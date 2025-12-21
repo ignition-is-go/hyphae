@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
-use rx3::{Cell, FilterExt, MapExt, Mutable, ScanExt, Watchable};
+use rx3::{Cell, FilterExt, MapExt, Mutable, ParallelExt, ScanExt, Watchable};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -57,7 +57,7 @@ fn bench_fan_out(c: &mut Criterion) {
 
     for num_subscribers in [10, 100, 1000, 5000].iter() {
         group.bench_with_input(
-            BenchmarkId::new("subscribers", num_subscribers),
+            BenchmarkId::new("sequential", num_subscribers),
             num_subscribers,
             |b, &num_subscribers| {
                 let source = Cell::new(0u64);
@@ -66,6 +66,29 @@ fn bench_fan_out(c: &mut Criterion) {
                 for _ in 0..num_subscribers {
                     let cnt = counter.clone();
                     source.watch(move |_| {
+                        cnt.fetch_add(1, Ordering::Relaxed);
+                    });
+                }
+
+                let mut i = 0u64;
+                b.iter(|| {
+                    i += 1;
+                    source.set(black_box(i));
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("parallel", num_subscribers),
+            num_subscribers,
+            |b, &num_subscribers| {
+                let source = Cell::new(0u64);
+                let parallel = source.parallel();
+                let counter = Arc::new(AtomicU64::new(0));
+
+                for _ in 0..num_subscribers {
+                    let cnt = counter.clone();
+                    parallel.watch(move |_| {
                         cnt.fetch_add(1, Ordering::Relaxed);
                     });
                 }
@@ -170,6 +193,72 @@ fn bench_pairwise_chain(c: &mut Criterion) {
     });
 }
 
+fn bench_parallel_heavy_callbacks(c: &mut Criterion) {
+    let mut group = c.benchmark_group("parallel heavy callbacks");
+
+    for num_subscribers in [10, 100, 500].iter() {
+        group.bench_with_input(
+            BenchmarkId::new("sequential", num_subscribers),
+            num_subscribers,
+            |b, &num_subscribers| {
+                let source = Cell::new(0u64);
+                let results: Vec<_> = (0..num_subscribers)
+                    .map(|_| Arc::new(AtomicU64::new(0)))
+                    .collect();
+
+                for result in &results {
+                    let r = result.clone();
+                    source.watch(move |x| {
+                        // Simulate expensive work - can't be optimized away
+                        let mut sum = *x;
+                        for _ in 0..10000 {
+                            sum = sum.wrapping_mul(31).wrapping_add(17);
+                        }
+                        r.store(sum, Ordering::Relaxed);
+                    });
+                }
+
+                let mut i = 0u64;
+                b.iter(|| {
+                    i += 1;
+                    source.set(black_box(i));
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("parallel", num_subscribers),
+            num_subscribers,
+            |b, &num_subscribers| {
+                let source = Cell::new(0u64);
+                let parallel = source.parallel();
+                let results: Vec<_> = (0..num_subscribers)
+                    .map(|_| Arc::new(AtomicU64::new(0)))
+                    .collect();
+
+                for result in &results {
+                    let r = result.clone();
+                    parallel.watch(move |x| {
+                        // Simulate expensive work - can't be optimized away
+                        let mut sum = *x;
+                        for _ in 0..10000 {
+                            sum = sum.wrapping_mul(31).wrapping_add(17);
+                        }
+                        r.store(sum, Ordering::Relaxed);
+                    });
+                }
+
+                let mut i = 0u64;
+                b.iter(|| {
+                    i += 1;
+                    source.set(black_box(i));
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_single_cell_propagation,
@@ -178,5 +267,6 @@ criterion_group!(
     bench_fan_in,
     bench_complex_graph,
     bench_pairwise_chain,
+    bench_parallel_heavy_callbacks,
 );
 criterion_main!(benches);

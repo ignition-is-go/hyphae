@@ -12,6 +12,7 @@ path = "src/lib.rs"
 [dependencies]
 arc-swap.workspace = true
 dashmap.workspace = true
+rayon = "1.10"
 uuid.workspace = true
 
 [dev-dependencies]

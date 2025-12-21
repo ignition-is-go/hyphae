@@ -461,6 +461,7 @@ dependencies = [
  "arc-swap",
  "criterion",
  "dashmap",
+ "rayon",
  "uuid",
 ]
 
