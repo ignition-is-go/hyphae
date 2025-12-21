@@ -1,0 +1,41 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use std::thread;
+
+use crate::{interval, from_iter_with_delay, Watchable};
+
+#[test]
+fn test_interval_emits_incrementing() {
+    let ticker = interval(Duration::from_millis(50));
+    let received = Arc::new(AtomicU64::new(0));
+
+    let r = received.clone();
+    ticker.watch(move |v| {
+        r.store(*v, Ordering::SeqCst);
+    });
+
+    assert_eq!(received.load(Ordering::SeqCst), 0);
+
+    thread::sleep(Duration::from_millis(120));
+    let val = received.load(Ordering::SeqCst);
+    assert!(val >= 2, "expected at least 2 ticks, got {}", val);
+}
+
+#[test]
+fn test_from_iter_with_delay_emits_all() {
+    let items = from_iter_with_delay(vec![1u64, 2, 3], Duration::from_millis(30));
+    let received = Arc::new(AtomicU64::new(0));
+
+    let r = received.clone();
+    items.watch(move |v| {
+        r.store(*v, Ordering::SeqCst);
+    });
+
+    // Initial value
+    assert_eq!(received.load(Ordering::SeqCst), 1);
+
+    // Wait for all to emit
+    thread::sleep(Duration::from_millis(100));
+    assert_eq!(received.load(Ordering::SeqCst), 3);
+}

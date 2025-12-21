@@ -14,7 +14,7 @@
 //! ## Quick Start
 //!
 //! ```rust
-//! use rx3::{Cell, combine, traits::{Mutable, Watchable}};
+//! use rx3::{Cell, MapExt, Mutable, Watchable, combine};
 //!
 //! // Create reactive cells
 //! let x = Cell::new(5).with_name("x");
@@ -42,7 +42,7 @@
 //! Every cell tracks its parent dependencies, enabling introspection and debugging:
 //!
 //! ```rust
-//! use rx3::{Cell, combine, traits::{Mutable, Watchable}};
+//! use rx3::{Cell, DepNode, Watchable, combine};
 //!
 //! let x = Cell::new(5).with_name("x");
 //! let y = Cell::new(10).with_name("y");
@@ -52,18 +52,8 @@
 //! assert_eq!(sum.dependency_count(), 2);
 //! assert!(sum.has_dependencies());
 //!
-//! // Visualize dependency structure
-//! sum.print_dependencies();
-//! // Output:
-//! // sum
-//! //   depends on:
-//! //     - x
-//! //     - y
-//!
-//! // Get dependency metadata
-//! for (id, name) in sum.dependencies() {
-//!     println!("Depends on: {:?}", name);
-//! }
+//! // Print dependency tree
+//! sum.print_dependency_tree();
 //! ```
 //!
 //! ## Combining Cells
@@ -71,7 +61,7 @@
 //! The `combine!` macro supports multiple cells of different types:
 //!
 //! ```rust
-//! use rx3::{Cell, combine, traits::{Mutable, Watchable}};
+//! use rx3::{Cell, Watchable, combine};
 //!
 //! let name = Cell::new("World".to_string());
 //! let count = Cell::new(3);
@@ -82,18 +72,15 @@
 //!
 //! assert_eq!(message.get(), "Hello, World! (x3)");
 //! ```
-//!
-//! ## Examples
-//!
-//! See the `examples/` directory for complete demonstrations:
-//! - `dependency_tracking.rs` - Basic dependency tracking
-//! - `advanced_dependencies.rs` - Complex dependency graphs
 
 #[macro_use]
 pub mod combine;
 pub mod cell;
 pub mod constructors;
 pub mod traits;
+
+#[cfg(test)]
+mod tests;
 
 pub use cell::{Cell, CellImmutable, CellMutable};
 pub use constructors::{from_iter_with_delay, interval};
