@@ -3,7 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::thread;
 
-use crate::{interval, from_iter_with_delay, Watchable};
+use crate::{interval, from_iter_with_delay};
+use crate::traits::Watchable;
 
 #[test]
 fn test_interval_emits_incrementing() {

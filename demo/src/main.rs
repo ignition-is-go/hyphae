@@ -1,4 +1,4 @@
-use rx3::{Cell, Mutable, Watchable};
+use rx3::{Cell, Mutable, SubscribeExt};
 
 fn main() {
     println!("=== Panic Isolation Demo ===\n");
@@ -7,12 +7,12 @@ fn main() {
     let cell = Cell::new(0);
 
     // Subscriber 1: prints normally
-    cell.watch(|v| {
+    let _g1 = cell.subscribe(|v| {
         println!("  Subscriber 1: got {}", v);
     });
 
     // Subscriber 2: panics on value 2
-    cell.watch(|v| {
+    let _g2 = cell.subscribe(|v| {
         if *v == 2 {
             panic!("Subscriber 2 panics on value 2!");
         }
@@ -20,7 +20,7 @@ fn main() {
     });
 
     // Subscriber 3: prints normally
-    cell.watch(|v| {
+    let _g3 = cell.subscribe(|v| {
         println!("  Subscriber 3: got {}", v);
     });
 

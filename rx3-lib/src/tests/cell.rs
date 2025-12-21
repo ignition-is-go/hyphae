@@ -1,7 +1,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use crate::{Cell, DepNode, Gettable, Mutable, Watchable};
+use crate::{Cell, DepNode, Gettable, Mutable};
+use crate::traits::Watchable;
 
 #[test]
 fn test_cell_new_and_get() {

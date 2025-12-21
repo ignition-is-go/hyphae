@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use crate::{Cell, Gettable, MapExt, Mutable, Watchable};
+use crate::{Cell, Gettable, MapExt, Mutable};
+use crate::traits::Watchable;
 
 // ============================================================================
 // WeakCell Tests
