@@ -25,7 +25,7 @@ fn test_interval_emits_incrementing() {
 
 #[test]
 fn test_from_iter_with_delay_emits_all() {
-    let items = from_iter_with_delay(vec![1u64, 2, 3], Duration::from_millis(30));
+    let items = from_iter_with_delay(vec![1u64, 2, 3], Duration::from_millis(30)).unwrap();
     let received = Arc::new(AtomicU64::new(0));
 
     let r = received.clone();
@@ -39,4 +39,10 @@ fn test_from_iter_with_delay_emits_all() {
     // Wait for all to emit
     thread::sleep(Duration::from_millis(100));
     assert_eq!(received.load(Ordering::SeqCst), 3);
+}
+
+#[test]
+fn test_from_iter_with_delay_empty() {
+    let items: Option<_> = from_iter_with_delay(Vec::<u64>::new(), Duration::from_millis(30));
+    assert!(items.is_none());
 }
