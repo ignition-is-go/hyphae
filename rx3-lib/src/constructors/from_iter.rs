@@ -2,6 +2,8 @@ use std::{thread, time::Duration};
 use crate::cell::{Cell, CellImmutable};
 
 /// Creates a cell that emits each value from the iterator with a delay between emissions.
+///
+/// The thread automatically stops when the cell is dropped.
 pub fn from_iter_with_delay<T, I>(iter: I, delay: Duration) -> Cell<T, CellImmutable>
 where
     T: Clone + Send + Sync + 'static,
@@ -12,10 +14,13 @@ where
     let first = iter.next().expect("from_iter_with_delay requires at least one element");
     let cell = Cell::<T, CellImmutable>::derived(first, vec![]);
 
-    let c = cell.clone();
+    // Use weak ref so thread doesn't keep cell alive
+    let weak = cell.downgrade();
     thread::spawn(move || {
         for value in iter {
             thread::sleep(delay);
+            // Exit when cell is dropped
+            let Some(c) = weak.upgrade() else { break };
             c.notify(value);
         }
     });
