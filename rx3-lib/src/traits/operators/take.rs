@@ -19,8 +19,18 @@ pub trait TakeExt<T>: Watchable<T> {
                 let prev = remaining.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
                     if n > 0 { Some(n - 1) } else { None }
                 });
-                if prev.is_ok() {
-                    c.notify(value.clone());
+                match prev {
+                    Ok(1) => {
+                        // This was the last one
+                        c.notify(value.clone());
+                        c.complete();
+                    }
+                    Ok(_) => {
+                        c.notify(value.clone());
+                    }
+                    Err(_) => {
+                        // Already exhausted
+                    }
                 }
             }
         });
@@ -36,7 +46,7 @@ impl<T, W: Watchable<T>> TakeExt<T> for W {}
 mod tests {
     use super::*;
     use crate::Mutable;
-    use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
     use std::sync::Arc;
 
     #[test]
@@ -59,5 +69,25 @@ mod tests {
         source.set(4); // ignored
 
         assert_eq!(count.load(AtomicOrdering::SeqCst), 3);
+    }
+
+    #[test]
+    fn test_take_completes() {
+        let source = Cell::new(0u64);
+        let taken = source.take(2);
+        let completed = Arc::new(AtomicBool::new(false));
+
+        let c = completed.clone();
+        let _guard = taken.on_complete(move || {
+            c.store(true, AtomicOrdering::SeqCst);
+        });
+
+        assert!(!taken.is_complete());
+        assert!(!completed.load(AtomicOrdering::SeqCst));
+
+        source.set(1); // 2nd emission, completes
+
+        assert!(taken.is_complete());
+        assert!(completed.load(AtomicOrdering::SeqCst));
     }
 }

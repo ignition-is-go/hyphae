@@ -4,7 +4,10 @@ use std::{
     fmt::Debug,
     marker::PhantomData,
     panic::{catch_unwind, AssertUnwindSafe},
-    sync::{Arc, Mutex, Weak},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, Weak,
+    },
 };
 use uuid::Uuid;
 
@@ -27,6 +30,10 @@ pub(crate) struct CellInner<T, M> {
     /// Owned values that should be dropped when this cell is dropped.
     /// Used to hold SubscriptionGuards so they unsubscribe on cell drop.
     pub(crate) owned: DashMap<Uuid, Box<dyn Send + Sync>>,
+    /// Whether this cell has completed (no more values will be emitted).
+    pub(crate) completed: AtomicBool,
+    /// Callbacks to invoke when this cell completes.
+    pub(crate) on_complete: DashMap<Uuid, Box<dyn Fn() + Send + Sync>>,
     pub(crate) _phantom: PhantomData<M>,
 }
 
@@ -78,6 +85,8 @@ impl<T: Clone + Send + Sync + 'static> Cell<T, CellMutable> {
                 name: Mutex::new(None),
                 dependencies: Vec::new(),
                 owned: DashMap::new(),
+                completed: AtomicBool::new(false),
+                on_complete: DashMap::new(),
                 _phantom: PhantomData::<CellMutable>,
             }),
         }
@@ -111,6 +120,56 @@ impl<T, M> Cell<T, M> {
     pub(crate) fn own(&self, value: impl Send + Sync + 'static) {
         self.inner.owned.insert(Uuid::new_v4(), Box::new(value));
     }
+
+    /// Returns true if this cell has completed (no more values will be emitted).
+    pub fn is_complete(&self) -> bool {
+        self.inner.completed.load(Ordering::SeqCst)
+    }
+}
+
+impl<T: Send + Sync + 'static, M: Send + Sync + 'static> Cell<T, M> {
+    /// Register a callback to be called when this cell completes.
+    /// Returns a guard that unregisters the callback when dropped.
+    pub fn on_complete(&self, callback: impl Fn() + Send + Sync + 'static) -> SubscriptionGuard {
+        // If already complete, call immediately
+        if self.is_complete() {
+            callback();
+        }
+
+        let id = Uuid::new_v4();
+        self.inner.on_complete.insert(id, Box::new(callback));
+
+        let cell = self.clone();
+        SubscriptionGuard::new(id, move || {
+            cell.inner.on_complete.remove(&id);
+        })
+    }
+
+    /// Mark this cell as complete. No more values should be emitted after this.
+    /// Calls all registered on_complete callbacks.
+    pub(crate) fn complete(&self) {
+        // Only complete once
+        if self.inner.completed.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
+        // Collect callback ids first to release lock
+        let ids: Vec<_> = self
+            .inner
+            .on_complete
+            .iter()
+            .map(|entry| *entry.key())
+            .collect();
+
+        // Call each callback
+        for id in ids {
+            if let Some(entry) = self.inner.on_complete.get(&id) {
+                let _ = catch_unwind(AssertUnwindSafe(|| {
+                    (entry.value())();
+                }));
+            }
+        }
+    }
 }
 
 // ============================================================================
@@ -143,6 +202,8 @@ impl<T: Clone + Send + Sync + 'static> Cell<T, CellImmutable> {
                 name: Mutex::new(None),
                 dependencies: deps,
                 owned: DashMap::new(),
+                completed: AtomicBool::new(false),
+                on_complete: DashMap::new(),
                 _phantom: PhantomData,
             }),
         }

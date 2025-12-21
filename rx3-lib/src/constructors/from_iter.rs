@@ -24,6 +24,10 @@ where
             let Some(c) = weak.upgrade() else { break };
             c.notify(value);
         }
+        // Complete when iterator exhausted
+        if let Some(c) = weak.upgrade() {
+            c.complete();
+        }
     });
 
     Some(cell)
