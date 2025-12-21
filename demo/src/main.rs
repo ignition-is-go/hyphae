@@ -49,7 +49,7 @@ fn main() {
 
     let mega = aa.join(&cc);
 
-    let mapped = mega.map(|((a, b), (c, d))| println!("{:?}:{:?}:{:?}:{:?}", a, b, c, d));
+    let _mapped = mega.map(|((a, b), (c, d))| println!("{:?}:{:?}:{:?}:{:?}", a, b, c, d));
 
     let flat_demo = a.join(&b).join(&c).join(&d).map(flat!(|a, b, c, d| {
         println!("Flattened values: {:?}, {:?}, {:?}, {:?}", a, b, c, d);
