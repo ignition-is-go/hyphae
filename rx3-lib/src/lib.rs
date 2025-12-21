@@ -67,8 +67,8 @@ pub use cell::{Cell, CellImmutable, CellMutable};
 pub use constructors::{from_iter_with_delay, interval};
 pub use subscription::SubscriptionGuard;
 pub use traits::{
-    CatchErrorExt, DebounceExt, DedupedExt, DelayExt, DepNode, FilterExt, Gettable, JoinExt,
-    MapErrExt, MapExt, MapOkExt, MergeMapExt, Mutable, PairwiseExt, ParallelCell, ParallelExt,
-    ScanExt, SkipExt, SwitchMapExt, TakeExt, TapExt, ThrottleExt, TryMapExt, UnwrapOrExt,
-    Watchable,
+    CatchErrorExt, DebounceExt, DedupedExt, DelayExt, DepNode, FilterExt, FirstExt, Gettable,
+    JoinExt, MapErrExt, MapExt, MapOkExt, MergeExt, MergeMapExt, Mutable, PairwiseExt,
+    ParallelCell, ParallelExt, ScanExt, SkipExt, SwitchMapExt, TakeExt, TakeUntilExt,
+    TakeWhileExt, TapExt, ThrottleExt, TryMapExt, UnwrapOrExt, Watchable, ZipExt,
 };

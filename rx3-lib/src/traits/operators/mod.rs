@@ -1,0 +1,48 @@
+// Re-export base traits for use by operator modules
+pub(crate) use super::{DepNode, Gettable, Watchable};
+
+mod debounce;
+mod deduped;
+mod delay;
+mod filter;
+mod first;
+mod join;
+mod map;
+mod merge;
+mod merge_map;
+mod pairwise;
+mod parallel;
+mod result_ext;
+mod scan;
+mod skip;
+mod switch_map;
+mod take;
+mod take_until;
+mod take_while;
+mod tap;
+mod throttle;
+mod try_map;
+mod zip;
+
+pub use debounce::DebounceExt;
+pub use deduped::DedupedExt;
+pub use delay::DelayExt;
+pub use filter::FilterExt;
+pub use first::FirstExt;
+pub use join::JoinExt;
+pub use map::MapExt;
+pub use merge::MergeExt;
+pub use merge_map::MergeMapExt;
+pub use pairwise::PairwiseExt;
+pub use parallel::{ParallelCell, ParallelExt};
+pub use result_ext::{CatchErrorExt, MapErrExt, MapOkExt, UnwrapOrExt};
+pub use scan::ScanExt;
+pub use skip::SkipExt;
+pub use switch_map::SwitchMapExt;
+pub use take::TakeExt;
+pub use take_until::TakeUntilExt;
+pub use take_while::TakeWhileExt;
+pub use tap::TapExt;
+pub use throttle::ThrottleExt;
+pub use try_map::TryMapExt;
+pub use zip::ZipExt;

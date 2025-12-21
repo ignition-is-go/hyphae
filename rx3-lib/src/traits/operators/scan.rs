@@ -37,3 +37,38 @@ pub trait ScanExt<T>: Watchable<T> {
 }
 
 impl<T, W: Watchable<T>> ScanExt<T> for W {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Gettable, Mutable};
+
+    #[test]
+    fn test_scan_accumulates() {
+        let source = Cell::new(1u64);
+        let sum = source.scan(0u64, |acc, x| acc + x);
+
+        // Initial: 0 + 1 = 1
+        assert_eq!(sum.get(), 1);
+
+        source.set(2);
+        assert_eq!(sum.get(), 3); // 1 + 2
+
+        source.set(3);
+        assert_eq!(sum.get(), 6); // 3 + 3
+    }
+
+    #[test]
+    fn test_scan_with_different_types() {
+        let source = Cell::new(1);
+        let collected = source.scan(String::new(), |acc, x| format!("{}{}", acc, x));
+
+        assert_eq!(collected.get(), "1");
+
+        source.set(2);
+        assert_eq!(collected.get(), "12");
+
+        source.set(3);
+        assert_eq!(collected.get(), "123");
+    }
+}

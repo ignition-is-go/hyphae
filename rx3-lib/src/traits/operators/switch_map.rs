@@ -67,3 +67,21 @@ pub trait SwitchMapExt<T>: Watchable<T> {
 }
 
 impl<T, W: Watchable<T>> SwitchMapExt<T> for W {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::MapExt;
+
+    #[test]
+    fn test_switch_map_switches() {
+        let source = Cell::new(1u64);
+        let switched = source.switch_map(|v| {
+            let v = *v;
+            Cell::new(v * 10).map(move |x| x + v)
+        });
+
+        // Initial: 1 * 10 + 1 = 11
+        assert_eq!(switched.get(), 11);
+    }
+}

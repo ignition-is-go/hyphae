@@ -38,3 +38,35 @@ pub trait DebounceExt<T>: Watchable<T> {
 }
 
 impl<T, W: Watchable<T>> DebounceExt<T> for W {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Mutable;
+    use std::sync::atomic::AtomicU64;
+
+    #[test]
+    fn test_debounce_waits_for_pause() {
+        let source = Cell::new(0u64);
+        let debounced = source.debounce(Duration::from_millis(50));
+        let received = Arc::new(AtomicU64::new(0));
+
+        let r = received.clone();
+        let _guard = debounced.subscribe(move |v| {
+            r.store(*v, Ordering::SeqCst);
+        });
+
+        // Rapid updates
+        source.set(1);
+        source.set(2);
+        source.set(3);
+
+        // Should not have updated yet
+        thread::sleep(Duration::from_millis(10));
+        assert_eq!(received.load(Ordering::SeqCst), 0);
+
+        // Wait for debounce
+        thread::sleep(Duration::from_millis(100));
+        assert_eq!(received.load(Ordering::SeqCst), 3);
+    }
+}

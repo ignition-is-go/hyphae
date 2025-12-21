@@ -31,3 +31,38 @@ pub trait SkipExt<T>: Watchable<T> {
 }
 
 impl<T, W: Watchable<T>> SkipExt<T> for W {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Mutable;
+    use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+    use std::sync::Arc;
+
+    #[test]
+    fn test_skip_ignores_first_n() {
+        let source = Cell::new(0u64);
+        let skipped = source.skip(2);
+        let count = Arc::new(AtomicU64::new(0));
+
+        let c = count.clone();
+        let _guard = skipped.subscribe(move |_| {
+            c.fetch_add(1, AtomicOrdering::SeqCst);
+        });
+
+        // Watch always fires once immediately with current value
+        assert_eq!(count.load(AtomicOrdering::SeqCst), 1);
+
+        // First set - skipped (to_skip goes 2 -> 1 from initial watch, then 1 -> 0 here)
+        source.set(1);
+        assert_eq!(count.load(AtomicOrdering::SeqCst), 1);
+
+        // Second set - now emits (to_skip is 0)
+        source.set(2);
+        assert_eq!(count.load(AtomicOrdering::SeqCst), 2);
+
+        // Third set - emits
+        source.set(3);
+        assert_eq!(count.load(AtomicOrdering::SeqCst), 3);
+    }
+}

@@ -1,41 +1,17 @@
-mod debounce;
-mod deduped;
-mod delay;
 mod dep_node;
-mod filter;
-mod join;
-mod map;
-mod merge_map;
 mod mutable;
-mod pairwise;
-mod parallel;
-mod result_ext;
-mod scan;
-mod skip;
-mod switch_map;
-mod take;
-mod tap;
-mod throttle;
-mod try_map;
 mod watchable;
 
-pub use debounce::DebounceExt;
-pub use deduped::DedupedExt;
-pub use delay::DelayExt;
+pub mod operators;
+
 pub use dep_node::DepNode;
-pub use filter::FilterExt;
-pub use join::JoinExt;
-pub use map::MapExt;
-pub use merge_map::MergeMapExt;
 pub use mutable::Mutable;
-pub use pairwise::PairwiseExt;
-pub use parallel::{ParallelCell, ParallelExt};
-pub use result_ext::{CatchErrorExt, MapErrExt, MapOkExt, UnwrapOrExt};
-pub use scan::ScanExt;
-pub use skip::SkipExt;
-pub use switch_map::SwitchMapExt;
-pub use take::TakeExt;
-pub use tap::TapExt;
-pub use throttle::ThrottleExt;
-pub use try_map::TryMapExt;
 pub use watchable::{Gettable, Watchable};
+
+// Re-export all operators for convenience
+pub use operators::{
+    CatchErrorExt, DebounceExt, DedupedExt, DelayExt, FilterExt, FirstExt, JoinExt, MapErrExt,
+    MapExt, MapOkExt, MergeExt, MergeMapExt, PairwiseExt, ParallelCell, ParallelExt, ScanExt,
+    SkipExt, SwitchMapExt, TakeExt, TakeUntilExt, TakeWhileExt, TapExt, ThrottleExt, TryMapExt,
+    UnwrapOrExt, ZipExt,
+};

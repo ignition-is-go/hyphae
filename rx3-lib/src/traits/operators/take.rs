@@ -31,3 +31,33 @@ pub trait TakeExt<T>: Watchable<T> {
 }
 
 impl<T, W: Watchable<T>> TakeExt<T> for W {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Mutable;
+    use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+    use std::sync::Arc;
+
+    #[test]
+    fn test_take_limits_emissions() {
+        let source = Cell::new(0u64);
+        let taken = source.take(3);
+        let count = Arc::new(AtomicU64::new(0));
+
+        let c = count.clone();
+        let _guard = taken.subscribe(move |_| {
+            c.fetch_add(1, AtomicOrdering::SeqCst);
+        });
+
+        // Initial watch call counts as 1
+        assert_eq!(count.load(AtomicOrdering::SeqCst), 1);
+
+        source.set(1); // 2
+        source.set(2); // 3
+        source.set(3); // ignored
+        source.set(4); // ignored
+
+        assert_eq!(count.load(AtomicOrdering::SeqCst), 3);
+    }
+}

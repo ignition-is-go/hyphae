@@ -39,3 +39,51 @@ pub trait MapExt<T>: Watchable<T> {
 }
 
 impl<T, W: Watchable<T>> MapExt<T> for W {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Gettable, Mutable};
+
+    #[test]
+    fn test_map_transform() {
+        let source = Cell::new(5);
+        let doubled = source.map(|x| x * 2);
+
+        assert_eq!(doubled.get(), 10);
+
+        source.set(10);
+        assert_eq!(doubled.get(), 20);
+    }
+
+    #[test]
+    fn test_map_chain() {
+        let source = Cell::new(1);
+        let result = source
+            .map(|x| x + 1)
+            .map(|x| x * 2)
+            .map(|x| x + 10);
+
+        assert_eq!(result.get(), 14); // ((1 + 1) * 2) + 10
+
+        source.set(5);
+        assert_eq!(result.get(), 22); // ((5 + 1) * 2) + 10
+    }
+
+    #[test]
+    fn test_map_type_change() {
+        let source = Cell::new(42);
+        let stringified = source.map(|x| format!("value: {}", x));
+
+        assert_eq!(stringified.get(), "value: 42");
+    }
+
+    #[test]
+    fn test_map_tracks_dependency() {
+        let source = Cell::new(1).with_name("source");
+        let mapped = source.map(|x| x * 2);
+
+        assert_eq!(mapped.dependency_count(), 1);
+        assert!(mapped.has_dependencies());
+    }
+}

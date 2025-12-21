@@ -29,3 +29,21 @@ pub trait PairwiseExt<T>: Watchable<T> {
 }
 
 impl<T, W: Watchable<T>> PairwiseExt<T> for W {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Gettable, Mutable};
+
+    #[test]
+    fn test_pairwise_emits_pairs() {
+        let source = Cell::new(1u64);
+        let pairs = source.pairwise();
+
+        source.set(2);
+        assert_eq!(pairs.get(), (1, 2));
+
+        source.set(3);
+        assert_eq!(pairs.get(), (2, 3));
+    }
+}

@@ -36,3 +36,31 @@ pub trait ThrottleExt<T>: Watchable<T> {
 }
 
 impl<T, W: Watchable<T>> ThrottleExt<T> for W {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Mutable;
+    use std::sync::atomic::AtomicU64;
+
+    #[test]
+    fn test_throttle_limits_rate() {
+        let source = Cell::new(0u64);
+        let throttled = source.throttle(Duration::from_millis(50));
+        let count = Arc::new(AtomicU64::new(0));
+
+        let c = count.clone();
+        let _guard = throttled.subscribe(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        });
+
+        // Rapid updates
+        for i in 1..=10 {
+            source.set(i);
+        }
+
+        // Should have limited emissions
+        let emissions = count.load(Ordering::SeqCst);
+        assert!(emissions < 10, "throttle should limit emissions, got {}", emissions);
+    }
+}

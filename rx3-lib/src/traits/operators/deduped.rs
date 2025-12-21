@@ -31,3 +31,34 @@ pub trait DedupedExt<T>: Watchable<T> {
 }
 
 impl<T, W: Watchable<T>> DedupedExt<T> for W {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Mutable;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+
+    #[test]
+    fn test_deduped_blocks_duplicates() {
+        let source = Cell::new(1u64);
+        let deduped = source.deduped();
+        let count = Arc::new(AtomicU64::new(0));
+
+        let c = count.clone();
+        let _guard = deduped.subscribe(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        });
+
+        assert_eq!(count.load(Ordering::SeqCst), 1); // initial
+
+        source.set(1); // same value - blocked
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+
+        source.set(2); // different - passes
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+
+        source.set(2); // same - blocked
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+}
