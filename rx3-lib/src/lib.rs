@@ -97,4 +97,7 @@ pub mod traits;
 
 pub use cell::{Cell, CellImmutable, CellMutable};
 pub use constructors::{from_iter_with_delay, interval};
-pub use traits::{DedupedExt, DepNode, JoinExt, MapExt, MergeMapExt, Mutable, SwitchMapExt, Watchable};
+pub use traits::{
+    DebounceExt, DedupedExt, DelayExt, DepNode, FilterExt, JoinExt, MapExt, MergeMapExt,
+    Mutable, PairwiseExt, ScanExt, SkipExt, SwitchMapExt, TakeExt, TapExt, ThrottleExt, Watchable,
+};
