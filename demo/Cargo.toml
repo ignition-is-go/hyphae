@@ -1,0 +1,14 @@
+[package]
+name = "demo"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "demo"
+path = "src/main.rs"
+
+[dependencies]
+rx3 = { path = "../rx3-lib" }
+anyhow.workspace = true
