@@ -77,6 +77,7 @@
 pub mod combine;
 pub mod cell;
 pub mod constructors;
+pub mod subscription;
 pub mod traits;
 
 #[cfg(test)]
@@ -84,8 +85,9 @@ mod tests;
 
 pub use cell::{Cell, CellImmutable, CellMutable};
 pub use constructors::{from_iter_with_delay, interval};
+pub use subscription::SubscriptionGuard;
 pub use traits::{
     DebounceExt, DedupedExt, DelayExt, DepNode, FilterExt, JoinExt, MapExt, MergeMapExt,
-    Mutable, PairwiseExt, ParallelCell, ParallelExt, ScanExt, SkipExt, SwitchMapExt, TakeExt,
-    TapExt, ThrottleExt, Watchable,
+    Mutable, PairwiseExt, ParallelCell, ParallelExt, ScanExt, SkipExt, SubscribeExt,
+    SwitchMapExt, TakeExt, TapExt, ThrottleExt, Watchable,
 };
