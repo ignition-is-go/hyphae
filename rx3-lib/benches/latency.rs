@@ -25,11 +25,6 @@ fn bench_chain_depth(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("map chain", depth), depth, |b, &depth| {
             let source = Cell::new(0u64);
 
-            let mut current: Box<dyn Fn() -> u64 + Send + Sync> = {
-                let s = source.clone();
-                Box::new(move || s.get())
-            };
-
             // Build chain of maps
             let mut last = source.map(|x| x + 1);
             for _ in 1..depth {
