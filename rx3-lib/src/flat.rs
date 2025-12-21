@@ -1,7 +1,7 @@
-/// Macro to flatten nested tuple patterns from chained `join()` calls.
+/// Macro to create tuple-destructuring closures for `join()` results.
 ///
-/// When you chain multiple `join()` calls, you get nested tuples like `((a, b), c)`.
-/// This macro lets you write flat parameter lists instead:
+/// Since closures take a single argument, joined cells require tuple patterns.
+/// This macro lets you write comma-separated patterns that mirror your join structure:
 ///
 /// ```
 /// use rx3::{Cell, Gettable, JoinExt, MapExt, flat};
@@ -10,34 +10,35 @@
 /// let b = Cell::new(2);
 /// let c = Cell::new(3);
 ///
-/// // Without flat! - nested tuple destructuring
-/// let sum = a.join(&b).join(&c).map(|((x, y), z)| x + y + z);
+/// // Two cells: a.join(&b) produces (A, B)
+/// let sum = a.join(&b).map(flat!(|x, y| x + y));
+/// assert_eq!(sum.get(), 3);
 ///
-/// // With flat! - clean parameter list
-/// let sum = a.join(&b).join(&c).map(flat!(|x, y, z| x + y + z));
-///
+/// // Chain: a.join(&b).join(&c) produces ((A, B), C)
+/// let sum = a.join(&b).join(&c).map(flat!(|(x, y), z| x + y + z));
 /// assert_eq!(sum.get(), 6);
+/// ```
+///
+/// For tree-shaped joins, mirror the structure:
+///
+/// ```
+/// use rx3::{Cell, Gettable, JoinExt, MapExt, flat};
+///
+/// let a = Cell::new(1);
+/// let b = Cell::new(2);
+/// let c = Cell::new(3);
+/// let d = Cell::new(4);
+///
+/// // ab.join(&cd) produces ((A, B), (C, D))
+/// let ab = a.join(&b);
+/// let cd = c.join(&d);
+/// let sum = ab.join(&cd).map(flat!(|(a, b), (c, d)| a + b + c + d));
+/// assert_eq!(sum.get(), 10);
 /// ```
 #[macro_export]
 macro_rules! flat {
-    // 2 params: (a, b)
-    (|$a:ident, $b:ident| $body:expr) => {
-        |($a, $b)| $body
-    };
-    // 3 params: ((a, b), c)
-    (|$a:ident, $b:ident, $c:ident| $body:expr) => {
-        |(($a, $b), $c)| $body
-    };
-    // 4 params: (((a, b), c), d)
-    (|$a:ident, $b:ident, $c:ident, $d:ident| $body:expr) => {
-        |((($a, $b), $c), $d)| $body
-    };
-    // 5 params: ((((a, b), c), d), e)
-    (|$a:ident, $b:ident, $c:ident, $d:ident, $e:ident| $body:expr) => {
-        |(((($a, $b), $c), $d), $e)| $body
-    };
-    // 6 params
-    (|$a:ident, $b:ident, $c:ident, $d:ident, $e:ident, $f:ident| $body:expr) => {
-        |((((($a, $b), $c), $d), $e), $f)| $body
+    // Wrap comma-separated patterns in a tuple
+    (|$($pat:pat_param),+| $body:expr) => {
+        |($($pat),+)| $body
     };
 }

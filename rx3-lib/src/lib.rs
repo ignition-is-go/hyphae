@@ -57,9 +57,9 @@
 //! let b = Cell::new(2);
 //! let c = Cell::new(3);
 //!
-//! // Without flat!: |((a, b), c)| - nested tuples
-//! // With flat!: |a, b, c| - clean params
-//! let sum = a.join(&b).join(&c).map(flat!(|x, y, z| x + y + z));
+//! // Without flat!: |((a, b), c)| - extra parens
+//! // With flat!: |(a, b), c| - mirrors join structure
+//! let sum = a.join(&b).join(&c).map(flat!(|(x, y), z| x + y + z));
 //! assert_eq!(sum.get(), 6);
 //! ```
 
