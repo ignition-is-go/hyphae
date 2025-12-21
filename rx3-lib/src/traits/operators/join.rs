@@ -51,22 +51,20 @@ pub trait JoinExt<T>: Watchable<T> {
         let oc = other_complete.clone();
         let complete_guard1 = self.on_complete(move || {
             sc.store(true, Ordering::SeqCst);
-            if oc.load(Ordering::SeqCst) {
-                if let Some(d) = weak.upgrade() {
+            if oc.load(Ordering::SeqCst)
+                && let Some(d) = weak.upgrade() {
                     d.complete();
                 }
-            }
         });
         derived.own(complete_guard1);
 
         let weak = derived.downgrade();
         let complete_guard2 = other.on_complete(move || {
             other_complete.store(true, Ordering::SeqCst);
-            if self_complete.load(Ordering::SeqCst) {
-                if let Some(d) = weak.upgrade() {
+            if self_complete.load(Ordering::SeqCst)
+                && let Some(d) = weak.upgrade() {
                     d.complete();
                 }
-            }
         });
         derived.own(complete_guard2);
 

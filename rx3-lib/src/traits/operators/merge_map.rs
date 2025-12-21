@@ -61,11 +61,10 @@ pub trait MergeMapExt<T>: Watchable<T> {
         let ai = active_inners.clone();
         let first_inner_complete = first_inner.on_complete(move || {
             let remaining = ai.fetch_sub(1, Ordering::SeqCst) - 1;
-            if remaining == 0 && oc.load(Ordering::SeqCst) {
-                if let Some(c) = weak.upgrade() {
+            if remaining == 0 && oc.load(Ordering::SeqCst)
+                && let Some(c) = weak.upgrade() {
                     c.complete();
                 }
-            }
         });
         cell.own(first_inner_complete);
 
@@ -93,11 +92,10 @@ pub trait MergeMapExt<T>: Watchable<T> {
             let ai_inner = ai2.clone();
             let inner_complete = inner.on_complete(move || {
                 let remaining = ai_inner.fetch_sub(1, Ordering::SeqCst) - 1;
-                if remaining == 0 && oc_inner.load(Ordering::SeqCst) {
-                    if let Some(c) = weak_inner.upgrade() {
+                if remaining == 0 && oc_inner.load(Ordering::SeqCst)
+                    && let Some(c) = weak_inner.upgrade() {
                         c.complete();
                     }
-                }
             });
             c.own(inner_complete);
         });
@@ -107,11 +105,10 @@ pub trait MergeMapExt<T>: Watchable<T> {
         let weak = cell.downgrade();
         let outer_complete_guard = self.on_complete(move || {
             outer_complete.store(true, Ordering::SeqCst);
-            if active_inners.load(Ordering::SeqCst) == 0 {
-                if let Some(c) = weak.upgrade() {
+            if active_inners.load(Ordering::SeqCst) == 0
+                && let Some(c) = weak.upgrade() {
                     c.complete();
                 }
-            }
         });
         cell.own(outer_complete_guard);
 

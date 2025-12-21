@@ -18,11 +18,10 @@ pub trait FilterExt<T>: Watchable<T> {
             if first.swap(false, Ordering::SeqCst) {
                 return;
             }
-            if let Some(c) = weak.upgrade() {
-                if predicate(value) {
+            if let Some(c) = weak.upgrade()
+                && predicate(value) {
                     c.notify(value.clone());
                 }
-            }
         });
         cell.own(guard);
 

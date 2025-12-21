@@ -16,8 +16,8 @@ pub trait ThrottleExt<T>: Watchable<T> {
         let can_emit = Arc::new(AtomicBool::new(true));
         let weak = cell.downgrade();
         let guard = self.subscribe(move |value| {
-            if let Some(c) = weak.upgrade() {
-                if can_emit.swap(false, Ordering::SeqCst) {
+            if let Some(c) = weak.upgrade()
+                && can_emit.swap(false, Ordering::SeqCst) {
                     c.notify(value.clone());
 
                     let can_emit = can_emit.clone();
@@ -26,7 +26,6 @@ pub trait ThrottleExt<T>: Watchable<T> {
                         can_emit.store(true, Ordering::SeqCst);
                     });
                 }
-            }
         });
         cell.own(guard);
 

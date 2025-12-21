@@ -17,11 +17,10 @@ pub trait DedupedExt<T>: Watchable<T> {
             if first.swap(false, Ordering::SeqCst) {
                 return;
             }
-            if let Some(d) = weak.upgrade() {
-                if *value != d.get() {
+            if let Some(d) = weak.upgrade()
+                && *value != d.get() {
                     d.notify(value.clone());
                 }
-            }
         });
         derived.own(guard);
 

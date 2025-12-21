@@ -223,11 +223,10 @@ impl<T: Clone + Send + Sync + 'static, U: Send + Sync + 'static> Watchable<T> fo
         // Check after insert: if already complete, we must call the callback ourselves
         // because complete() may have already finished iterating.
         // Use atomic remove to ensure exactly-once: whoever successfully removes it, calls it.
-        if self.is_complete() {
-            if let Some((_, cb)) = self.inner.on_complete.remove(&id) {
-                let _ = catch_unwind(AssertUnwindSafe(|| cb()));
+        if self.is_complete()
+            && let Some((_, cb)) = self.inner.on_complete.remove(&id) {
+                let _ = catch_unwind(AssertUnwindSafe(cb));
             }
-        }
 
         let source: Arc<dyn DepNode> = Arc::new(self.clone());
         let cell = self.clone();
@@ -266,7 +265,7 @@ impl<T: Clone + Send + Sync + 'static, M: Send + Sync + 'static> Cell<T, M> {
         // whoever successfully removes the callback is responsible for calling it.
         for id in ids {
             if let Some((_, cb)) = self.inner.on_complete.remove(&id) {
-                let _ = catch_unwind(AssertUnwindSafe(|| cb()));
+                let _ = catch_unwind(AssertUnwindSafe(cb));
             }
         }
     }

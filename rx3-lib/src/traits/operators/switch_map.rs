@@ -31,11 +31,10 @@ pub trait SwitchMapExt<T>: Watchable<T> {
         let state_for_first = state.clone();
         let first_guard = first_inner.subscribe(move |value| {
             let current = state_for_first.load(Ordering::SeqCst);
-            if current & GEN_MASK == 0 {
-                if let Some(c) = weak.upgrade() {
+            if current & GEN_MASK == 0
+                && let Some(c) = weak.upgrade() {
                     c.notify(value.clone());
                 }
-            }
         });
         cell.own(first_guard);
 
@@ -57,11 +56,10 @@ pub trait SwitchMapExt<T>: Watchable<T> {
                     .is_ok()
                 {
                     // Successfully marked inner complete - check if both complete
-                    if new & OUTER_COMPLETE_BIT != 0 {
-                        if let Some(c) = weak.upgrade() {
+                    if new & OUTER_COMPLETE_BIT != 0
+                        && let Some(c) = weak.upgrade() {
                             c.complete();
                         }
-                    }
                     return;
                 }
                 // CAS failed, retry
@@ -103,11 +101,10 @@ pub trait SwitchMapExt<T>: Watchable<T> {
             let state_for_value = state_for_outer.clone();
             let value_guard = inner.subscribe(move |value| {
                 let current = state_for_value.load(Ordering::SeqCst);
-                if current & GEN_MASK == my_gen {
-                    if let Some(c) = weak_inner.upgrade() {
+                if current & GEN_MASK == my_gen
+                    && let Some(c) = weak_inner.upgrade() {
                         c.notify(value.clone());
                     }
-                }
             });
             c.own(value_guard);
 
@@ -129,11 +126,10 @@ pub trait SwitchMapExt<T>: Watchable<T> {
                         .is_ok()
                     {
                         // Successfully marked inner complete - check if both complete
-                        if new & OUTER_COMPLETE_BIT != 0 {
-                            if let Some(c) = weak_inner.upgrade() {
+                        if new & OUTER_COMPLETE_BIT != 0
+                            && let Some(c) = weak_inner.upgrade() {
                                 c.complete();
                             }
-                        }
                         return;
                     }
                     // CAS failed, retry
@@ -157,11 +153,10 @@ pub trait SwitchMapExt<T>: Watchable<T> {
                     .is_ok()
                 {
                     // Successfully marked outer complete - check if both complete
-                    if new & INNER_COMPLETE_BIT != 0 {
-                        if let Some(c) = weak.upgrade() {
+                    if new & INNER_COMPLETE_BIT != 0
+                        && let Some(c) = weak.upgrade() {
                             c.complete();
                         }
-                    }
                     return;
                 }
                 // CAS failed, retry

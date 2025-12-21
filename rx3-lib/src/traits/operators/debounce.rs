@@ -23,11 +23,10 @@ pub trait DebounceExt<T>: Watchable<T> {
 
             thread::spawn(move || {
                 thread::sleep(duration);
-                if generation.load(Ordering::SeqCst) == my_gen {
-                    if let Some(c) = weak.upgrade() {
+                if generation.load(Ordering::SeqCst) == my_gen
+                    && let Some(c) = weak.upgrade() {
                         c.notify(value);
                     }
-                }
             });
         });
         cell.own(guard);
