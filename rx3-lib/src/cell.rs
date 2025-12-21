@@ -3,6 +3,7 @@ use dashmap::DashMap;
 use std::{
     fmt::Debug,
     marker::PhantomData,
+    panic::{catch_unwind, AssertUnwindSafe},
     sync::{Arc, Mutex, Weak},
 };
 use uuid::Uuid;
@@ -157,9 +158,21 @@ impl<T: Clone + Send + Sync + 'static, M: Send + Sync + 'static> Cell<T, M> {
     #[doc(hidden)]
     pub fn notify(&self, value: T) {
         self.inner.value.store(Arc::new(value.clone()));
-        self.inner.subscribers.iter().for_each(|subscriber| {
-            (subscriber.callback)(&value);
-        });
+
+        // Collect callbacks first to release DashMap lock before calling them
+        let callbacks: Vec<_> = self
+            .inner
+            .subscribers
+            .iter()
+            .map(|entry| Arc::clone(&entry.value().callback))
+            .collect();
+
+        // Call each callback, catching panics so one bad callback doesn't kill the rest
+        for callback in callbacks {
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                callback(&value);
+            }));
+        }
     }
 }
 
