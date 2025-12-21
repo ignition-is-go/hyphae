@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use crate::cell::{Cell, CellImmutable};
-use super::{DepNode, Watchable};
+use crate::cell::{Cell, CellImmutable, CellMutable};
+use super::Watchable;
 
 pub trait TakeExt<T>: Watchable<T> {
     fn take(&self, count: usize) -> Cell<T, CellImmutable>
@@ -9,8 +9,7 @@ pub trait TakeExt<T>: Watchable<T> {
         T: Clone + Send + Sync + 'static,
         Self: Clone + Send + Sync + 'static,
     {
-        let parent: Arc<dyn DepNode> = Arc::new(self.clone());
-        let cell = Cell::<T, CellImmutable>::derived(self.get(), vec![parent]);
+        let cell = Cell::<T, CellMutable>::new(self.get());
 
         let remaining = Arc::new(AtomicUsize::new(count));
         let weak = cell.downgrade();
@@ -36,7 +35,7 @@ pub trait TakeExt<T>: Watchable<T> {
         });
         cell.own(guard);
 
-        cell
+        cell.lock()
     }
 }
 

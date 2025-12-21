@@ -1,5 +1,5 @@
 use std::{thread, time::Duration};
-use crate::cell::{Cell, CellImmutable};
+use crate::cell::{Cell, CellImmutable, CellMutable};
 
 /// Creates a cell that emits each value from the iterator with a delay between emissions.
 ///
@@ -13,7 +13,7 @@ where
 {
     let mut iter = iter.into_iter();
     let first = iter.next()?;
-    let cell = Cell::<T, CellImmutable>::derived(first, vec![]);
+    let cell = Cell::<T, CellMutable>::new(first);
 
     // Use weak ref so thread doesn't keep cell alive
     let weak = cell.downgrade();
@@ -30,5 +30,5 @@ where
         }
     });
 
-    Some(cell)
+    Some(cell.lock())
 }

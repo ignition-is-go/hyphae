@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use crate::cell::{Cell, CellImmutable};
-use super::{DepNode, Gettable, Watchable};
+use crate::cell::{Cell, CellImmutable, CellMutable};
+use super::{Gettable, Watchable};
 
 pub trait DedupedExt<T>: Watchable<T> {
     fn deduped(&self) -> Cell<T, CellImmutable>
@@ -9,8 +9,7 @@ pub trait DedupedExt<T>: Watchable<T> {
         T: Clone + PartialEq + Send + Sync + 'static,
         Self: Clone + Send + Sync + 'static,
     {
-        let parent: Arc<dyn DepNode> = Arc::new(self.clone());
-        let derived = Cell::<T, CellImmutable>::derived(self.get(), vec![parent]);
+        let derived = Cell::<T, CellMutable>::new(self.get());
 
         let weak = derived.downgrade();
         let first = Arc::new(AtomicBool::new(true));
@@ -26,7 +25,16 @@ pub trait DedupedExt<T>: Watchable<T> {
         });
         derived.own(guard);
 
-        derived
+        // Propagate source completion
+        let weak = derived.downgrade();
+        let complete_guard = self.on_complete(move || {
+            if let Some(d) = weak.upgrade() {
+                d.complete();
+            }
+        });
+        derived.own(complete_guard);
+
+        derived.lock()
     }
 }
 

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use crate::cell::{Cell, CellImmutable};
-use super::{DepNode, Watchable};
+use crate::cell::{Cell, CellImmutable, CellMutable};
+use super::Watchable;
 
 /// Extension trait for fallible transformations.
 pub trait TryMapExt<T>: Watchable<T> {
@@ -34,8 +34,7 @@ pub trait TryMapExt<T>: Watchable<T> {
         Self: Clone + Send + Sync + 'static,
     {
         let initial = f(&self.get());
-        let parent: Arc<dyn DepNode> = Arc::new(self.clone());
-        let derived = Cell::<Result<U, E>, CellImmutable>::derived(initial, vec![parent]);
+        let derived = Cell::<Result<U, E>, CellMutable>::new(initial);
 
         let weak = derived.downgrade();
         let first = Arc::new(AtomicBool::new(true));
@@ -49,7 +48,16 @@ pub trait TryMapExt<T>: Watchable<T> {
         });
         derived.own(guard);
 
-        derived
+        // Propagate source completion
+        let weak = derived.downgrade();
+        let complete_guard = self.on_complete(move || {
+            if let Some(d) = weak.upgrade() {
+                d.complete();
+            }
+        });
+        derived.own(complete_guard);
+
+        derived.lock()
     }
 }
 

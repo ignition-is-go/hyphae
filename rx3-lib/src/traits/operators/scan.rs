@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use arc_swap::ArcSwap;
-use crate::cell::{Cell, CellImmutable};
-use super::{DepNode, Watchable};
+use crate::cell::{Cell, CellImmutable, CellMutable};
+use super::Watchable;
 
 pub trait ScanExt<T>: Watchable<T> {
     fn scan<U, F>(&self, initial: U, f: F) -> Cell<U, CellImmutable>
@@ -12,9 +12,8 @@ pub trait ScanExt<T>: Watchable<T> {
         F: Fn(&U, &T) -> U + Send + Sync + 'static,
         Self: Clone + Send + Sync + 'static,
     {
-        let parent: Arc<dyn DepNode> = Arc::new(self.clone());
         let first_acc = f(&initial, &self.get());
-        let cell = Cell::<U, CellImmutable>::derived(first_acc.clone(), vec![parent]);
+        let cell = Cell::<U, CellMutable>::new(first_acc.clone());
 
         let acc = Arc::new(ArcSwap::from_pointee(first_acc));
         let weak = cell.downgrade();
@@ -32,7 +31,16 @@ pub trait ScanExt<T>: Watchable<T> {
         });
         cell.own(guard);
 
-        cell
+        // Propagate source completion
+        let weak = cell.downgrade();
+        let complete_guard = self.on_complete(move || {
+            if let Some(c) = weak.upgrade() {
+                c.complete();
+            }
+        });
+        cell.own(complete_guard);
+
+        cell.lock()
     }
 }
 

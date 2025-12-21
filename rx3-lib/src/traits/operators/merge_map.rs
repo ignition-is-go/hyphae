@@ -1,6 +1,6 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use crate::cell::{Cell, CellImmutable};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use crate::cell::{Cell, CellImmutable, CellMutable};
 use super::{Gettable, Watchable};
 
 pub trait MergeMapExt<T>: Watchable<T> {
@@ -12,7 +12,7 @@ pub trait MergeMapExt<T>: Watchable<T> {
         Self: Clone + Send + Sync + 'static,
     {
         let first_inner = f(&self.get());
-        let cell = Cell::<U, CellImmutable>::derived(first_inner.get(), vec![]);
+        let cell = Cell::<U, CellMutable>::new(first_inner.get());
 
         // Subscribe to first inner with cleanup
         let weak = cell.downgrade();
@@ -27,6 +27,7 @@ pub trait MergeMapExt<T>: Watchable<T> {
         // Note: merge_map accumulates subscriptions by design - each inner cell stays subscribed
         let weak_outer = cell.downgrade();
         let f = Arc::new(f);
+        let f_for_outer = f.clone();
         let first = Arc::new(AtomicBool::new(true));
         let outer_guard = self.subscribe(move |outer_value| {
             if first.swap(false, Ordering::SeqCst) {
@@ -35,7 +36,7 @@ pub trait MergeMapExt<T>: Watchable<T> {
 
             let Some(c) = weak_outer.upgrade() else { return };
 
-            let inner = f(outer_value);
+            let inner = f_for_outer(outer_value);
 
             // Subscribe to new inner - these subscriptions accumulate
             // They will be cleaned up when the derived cell drops
@@ -49,7 +50,72 @@ pub trait MergeMapExt<T>: Watchable<T> {
         });
         cell.own(outer_guard);
 
-        cell
+        // Complete when outer completes AND all inner cells complete
+        // Track: outer_complete flag + count of active (non-complete) inner cells
+        let outer_complete = Arc::new(AtomicBool::new(false));
+        let active_inners = Arc::new(AtomicUsize::new(1)); // Start with 1 for first_inner
+
+        // Track first inner completion
+        let weak = cell.downgrade();
+        let oc = outer_complete.clone();
+        let ai = active_inners.clone();
+        let first_inner_complete = first_inner.on_complete(move || {
+            let remaining = ai.fetch_sub(1, Ordering::SeqCst) - 1;
+            if remaining == 0 && oc.load(Ordering::SeqCst) {
+                if let Some(c) = weak.upgrade() {
+                    c.complete();
+                }
+            }
+        });
+        cell.own(first_inner_complete);
+
+        // When outer creates new inners, track their completion too
+        let weak_for_outer = cell.downgrade();
+        let f2 = f;
+        let oc2 = outer_complete.clone();
+        let ai2 = active_inners.clone();
+        let first2 = Arc::new(AtomicBool::new(true));
+        let outer_complete_tracker = self.subscribe(move |outer_value| {
+            if first2.swap(false, Ordering::SeqCst) {
+                return;
+            }
+
+            let Some(c) = weak_for_outer.upgrade() else { return };
+
+            // Increment active count before creating inner
+            ai2.fetch_add(1, Ordering::SeqCst);
+
+            let inner = f2(outer_value);
+
+            // Track this inner's completion
+            let weak_inner = weak_for_outer.clone();
+            let oc_inner = oc2.clone();
+            let ai_inner = ai2.clone();
+            let inner_complete = inner.on_complete(move || {
+                let remaining = ai_inner.fetch_sub(1, Ordering::SeqCst) - 1;
+                if remaining == 0 && oc_inner.load(Ordering::SeqCst) {
+                    if let Some(c) = weak_inner.upgrade() {
+                        c.complete();
+                    }
+                }
+            });
+            c.own(inner_complete);
+        });
+        cell.own(outer_complete_tracker);
+
+        // When outer completes, mark it and check if we can complete
+        let weak = cell.downgrade();
+        let outer_complete_guard = self.on_complete(move || {
+            outer_complete.store(true, Ordering::SeqCst);
+            if active_inners.load(Ordering::SeqCst) == 0 {
+                if let Some(c) = weak.upgrade() {
+                    c.complete();
+                }
+            }
+        });
+        cell.own(outer_complete_guard);
+
+        cell.lock()
     }
 }
 

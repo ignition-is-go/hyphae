@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use arc_swap::ArcSwap;
-use crate::cell::{Cell, CellImmutable};
-use super::{DepNode, Watchable};
+use crate::cell::{Cell, CellImmutable, CellMutable};
+use super::Watchable;
 
 pub trait PairwiseExt<T>: Watchable<T> {
     fn pairwise(&self) -> Cell<(T, T), CellImmutable>
@@ -10,8 +10,7 @@ pub trait PairwiseExt<T>: Watchable<T> {
         Self: Clone + Send + Sync + 'static,
     {
         let initial = self.get();
-        let parent: Arc<dyn DepNode> = Arc::new(self.clone());
-        let cell = Cell::<(T, T), CellImmutable>::derived((initial.clone(), initial.clone()), vec![parent]);
+        let cell = Cell::<(T, T), CellMutable>::new((initial.clone(), initial.clone()));
 
         let prev = Arc::new(ArcSwap::from_pointee(initial));
         let weak = cell.downgrade();
@@ -24,7 +23,16 @@ pub trait PairwiseExt<T>: Watchable<T> {
         });
         cell.own(guard);
 
-        cell
+        // Propagate source completion
+        let weak = cell.downgrade();
+        let complete_guard = self.on_complete(move || {
+            if let Some(c) = weak.upgrade() {
+                c.complete();
+            }
+        });
+        cell.own(complete_guard);
+
+        cell.lock()
     }
 }
 

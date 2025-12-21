@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use crate::cell::{Cell, CellImmutable};
-use super::{DepNode, Watchable};
+use crate::cell::{Cell, CellImmutable, CellMutable};
+use super::Watchable;
 
 /// Extension trait for transforming Ok values in Result cells.
 pub trait MapOkExt<T, E>: Watchable<Result<T, E>> {
@@ -18,8 +18,7 @@ pub trait MapOkExt<T, E>: Watchable<Result<T, E>> {
             Ok(v) => Ok(f(v)),
             Err(e) => Err(e.clone()),
         };
-        let parent: Arc<dyn DepNode> = Arc::new(self.clone());
-        let derived = Cell::<Result<U, E>, CellImmutable>::derived(initial, vec![parent]);
+        let derived = Cell::<Result<U, E>, CellMutable>::new(initial);
 
         let weak = derived.downgrade();
         let first = Arc::new(AtomicBool::new(true));
@@ -37,7 +36,16 @@ pub trait MapOkExt<T, E>: Watchable<Result<T, E>> {
         });
         derived.own(guard);
 
-        derived
+        // Propagate source completion
+        let weak = derived.downgrade();
+        let complete_guard = self.on_complete(move || {
+            if let Some(d) = weak.upgrade() {
+                d.complete();
+            }
+        });
+        derived.own(complete_guard);
+
+        derived.lock()
     }
 }
 
@@ -63,8 +71,7 @@ pub trait MapErrExt<T, E>: Watchable<Result<T, E>> {
             Ok(v) => Ok(v.clone()),
             Err(e) => Err(f(e)),
         };
-        let parent: Arc<dyn DepNode> = Arc::new(self.clone());
-        let derived = Cell::<Result<T, E2>, CellImmutable>::derived(initial, vec![parent]);
+        let derived = Cell::<Result<T, E2>, CellMutable>::new(initial);
 
         let weak = derived.downgrade();
         let first = Arc::new(AtomicBool::new(true));
@@ -82,7 +89,16 @@ pub trait MapErrExt<T, E>: Watchable<Result<T, E>> {
         });
         derived.own(guard);
 
-        derived
+        // Propagate source completion
+        let weak = derived.downgrade();
+        let complete_guard = self.on_complete(move || {
+            if let Some(d) = weak.upgrade() {
+                d.complete();
+            }
+        });
+        derived.own(complete_guard);
+
+        derived.lock()
     }
 }
 
@@ -109,8 +125,7 @@ pub trait CatchErrorExt<T, E>: Watchable<Result<T, E>> {
             Ok(v) => v.clone(),
             Err(e) => f(e),
         };
-        let parent: Arc<dyn DepNode> = Arc::new(self.clone());
-        let derived = Cell::<T, CellImmutable>::derived(initial, vec![parent]);
+        let derived = Cell::<T, CellMutable>::new(initial);
 
         let weak = derived.downgrade();
         let first = Arc::new(AtomicBool::new(true));
@@ -128,7 +143,16 @@ pub trait CatchErrorExt<T, E>: Watchable<Result<T, E>> {
         });
         derived.own(guard);
 
-        derived
+        // Propagate source completion
+        let weak = derived.downgrade();
+        let complete_guard = self.on_complete(move || {
+            if let Some(d) = weak.upgrade() {
+                d.complete();
+            }
+        });
+        derived.own(complete_guard);
+
+        derived.lock()
     }
 }
 
@@ -152,8 +176,7 @@ pub trait UnwrapOrExt<T, E>: Watchable<Result<T, E>> {
             Ok(v) => v,
             Err(_) => default.clone(),
         };
-        let parent: Arc<dyn DepNode> = Arc::new(self.clone());
-        let derived = Cell::<T, CellImmutable>::derived(initial, vec![parent]);
+        let derived = Cell::<T, CellMutable>::new(initial);
 
         let weak = derived.downgrade();
         let first = Arc::new(AtomicBool::new(true));
@@ -171,7 +194,16 @@ pub trait UnwrapOrExt<T, E>: Watchable<Result<T, E>> {
         });
         derived.own(guard);
 
-        derived
+        // Propagate source completion
+        let weak = derived.downgrade();
+        let complete_guard = self.on_complete(move || {
+            if let Some(d) = weak.upgrade() {
+                d.complete();
+            }
+        });
+        derived.own(complete_guard);
+
+        derived.lock()
     }
 
     /// Unwrap Ok values, computing a fallback for Err.
@@ -186,8 +218,7 @@ pub trait UnwrapOrExt<T, E>: Watchable<Result<T, E>> {
             Ok(v) => v.clone(),
             Err(e) => f(e),
         };
-        let parent: Arc<dyn DepNode> = Arc::new(self.clone());
-        let derived = Cell::<T, CellImmutable>::derived(initial, vec![parent]);
+        let derived = Cell::<T, CellMutable>::new(initial);
 
         let weak = derived.downgrade();
         let first = Arc::new(AtomicBool::new(true));
@@ -205,7 +236,16 @@ pub trait UnwrapOrExt<T, E>: Watchable<Result<T, E>> {
         });
         derived.own(guard);
 
-        derived
+        // Propagate source completion
+        let weak = derived.downgrade();
+        let complete_guard = self.on_complete(move || {
+            if let Some(d) = weak.upgrade() {
+                d.complete();
+            }
+        });
+        derived.own(complete_guard);
+
+        derived.lock()
     }
 }
 

@@ -1,11 +1,11 @@
 use std::{thread, time::Duration};
-use crate::cell::{Cell, CellImmutable};
+use crate::cell::{Cell, CellImmutable, CellMutable};
 
 /// Creates a cell that emits 0, 1, 2, ... on the given interval.
 ///
 /// The thread automatically stops when the cell is dropped.
 pub fn interval(duration: Duration) -> Cell<u64, CellImmutable> {
-    let cell = Cell::<u64, CellImmutable>::derived(0, vec![]);
+    let cell = Cell::<u64, CellMutable>::new(0);
 
     // Use weak ref so thread doesn't keep cell alive
     let weak = cell.downgrade();
@@ -20,5 +20,5 @@ pub fn interval(duration: Duration) -> Cell<u64, CellImmutable> {
         }
     });
 
-    cell
+    cell.lock()
 }

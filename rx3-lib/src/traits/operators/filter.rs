@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use crate::cell::{Cell, CellImmutable};
-use super::{DepNode, Watchable};
+use crate::cell::{Cell, CellImmutable, CellMutable};
+use super::Watchable;
 
 pub trait FilterExt<T>: Watchable<T> {
     fn filter(&self, predicate: impl Fn(&T) -> bool + Send + Sync + 'static) -> Cell<T, CellImmutable>
@@ -9,8 +9,7 @@ pub trait FilterExt<T>: Watchable<T> {
         T: Clone + Send + Sync + 'static,
         Self: Clone + Send + Sync + 'static,
     {
-        let parent: Arc<dyn DepNode> = Arc::new(self.clone());
-        let cell = Cell::<T, CellImmutable>::derived(self.get(), vec![parent]);
+        let cell = Cell::<T, CellMutable>::new(self.get());
 
         let weak = cell.downgrade();
         let predicate = Arc::new(predicate);
@@ -27,7 +26,16 @@ pub trait FilterExt<T>: Watchable<T> {
         });
         cell.own(guard);
 
-        cell
+        // Propagate source completion
+        let weak = cell.downgrade();
+        let complete_guard = self.on_complete(move || {
+            if let Some(c) = weak.upgrade() {
+                c.complete();
+            }
+        });
+        cell.own(complete_guard);
+
+        cell.lock()
     }
 }
 

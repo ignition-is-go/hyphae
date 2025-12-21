@@ -14,4 +14,11 @@ pub trait Watchable<T>: Clone + Gettable<T> + DepNode + Sized + Send + Sync + 's
 
     /// Unsubscribe by ID (for internal use).
     fn unsubscribe(&self, id: Uuid);
+
+    /// Register a callback to be called when this cell completes.
+    /// Returns a guard that unregisters the callback when dropped.
+    fn on_complete(&self, callback: impl Fn() + Send + Sync + 'static) -> SubscriptionGuard;
+
+    /// Returns true if this cell has completed (no more values will be emitted).
+    fn is_complete(&self) -> bool;
 }

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use crate::cell::{Cell, CellImmutable};
-use super::{DepNode, Watchable};
+use crate::cell::{Cell, CellImmutable, CellMutable};
+use super::Watchable;
 
 pub trait MapExt<T>: Watchable<T> {
     fn map<U: Clone + Send + Sync + 'static>(
@@ -13,9 +13,8 @@ pub trait MapExt<T>: Watchable<T> {
         Self: Clone + Send + Sync + 'static,
     {
         let initial = transform(&self.get());
-        let parent: Arc<dyn DepNode> = Arc::new(self.clone());
 
-        let derived = Cell::<U, CellImmutable>::derived(initial, vec![parent]);
+        let derived = Cell::<U, CellMutable>::new(initial);
         let derived = if let Some(parent_name) = self.name() {
             derived.with_name(format!("{}::map", parent_name))
         } else {
@@ -34,7 +33,16 @@ pub trait MapExt<T>: Watchable<T> {
         });
         derived.own(guard);
 
-        derived
+        // Propagate source completion
+        let weak = derived.downgrade();
+        let complete_guard = self.on_complete(move || {
+            if let Some(d) = weak.upgrade() {
+                d.complete();
+            }
+        });
+        derived.own(complete_guard);
+
+        derived.lock()
     }
 }
 
@@ -43,6 +51,7 @@ impl<T, W: Watchable<T>> MapExt<T> for W {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::traits::DepNode;
     use crate::{Gettable, Mutable};
 
     #[test]

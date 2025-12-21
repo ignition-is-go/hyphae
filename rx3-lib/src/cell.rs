@@ -21,37 +21,36 @@ pub struct CellMutable;
 pub struct CellImmutable;
 
 /// The inner data of a Cell, wrapped in Arc for shared ownership.
-pub(crate) struct CellInner<T, M> {
+pub(crate) struct CellInner<T> {
     pub(crate) id: Uuid,
     pub(crate) subscribers: DashMap<Uuid, Box<Subscriber<T>>>,
     pub(crate) value: ArcSwap<T>,
     pub(crate) name: Mutex<Option<Arc<str>>>,
-    pub(crate) dependencies: Vec<Arc<dyn DepNode>>,
-    /// Owned values that should be dropped when this cell is dropped.
-    /// Used to hold SubscriptionGuards so they unsubscribe on cell drop.
-    pub(crate) owned: DashMap<Uuid, Box<dyn Send + Sync>>,
+    /// Subscription guards owned by this cell (dropped when cell drops, provides dependency tracking).
+    pub(crate) owned: DashMap<Uuid, SubscriptionGuard>,
     /// Whether this cell has completed (no more values will be emitted).
     pub(crate) completed: AtomicBool,
     /// Callbacks to invoke when this cell completes.
     pub(crate) on_complete: DashMap<Uuid, Box<dyn Fn() + Send + Sync>>,
-    pub(crate) _phantom: PhantomData<M>,
 }
 
 /// A reactive cell that holds a value and notifies subscribers on change.
 pub struct Cell<T, M> {
-    pub(crate) inner: Arc<CellInner<T, M>>,
+    pub(crate) inner: Arc<CellInner<T>>,
+    _marker: PhantomData<M>,
 }
 
 /// A weak reference to a Cell that doesn't prevent it from being dropped.
 pub struct WeakCell<T, M> {
-    inner: Weak<CellInner<T, M>>,
+    inner: Weak<CellInner<T>>,
+    _marker: PhantomData<M>,
 }
 
 impl<T, M> WeakCell<T, M> {
     /// Try to upgrade to a strong Cell reference.
     /// Returns None if the Cell has been dropped.
     pub fn upgrade(&self) -> Option<Cell<T, M>> {
-        self.inner.upgrade().map(|inner| Cell { inner })
+        self.inner.upgrade().map(|inner| Cell { inner, _marker: PhantomData })
     }
 }
 
@@ -59,6 +58,7 @@ impl<T, M> Clone for WeakCell<T, M> {
     fn clone(&self) -> Self {
         WeakCell {
             inner: self.inner.clone(),
+            _marker: PhantomData,
         }
     }
 }
@@ -83,12 +83,20 @@ impl<T: Clone + Send + Sync + 'static> Cell<T, CellMutable> {
                 subscribers: DashMap::new(),
                 value: ArcSwap::from_pointee(initial_value),
                 name: Mutex::new(None),
-                dependencies: Vec::new(),
                 owned: DashMap::new(),
                 completed: AtomicBool::new(false),
                 on_complete: DashMap::new(),
-                _phantom: PhantomData::<CellMutable>,
             }),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Lock this mutable cell, converting it to an immutable cell.
+    /// The underlying data is shared; only the type changes.
+    pub fn lock(self) -> Cell<T, CellImmutable> {
+        Cell {
+            inner: self.inner,
+            _marker: PhantomData,
         }
     }
 
@@ -102,6 +110,7 @@ impl<T, M> Clone for Cell<T, M> {
     fn clone(&self) -> Self {
         Cell {
             inner: Arc::clone(&self.inner),
+            _marker: PhantomData,
         }
     }
 }
@@ -112,63 +121,13 @@ impl<T, M> Cell<T, M> {
     pub fn downgrade(&self) -> WeakCell<T, M> {
         WeakCell {
             inner: Arc::downgrade(&self.inner),
+            _marker: PhantomData,
         }
     }
 
-    /// Take ownership of a value, dropping it when this cell is dropped.
-    /// Used to hold SubscriptionGuards so they unsubscribe automatically.
-    pub(crate) fn own(&self, value: impl Send + Sync + 'static) {
-        self.inner.owned.insert(Uuid::new_v4(), Box::new(value));
-    }
-
-    /// Returns true if this cell has completed (no more values will be emitted).
-    pub fn is_complete(&self) -> bool {
-        self.inner.completed.load(Ordering::SeqCst)
-    }
-}
-
-impl<T: Send + Sync + 'static, M: Send + Sync + 'static> Cell<T, M> {
-    /// Register a callback to be called when this cell completes.
-    /// Returns a guard that unregisters the callback when dropped.
-    pub fn on_complete(&self, callback: impl Fn() + Send + Sync + 'static) -> SubscriptionGuard {
-        // If already complete, call immediately
-        if self.is_complete() {
-            callback();
-        }
-
-        let id = Uuid::new_v4();
-        self.inner.on_complete.insert(id, Box::new(callback));
-
-        let cell = self.clone();
-        SubscriptionGuard::new(id, move || {
-            cell.inner.on_complete.remove(&id);
-        })
-    }
-
-    /// Mark this cell as complete. No more values should be emitted after this.
-    /// Calls all registered on_complete callbacks.
-    pub(crate) fn complete(&self) {
-        // Only complete once
-        if self.inner.completed.swap(true, Ordering::SeqCst) {
-            return;
-        }
-
-        // Collect callback ids first to release lock
-        let ids: Vec<_> = self
-            .inner
-            .on_complete
-            .iter()
-            .map(|entry| *entry.key())
-            .collect();
-
-        // Call each callback
-        for id in ids {
-            if let Some(entry) = self.inner.on_complete.get(&id) {
-                let _ = catch_unwind(AssertUnwindSafe(|| {
-                    (entry.value())();
-                }));
-            }
-        }
+    /// Take ownership of a subscription guard, dropping it when this cell is dropped.
+    pub(crate) fn own(&self, guard: SubscriptionGuard) {
+        self.inner.owned.insert(Uuid::new_v4(), guard);
     }
 }
 
@@ -185,30 +144,26 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
         self.inner.name.lock().unwrap().as_ref().map(|s| s.to_string())
     }
 
-    fn deps(&self) -> &[Arc<dyn DepNode>] {
-        &self.inner.dependencies
+    fn deps(&self) -> Vec<Arc<dyn DepNode>> {
+        // Collect unique dependencies from owned subscription guards
+        let mut seen = std::collections::HashSet::new();
+        self.inner
+            .owned
+            .iter()
+            .filter_map(|entry| {
+                let source = entry.value().source();
+                let id = source.id();
+                if seen.insert(id) {
+                    Some(Arc::clone(source))
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 }
 
 impl<T: Clone + Send + Sync + 'static> Cell<T, CellImmutable> {
-    /// Creates a derived cell with dependencies. Used internally by `map` and `combine!`.
-    #[doc(hidden)]
-    pub fn derived(initial: T, deps: Vec<Arc<dyn DepNode>>) -> Self {
-        Self {
-            inner: Arc::new(CellInner {
-                id: Uuid::new_v4(),
-                subscribers: DashMap::new(),
-                value: ArcSwap::from_pointee(initial),
-                name: Mutex::new(None),
-                dependencies: deps,
-                owned: DashMap::new(),
-                completed: AtomicBool::new(false),
-                on_complete: DashMap::new(),
-                _phantom: PhantomData,
-            }),
-        }
-    }
-
     pub fn with_name(self, name: impl Into<Arc<str>>) -> Self {
         *self.inner.name.lock().unwrap() = Some(name.into());
         self
@@ -250,8 +205,9 @@ impl<T: Clone + Send + Sync + 'static, U: Send + Sync + 'static> Watchable<T> fo
         let id = Uuid::new_v4();
         self.inner.subscribers.insert(id, Box::new(Subscriber::new(callback)));
 
+        let source: Arc<dyn DepNode> = Arc::new(self.clone());
         let cell = self.clone();
-        SubscriptionGuard::new(id, move || {
+        SubscriptionGuard::new(id, source, move || {
             cell.inner.subscribers.remove(&id);
         })
     }
@@ -259,10 +215,65 @@ impl<T: Clone + Send + Sync + 'static, U: Send + Sync + 'static> Watchable<T> fo
     fn unsubscribe(&self, id: Uuid) {
         self.inner.subscribers.remove(&id);
     }
+
+    fn on_complete(&self, callback: impl Fn() + Send + Sync + 'static) -> SubscriptionGuard {
+        // If already complete, call immediately
+        if self.is_complete() {
+            callback();
+        }
+
+        let id = Uuid::new_v4();
+        self.inner.on_complete.insert(id, Box::new(callback));
+
+        let source: Arc<dyn DepNode> = Arc::new(self.clone());
+        let cell = self.clone();
+        SubscriptionGuard::new(id, source, move || {
+            cell.inner.on_complete.remove(&id);
+        })
+    }
+
+    fn is_complete(&self) -> bool {
+        self.inner.completed.load(Ordering::SeqCst)
+    }
+}
+
+impl<T: Clone + Send + Sync + 'static, M: Send + Sync + 'static> Cell<T, M> {
+    /// Mark this cell as complete. No more values should be emitted after this.
+    /// Calls all registered on_complete callbacks.
+    ///
+    /// This is pub(crate) so operators can complete derived cells internally.
+    /// For user-facing completion of mutable cells, use the `Mutable::complete` method.
+    pub(crate) fn complete(&self) {
+        // Only complete once
+        if self.inner.completed.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
+        // Collect callback ids first to release lock
+        let ids: Vec<_> = self
+            .inner
+            .on_complete
+            .iter()
+            .map(|entry| *entry.key())
+            .collect();
+
+        // Call each callback
+        for id in ids {
+            if let Some(entry) = self.inner.on_complete.get(&id) {
+                let _ = catch_unwind(AssertUnwindSafe(|| {
+                    (entry.value())();
+                }));
+            }
+        }
+    }
 }
 
 impl<T: Clone + Send + Sync + 'static> Mutable<T> for Cell<T, CellMutable> {
     fn set(&self, value: T) {
         self.notify(value);
+    }
+
+    fn complete(&self) {
+        Cell::complete(self)
     }
 }

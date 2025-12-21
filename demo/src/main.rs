@@ -1,4 +1,4 @@
-use rx3::{Cell, JoinExt, MapExt, Mutable, Watchable, flat};
+use rx3::{Cell, DepNode, JoinExt, MapExt, Mutable, Watchable, flat};
 
 fn main() {
     println!("=== Panic Isolation Demo ===\n");
@@ -35,13 +35,13 @@ fn main() {
 
     println!("\nDone! All subscribers survived the panic.");
 
-    let a = Cell::new(1);
+    let a = Cell::new(1).with_name("a");
 
-    let b = Cell::new('A');
+    let b = Cell::new('A').with_name("b");
 
-    let c = Cell::new("alpha");
+    let c = Cell::new("alpha").with_name("c");
 
-    let d = Cell::new(1.0);
+    let d = Cell::new(1.0).with_name("d");
 
     let aa = a.join(&b);
 
@@ -55,6 +55,6 @@ fn main() {
         println!("Flattened values: {:?}, {:?}, {:?}, {:?}", a, b, c, d);
     }));
 
-
+    flat_demo.print_dependency_tree();
 
 }

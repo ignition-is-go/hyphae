@@ -1,8 +1,6 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use arc_swap::ArcSwap;
-use crate::cell::{Cell, CellImmutable};
-use crate::subscription::SubscriptionGuard;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use crate::cell::{Cell, CellImmutable, CellMutable};
 use super::{Gettable, Watchable};
 
 pub trait SwitchMapExt<T>: Watchable<T> {
@@ -14,55 +12,131 @@ pub trait SwitchMapExt<T>: Watchable<T> {
         Self: Clone + Send + Sync + 'static,
     {
         let first_inner = f(&self.get());
-        let cell = Cell::<U, CellImmutable>::derived(first_inner.get(), vec![]);
+        let cell = Cell::<U, CellMutable>::new(first_inner.get());
 
-        // Subscribe to first inner
-        let first_guard = {
-            let weak = cell.downgrade();
-            first_inner.subscribe(move |value| {
+        // Generation counter - only the current generation emits
+        let generation = Arc::new(AtomicU64::new(0));
+
+        // Subscribe to first inner (generation 0)
+        let weak = cell.downgrade();
+        let gen_check = generation.clone();
+        let first_guard = first_inner.subscribe(move |value| {
+            if gen_check.load(Ordering::SeqCst) == 0 {
                 if let Some(c) = weak.upgrade() {
                     c.notify(value.clone());
                 }
-            })
-        };
-
-        // Track current subscription (lock-free)
-        // When we swap in a new guard, the old one drops and auto-unsubscribes
-        let current: Arc<ArcSwap<Option<SubscriptionGuard>>> =
-            Arc::new(ArcSwap::from_pointee(Some(first_guard)));
+            }
+        });
+        cell.own(first_guard);
 
         // When outer changes, switch to new inner
         let weak_outer = cell.downgrade();
         let f = Arc::new(f);
+        let f_for_outer = f.clone();
         let first = Arc::new(AtomicBool::new(true));
-        let current_clone = current.clone();
+        let gen_outer = generation.clone();
         let outer_guard = self.subscribe(move |outer_value| {
             if first.swap(false, Ordering::SeqCst) {
                 return;
             }
 
-            let Some(_) = weak_outer.upgrade() else { return };
+            let Some(c) = weak_outer.upgrade() else { return };
 
-            let inner = f(outer_value);
+            // Increment generation - old subscriptions become no-ops
+            let my_gen = gen_outer.fetch_add(1, Ordering::SeqCst) + 1;
 
-            // Subscribe to new inner
+            let inner = f_for_outer(outer_value);
+
+            // Subscribe to new inner with generation check
             let weak_inner = weak_outer.clone();
-            let new_guard = inner.subscribe(move |value| {
-                if let Some(c) = weak_inner.upgrade() {
-                    c.notify(value.clone());
+            let gen_check = gen_outer.clone();
+            let guard = inner.subscribe(move |value| {
+                if gen_check.load(Ordering::SeqCst) == my_gen {
+                    if let Some(c) = weak_inner.upgrade() {
+                        c.notify(value.clone());
+                    }
                 }
             });
-
-            // Swap in new guard - old guard drops and unsubscribes automatically
-            current_clone.store(Arc::new(Some(new_guard)));
+            c.own(guard);
         });
         cell.own(outer_guard);
 
-        // When derived cell drops, this Arc drops, the guard inside drops,
-        // and it auto-unsubscribes from the current inner cell
-        cell.own(current);
+        // Complete when outer completes AND current inner completes
+        let outer_complete = Arc::new(AtomicBool::new(false));
+        let inner_complete = Arc::new(AtomicBool::new(false));
+        let current_gen = Arc::new(AtomicU64::new(0));
 
-        cell
+        // Track first inner completion
+        let weak = cell.downgrade();
+        let oc = outer_complete.clone();
+        let ic = inner_complete.clone();
+        let cg = current_gen.clone();
+        let first_inner_complete = first_inner.on_complete(move || {
+            // Only count if still generation 0
+            if cg.load(Ordering::SeqCst) == 0 {
+                ic.store(true, Ordering::SeqCst);
+                if oc.load(Ordering::SeqCst) {
+                    if let Some(c) = weak.upgrade() {
+                        c.complete();
+                    }
+                }
+            }
+        });
+        cell.own(first_inner_complete);
+
+        // Track when we switch to new inners
+        let weak_for_switch = cell.downgrade();
+        let f2 = f;
+        let oc2 = outer_complete.clone();
+        let ic2 = inner_complete.clone();
+        let cg2 = current_gen.clone();
+        let first2 = Arc::new(AtomicBool::new(true));
+        let switch_tracker = self.subscribe(move |outer_value| {
+            if first2.swap(false, Ordering::SeqCst) {
+                return;
+            }
+
+            let Some(c) = weak_for_switch.upgrade() else { return };
+
+            // Update current generation and reset inner_complete
+            let my_gen = cg2.fetch_add(1, Ordering::SeqCst) + 1;
+            ic2.store(false, Ordering::SeqCst);
+
+            let inner = f2(outer_value);
+
+            // Track this inner's completion
+            let weak_inner = weak_for_switch.clone();
+            let oc_inner = oc2.clone();
+            let ic_inner = ic2.clone();
+            let cg_inner = cg2.clone();
+            let complete_guard = inner.on_complete(move || {
+                // Only count if still current generation
+                if cg_inner.load(Ordering::SeqCst) == my_gen {
+                    ic_inner.store(true, Ordering::SeqCst);
+                    if oc_inner.load(Ordering::SeqCst) {
+                        if let Some(c) = weak_inner.upgrade() {
+                            c.complete();
+                        }
+                    }
+                }
+            });
+            c.own(complete_guard);
+        });
+        cell.own(switch_tracker);
+
+        // When outer completes, mark it and check if we can complete
+        let weak = cell.downgrade();
+        let outer_complete_guard = self.on_complete(move || {
+            outer_complete.store(true, Ordering::SeqCst);
+            if inner_complete.load(Ordering::SeqCst) {
+                if let Some(c) = weak.upgrade() {
+                    c.complete();
+                }
+            }
+        });
+        cell.own(outer_complete_guard);
+
+        cell.lock()
     }
 }
 

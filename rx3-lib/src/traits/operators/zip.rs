@@ -1,8 +1,8 @@
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::VecDeque;
-use crate::cell::{Cell, CellImmutable};
-use super::{DepNode, Gettable, Watchable};
+use crate::cell::{Cell, CellImmutable, CellMutable};
+use super::{Gettable, Watchable};
 
 pub trait ZipExt<T>: Watchable<T> {
     /// Zip with another cell - pairs values in order.
@@ -15,11 +15,7 @@ pub trait ZipExt<T>: Watchable<T> {
         Self: Clone + Send + Sync + 'static,
     {
         let initial = (self.get(), other.get());
-        let deps: Vec<Arc<dyn DepNode>> = vec![
-            Arc::new(self.clone()),
-            Arc::new(other.clone()),
-        ];
-        let derived = Cell::<(T, U), CellImmutable>::derived(initial, deps);
+        let derived = Cell::<(T, U), CellMutable>::new(initial);
 
         // Queues to buffer values
         let left_queue: Arc<Mutex<VecDeque<T>>> = Arc::new(Mutex::new(VecDeque::new()));
@@ -69,7 +65,24 @@ pub trait ZipExt<T>: Watchable<T> {
         });
         derived.own(guard2);
 
-        derived
+        // Complete when EITHER source completes (no more pairs possible)
+        let weak = derived.downgrade();
+        let complete_guard1 = self.on_complete(move || {
+            if let Some(d) = weak.upgrade() {
+                d.complete();
+            }
+        });
+        derived.own(complete_guard1);
+
+        let weak = derived.downgrade();
+        let complete_guard2 = other.on_complete(move || {
+            if let Some(d) = weak.upgrade() {
+                d.complete();
+            }
+        });
+        derived.own(complete_guard2);
+
+        derived.lock()
     }
 }
 

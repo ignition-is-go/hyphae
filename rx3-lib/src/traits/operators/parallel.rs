@@ -1,12 +1,12 @@
 use rayon::prelude::*;
 use std::sync::Arc;
-use crate::cell::{Cell, CellImmutable};
+use crate::cell::{Cell, CellMutable};
 use crate::subscription::SubscriptionGuard;
-use super::{DepNode, Gettable, Watchable};
+use super::{Gettable, Watchable};
 
 /// A cell that notifies subscribers in parallel using Rayon.
 pub struct ParallelCell<T> {
-    inner: Cell<T, CellImmutable>,
+    inner: Cell<T, CellMutable>,
 }
 
 impl<T: Clone + Send + Sync + 'static> ParallelCell<T> {
@@ -50,8 +50,7 @@ pub trait ParallelExt<T>: Watchable<T> {
         T: Clone + Send + Sync + 'static,
         Self: Clone + Send + Sync + 'static,
     {
-        let parent: Arc<dyn DepNode> = Arc::new(self.clone());
-        let inner = Cell::<T, CellImmutable>::derived(self.get(), vec![parent]);
+        let inner = Cell::<T, CellMutable>::new(self.get());
         let parallel = ParallelCell { inner };
 
         let weak = parallel.inner.downgrade();
@@ -69,6 +68,15 @@ pub trait ParallelExt<T>: Watchable<T> {
             }
         });
         parallel.inner.own(guard);
+
+        // Propagate source completion
+        let weak = parallel.inner.downgrade();
+        let complete_guard = self.on_complete(move || {
+            if let Some(inner) = weak.upgrade() {
+                inner.complete();
+            }
+        });
+        parallel.inner.own(complete_guard);
 
         parallel
     }

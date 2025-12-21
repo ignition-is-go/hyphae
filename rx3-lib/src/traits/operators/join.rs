@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use crate::cell::{Cell, CellImmutable};
-use super::{DepNode, Gettable, Watchable};
+use crate::cell::{Cell, CellImmutable, CellMutable};
+use super::{Gettable, Watchable};
 
 pub trait JoinExt<T>: Watchable<T> {
     fn join<U, M>(&self, other: &Cell<U, M>) -> Cell<(T, U), CellImmutable>
@@ -12,11 +12,7 @@ pub trait JoinExt<T>: Watchable<T> {
         Self: Clone + Send + Sync + 'static,
     {
         let initial = (self.get(), other.get());
-        let deps: Vec<Arc<dyn DepNode>> = vec![
-            Arc::new(self.clone()),
-            Arc::new(other.clone()),
-        ];
-        let derived = Cell::<(T, U), CellImmutable>::derived(initial, deps);
+        let derived = Cell::<(T, U), CellMutable>::new(initial);
 
         // Subscribe to self
         let weak1 = derived.downgrade();
@@ -46,7 +42,35 @@ pub trait JoinExt<T>: Watchable<T> {
         });
         derived.own(guard2);
 
-        derived
+        // Complete when BOTH sources complete
+        let self_complete = Arc::new(AtomicBool::new(false));
+        let other_complete = Arc::new(AtomicBool::new(false));
+
+        let weak = derived.downgrade();
+        let sc = self_complete.clone();
+        let oc = other_complete.clone();
+        let complete_guard1 = self.on_complete(move || {
+            sc.store(true, Ordering::SeqCst);
+            if oc.load(Ordering::SeqCst) {
+                if let Some(d) = weak.upgrade() {
+                    d.complete();
+                }
+            }
+        });
+        derived.own(complete_guard1);
+
+        let weak = derived.downgrade();
+        let complete_guard2 = other.on_complete(move || {
+            other_complete.store(true, Ordering::SeqCst);
+            if self_complete.load(Ordering::SeqCst) {
+                if let Some(d) = weak.upgrade() {
+                    d.complete();
+                }
+            }
+        });
+        derived.own(complete_guard2);
+
+        derived.lock()
     }
 }
 

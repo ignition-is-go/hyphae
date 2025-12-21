@@ -1,6 +1,5 @@
-use std::sync::Arc;
-use crate::cell::{Cell, CellImmutable};
-use super::{DepNode, Watchable};
+use crate::cell::{Cell, CellImmutable, CellMutable};
+use super::Watchable;
 
 pub trait FirstExt<T>: Watchable<T> {
     /// Take only the first value, then complete.
@@ -9,13 +8,12 @@ pub trait FirstExt<T>: Watchable<T> {
         T: Clone + Send + Sync + 'static,
         Self: Clone + Send + Sync + 'static,
     {
-        let parent: Arc<dyn DepNode> = Arc::new(self.clone());
-        let derived = Cell::<T, CellImmutable>::derived(self.get(), vec![parent]);
+        let derived = Cell::<T, CellMutable>::new(self.get());
 
         // Already got first value - complete immediately
         derived.complete();
 
-        derived
+        derived.lock()
     }
 }
 

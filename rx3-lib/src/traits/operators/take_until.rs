@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use crate::cell::{Cell, CellImmutable};
-use super::{DepNode, Watchable};
+use crate::cell::{Cell, CellImmutable, CellMutable};
+use super::Watchable;
 
 pub trait TakeUntilExt<T>: Watchable<T> {
     /// Take values until the notifier emits, then stop.
@@ -13,19 +13,22 @@ pub trait TakeUntilExt<T>: Watchable<T> {
         Self: Clone + Send + Sync + 'static,
     {
         let initial = self.get();
-        let parent: Arc<dyn DepNode> = Arc::new(self.clone());
-        let derived = Cell::<T, CellImmutable>::derived(initial, vec![parent]);
+        let derived = Cell::<T, CellMutable>::new(initial);
 
         let stopped = Arc::new(AtomicBool::new(false));
 
         // Subscribe to notifier - when it emits, stop
         let stopped_clone = stopped.clone();
         let notifier_first = Arc::new(AtomicBool::new(true));
+        let weak_for_notifier = derived.downgrade();
         let notifier_guard = notifier.subscribe(move |_| {
             if notifier_first.swap(false, Ordering::SeqCst) {
                 return;
             }
             stopped_clone.store(true, Ordering::SeqCst);
+            if let Some(d) = weak_for_notifier.upgrade() {
+                d.complete();
+            }
         });
         derived.own(notifier_guard);
 
@@ -45,7 +48,16 @@ pub trait TakeUntilExt<T>: Watchable<T> {
         });
         derived.own(guard);
 
-        derived
+        // Propagate source completion
+        let weak = derived.downgrade();
+        let complete_guard = self.on_complete(move || {
+            if let Some(d) = weak.upgrade() {
+                d.complete();
+            }
+        });
+        derived.own(complete_guard);
+
+        derived.lock()
     }
 }
 
@@ -71,5 +83,27 @@ mod tests {
 
         source.set(3);
         assert_eq!(taken.get(), 2); // Stopped, no more updates
+    }
+
+    #[test]
+    fn test_take_until_completes_on_notifier() {
+        use std::sync::atomic::AtomicBool;
+
+        let source = Cell::new(1u64);
+        let stopper = Cell::new(false);
+        let taken = source.take_until(&stopper);
+        let completed = Arc::new(AtomicBool::new(false));
+
+        let c = completed.clone();
+        let _guard = taken.on_complete(move || {
+            c.store(true, Ordering::SeqCst);
+        });
+
+        assert!(!taken.is_complete());
+
+        stopper.set(true); // Signal stop
+
+        assert!(taken.is_complete());
+        assert!(completed.load(Ordering::SeqCst));
     }
 }

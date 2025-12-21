@@ -9,7 +9,8 @@ use uuid::Uuid;
 pub trait DepNode: Send + Sync {
     fn id(&self) -> Uuid;
     fn name(&self) -> Option<String>;
-    fn deps(&self) -> &[Arc<dyn DepNode>];
+    /// Returns the dependencies of this node.
+    fn deps(&self) -> Vec<Arc<dyn DepNode>>;
 
     fn display_name(&self) -> String {
         self.name()
