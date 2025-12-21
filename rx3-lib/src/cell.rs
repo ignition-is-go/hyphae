@@ -217,13 +217,17 @@ impl<T: Clone + Send + Sync + 'static, U: Send + Sync + 'static> Watchable<T> fo
     }
 
     fn on_complete(&self, callback: impl Fn() + Send + Sync + 'static) -> SubscriptionGuard {
-        // If already complete, call immediately
-        if self.is_complete() {
-            callback();
-        }
-
         let id = Uuid::new_v4();
         self.inner.on_complete.insert(id, Box::new(callback));
+
+        // Check after insert: if already complete, we must call the callback ourselves
+        // because complete() may have already finished iterating.
+        // Use atomic remove to ensure exactly-once: whoever successfully removes it, calls it.
+        if self.is_complete() {
+            if let Some((_, cb)) = self.inner.on_complete.remove(&id) {
+                let _ = catch_unwind(AssertUnwindSafe(|| cb()));
+            }
+        }
 
         let source: Arc<dyn DepNode> = Arc::new(self.clone());
         let cell = self.clone();
@@ -249,7 +253,7 @@ impl<T: Clone + Send + Sync + 'static, M: Send + Sync + 'static> Cell<T, M> {
             return;
         }
 
-        // Collect callback ids first to release lock
+        // Collect callback ids first to avoid holding iterator lock during callbacks
         let ids: Vec<_> = self
             .inner
             .on_complete
@@ -257,12 +261,12 @@ impl<T: Clone + Send + Sync + 'static, M: Send + Sync + 'static> Cell<T, M> {
             .map(|entry| *entry.key())
             .collect();
 
-        // Call each callback
+        // Remove and call each callback.
+        // Atomic remove ensures exactly-once: if on_complete() races with us,
+        // whoever successfully removes the callback is responsible for calling it.
         for id in ids {
-            if let Some(entry) = self.inner.on_complete.get(&id) {
-                let _ = catch_unwind(AssertUnwindSafe(|| {
-                    (entry.value())();
-                }));
+            if let Some((_, cb)) = self.inner.on_complete.remove(&id) {
+                let _ = catch_unwind(AssertUnwindSafe(|| cb()));
             }
         }
     }

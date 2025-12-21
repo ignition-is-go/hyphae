@@ -1,7 +1,11 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use crate::cell::{Cell, CellImmutable, CellMutable};
 use super::Watchable;
+
+// Completion state flags for merge (both must complete)
+const SELF_COMPLETE: u8 = 0b01;
+const OTHER_COMPLETE: u8 = 0b10;
 
 pub trait MergeExt<T>: Watchable<T> {
     /// Merge with another cell - emit from whichever updates.
@@ -40,16 +44,15 @@ pub trait MergeExt<T>: Watchable<T> {
         });
         derived.own(guard2);
 
-        // Complete when BOTH sources complete
-        let self_complete = Arc::new(AtomicBool::new(false));
-        let other_complete = Arc::new(AtomicBool::new(false));
+        // Complete when BOTH sources complete - use atomic fetch_or to avoid TOCTOU race
+        let complete_state = Arc::new(AtomicU8::new(0));
 
         let weak = derived.downgrade();
-        let sc = self_complete.clone();
-        let oc = other_complete.clone();
+        let cs = complete_state.clone();
         let complete_guard1 = self.on_complete(move || {
-            sc.store(true, Ordering::SeqCst);
-            if oc.load(Ordering::SeqCst) {
+            let prev = cs.fetch_or(SELF_COMPLETE, Ordering::SeqCst);
+            if prev == OTHER_COMPLETE {
+                // Other was already complete, now both are done
                 if let Some(d) = weak.upgrade() {
                     d.complete();
                 }
@@ -59,8 +62,9 @@ pub trait MergeExt<T>: Watchable<T> {
 
         let weak = derived.downgrade();
         let complete_guard2 = other.on_complete(move || {
-            other_complete.store(true, Ordering::SeqCst);
-            if self_complete.load(Ordering::SeqCst) {
+            let prev = complete_state.fetch_or(OTHER_COMPLETE, Ordering::SeqCst);
+            if prev == SELF_COMPLETE {
+                // Self was already complete, now both are done
                 if let Some(d) = weak.upgrade() {
                     d.complete();
                 }
