@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::cell::{Cell, CellImmutable};
-use super::{DepNode, SubscribeExt, Watchable};
+use super::{DepNode, Watchable};
 
 pub trait SkipExt<T>: Watchable<T> {
     fn skip(&self, count: usize) -> Cell<T, CellImmutable>

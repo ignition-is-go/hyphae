@@ -82,7 +82,7 @@ fn test_source_still_works_after_derived_dropped() {
 
     // Add a direct watcher on source
     let count = source_call_count.clone();
-    source.watch(move |_| {
+    let _guard = source.subscribe(move |_| {
         count.fetch_add(1, Ordering::SeqCst);
     });
 
@@ -134,7 +134,7 @@ fn test_parent_cell_outlives_derived() {
     let source = Cell::new(0u64);
     let derived = source.map(|v| *v * 2);
 
-    derived.watch(move |v| {
+    let _guard = derived.subscribe(move |v| {
         r.store(*v, Ordering::SeqCst);
     });
 

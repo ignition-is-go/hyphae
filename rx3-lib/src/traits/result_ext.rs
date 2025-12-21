@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use crate::cell::{Cell, CellImmutable};
-use super::{DepNode, SubscribeExt, Watchable};
+use super::{DepNode, Watchable};
 
 /// Extension trait for transforming Ok values in Result cells.
 pub trait MapOkExt<T, E>: Watchable<Result<T, E>> {

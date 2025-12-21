@@ -23,7 +23,7 @@ fn test_cell_watch_immediate() {
     let received = Arc::new(AtomicU64::new(0));
 
     let r = received.clone();
-    cell.watch(move |v| {
+    let _guard = cell.subscribe(move |v| {
         r.store(*v, Ordering::SeqCst);
     });
 
@@ -37,7 +37,7 @@ fn test_cell_watch_on_set() {
     let received = Arc::new(AtomicU64::new(0));
 
     let r = received.clone();
-    cell.watch(move |v| {
+    let _guard = cell.subscribe(move |v| {
         r.store(*v, Ordering::SeqCst);
     });
 
@@ -50,12 +50,12 @@ fn test_cell_multiple_watchers() {
     let cell = Cell::new(0u64);
     let count = Arc::new(AtomicU64::new(0));
 
-    for _ in 0..10 {
+    let _guards: Vec<_> = (0..10).map(|_| {
         let c = count.clone();
-        cell.watch(move |_| {
+        cell.subscribe(move |_| {
             c.fetch_add(1, Ordering::SeqCst);
-        });
-    }
+        })
+    }).collect();
 
     // 10 watchers called immediately
     assert_eq!(count.load(Ordering::SeqCst), 10);
@@ -71,7 +71,7 @@ fn test_cell_unsubscribe() {
     let count = Arc::new(AtomicU64::new(0));
 
     let c = count.clone();
-    let sub_id = cell.watch(move |_| {
+    let guard = cell.subscribe(move |_| {
         c.fetch_add(1, Ordering::SeqCst);
     });
 
@@ -80,7 +80,7 @@ fn test_cell_unsubscribe() {
     cell.set(1);
     assert_eq!(count.load(Ordering::SeqCst), 2);
 
-    cell.unsubscribe(sub_id);
+    drop(guard); // unsubscribe by dropping the guard
 
     cell.set(2);
     assert_eq!(count.load(Ordering::SeqCst), 2); // no change after unsubscribe

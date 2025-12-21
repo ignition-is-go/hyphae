@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use arc_swap::ArcSwap;
 use crate::cell::{Cell, CellImmutable};
-use super::{DepNode, SubscribeExt, Watchable};
+use super::{DepNode, Watchable};
 
 pub trait ScanExt<T>: Watchable<T> {
     fn scan<U, F>(&self, initial: U, f: F) -> Cell<U, CellImmutable>

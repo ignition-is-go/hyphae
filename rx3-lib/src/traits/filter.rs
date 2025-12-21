@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use crate::cell::{Cell, CellImmutable};
-use super::{DepNode, SubscribeExt, Watchable};
+use super::{DepNode, Watchable};
 
 pub trait FilterExt<T>: Watchable<T> {
     fn filter(&self, predicate: impl Fn(&T) -> bool + Send + Sync + 'static) -> Cell<T, CellImmutable>

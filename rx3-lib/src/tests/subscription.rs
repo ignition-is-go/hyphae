@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use crate::{Cell, Mutable, SubscribeExt};
+use crate::{Cell, Mutable, Watchable};
 
 #[test]
 fn test_subscribe_returns_guard() {

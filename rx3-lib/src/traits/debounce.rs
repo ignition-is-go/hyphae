@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 use crate::cell::{Cell, CellImmutable};
-use super::{DepNode, SubscribeExt, Watchable};
+use super::{DepNode, Watchable};
 
 pub trait DebounceExt<T>: Watchable<T> {
     fn debounce(&self, duration: Duration) -> Cell<T, CellImmutable>

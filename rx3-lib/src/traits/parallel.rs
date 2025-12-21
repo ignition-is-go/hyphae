@@ -1,7 +1,8 @@
 use rayon::prelude::*;
 use std::sync::Arc;
 use crate::cell::{Cell, CellImmutable};
-use super::{DepNode, Gettable, SubscribeExt, Watchable};
+use crate::subscription::SubscriptionGuard;
+use super::{DepNode, Gettable, Watchable};
 
 /// A cell that notifies subscribers in parallel using Rayon.
 pub struct ParallelCell<T> {
@@ -13,8 +14,8 @@ impl<T: Clone + Send + Sync + 'static> ParallelCell<T> {
         self.inner.get()
     }
 
-    pub fn watch(&self, callback: impl Fn(&T) + Send + Sync + 'static) {
-        self.inner.watch(callback);
+    pub fn subscribe(&self, callback: impl Fn(&T) + Send + Sync + 'static) -> SubscriptionGuard {
+        self.inner.subscribe(callback)
     }
 }
 

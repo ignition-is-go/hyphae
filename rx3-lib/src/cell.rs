@@ -8,6 +8,7 @@ use std::{
 };
 use uuid::Uuid;
 
+use crate::subscription::SubscriptionGuard;
 use crate::traits::{DepNode, Gettable, Mutable, Watchable};
 
 #[derive(Debug, Clone)]
@@ -183,11 +184,15 @@ impl<T: Clone + Send + Sync + 'static, U: Send + Sync + 'static> Gettable<T> for
 }
 
 impl<T: Clone + Send + Sync + 'static, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
-    fn watch(&self, callback: impl Fn(&T) + Send + Sync + 'static) -> Uuid {
+    fn subscribe(&self, callback: impl Fn(&T) + Send + Sync + 'static) -> SubscriptionGuard {
         callback(&self.get());
         let id = Uuid::new_v4();
         self.inner.subscribers.insert(id, Box::new(Subscriber::new(callback)));
-        id
+
+        let cell = self.clone();
+        SubscriptionGuard::new(id, move || {
+            cell.inner.subscribers.remove(&id);
+        })
     }
 
     fn unsubscribe(&self, id: Uuid) {

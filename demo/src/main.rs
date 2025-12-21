@@ -1,4 +1,4 @@
-use rx3::{Cell, JoinExt, MapExt, Mutable, SubscribeExt, flat};
+use rx3::{Cell, JoinExt, MapExt, Mutable, Watchable, flat};
 
 fn main() {
     println!("=== Panic Isolation Demo ===\n");

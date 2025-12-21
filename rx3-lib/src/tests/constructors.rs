@@ -12,7 +12,7 @@ fn test_interval_emits_incrementing() {
     let received = Arc::new(AtomicU64::new(0));
 
     let r = received.clone();
-    ticker.watch(move |v| {
+    let _guard = ticker.subscribe(move |v| {
         r.store(*v, Ordering::SeqCst);
     });
 
@@ -29,7 +29,7 @@ fn test_from_iter_with_delay_emits_all() {
     let received = Arc::new(AtomicU64::new(0));
 
     let r = received.clone();
-    items.watch(move |v| {
+    let _guard = items.subscribe(move |v| {
         r.store(*v, Ordering::SeqCst);
     });
 

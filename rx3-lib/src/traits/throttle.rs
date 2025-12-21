@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 use crate::cell::{Cell, CellImmutable};
-use super::{DepNode, SubscribeExt, Watchable};
+use super::{DepNode, Watchable};
 
 pub trait ThrottleExt<T>: Watchable<T> {
     fn throttle(&self, duration: Duration) -> Cell<T, CellImmutable>

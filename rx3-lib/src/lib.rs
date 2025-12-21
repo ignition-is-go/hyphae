@@ -14,7 +14,7 @@
 //! ## Quick Start
 //!
 //! ```rust
-//! use rx3::{Cell, MapExt, Mutable, SubscribeExt, JoinExt, flat};
+//! use rx3::{Cell, MapExt, Mutable, Watchable, JoinExt, flat};
 //!
 //! // Create reactive cells
 //! let x = Cell::new(5).with_name("x");
@@ -69,6 +69,6 @@ pub use subscription::SubscriptionGuard;
 pub use traits::{
     CatchErrorExt, DebounceExt, DedupedExt, DelayExt, DepNode, FilterExt, Gettable, JoinExt,
     MapErrExt, MapExt, MapOkExt, MergeMapExt, Mutable, PairwiseExt, ParallelCell, ParallelExt,
-    ScanExt, SkipExt, SubscribeExt, SwitchMapExt, TakeExt, TapExt, ThrottleExt, TryMapExt,
-    UnwrapOrExt,
+    ScanExt, SkipExt, SwitchMapExt, TakeExt, TapExt, ThrottleExt, TryMapExt, UnwrapOrExt,
+    Watchable,
 };

@@ -67,7 +67,7 @@ fn test_filter_passes_matching() {
     let received = Arc::new(AtomicU64::new(0));
 
     let r = received.clone();
-    evens.watch(move |v| {
+    let _guard = evens.subscribe(move |v| {
         r.store(*v, Ordering::SeqCst);
     });
 
@@ -84,7 +84,7 @@ fn test_filter_blocks_non_matching() {
     let received = Arc::new(AtomicU64::new(0));
 
     let r = received.clone();
-    evens.watch(move |v| {
+    let _guard = evens.subscribe(move |v| {
         r.store(*v, Ordering::SeqCst);
     });
 
@@ -158,7 +158,7 @@ fn test_take_limits_emissions() {
     let count = Arc::new(AtomicU64::new(0));
 
     let c = count.clone();
-    taken.watch(move |_| {
+    let _guard = taken.subscribe(move |_| {
         c.fetch_add(1, Ordering::SeqCst);
     });
 
@@ -184,7 +184,7 @@ fn test_skip_ignores_first_n() {
     let count = Arc::new(AtomicU64::new(0));
 
     let c = count.clone();
-    skipped.watch(move |_| {
+    let _guard = skipped.subscribe(move |_| {
         c.fetch_add(1, Ordering::SeqCst);
     });
 
@@ -231,7 +231,7 @@ fn test_deduped_blocks_duplicates() {
     let count = Arc::new(AtomicU64::new(0));
 
     let c = count.clone();
-    deduped.watch(move |_| {
+    let _guard = deduped.subscribe(move |_| {
         c.fetch_add(1, Ordering::SeqCst);
     });
 
@@ -292,7 +292,7 @@ fn test_debounce_waits_for_pause() {
     let received = Arc::new(AtomicU64::new(0));
 
     let r = received.clone();
-    debounced.watch(move |v| {
+    let _guard = debounced.subscribe(move |v| {
         r.store(*v, Ordering::SeqCst);
     });
 
@@ -321,7 +321,7 @@ fn test_throttle_limits_rate() {
     let count = Arc::new(AtomicU64::new(0));
 
     let c = count.clone();
-    throttled.watch(move |_| {
+    let _guard = throttled.subscribe(move |_| {
         c.fetch_add(1, Ordering::SeqCst);
     });
 
@@ -346,7 +346,7 @@ fn test_delay_delays_emission() {
     let received = Arc::new(AtomicU64::new(0));
 
     let r = received.clone();
-    delayed.watch(move |v| {
+    let _guard = delayed.subscribe(move |v| {
         r.store(*v, Ordering::SeqCst);
     });
 

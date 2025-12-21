@@ -1,36 +1,24 @@
 use uuid::Uuid;
-use crate::traits::Watchable;
 
 /// RAII guard that unsubscribes when dropped.
 #[must_use = "subscription will be cancelled immediately if the guard is dropped"]
-pub struct SubscriptionGuard<T, C>
-where
-    C: Watchable<T>,
-{
-    cell: C,
+pub struct SubscriptionGuard {
+    unsubscribe_fn: Option<Box<dyn FnMut() + Send + Sync>>,
     id: Uuid,
-    active: bool,
-    // Use fn() -> T to be covariant without requiring T: Send + Sync
-    _marker: std::marker::PhantomData<fn() -> T>,
 }
 
-impl<T, C> SubscriptionGuard<T, C>
-where
-    C: Watchable<T>,
-{
-    pub(crate) fn new(cell: C, id: Uuid) -> Self {
+impl SubscriptionGuard {
+    pub(crate) fn new(id: Uuid, unsubscribe_fn: impl FnMut() + Send + Sync + 'static) -> Self {
         Self {
-            cell,
+            unsubscribe_fn: Some(Box::new(unsubscribe_fn)),
             id,
-            active: true,
-            _marker: std::marker::PhantomData,
         }
     }
 
     /// Prevent automatic unsubscribe on drop.
     /// Returns the subscription ID for manual management.
     pub fn leak(mut self) -> Uuid {
-        self.active = false;
+        self.unsubscribe_fn = None;
         self.id
     }
 
@@ -45,13 +33,10 @@ where
     }
 }
 
-impl<T, C> Drop for SubscriptionGuard<T, C>
-where
-    C: Watchable<T>,
-{
+impl Drop for SubscriptionGuard {
     fn drop(&mut self) {
-        if self.active {
-            self.cell.unsubscribe(self.id);
+        if let Some(mut f) = self.unsubscribe_fn.take() {
+            f();
         }
     }
 }

@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use crate::cell::{Cell, CellImmutable};
-use super::{DepNode, SubscribeExt, Watchable};
+use super::{DepNode, Watchable};
 
 pub trait DelayExt<T>: Watchable<T> {
     fn delay(&self, duration: Duration) -> Cell<T, CellImmutable>

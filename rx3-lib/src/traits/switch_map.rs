@@ -3,9 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use arc_swap::ArcSwap;
 use crate::cell::{Cell, CellImmutable};
 use crate::subscription::SubscriptionGuard;
-use super::{Gettable, SubscribeExt, Watchable};
-
-type InnerGuard<U> = SubscriptionGuard<U, Cell<U, CellImmutable>>;
+use super::{Gettable, Watchable};
 
 pub trait SwitchMapExt<T>: Watchable<T> {
     fn switch_map<U, F>(&self, f: F) -> Cell<U, CellImmutable>
@@ -30,7 +28,7 @@ pub trait SwitchMapExt<T>: Watchable<T> {
 
         // Track current subscription (lock-free)
         // When we swap in a new guard, the old one drops and auto-unsubscribes
-        let current: Arc<ArcSwap<Option<InnerGuard<U>>>> =
+        let current: Arc<ArcSwap<Option<SubscriptionGuard>>> =
             Arc::new(ArcSwap::from_pointee(Some(first_guard)));
 
         // When outer changes, switch to new inner

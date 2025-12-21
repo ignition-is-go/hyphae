@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use arc_swap::ArcSwap;
 use crate::cell::{Cell, CellImmutable};
-use super::{DepNode, SubscribeExt, Watchable};
+use super::{DepNode, Watchable};
 
 pub trait PairwiseExt<T>: Watchable<T> {
     fn pairwise(&self) -> Cell<(T, T), CellImmutable>
