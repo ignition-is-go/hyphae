@@ -1,0 +1,15 @@
+[package]
+name = "rx3"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "rx3"
+path = "src/lib.rs"
+
+[dependencies]
+arc-swap.workspace = true
+dashmap.workspace = true
+uuid.workspace = true
