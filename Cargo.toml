@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = [
+    "rx3-lib",
+    "demo",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["Trevor"]
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+anyhow = "1.0.100"
+arc-swap = "1.7.1"
+dashmap = "6.1.0"
+uuid = { version = "1.19.0", features = ["v4"] }
