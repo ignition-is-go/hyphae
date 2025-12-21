@@ -147,3 +147,67 @@ fn test_parent_cell_outlives_derived() {
     // derived should still have its value
     assert_eq!(derived.get(), 10);
 }
+
+// ============================================================================
+// Subscription Cleanup Tests
+// ============================================================================
+
+#[test]
+fn test_subscription_cleaned_up_on_derived_drop() {
+    let source = Cell::new(0u64);
+
+    // Check initial subscriber count
+    let initial_count = source.inner.subscribers.len();
+
+    {
+        let _derived = source.map(|v| *v * 2);
+        // map() creates one subscription on source
+        assert_eq!(source.inner.subscribers.len(), initial_count + 1);
+    } // derived dropped here - should unsubscribe
+
+    // Subscription should be cleaned up
+    assert_eq!(source.inner.subscribers.len(), initial_count);
+}
+
+#[test]
+fn test_chained_subscriptions_cleaned_up() {
+    let source = Cell::new(0u64);
+    let initial_count = source.inner.subscribers.len();
+
+    {
+        let derived1 = source.map(|v| *v * 2);
+        let d1_initial = derived1.inner.subscribers.len();
+
+        {
+            let _derived2 = derived1.map(|v| *v + 1);
+            // derived2 subscribes to derived1
+            assert_eq!(derived1.inner.subscribers.len(), d1_initial + 1);
+        } // derived2 dropped
+
+        // derived1 subscription should be cleaned up
+        assert_eq!(derived1.inner.subscribers.len(), d1_initial);
+    } // derived1 dropped
+
+    // source subscription should be cleaned up
+    assert_eq!(source.inner.subscribers.len(), initial_count);
+}
+
+#[test]
+fn test_multiple_derived_cells_independent_cleanup() {
+    let source = Cell::new(0u64);
+    let initial_count = source.inner.subscribers.len();
+
+    let derived1 = source.map(|v| *v * 2);
+    assert_eq!(source.inner.subscribers.len(), initial_count + 1);
+
+    let derived2 = source.map(|v| *v + 1);
+    assert_eq!(source.inner.subscribers.len(), initial_count + 2);
+
+    drop(derived1);
+    // Only derived1's subscription should be cleaned up
+    assert_eq!(source.inner.subscribers.len(), initial_count + 1);
+
+    drop(derived2);
+    // Now both should be cleaned up
+    assert_eq!(source.inner.subscribers.len(), initial_count);
+}

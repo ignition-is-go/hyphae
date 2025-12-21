@@ -10,7 +10,8 @@ where
     cell: C,
     id: Uuid,
     active: bool,
-    _marker: std::marker::PhantomData<T>,
+    // Use fn() -> T to be covariant without requiring T: Send + Sync
+    _marker: std::marker::PhantomData<fn() -> T>,
 }
 
 impl<T, C> SubscriptionGuard<T, C>

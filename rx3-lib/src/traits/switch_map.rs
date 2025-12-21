@@ -1,14 +1,11 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use arc_swap::ArcSwap;
-use uuid::Uuid;
 use crate::cell::{Cell, CellImmutable};
-use super::{Gettable, Watchable};
+use crate::subscription::SubscriptionGuard;
+use super::{Gettable, SubscribeExt, Watchable};
 
-struct Subscription<U> {
-    cell: Cell<U, CellImmutable>,
-    id: Uuid,
-}
+type InnerGuard<U> = SubscriptionGuard<U, Cell<U, CellImmutable>>;
 
 pub trait SwitchMapExt<T>: Watchable<T> {
     fn switch_map<U, F>(&self, f: F) -> Cell<U, CellImmutable>
@@ -16,14 +13,15 @@ pub trait SwitchMapExt<T>: Watchable<T> {
         T: Clone + Send + Sync + 'static,
         U: Clone + Send + Sync + 'static,
         F: Fn(&T) -> Cell<U, CellImmutable> + Send + Sync + 'static,
+        Self: Clone + Send + Sync + 'static,
     {
         let first_inner = f(&self.get());
         let cell = Cell::<U, CellImmutable>::derived(first_inner.get(), vec![]);
 
         // Subscribe to first inner
-        let sub_id = {
+        let first_guard = {
             let weak = cell.downgrade();
-            first_inner.watch(move |value| {
+            first_inner.subscribe(move |value| {
                 if let Some(c) = weak.upgrade() {
                     c.notify(value.clone());
                 }
@@ -31,39 +29,40 @@ pub trait SwitchMapExt<T>: Watchable<T> {
         };
 
         // Track current subscription (lock-free)
-        let current_sub: Arc<ArcSwap<Option<Subscription<U>>>> =
-            Arc::new(ArcSwap::from_pointee(Some(Subscription { cell: first_inner, id: sub_id })));
+        // When we swap in a new guard, the old one drops and auto-unsubscribes
+        let current: Arc<ArcSwap<Option<InnerGuard<U>>>> =
+            Arc::new(ArcSwap::from_pointee(Some(first_guard)));
 
         // When outer changes, switch to new inner
         let weak_outer = cell.downgrade();
         let f = Arc::new(f);
         let first = Arc::new(AtomicBool::new(true));
-        self.watch(move |outer_value| {
-            // Skip first emission - we already handled it above
+        let current_clone = current.clone();
+        let outer_guard = self.subscribe(move |outer_value| {
             if first.swap(false, Ordering::SeqCst) {
                 return;
             }
 
-            // Check if output cell still exists
             let Some(_) = weak_outer.upgrade() else { return };
-
-            // Unsubscribe from previous inner
-            if let Some(old) = current_sub.load().as_ref() {
-                old.cell.unsubscribe(old.id);
-            }
 
             let inner = f(outer_value);
 
             // Subscribe to new inner
             let weak_inner = weak_outer.clone();
-            let sub_id = inner.watch(move |value| {
+            let new_guard = inner.subscribe(move |value| {
                 if let Some(c) = weak_inner.upgrade() {
                     c.notify(value.clone());
                 }
             });
 
-            current_sub.store(Arc::new(Some(Subscription { cell: inner, id: sub_id })));
+            // Swap in new guard - old guard drops and unsubscribes automatically
+            current_clone.store(Arc::new(Some(new_guard)));
         });
+        cell.own(outer_guard);
+
+        // When derived cell drops, this Arc drops, the guard inside drops,
+        // and it auto-unsubscribes from the current inner cell
+        cell.own(current);
 
         cell
     }

@@ -1,19 +1,20 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use crate::cell::{Cell, CellImmutable};
-use super::{DepNode, Watchable};
+use super::{DepNode, SubscribeExt, Watchable};
 
 pub trait TapExt<T>: Watchable<T> {
     fn tap(&self, f: impl Fn(&T) + Send + Sync + 'static) -> Cell<T, CellImmutable>
     where
         T: Clone + Send + Sync + 'static,
+        Self: Clone + Send + Sync + 'static,
     {
         let parent: Arc<dyn DepNode> = Arc::new(self.clone());
         let cell = Cell::<T, CellImmutable>::derived(self.get(), vec![parent]);
 
         let weak = cell.downgrade();
         let first = Arc::new(AtomicBool::new(true));
-        self.watch(move |value| {
+        let guard = self.subscribe(move |value| {
             if first.swap(false, Ordering::SeqCst) {
                 return;
             }
@@ -22,6 +23,7 @@ pub trait TapExt<T>: Watchable<T> {
                 c.notify(value.clone());
             }
         });
+        cell.own(guard);
 
         cell
     }

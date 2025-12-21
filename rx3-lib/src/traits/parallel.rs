@@ -1,7 +1,7 @@
 use rayon::prelude::*;
 use std::sync::Arc;
 use crate::cell::{Cell, CellImmutable};
-use super::{DepNode, Gettable, Watchable};
+use super::{DepNode, Gettable, SubscribeExt, Watchable};
 
 /// A cell that notifies subscribers in parallel using Rayon.
 pub struct ParallelCell<T> {
@@ -47,15 +47,15 @@ pub trait ParallelExt<T>: Watchable<T> {
     fn parallel(&self) -> ParallelCell<T>
     where
         T: Clone + Send + Sync + 'static,
+        Self: Clone + Send + Sync + 'static,
     {
         let parent: Arc<dyn DepNode> = Arc::new(self.clone());
         let inner = Cell::<T, CellImmutable>::derived(self.get(), vec![parent]);
         let parallel = ParallelCell { inner };
 
         let weak = parallel.inner.downgrade();
-        self.watch(move |value| {
+        let guard = self.subscribe(move |value| {
             if let Some(inner) = weak.upgrade() {
-                // Notify in parallel using the inner cell's value and subscribers
                 inner.inner.value.store(Arc::new(value.clone()));
 
                 let callbacks: Vec<_> = inner.inner.subscribers.iter()
@@ -67,6 +67,7 @@ pub trait ParallelExt<T>: Watchable<T> {
                 });
             }
         });
+        parallel.inner.own(guard);
 
         parallel
     }

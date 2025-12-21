@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use crate::cell::{Cell, CellImmutable};
-use super::{DepNode, Watchable};
+use super::{DepNode, SubscribeExt, Watchable};
 
 pub trait MapExt<T>: Watchable<T> {
     fn map<U: Clone + Send + Sync + 'static>(
@@ -9,7 +9,8 @@ pub trait MapExt<T>: Watchable<T> {
         transform: impl Fn(&T) -> U + Send + Sync + 'static,
     ) -> Cell<U, CellImmutable>
     where
-        T: Clone,
+        T: Clone + 'static,
+        Self: Clone + Send + Sync + 'static,
     {
         let initial = transform(&self.get());
         let parent: Arc<dyn DepNode> = Arc::new(self.clone());
@@ -22,9 +23,8 @@ pub trait MapExt<T>: Watchable<T> {
         };
 
         let weak = derived.downgrade();
-        // Skip the first immediate callback from watch() since we already computed initial value
         let first = Arc::new(AtomicBool::new(true));
-        self.watch(move |value| {
+        let guard = self.subscribe(move |value| {
             if first.swap(false, Ordering::SeqCst) {
                 return;
             }
@@ -32,6 +32,7 @@ pub trait MapExt<T>: Watchable<T> {
                 d.notify(transform(value));
             }
         });
+        derived.own(guard);
 
         derived
     }

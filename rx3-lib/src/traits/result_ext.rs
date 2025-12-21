@@ -1,17 +1,18 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use crate::cell::{Cell, CellImmutable};
-use super::{DepNode, Watchable};
+use super::{DepNode, SubscribeExt, Watchable};
 
 /// Extension trait for transforming Ok values in Result cells.
 pub trait MapOkExt<T, E>: Watchable<Result<T, E>> {
     /// Transform the Ok value, passing through Err unchanged.
     fn map_ok<U, F>(&self, f: F) -> Cell<Result<U, E>, CellImmutable>
     where
-        T: Clone,
+        T: Clone + 'static,
         U: Clone + Send + Sync + 'static,
         E: Clone + Send + Sync + 'static,
         F: Fn(&T) -> U + Send + Sync + 'static,
+        Self: Clone + Send + Sync + 'static,
     {
         let initial = match &self.get() {
             Ok(v) => Ok(f(v)),
@@ -22,7 +23,7 @@ pub trait MapOkExt<T, E>: Watchable<Result<T, E>> {
 
         let weak = derived.downgrade();
         let first = Arc::new(AtomicBool::new(true));
-        self.watch(move |result| {
+        let guard = self.subscribe(move |result| {
             if first.swap(false, Ordering::SeqCst) {
                 return;
             }
@@ -34,6 +35,7 @@ pub trait MapOkExt<T, E>: Watchable<Result<T, E>> {
                 d.notify(mapped);
             }
         });
+        derived.own(guard);
 
         derived
     }
@@ -52,8 +54,10 @@ pub trait MapErrExt<T, E>: Watchable<Result<T, E>> {
     fn map_err<E2, F>(&self, f: F) -> Cell<Result<T, E2>, CellImmutable>
     where
         T: Clone + Send + Sync + 'static,
+        E: 'static,
         E2: Clone + Send + Sync + 'static,
         F: Fn(&E) -> E2 + Send + Sync + 'static,
+        Self: Clone + Send + Sync + 'static,
     {
         let initial = match &self.get() {
             Ok(v) => Ok(v.clone()),
@@ -64,7 +68,7 @@ pub trait MapErrExt<T, E>: Watchable<Result<T, E>> {
 
         let weak = derived.downgrade();
         let first = Arc::new(AtomicBool::new(true));
-        self.watch(move |result| {
+        let guard = self.subscribe(move |result| {
             if first.swap(false, Ordering::SeqCst) {
                 return;
             }
@@ -76,6 +80,7 @@ pub trait MapErrExt<T, E>: Watchable<Result<T, E>> {
                 d.notify(mapped);
             }
         });
+        derived.own(guard);
 
         derived
     }
@@ -96,7 +101,9 @@ pub trait CatchErrorExt<T, E>: Watchable<Result<T, E>> {
     fn catch_error<F>(&self, f: F) -> Cell<T, CellImmutable>
     where
         T: Clone + Send + Sync + 'static,
+        E: 'static,
         F: Fn(&E) -> T + Send + Sync + 'static,
+        Self: Clone + Send + Sync + 'static,
     {
         let initial = match &self.get() {
             Ok(v) => v.clone(),
@@ -107,7 +114,7 @@ pub trait CatchErrorExt<T, E>: Watchable<Result<T, E>> {
 
         let weak = derived.downgrade();
         let first = Arc::new(AtomicBool::new(true));
-        self.watch(move |result| {
+        let guard = self.subscribe(move |result| {
             if first.swap(false, Ordering::SeqCst) {
                 return;
             }
@@ -119,6 +126,7 @@ pub trait CatchErrorExt<T, E>: Watchable<Result<T, E>> {
                 d.notify(value);
             }
         });
+        derived.own(guard);
 
         derived
     }
@@ -137,6 +145,8 @@ pub trait UnwrapOrExt<T, E>: Watchable<Result<T, E>> {
     fn unwrap_or(&self, default: T) -> Cell<T, CellImmutable>
     where
         T: Clone + Send + Sync + 'static,
+        E: 'static,
+        Self: Clone + Send + Sync + 'static,
     {
         let initial = match self.get() {
             Ok(v) => v,
@@ -147,7 +157,7 @@ pub trait UnwrapOrExt<T, E>: Watchable<Result<T, E>> {
 
         let weak = derived.downgrade();
         let first = Arc::new(AtomicBool::new(true));
-        self.watch(move |result| {
+        let guard = self.subscribe(move |result| {
             if first.swap(false, Ordering::SeqCst) {
                 return;
             }
@@ -159,6 +169,7 @@ pub trait UnwrapOrExt<T, E>: Watchable<Result<T, E>> {
                 d.notify(value);
             }
         });
+        derived.own(guard);
 
         derived
     }
@@ -167,7 +178,9 @@ pub trait UnwrapOrExt<T, E>: Watchable<Result<T, E>> {
     fn unwrap_or_else<F>(&self, f: F) -> Cell<T, CellImmutable>
     where
         T: Clone + Send + Sync + 'static,
+        E: 'static,
         F: Fn(&E) -> T + Send + Sync + 'static,
+        Self: Clone + Send + Sync + 'static,
     {
         let initial = match &self.get() {
             Ok(v) => v.clone(),
@@ -178,7 +191,7 @@ pub trait UnwrapOrExt<T, E>: Watchable<Result<T, E>> {
 
         let weak = derived.downgrade();
         let first = Arc::new(AtomicBool::new(true));
-        self.watch(move |result| {
+        let guard = self.subscribe(move |result| {
             if first.swap(false, Ordering::SeqCst) {
                 return;
             }
@@ -190,6 +203,7 @@ pub trait UnwrapOrExt<T, E>: Watchable<Result<T, E>> {
                 d.notify(value);
             }
         });
+        derived.own(guard);
 
         derived
     }

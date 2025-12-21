@@ -3,19 +3,20 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 use crate::cell::{Cell, CellImmutable};
-use super::{DepNode, Watchable};
+use super::{DepNode, SubscribeExt, Watchable};
 
 pub trait ThrottleExt<T>: Watchable<T> {
     fn throttle(&self, duration: Duration) -> Cell<T, CellImmutable>
     where
         T: Clone + Send + Sync + 'static,
+        Self: Clone + Send + Sync + 'static,
     {
         let parent: Arc<dyn DepNode> = Arc::new(self.clone());
         let cell = Cell::<T, CellImmutable>::derived(self.get(), vec![parent]);
 
         let can_emit = Arc::new(AtomicBool::new(true));
         let weak = cell.downgrade();
-        self.watch(move |value| {
+        let guard = self.subscribe(move |value| {
             if let Some(c) = weak.upgrade() {
                 if can_emit.swap(false, Ordering::SeqCst) {
                     c.notify(value.clone());
@@ -28,6 +29,7 @@ pub trait ThrottleExt<T>: Watchable<T> {
                 }
             }
         });
+        cell.own(guard);
 
         cell
     }

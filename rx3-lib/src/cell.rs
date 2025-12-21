@@ -22,6 +22,9 @@ pub(crate) struct CellInner<T, M> {
     pub(crate) value: ArcSwap<T>,
     pub(crate) name: Mutex<Option<Arc<str>>>,
     pub(crate) dependencies: Vec<Arc<dyn DepNode>>,
+    /// Owned values that should be dropped when this cell is dropped.
+    /// Used to hold SubscriptionGuards so they unsubscribe on cell drop.
+    pub(crate) owned: DashMap<Uuid, Box<dyn Send + Sync>>,
     pub(crate) _phantom: PhantomData<M>,
 }
 
@@ -72,6 +75,7 @@ impl<T: Clone + Send + Sync + 'static> Cell<T, CellMutable> {
                 value: ArcSwap::from_pointee(initial_value),
                 name: Mutex::new(None),
                 dependencies: Vec::new(),
+                owned: DashMap::new(),
                 _phantom: PhantomData::<CellMutable>,
             }),
         }
@@ -98,6 +102,12 @@ impl<T, M> Cell<T, M> {
         WeakCell {
             inner: Arc::downgrade(&self.inner),
         }
+    }
+
+    /// Take ownership of a value, dropping it when this cell is dropped.
+    /// Used to hold SubscriptionGuards so they unsubscribe automatically.
+    pub(crate) fn own(&self, value: impl Send + Sync + 'static) {
+        self.inner.owned.insert(Uuid::new_v4(), Box::new(value));
     }
 }
 
@@ -130,6 +140,7 @@ impl<T: Clone + Send + Sync + 'static> Cell<T, CellImmutable> {
                 value: ArcSwap::from_pointee(initial),
                 name: Mutex::new(None),
                 dependencies: deps,
+                owned: DashMap::new(),
                 _phantom: PhantomData,
             }),
         }

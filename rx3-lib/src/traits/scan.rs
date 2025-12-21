@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use arc_swap::ArcSwap;
 use crate::cell::{Cell, CellImmutable};
-use super::{DepNode, Watchable};
+use super::{DepNode, SubscribeExt, Watchable};
 
 pub trait ScanExt<T>: Watchable<T> {
     fn scan<U, F>(&self, initial: U, f: F) -> Cell<U, CellImmutable>
@@ -10,16 +10,16 @@ pub trait ScanExt<T>: Watchable<T> {
         T: Clone + Send + Sync + 'static,
         U: Clone + Send + Sync + 'static,
         F: Fn(&U, &T) -> U + Send + Sync + 'static,
+        Self: Clone + Send + Sync + 'static,
     {
         let parent: Arc<dyn DepNode> = Arc::new(self.clone());
-        // Compute initial accumulated value
         let first_acc = f(&initial, &self.get());
         let cell = Cell::<U, CellImmutable>::derived(first_acc.clone(), vec![parent]);
 
         let acc = Arc::new(ArcSwap::from_pointee(first_acc));
         let weak = cell.downgrade();
         let first = Arc::new(AtomicBool::new(true));
-        self.watch(move |value| {
+        let guard = self.subscribe(move |value| {
             if first.swap(false, Ordering::SeqCst) {
                 return;
             }
@@ -30,6 +30,7 @@ pub trait ScanExt<T>: Watchable<T> {
                 c.notify(next);
             }
         });
+        cell.own(guard);
 
         cell
     }
