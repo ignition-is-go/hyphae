@@ -119,10 +119,15 @@ impl<T: Clone + Send + Sync + 'static, M: Send + Sync + 'static> Cell<T, M> {
 }
 
 impl<T: Clone + Send + Sync + 'static, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
-    fn watch(&self, callback: impl Fn(&T) + Send + Sync + 'static) {
+    fn watch(&self, callback: impl Fn(&T) + Send + Sync + 'static) -> Uuid {
         callback(&self.get());
-        self.subscribers
-            .insert(Uuid::new_v4(), Box::new(Subscriber::new(callback)));
+        let id = Uuid::new_v4();
+        self.subscribers.insert(id, Box::new(Subscriber::new(callback)));
+        id
+    }
+
+    fn unsubscribe(&self, id: Uuid) {
+        self.subscribers.remove(&id);
     }
 
     fn get(&self) -> T {
