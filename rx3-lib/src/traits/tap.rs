@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use crate::cell::{Cell, CellImmutable};
 use super::{DepNode, Watchable};
 
@@ -10,10 +11,16 @@ pub trait TapExt<T>: Watchable<T> {
         let parent: Arc<dyn DepNode> = Arc::new(self.clone());
         let cell = Cell::<T, CellImmutable>::derived(self.get(), vec![parent]);
 
-        let c = cell.clone();
+        let weak = cell.downgrade();
+        let first = Arc::new(AtomicBool::new(true));
         self.watch(move |value| {
-            f(value);
-            c.notify(value.clone());
+            if first.swap(false, Ordering::SeqCst) {
+                return;
+            }
+            if let Some(c) = weak.upgrade() {
+                f(value);
+                c.notify(value.clone());
+            }
         });
 
         cell

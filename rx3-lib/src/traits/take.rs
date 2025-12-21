@@ -12,13 +12,15 @@ pub trait TakeExt<T>: Watchable<T> {
         let cell = Cell::<T, CellImmutable>::derived(self.get(), vec![parent]);
 
         let remaining = Arc::new(AtomicUsize::new(count));
-        let c = cell.clone();
+        let weak = cell.downgrade();
         self.watch(move |value| {
-            let prev = remaining.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                if n > 0 { Some(n - 1) } else { None }
-            });
-            if prev.is_ok() {
-                c.notify(value.clone());
+            if let Some(c) = weak.upgrade() {
+                let prev = remaining.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                    if n > 0 { Some(n - 1) } else { None }
+                });
+                if prev.is_ok() {
+                    c.notify(value.clone());
+                }
             }
         });
 

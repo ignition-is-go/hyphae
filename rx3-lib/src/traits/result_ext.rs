@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use crate::cell::{Cell, CellImmutable};
 use super::{DepNode, Watchable};
 
@@ -19,13 +20,19 @@ pub trait MapOkExt<T, E>: Watchable<Result<T, E>> {
         let parent: Arc<dyn DepNode> = Arc::new(self.clone());
         let derived = Cell::<Result<U, E>, CellImmutable>::derived(initial, vec![parent]);
 
-        let d = derived.clone();
+        let weak = derived.downgrade();
+        let first = Arc::new(AtomicBool::new(true));
         self.watch(move |result| {
-            let mapped = match result {
-                Ok(v) => Ok(f(v)),
-                Err(e) => Err(e.clone()),
-            };
-            d.notify(mapped);
+            if first.swap(false, Ordering::SeqCst) {
+                return;
+            }
+            if let Some(d) = weak.upgrade() {
+                let mapped = match result {
+                    Ok(v) => Ok(f(v)),
+                    Err(e) => Err(e.clone()),
+                };
+                d.notify(mapped);
+            }
         });
 
         derived
@@ -55,13 +62,19 @@ pub trait MapErrExt<T, E>: Watchable<Result<T, E>> {
         let parent: Arc<dyn DepNode> = Arc::new(self.clone());
         let derived = Cell::<Result<T, E2>, CellImmutable>::derived(initial, vec![parent]);
 
-        let d = derived.clone();
+        let weak = derived.downgrade();
+        let first = Arc::new(AtomicBool::new(true));
         self.watch(move |result| {
-            let mapped = match result {
-                Ok(v) => Ok(v.clone()),
-                Err(e) => Err(f(e)),
-            };
-            d.notify(mapped);
+            if first.swap(false, Ordering::SeqCst) {
+                return;
+            }
+            if let Some(d) = weak.upgrade() {
+                let mapped = match result {
+                    Ok(v) => Ok(v.clone()),
+                    Err(e) => Err(f(e)),
+                };
+                d.notify(mapped);
+            }
         });
 
         derived
@@ -92,13 +105,19 @@ pub trait CatchErrorExt<T, E>: Watchable<Result<T, E>> {
         let parent: Arc<dyn DepNode> = Arc::new(self.clone());
         let derived = Cell::<T, CellImmutable>::derived(initial, vec![parent]);
 
-        let d = derived.clone();
+        let weak = derived.downgrade();
+        let first = Arc::new(AtomicBool::new(true));
         self.watch(move |result| {
-            let value = match result {
-                Ok(v) => v.clone(),
-                Err(e) => f(e),
-            };
-            d.notify(value);
+            if first.swap(false, Ordering::SeqCst) {
+                return;
+            }
+            if let Some(d) = weak.upgrade() {
+                let value = match result {
+                    Ok(v) => v.clone(),
+                    Err(e) => f(e),
+                };
+                d.notify(value);
+            }
         });
 
         derived
@@ -126,13 +145,19 @@ pub trait UnwrapOrExt<T, E>: Watchable<Result<T, E>> {
         let parent: Arc<dyn DepNode> = Arc::new(self.clone());
         let derived = Cell::<T, CellImmutable>::derived(initial, vec![parent]);
 
-        let d = derived.clone();
+        let weak = derived.downgrade();
+        let first = Arc::new(AtomicBool::new(true));
         self.watch(move |result| {
-            let value = match result {
-                Ok(v) => v.clone(),
-                Err(_) => default.clone(),
-            };
-            d.notify(value);
+            if first.swap(false, Ordering::SeqCst) {
+                return;
+            }
+            if let Some(d) = weak.upgrade() {
+                let value = match result {
+                    Ok(v) => v.clone(),
+                    Err(_) => default.clone(),
+                };
+                d.notify(value);
+            }
         });
 
         derived
@@ -151,13 +176,19 @@ pub trait UnwrapOrExt<T, E>: Watchable<Result<T, E>> {
         let parent: Arc<dyn DepNode> = Arc::new(self.clone());
         let derived = Cell::<T, CellImmutable>::derived(initial, vec![parent]);
 
-        let d = derived.clone();
+        let weak = derived.downgrade();
+        let first = Arc::new(AtomicBool::new(true));
         self.watch(move |result| {
-            let value = match result {
-                Ok(v) => v.clone(),
-                Err(e) => f(e),
-            };
-            d.notify(value);
+            if first.swap(false, Ordering::SeqCst) {
+                return;
+            }
+            if let Some(d) = weak.upgrade() {
+                let value = match result {
+                    Ok(v) => v.clone(),
+                    Err(e) => f(e),
+                };
+                d.notify(value);
+            }
         });
 
         derived

@@ -334,13 +334,18 @@ fn test_delay_delays_emission() {
         r.store(*v, Ordering::SeqCst);
     });
 
-    source.set(42);
-
-    // Not yet
-    thread::sleep(Duration::from_millis(10));
+    // Wait for the initial delayed value (0) to arrive before triggering a new one.
+    // This avoids a race between the initial and new value's delayed notifications.
+    thread::sleep(Duration::from_millis(100));
     assert_eq!(received.load(Ordering::SeqCst), 0);
 
-    // Now
+    source.set(42);
+
+    // Not yet (delay is 50ms, so after 20ms value should still be 0)
+    thread::sleep(Duration::from_millis(20));
+    assert_eq!(received.load(Ordering::SeqCst), 0);
+
+    // Now (wait 100ms more to ensure delay has passed with margin for thread scheduling)
     thread::sleep(Duration::from_millis(100));
     assert_eq!(received.load(Ordering::SeqCst), 42);
 }

@@ -12,13 +12,15 @@ pub trait DelayExt<T>: Watchable<T> {
         let parent: Arc<dyn DepNode> = Arc::new(self.clone());
         let cell = Cell::<T, CellImmutable>::derived(self.get(), vec![parent]);
 
-        let c = cell.clone();
+        let weak = cell.downgrade();
         self.watch(move |value| {
             let value = value.clone();
-            let c = c.clone();
+            let weak = weak.clone();
             thread::spawn(move || {
                 thread::sleep(duration);
-                c.notify(value);
+                if let Some(c) = weak.upgrade() {
+                    c.notify(value);
+                }
             });
         });
 

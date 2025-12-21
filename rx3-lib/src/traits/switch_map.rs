@@ -22,9 +22,11 @@ pub trait SwitchMapExt<T>: Watchable<T> {
 
         // Subscribe to first inner
         let sub_id = {
-            let cell = cell.clone();
+            let weak = cell.downgrade();
             first_inner.watch(move |value| {
-                cell.notify(value.clone());
+                if let Some(c) = weak.upgrade() {
+                    c.notify(value.clone());
+                }
             })
         };
 
@@ -33,7 +35,7 @@ pub trait SwitchMapExt<T>: Watchable<T> {
             Arc::new(ArcSwap::from_pointee(Some(Subscription { cell: first_inner, id: sub_id })));
 
         // When outer changes, switch to new inner
-        let cell_outer = cell.clone();
+        let weak_outer = cell.downgrade();
         let f = Arc::new(f);
         let first = Arc::new(AtomicBool::new(true));
         self.watch(move |outer_value| {
@@ -41,6 +43,9 @@ pub trait SwitchMapExt<T>: Watchable<T> {
             if first.swap(false, Ordering::SeqCst) {
                 return;
             }
+
+            // Check if output cell still exists
+            let Some(_) = weak_outer.upgrade() else { return };
 
             // Unsubscribe from previous inner
             if let Some(old) = current_sub.load().as_ref() {
@@ -50,9 +55,11 @@ pub trait SwitchMapExt<T>: Watchable<T> {
             let inner = f(outer_value);
 
             // Subscribe to new inner
-            let cell_inner = cell_outer.clone();
+            let weak_inner = weak_outer.clone();
             let sub_id = inner.watch(move |value| {
-                cell_inner.notify(value.clone());
+                if let Some(c) = weak_inner.upgrade() {
+                    c.notify(value.clone());
+                }
             });
 
             current_sub.store(Arc::new(Some(Subscription { cell: inner, id: sub_id })));

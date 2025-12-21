@@ -14,18 +14,20 @@ pub trait DebounceExt<T>: Watchable<T> {
         let cell = Cell::<T, CellImmutable>::derived(self.get(), vec![parent]);
 
         let generation = Arc::new(AtomicU64::new(0));
-        let c = cell.clone();
+        let weak = cell.downgrade();
         self.watch(move |value| {
             let my_gen = generation.fetch_add(1, Ordering::SeqCst) + 1;
             let value = value.clone();
-            let c = c.clone();
+            let weak = weak.clone();
             let generation = generation.clone();
 
             thread::spawn(move || {
                 thread::sleep(duration);
-                // Only emit if no newer value came in
+                // Only emit if no newer value came in and cell still exists
                 if generation.load(Ordering::SeqCst) == my_gen {
-                    c.notify(value);
+                    if let Some(c) = weak.upgrade() {
+                        c.notify(value);
+                    }
                 }
             });
         });

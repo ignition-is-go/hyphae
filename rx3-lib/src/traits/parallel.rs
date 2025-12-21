@@ -29,10 +29,10 @@ impl<T> Clone for ParallelCell<T> {
 impl<T: Clone + Send + Sync + 'static> ParallelCell<T> {
     /// Notify all subscribers in parallel using Rayon.
     pub fn notify(&self, value: T) {
-        self.inner.value.store(Arc::new(value.clone()));
+        self.inner.inner.value.store(Arc::new(value.clone()));
 
         // Collect subscribers and notify in parallel
-        let callbacks: Vec<_> = self.inner.subscribers.iter()
+        let callbacks: Vec<_> = self.inner.inner.subscribers.iter()
             .map(|entry| Arc::clone(&entry.value().callback))
             .collect();
 
@@ -52,9 +52,20 @@ pub trait ParallelExt<T>: Watchable<T> {
         let inner = Cell::<T, CellImmutable>::derived(self.get(), vec![parent]);
         let parallel = ParallelCell { inner };
 
-        let p = parallel.clone();
+        let weak = parallel.inner.downgrade();
         self.watch(move |value| {
-            p.notify(value.clone());
+            if let Some(inner) = weak.upgrade() {
+                // Notify in parallel using the inner cell's value and subscribers
+                inner.inner.value.store(Arc::new(value.clone()));
+
+                let callbacks: Vec<_> = inner.inner.subscribers.iter()
+                    .map(|entry| Arc::clone(&entry.value().callback))
+                    .collect();
+
+                callbacks.par_iter().for_each(|callback| {
+                    callback(value);
+                });
+            }
         });
 
         parallel

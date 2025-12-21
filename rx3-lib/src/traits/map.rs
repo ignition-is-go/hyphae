@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use crate::cell::{Cell, CellImmutable};
 use super::{DepNode, Watchable};
 
@@ -20,9 +21,16 @@ pub trait MapExt<T>: Watchable<T> {
             derived
         };
 
-        let d = derived.clone();
+        let weak = derived.downgrade();
+        // Skip the first immediate callback from watch() since we already computed initial value
+        let first = Arc::new(AtomicBool::new(true));
         self.watch(move |value| {
-            d.notify(transform(value));
+            if first.swap(false, Ordering::SeqCst) {
+                return;
+            }
+            if let Some(d) = weak.upgrade() {
+                d.notify(transform(value));
+            }
         });
 
         derived

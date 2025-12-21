@@ -14,16 +14,18 @@ pub trait ThrottleExt<T>: Watchable<T> {
         let cell = Cell::<T, CellImmutable>::derived(self.get(), vec![parent]);
 
         let can_emit = Arc::new(AtomicBool::new(true));
-        let c = cell.clone();
+        let weak = cell.downgrade();
         self.watch(move |value| {
-            if can_emit.swap(false, Ordering::SeqCst) {
-                c.notify(value.clone());
+            if let Some(c) = weak.upgrade() {
+                if can_emit.swap(false, Ordering::SeqCst) {
+                    c.notify(value.clone());
 
-                let can_emit = can_emit.clone();
-                thread::spawn(move || {
-                    thread::sleep(duration);
-                    can_emit.store(true, Ordering::SeqCst);
-                });
+                    let can_emit = can_emit.clone();
+                    thread::spawn(move || {
+                        thread::sleep(duration);
+                        can_emit.store(true, Ordering::SeqCst);
+                    });
+                }
             }
         });
 

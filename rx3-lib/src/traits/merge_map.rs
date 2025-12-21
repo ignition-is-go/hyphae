@@ -15,14 +15,16 @@ pub trait MergeMapExt<T>: Watchable<T> {
 
         // Subscribe to first inner
         {
-            let cell = cell.clone();
+            let weak = cell.downgrade();
             first_inner.watch(move |value| {
-                cell.notify(value.clone());
+                if let Some(c) = weak.upgrade() {
+                    c.notify(value.clone());
+                }
             });
         }
 
         // When outer changes, subscribe to new inner (without unsubscribing from previous)
-        let cell_outer = cell.clone();
+        let weak_outer = cell.downgrade();
         let f = Arc::new(f);
         let first = Arc::new(AtomicBool::new(true));
         self.watch(move |outer_value| {
@@ -31,11 +33,16 @@ pub trait MergeMapExt<T>: Watchable<T> {
                 return;
             }
 
+            // Check if output cell still exists
+            let Some(_) = weak_outer.upgrade() else { return };
+
             let inner = f(outer_value);
 
-            let cell_inner = cell_outer.clone();
+            let weak_inner = weak_outer.clone();
             inner.watch(move |value| {
-                cell_inner.notify(value.clone());
+                if let Some(c) = weak_inner.upgrade() {
+                    c.notify(value.clone());
+                }
             });
         });
 

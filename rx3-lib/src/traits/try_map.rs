@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use crate::cell::{Cell, CellImmutable};
 use super::{DepNode, Watchable};
 
@@ -34,9 +35,15 @@ pub trait TryMapExt<T>: Watchable<T> {
         let parent: Arc<dyn DepNode> = Arc::new(self.clone());
         let derived = Cell::<Result<U, E>, CellImmutable>::derived(initial, vec![parent]);
 
-        let d = derived.clone();
+        let weak = derived.downgrade();
+        let first = Arc::new(AtomicBool::new(true));
         self.watch(move |value| {
-            d.notify(f(value));
+            if first.swap(false, Ordering::SeqCst) {
+                return;
+            }
+            if let Some(d) = weak.upgrade() {
+                d.notify(f(value));
+            }
         });
 
         derived

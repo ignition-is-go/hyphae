@@ -13,11 +13,13 @@ pub trait PairwiseExt<T>: Watchable<T> {
         let cell = Cell::<(T, T), CellImmutable>::derived((initial.clone(), initial.clone()), vec![parent]);
 
         let prev = Arc::new(ArcSwap::from_pointee(initial));
-        let c = cell.clone();
+        let weak = cell.downgrade();
         self.watch(move |value| {
-            let previous = (**prev.load()).clone();
-            prev.store(Arc::new(value.clone()));
-            c.notify((previous, value.clone()));
+            if let Some(c) = weak.upgrade() {
+                let previous = (**prev.load()).clone();
+                prev.store(Arc::new(value.clone()));
+                c.notify((previous, value.clone()));
+            }
         });
 
         cell

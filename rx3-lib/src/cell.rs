@@ -3,7 +3,7 @@ use dashmap::DashMap;
 use std::{
     fmt::Debug,
     marker::PhantomData,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
 };
 use uuid::Uuid;
 
@@ -15,13 +15,40 @@ pub struct CellMutable;
 #[derive(Debug, Clone)]
 pub struct CellImmutable;
 
-pub struct Cell<T, M> {
+/// The inner data of a Cell, wrapped in Arc for shared ownership.
+pub(crate) struct CellInner<T, M> {
     pub(crate) id: Uuid,
-    pub(crate) subscribers: Arc<DashMap<Uuid, Box<Subscriber<T>>>>,
-    pub(crate) value: Arc<ArcSwap<T>>,
-    pub(crate) name: Arc<Mutex<Option<Arc<str>>>>,
-    pub(crate) dependencies: Arc<Vec<Arc<dyn DepNode>>>,
-    _phantom: PhantomData<M>,
+    pub(crate) subscribers: DashMap<Uuid, Box<Subscriber<T>>>,
+    pub(crate) value: ArcSwap<T>,
+    pub(crate) name: Mutex<Option<Arc<str>>>,
+    pub(crate) dependencies: Vec<Arc<dyn DepNode>>,
+    pub(crate) _phantom: PhantomData<M>,
+}
+
+/// A reactive cell that holds a value and notifies subscribers on change.
+pub struct Cell<T, M> {
+    pub(crate) inner: Arc<CellInner<T, M>>,
+}
+
+/// A weak reference to a Cell that doesn't prevent it from being dropped.
+pub struct WeakCell<T, M> {
+    inner: Weak<CellInner<T, M>>,
+}
+
+impl<T, M> WeakCell<T, M> {
+    /// Try to upgrade to a strong Cell reference.
+    /// Returns None if the Cell has been dropped.
+    pub fn upgrade(&self) -> Option<Cell<T, M>> {
+        self.inner.upgrade().map(|inner| Cell { inner })
+    }
+}
+
+impl<T, M> Clone for WeakCell<T, M> {
+    fn clone(&self) -> Self {
+        WeakCell {
+            inner: self.inner.clone(),
+        }
+    }
 }
 
 pub(crate) struct Subscriber<T> {
@@ -39,31 +66,37 @@ impl<T> Subscriber<T> {
 impl<T: Clone + Send + Sync + 'static> Cell<T, CellMutable> {
     pub fn new(initial_value: T) -> Self {
         Self {
-            id: Uuid::new_v4(),
-            subscribers: Arc::new(DashMap::new()),
-            value: Arc::new(ArcSwap::from_pointee(initial_value)),
-            name: Arc::new(Mutex::new(None)),
-            dependencies: Arc::new(Vec::new()),
-            _phantom: PhantomData::<CellMutable>,
+            inner: Arc::new(CellInner {
+                id: Uuid::new_v4(),
+                subscribers: DashMap::new(),
+                value: ArcSwap::from_pointee(initial_value),
+                name: Mutex::new(None),
+                dependencies: Vec::new(),
+                _phantom: PhantomData::<CellMutable>,
+            }),
         }
     }
 
     pub fn with_name(self, name: impl Into<Arc<str>>) -> Self {
-        *self.name.lock().unwrap() = Some(name.into());
+        *self.inner.name.lock().unwrap() = Some(name.into());
         self
     }
-
 }
 
 impl<T, M> Clone for Cell<T, M> {
     fn clone(&self) -> Self {
         Cell {
-            id: self.id,
-            subscribers: Arc::clone(&self.subscribers),
-            value: Arc::clone(&self.value),
-            name: Arc::clone(&self.name),
-            dependencies: Arc::clone(&self.dependencies),
-            _phantom: PhantomData,
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl<T, M> Cell<T, M> {
+    /// Create a weak reference to this cell.
+    /// The weak reference doesn't prevent the cell from being dropped.
+    pub fn downgrade(&self) -> WeakCell<T, M> {
+        WeakCell {
+            inner: Arc::downgrade(&self.inner),
         }
     }
 }
@@ -74,35 +107,36 @@ impl<T, M> Clone for Cell<T, M> {
 
 impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
     fn id(&self) -> Uuid {
-        self.id
+        self.inner.id
     }
 
     fn name(&self) -> Option<String> {
-        self.name.lock().unwrap().as_ref().map(|s| s.to_string())
+        self.inner.name.lock().unwrap().as_ref().map(|s| s.to_string())
     }
 
     fn deps(&self) -> &[Arc<dyn DepNode>] {
-        &self.dependencies
+        &self.inner.dependencies
     }
 }
-
 
 impl<T: Clone + Send + Sync + 'static> Cell<T, CellImmutable> {
     /// Creates a derived cell with dependencies. Used internally by `map` and `combine!`.
     #[doc(hidden)]
     pub fn derived(initial: T, deps: Vec<Arc<dyn DepNode>>) -> Self {
         Self {
-            id: Uuid::new_v4(),
-            subscribers: Arc::new(DashMap::new()),
-            value: Arc::new(ArcSwap::from_pointee(initial)),
-            name: Arc::new(Mutex::new(None)),
-            dependencies: Arc::new(deps),
-            _phantom: PhantomData,
+            inner: Arc::new(CellInner {
+                id: Uuid::new_v4(),
+                subscribers: DashMap::new(),
+                value: ArcSwap::from_pointee(initial),
+                name: Mutex::new(None),
+                dependencies: deps,
+                _phantom: PhantomData,
+            }),
         }
     }
 
     pub fn with_name(self, name: impl Into<Arc<str>>) -> Self {
-        *self.name.lock().unwrap() = Some(name.into());
+        *self.inner.name.lock().unwrap() = Some(name.into());
         self
     }
 }
@@ -111,8 +145,8 @@ impl<T: Clone + Send + Sync + 'static, M: Send + Sync + 'static> Cell<T, M> {
     /// Internal: store value and notify subscribers
     #[doc(hidden)]
     pub fn notify(&self, value: T) {
-        self.value.store(Arc::new(value.clone()));
-        self.subscribers.iter().for_each(|subscriber| {
+        self.inner.value.store(Arc::new(value.clone()));
+        self.inner.subscribers.iter().for_each(|subscriber| {
             (subscriber.callback)(&value);
         });
     }
@@ -120,7 +154,7 @@ impl<T: Clone + Send + Sync + 'static, M: Send + Sync + 'static> Cell<T, M> {
 
 impl<T: Clone + Send + Sync + 'static, U: Send + Sync + 'static> Gettable<T> for Cell<T, U> {
     fn get(&self) -> T {
-        (**self.value.load()).clone()
+        (**self.inner.value.load()).clone()
     }
 }
 
@@ -128,12 +162,12 @@ impl<T: Clone + Send + Sync + 'static, U: Send + Sync + 'static> Watchable<T> fo
     fn watch(&self, callback: impl Fn(&T) + Send + Sync + 'static) -> Uuid {
         callback(&self.get());
         let id = Uuid::new_v4();
-        self.subscribers.insert(id, Box::new(Subscriber::new(callback)));
+        self.inner.subscribers.insert(id, Box::new(Subscriber::new(callback)));
         id
     }
 
     fn unsubscribe(&self, id: Uuid) {
-        self.subscribers.remove(&id);
+        self.inner.subscribers.remove(&id);
     }
 }
 
