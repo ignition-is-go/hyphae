@@ -3,7 +3,7 @@ macro_rules! combine {
     // Tuple syntax with type annotations: combine!((&cell1, &cell2), |a: &T1, b: &T2| { ... })
     (($($cell:expr),+), |$($param:ident : $param_ty:ty),+| $body:expr) => {{
         use std::sync::Arc;
-        use $crate::traits::DepNode;
+        use $crate::traits::{DepNode, Gettable};
 
         let compute = Arc::new(move |$($param: $param_ty),+| $body);
 
@@ -19,7 +19,7 @@ macro_rules! combine {
     // Tuple syntax without type annotations: combine!((&cell1, &cell2), |a, b| { ... })
     (($($cell:expr),+), |$($param:ident),+| $body:expr) => {{
         use std::sync::Arc;
-        use $crate::traits::DepNode;
+        use $crate::traits::{DepNode, Gettable};
 
         let compute = Arc::new(move |$($param: &_),+| $body);
 
@@ -35,7 +35,7 @@ macro_rules! combine {
     // Bracket syntax with type annotations (backwards compat)
     [$($cell:expr),+ => |$($param:ident : $param_ty:ty),+| $body:expr] => {{
         use std::sync::Arc;
-        use $crate::traits::DepNode;
+        use $crate::traits::{DepNode, Gettable};
 
         let compute = Arc::new(move |$($param: $param_ty),+| $body);
 
@@ -51,7 +51,7 @@ macro_rules! combine {
     // Bracket syntax without type annotations (backwards compat)
     [$($cell:expr),+ => |$($param:ident),+| $body:expr] => {{
         use std::sync::Arc;
-        use $crate::traits::DepNode;
+        use $crate::traits::{DepNode, Gettable};
 
         let compute = Arc::new(move |$($param: &_),+| $body);
 
@@ -78,6 +78,7 @@ macro_rules! combine {
     // Set up a watcher for each cell
     (@watch_all [$($all:ident)+] [$current:ident $($rest:ident)*] $compute:ident $derived:ident) => {{
         {
+            use $crate::traits::Gettable;
             $(let $all = $all.clone();)+
             let compute = Arc::clone(&$compute);
             let derived = $derived.clone();

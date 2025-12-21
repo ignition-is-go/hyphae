@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use arc_swap::ArcSwap;
 use uuid::Uuid;
 use crate::cell::{Cell, CellImmutable};
-use super::Watchable;
+use super::{Gettable, Watchable};
 
 struct Subscription<U> {
     cell: Cell<U, CellImmutable>,

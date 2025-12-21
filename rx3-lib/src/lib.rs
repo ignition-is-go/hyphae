@@ -61,7 +61,7 @@
 //! The `combine!` macro supports multiple cells of different types:
 //!
 //! ```rust
-//! use rx3::{Cell, Watchable, combine};
+//! use rx3::{Cell, Gettable, Watchable, combine};
 //!
 //! let name = Cell::new("World".to_string());
 //! let count = Cell::new(3);
@@ -87,7 +87,7 @@ pub use cell::{Cell, CellImmutable, CellMutable};
 pub use constructors::{from_iter_with_delay, interval};
 pub use subscription::SubscriptionGuard;
 pub use traits::{
-    DebounceExt, DedupedExt, DelayExt, DepNode, FilterExt, JoinExt, MapExt, MergeMapExt,
-    Mutable, PairwiseExt, ParallelCell, ParallelExt, ScanExt, SkipExt, SubscribeExt,
-    SwitchMapExt, TakeExt, TapExt, ThrottleExt, Watchable,
+    DebounceExt, DedupedExt, DelayExt, DepNode, FilterExt, Gettable, JoinExt, MapExt,
+    MergeMapExt, Mutable, PairwiseExt, ParallelCell, ParallelExt, ScanExt, SkipExt,
+    SubscribeExt, SwitchMapExt, TakeExt, TapExt, ThrottleExt, Watchable,
 };

@@ -36,4 +36,4 @@ pub use switch_map::SwitchMapExt;
 pub use take::TakeExt;
 pub use tap::TapExt;
 pub use throttle::ThrottleExt;
-pub use watchable::Watchable;
+pub use watchable::{Gettable, Watchable};

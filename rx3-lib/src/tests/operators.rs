@@ -4,7 +4,7 @@ use std::time::Duration;
 use std::thread;
 
 use crate::{
-    Cell, Mutable, Watchable, MapExt, FilterExt, ScanExt, TapExt,
+    Cell, Mutable, Gettable, Watchable, MapExt, FilterExt, ScanExt, TapExt,
     TakeExt, SkipExt, PairwiseExt, DedupedExt, JoinExt, DepNode,
     DebounceExt, ThrottleExt, DelayExt, SwitchMapExt, MergeMapExt,
 };

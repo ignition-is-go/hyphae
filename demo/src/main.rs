@@ -1,4 +1,4 @@
-use rx3::{MapExt, MergeMapExt, SwitchMapExt, Watchable, from_iter_with_delay, interval};
+use rx3::{MapExt, SubscribeExt, SwitchMapExt, from_iter_with_delay, interval};
 use std::time::{Duration, Instant};
 
 fn main() {
@@ -12,7 +12,7 @@ fn main() {
             .map(move |&letter| format!("{}{}", v, letter))
     });
 
-    mapped.watch(move |x| {
+    let _guard = mapped.subscribe(move |x| {
         let elapsed = start.elapsed();
         println!(
             "{}.{:03}s: {}",

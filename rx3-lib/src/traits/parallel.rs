@@ -1,7 +1,7 @@
 use rayon::prelude::*;
 use std::sync::Arc;
 use crate::cell::{Cell, CellImmutable};
-use super::{DepNode, Watchable};
+use super::{DepNode, Gettable, Watchable};
 
 /// A cell that notifies subscribers in parallel using Rayon.
 pub struct ParallelCell<T> {

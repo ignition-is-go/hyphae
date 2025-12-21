@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use crate::cell::{Cell, CellImmutable};
-use super::Watchable;
+use super::{Gettable, Watchable};
 
 pub trait MergeMapExt<T>: Watchable<T> {
     fn merge_map<U, F>(&self, f: F) -> Cell<U, CellImmutable>

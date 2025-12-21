@@ -2,6 +2,7 @@ use uuid::Uuid;
 use crate::traits::Watchable;
 
 /// RAII guard that unsubscribes when dropped.
+#[must_use = "subscription will be cancelled immediately if the guard is dropped"]
 pub struct SubscriptionGuard<T, C>
 where
     C: Watchable<T>,

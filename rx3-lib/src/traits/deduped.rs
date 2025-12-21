@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use crate::cell::{Cell, CellImmutable};
-use super::{DepNode, Watchable};
+use super::{DepNode, Gettable, Watchable};
 
 pub trait DedupedExt<T>: Watchable<T> {
     fn deduped(&self) -> Cell<T, CellImmutable>

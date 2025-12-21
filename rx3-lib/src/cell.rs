@@ -7,7 +7,7 @@ use std::{
 };
 use uuid::Uuid;
 
-use crate::traits::{DepNode, Mutable, Watchable};
+use crate::traits::{DepNode, Gettable, Mutable, Watchable};
 
 #[derive(Debug, Clone)]
 pub struct CellMutable;
@@ -118,6 +118,12 @@ impl<T: Clone + Send + Sync + 'static, M: Send + Sync + 'static> Cell<T, M> {
     }
 }
 
+impl<T: Clone + Send + Sync + 'static, U: Send + Sync + 'static> Gettable<T> for Cell<T, U> {
+    fn get(&self) -> T {
+        (**self.value.load()).clone()
+    }
+}
+
 impl<T: Clone + Send + Sync + 'static, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
     fn watch(&self, callback: impl Fn(&T) + Send + Sync + 'static) -> Uuid {
         callback(&self.get());
@@ -128,10 +134,6 @@ impl<T: Clone + Send + Sync + 'static, U: Send + Sync + 'static> Watchable<T> fo
 
     fn unsubscribe(&self, id: Uuid) {
         self.subscribers.remove(&id);
-    }
-
-    fn get(&self) -> T {
-        (**self.value.load()).clone()
     }
 }
 
