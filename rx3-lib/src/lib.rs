@@ -92,7 +92,9 @@
 #[macro_use]
 pub mod combine;
 pub mod cell;
+pub mod constructors;
 pub mod traits;
 
 pub use cell::{Cell, CellImmutable, CellMutable};
+pub use constructors::{from_iter_with_delay, interval};
 pub use traits::{DedupedExt, DepNode, JoinExt, MapExt, Mutable, Watchable};

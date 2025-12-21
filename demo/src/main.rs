@@ -1,26 +1,12 @@
-use rx3::{Cell, DepNode, JoinExt, MapExt, Mutable, Watchable};
+use rx3::{from_iter_with_delay, interval, Watchable};
+use std::time::Duration;
 
 fn main() {
-    let a = Cell::new(1);
-    let b = Cell::new("b").with_name("b");
+    let items = from_iter_with_delay(vec!["a", "b", "c"], Duration::from_millis(300));
+    items.watch(|v| println!("iter: {}", v));
 
-    let aa = a.clone();
+    let ticker = interval(Duration::from_millis(500));
+    ticker.watch(|v| println!("tick: {}", v));
 
-    let a_double = a.map(|x| x * 2).with_name("a_double");
-
-    let aa_double = aa.map(|x| x * 2).with_name("aa_double");
-
-    let combined = a_double
-        .join(&b)
-        // .map(|(a_val, b_val)| format!("{}{}", a_val, b_val))
-        .with_name("combined");
-
-    combined.watch(|v| println!(">>>: {:?}", v));
-
-    aa.set(5);
-    a.set(10);
-
-    combined.print_dependency_tree();
-
-    aa_double.print_dependency_tree();
+    std::thread::sleep(Duration::from_secs(2));
 }
