@@ -42,25 +42,15 @@
 //! ```rust
 //! use rx3::{Cell, Gettable, JoinExt, MapExt, flat};
 //!
-//! let name = Cell::new("World".to_string());
-//! let count = Cell::new(3);
-//!
-//! // flat! turns |n, c| into |(n, c)| automatically
-//! let message = name.join(&count).map(flat!(|n, c| {
-//!     format!("Hello, {}! (x{})", n, c)
-//! }));
-//!
-//! assert_eq!(message.get(), "Hello, World! (x3)");
-//!
-//! // For 3+ cells, flat! handles the nesting
 //! let a = Cell::new(1);
 //! let b = Cell::new(2);
 //! let c = Cell::new(3);
+//! let d = Cell::new(4);
 //!
-//! // Without flat!: |((a, b), c)| - extra parens
-//! // With flat!: |(a, b), c| - mirrors join structure
-//! let sum = a.join(&b).join(&c).map(flat!(|(x, y), z| x + y + z));
-//! assert_eq!(sum.get(), 6);
+//! // Without flat!: |(((a, b), c), d)| - deeply nested
+//! // With flat!: |a, b, c, d| - clean and simple
+//! let sum = a.join(&b).join(&c).join(&d).map(flat!(|a, b, c, d| a + b + c + d));
+//! assert_eq!(sum.get(), 10);
 //! ```
 
 #[macro_use]

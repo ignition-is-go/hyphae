@@ -267,7 +267,7 @@ fn test_join_combines_cells() {
 }
 
 #[test]
-fn test_flat_macro_tree_joins() {
+fn test_flat_macro_chain() {
     use crate::flat;
 
     let a = Cell::new(1);
@@ -275,26 +275,10 @@ fn test_flat_macro_tree_joins() {
     let c = Cell::new(3);
     let d = Cell::new(4);
 
-    // Tree join: ab.join(&cd) produces ((A, B), (C, D))
-    let ab = a.join(&b);
-    let cd = c.join(&d);
-    let sum = ab.join(&cd).map(flat!(|(a, b), (c, d)| a + b + c + d));
+    // flat!(|a, b, c, d| ...) expands to |(((a, b), c), d)| ...
+    let sum = a.join(&b).join(&c).join(&d).map(flat!(|a, b, c, d| a + b + c + d));
 
     assert_eq!(sum.get(), 10);
-}
-
-#[test]
-fn test_flat_macro_chain() {
-    use crate::flat;
-
-    let a = Cell::new(1);
-    let b = Cell::new(2);
-    let c = Cell::new(3);
-
-    // Chain: a.join(&b).join(&c) produces ((A, B), C)
-    let sum = a.join(&b).join(&c).map(flat!(|(x, y), z| x + y + z));
-
-    assert_eq!(sum.get(), 6);
 }
 
 // ============================================================================

@@ -1,4 +1,4 @@
-use rx3::{Cell, Mutable, SubscribeExt};
+use rx3::{Cell, JoinExt, MapExt, Mutable, SubscribeExt, flat};
 
 fn main() {
     println!("=== Panic Isolation Demo ===\n");
@@ -34,4 +34,27 @@ fn main() {
     cell.set(3);
 
     println!("\nDone! All subscribers survived the panic.");
+
+    let a = Cell::new(1);
+
+    let b = Cell::new('A');
+
+    let c = Cell::new("alpha");
+
+    let d = Cell::new(1.0);
+
+    let aa = a.join(&b);
+
+    let cc = c.join(&d);
+
+    let mega = aa.join(&cc);
+
+    let mapped = mega.map(|((a, b), (c, d))| println!("{:?}:{:?}:{:?}:{:?}", a, b, c, d));
+
+    let flat_demo = a.join(&b).join(&c).join(&d).map(flat!(|a, b, c, d| {
+        println!("Flattened values: {:?}, {:?}, {:?}, {:?}", a, b, c, d);
+    }));
+
+
+
 }
