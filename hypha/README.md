@@ -1,73 +1,89 @@
 # hypha
 
-A lock-free reactive programming library for Rust with dependency tracking.
+A lock-free reactive programming library for Rust.
 
 ## Features
 
-- 🔒 **Lock-Free** - True lock-free operations using `arc-swap`
-- 🎯 **Type-Safe** - Full compile-time type checking
-- 🔗 **Heterogeneous Cells** - Combine cells of different types
-- 📊 **Dependency Tracking** - Inspect and visualize cell relationships
-- 🧵 **Thread-Safe** - Safe concurrent access without blocking
+- **Lock-free** - Atomic updates via `arc-swap`, no blocking
+- **Type-safe** - Compile-time checking with heterogeneous cell combinations
+- **Thread-safe** - Safe concurrent access across threads
+- **Dependency tracking** - Inspect and visualize cell relationships
 
 ## Quick Start
 
 ```rust
-use hypha::{Cell, combine, traits::{Mutable, Watchable}};
+use hypha::{Cell, Signal, flat, JoinExt, MapExt, Mutable, Watchable};
 
-// Create reactive cells
-let x = Cell::new(5).with_name("x");
-let y = Cell::new(10).with_name("y");
+let x = Cell::new(5);
+let y = Cell::new(10);
 
-// Derive new cells
-let doubled = x.map(|val| val * 2);
+// Combine cells with join + flat! macro
+let sum = x.join(&y).map(flat!(|a, b| a + b));
 
-// Combine multiple cells
-let sum = combine!((&x, &y), |a: &i32, b: &i32| { a + b });
-
-// Watch for changes
-sum.watch(|value| {
-    println!("Sum: {}", value);
+// Subscribe to changes
+let _guard = sum.subscribe(|signal| {
+    if let Signal::Value(v) = signal {
+        println!("Sum: {}", v);
+    }
 });
 
-// Updates propagate automatically
-x.set(20);
+x.set(20); // prints "Sum: 30"
 ```
 
-## Dependency Tracking
+## Operators
+
+Transform, combine, and filter reactive streams:
 
 ```rust
-let x = Cell::new(5).with_name("x");
-let y = Cell::new(10).with_name("y");
-let sum = combine!((&x, &y), |a: &i32, b: &i32| { a + b }).with_name("sum");
+use std::time::Duration;
+use hypha::{MapExt, FilterExt, ScanExt, DebounceExt, ThrottleExt, CatchErrorExt};
 
-// Inspect dependencies
-println!("Dependencies: {}", sum.dependency_count()); // 2
-
-// Visualize structure
-sum.print_dependencies();
-// Output:
-// sum
-//   depends on:
-//     - x
-//     - y
+let doubled = x.map(|v| v * 2);
+let filtered = x.filter(|v| *v > 10);
+let running_sum = numbers.scan(0, |acc, x| acc + x);
+let debounced = input.debounce(Duration::from_millis(100));
+let throttled = input.throttle(Duration::from_millis(50));
+let safe = fallible.catch_error(|_| Cell::new(default));
 ```
 
-## Examples
+## Reactive Collections
 
-Run the included examples to see dependency tracking in action:
+```rust
+use hypha::{CellMap, Gettable};
 
-```bash
-cargo run --example dependency_tracking
-cargo run --example advanced_dependencies
+let users = CellMap::<String, User>::new();
+let admin = users.get(&"admin".to_string()); // reactive cell
+
+users.insert("admin".to_string(), User::new());
+assert!(admin.get().is_some()); // updates automatically
 ```
 
-## Documentation
+## Async Support
 
-Full API documentation is available via rustdoc:
+```rust
+use hypha::{Cell, AsyncWatchableExt};
 
-```bash
-cargo doc --open
+let cell = Cell::new(0);
+let mut stream = cell.to_stream();
+
+while let Some(value) = stream.next().await {
+    println!("Got: {}", value);
+}
+```
+
+Requires the `async` feature flag.
+
+## Performance Monitoring
+
+```rust
+use std::time::Duration;
+use hypha::Cell;
+
+let cell = Cell::with_metrics(0);
+
+cell.on_slow_subscriber(Duration::from_millis(10), |alert| {
+    eprintln!("Slow subscriber: {}ns", alert.duration_ns);
+});
 ```
 
 ## License
