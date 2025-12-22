@@ -58,6 +58,7 @@
 #[macro_use]
 pub mod flat;
 pub mod bounded_input;
+pub mod bounded_output;
 pub mod cell;
 pub mod cell_map;
 pub mod cell_set;
@@ -71,6 +72,7 @@ pub mod traits;
 mod tests;
 
 pub use bounded_input::{BoundedInput, BoundedInputMetrics, OverflowPolicy};
+pub use bounded_output::BoundedOutput;
 pub use cell::{Cell, CellImmutable, CellMutable, SlowSubscriberAlert};
 pub use cell_map::{CellMap, MapDiff};
 pub use cell_set::{CellSet, SetDiff};
