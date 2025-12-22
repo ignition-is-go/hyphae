@@ -13,6 +13,6 @@ pub use operators::{
     BufferCountExt, CatchErrorExt, ConcatExt, DebounceExt, DedupedExt, DelayExt,
     DistinctUntilChangedByExt, FilterExt, FirstExt, JoinExt, MapErrExt, MapExt, MapOkExt,
     MergeExt, MergeMapExt, PairwiseExt, ParallelCell, ParallelExt, SampleExt, ScanExt, SkipExt,
-    SwitchMapExt, TakeExt, TakeUntilExt, TakeWhileExt, TapExt, ThrottleExt, TryMapExt,
-    UnwrapOrExt, WithLatestFromExt, ZipExt,
+    StateMachineBuilder, StateTransitionExt, SwitchMapExt, TakeExt, TakeUntilExt, TakeWhileExt,
+    TapExt, ThrottleExt, TryMapExt, UnwrapOrExt, WithLatestFromExt, ZipExt,
 };

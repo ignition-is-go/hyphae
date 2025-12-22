@@ -78,6 +78,7 @@ pub use traits::{
     BufferCountExt, CatchErrorExt, ConcatExt, DebounceExt, DedupedExt, DelayExt, DepNode,
     DistinctUntilChangedByExt, FilterExt, FirstExt, Gettable, JoinExt, MapErrExt, MapExt,
     MapOkExt, MergeExt, MergeMapExt, Mutable, PairwiseExt, ParallelCell, ParallelExt, SampleExt,
-    ScanExt, SkipExt, SwitchMapExt, TakeExt, TakeUntilExt, TakeWhileExt, TapExt, ThrottleExt,
-    TryMapExt, UnwrapOrExt, Watchable, WithLatestFromExt, ZipExt,
+    ScanExt, SkipExt, StateMachineBuilder, StateTransitionExt, SwitchMapExt, TakeExt,
+    TakeUntilExt, TakeWhileExt, TapExt, ThrottleExt, TryMapExt, UnwrapOrExt, Watchable,
+    WithLatestFromExt, ZipExt,
 };
