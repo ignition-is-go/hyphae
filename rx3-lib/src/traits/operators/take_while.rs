@@ -28,12 +28,12 @@ pub trait TakeWhileExt<T>: Watchable<T> {
                         if stopped.load(Ordering::SeqCst) {
                             return;
                         }
-                        if !predicate(value) {
+                        if !predicate(value.as_ref()) {
                             stopped.store(true, Ordering::SeqCst);
                             d.notify(Signal::Complete);
                             return;
                         }
-                        d.notify(Signal::Value(value.clone()));
+                        d.notify(signal.clone());
                     }
                     Signal::Complete => d.notify(Signal::Complete),
                     Signal::Error(e) => d.notify(Signal::Error(e.clone())),

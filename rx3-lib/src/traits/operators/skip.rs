@@ -17,12 +17,12 @@ pub trait SkipExt<T>: Watchable<T> {
         let guard = self.subscribe(move |signal| {
             if let Some(c) = weak.upgrade() {
                 match signal {
-                    Signal::Value(value) => {
+                    Signal::Value(_) => {
                         let prev = to_skip.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
                             if n > 0 { Some(n - 1) } else { None }
                         });
                         if prev.is_err() {
-                            c.notify(Signal::Value(value.clone()));
+                            c.notify(signal.clone()); // Arc clone, no deep copy
                         }
                     }
                     Signal::Complete => c.notify(Signal::Complete),

@@ -33,7 +33,7 @@ pub trait JoinExt<T>: Watchable<T> {
                         if first1.swap(false, Ordering::SeqCst) {
                             return;
                         }
-                        d.notify(Signal::Value((a.clone(), other1.get())));
+                        d.notify(Signal::value((a.as_ref().clone(), other1.get())));
                     }
                     Signal::Complete => {
                         let prev = cs1.fetch_or(SELF_COMPLETE, Ordering::SeqCst);
@@ -58,7 +58,7 @@ pub trait JoinExt<T>: Watchable<T> {
                         if first2.swap(false, Ordering::SeqCst) {
                             return;
                         }
-                        d.notify(Signal::Value((self2.get(), b.clone())));
+                        d.notify(Signal::value((self2.get(), b.as_ref().clone())));
                     }
                     Signal::Complete => {
                         let prev = complete_state.fetch_or(OTHER_COMPLETE, Ordering::SeqCst);

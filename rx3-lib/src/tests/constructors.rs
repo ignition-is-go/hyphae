@@ -14,7 +14,7 @@ fn test_interval_emits_incrementing() {
     let r = received.clone();
     let _guard = ticker.subscribe(move |signal| {
         if let Signal::Value(v) = signal {
-            r.store(*v, Ordering::SeqCst);
+            r.store(**v, Ordering::SeqCst);
         }
     });
 
@@ -33,7 +33,7 @@ fn test_from_iter_with_delay_emits_all() {
     let r = received.clone();
     let _guard = items.subscribe(move |signal| {
         if let Signal::Value(v) = signal {
-            r.store(*v, Ordering::SeqCst);
+            r.store(**v, Ordering::SeqCst);
         }
     });
 

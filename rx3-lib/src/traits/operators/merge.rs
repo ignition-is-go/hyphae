@@ -28,11 +28,11 @@ pub trait MergeExt<T>: Watchable<T> {
         let guard1 = self.subscribe(move |signal| {
             if let Some(d) = weak1.upgrade() {
                 match signal {
-                    Signal::Value(value) => {
+                    Signal::Value(_) => {
                         if first1.swap(false, Ordering::SeqCst) {
                             return;
                         }
-                        d.notify(Signal::Value(value.clone()));
+                        d.notify(signal.clone());
                     }
                     Signal::Complete => {
                         let prev = cs1.fetch_or(SELF_COMPLETE, Ordering::SeqCst);
@@ -52,11 +52,11 @@ pub trait MergeExt<T>: Watchable<T> {
         let guard2 = other.subscribe(move |signal| {
             if let Some(d) = weak2.upgrade() {
                 match signal {
-                    Signal::Value(value) => {
+                    Signal::Value(_) => {
                         if first2.swap(false, Ordering::SeqCst) {
                             return;
                         }
-                        d.notify(Signal::Value(value.clone()));
+                        d.notify(signal.clone());
                     }
                     Signal::Complete => {
                         let prev = complete_state.fetch_or(OTHER_COMPLETE, Ordering::SeqCst);

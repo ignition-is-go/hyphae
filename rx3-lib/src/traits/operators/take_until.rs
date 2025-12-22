@@ -45,14 +45,14 @@ pub trait TakeUntilExt<T>: Watchable<T> {
         let guard = self.subscribe(move |signal| {
             if let Some(d) = weak.upgrade() {
                 match signal {
-                    Signal::Value(value) => {
+                    Signal::Value(_) => {
                         if first.swap(false, Ordering::SeqCst) {
                             return;
                         }
                         if stopped.load(Ordering::SeqCst) {
                             return;
                         }
-                        d.notify(Signal::Value(value.clone()));
+                        d.notify(signal.clone());
                     }
                     Signal::Complete => d.notify(Signal::Complete),
                     Signal::Error(e) => d.notify(Signal::Error(e.clone())),

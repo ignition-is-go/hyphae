@@ -22,8 +22,8 @@ pub trait FilterExt<T>: Watchable<T> {
                         if first.swap(false, Ordering::SeqCst) {
                             return;
                         }
-                        if predicate(value) {
-                            c.notify(Signal::Value(value.clone()));
+                        if predicate(value.as_ref()) {
+                            c.notify(signal.clone()); // Arc clone, no deep copy
                         }
                     }
                     Signal::Complete => c.notify(Signal::Complete),
@@ -55,7 +55,7 @@ mod tests {
         let r = received.clone();
         let _guard = evens.subscribe(move |signal| {
             if let Signal::Value(v) = signal {
-                r.store(*v, Ordering::SeqCst);
+                r.store(**v, Ordering::SeqCst);
             }
         });
 
@@ -74,7 +74,7 @@ mod tests {
         let r = received.clone();
         let _guard = evens.subscribe(move |signal| {
             if let Signal::Value(v) = signal {
-                r.store(*v, Ordering::SeqCst);
+                r.store(**v, Ordering::SeqCst);
             }
         });
 

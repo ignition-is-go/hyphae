@@ -12,6 +12,7 @@ path = "src/lib.rs"
 [dependencies]
 anyhow = "1"
 arc-swap.workspace = true
+crossbeam = "0.8"
 dashmap.workspace = true
 rayon = "1.10"
 uuid.workspace = true

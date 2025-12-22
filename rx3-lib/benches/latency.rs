@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
-use rx3::{Cell, FilterExt, MapExt, Mutable, ParallelExt, ScanExt, Watchable};
+use rx3::{Cell, FilterExt, MapExt, Mutable, ParallelExt, ScanExt, Signal, Watchable};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -8,7 +8,7 @@ fn bench_single_cell_propagation(c: &mut Criterion) {
         let cell = Cell::new(0u64);
         let counter = Arc::new(AtomicU64::new(0));
         let cnt = counter.clone();
-        cell.watch(move |_| {
+        let _guard = cell.subscribe(move |_| {
             cnt.fetch_add(1, Ordering::Relaxed);
         });
 
@@ -33,7 +33,7 @@ fn bench_chain_depth(c: &mut Criterion) {
 
             let counter = Arc::new(AtomicU64::new(0));
             let cnt = counter.clone();
-            last.watch(move |_| {
+            let _guard = last.subscribe(move |_| {
                 cnt.fetch_add(1, Ordering::Relaxed);
             });
 
@@ -58,18 +58,20 @@ fn bench_fan_out(c: &mut Criterion) {
                 let source = Cell::new(0u64);
                 let counter = Arc::new(AtomicU64::new(0));
 
-                for _ in 0..num_subscribers {
+                let guards: Vec<_> = (0..num_subscribers).map(|_| {
                     let cnt = counter.clone();
-                    source.watch(move |_| {
+                    source.subscribe(move |_| {
                         cnt.fetch_add(1, Ordering::Relaxed);
-                    });
-                }
+                    })
+                }).collect();
 
                 let mut i = 0u64;
                 b.iter(|| {
                     i += 1;
                     source.set(black_box(i));
                 });
+
+                drop(guards);
             },
         );
 
@@ -81,18 +83,20 @@ fn bench_fan_out(c: &mut Criterion) {
                 let parallel = source.parallel();
                 let counter = Arc::new(AtomicU64::new(0));
 
-                for _ in 0..num_subscribers {
+                let guards: Vec<_> = (0..num_subscribers).map(|_| {
                     let cnt = counter.clone();
-                    parallel.watch(move |_| {
+                    parallel.subscribe(move |_| {
                         cnt.fetch_add(1, Ordering::Relaxed);
-                    });
-                }
+                    })
+                }).collect();
 
                 let mut i = 0u64;
                 b.iter(|| {
                     i += 1;
                     source.set(black_box(i));
                 });
+
+                drop(guards);
             },
         );
     }
@@ -111,13 +115,13 @@ fn bench_fan_in(c: &mut Criterion) {
                 let counter = Arc::new(AtomicU64::new(0));
 
                 // Each source maps and the watcher counts
-                for source in &sources {
+                let guards: Vec<_> = sources.iter().map(|source| {
                     let cnt = counter.clone();
                     let mapped = source.map(|x| x * 2);
-                    mapped.watch(move |_| {
+                    mapped.subscribe(move |_| {
                         cnt.fetch_add(1, Ordering::Relaxed);
-                    });
-                }
+                    })
+                }).collect();
 
                 let mut i = 0u64;
                 b.iter(|| {
@@ -127,6 +131,8 @@ fn bench_fan_in(c: &mut Criterion) {
                         source.set(black_box(i));
                     }
                 });
+
+                drop(guards);
             },
         );
     }
@@ -138,19 +144,20 @@ fn bench_complex_graph(c: &mut Criterion) {
         let sources: Vec<_> = (0..100).map(|i| Cell::new(i as u64)).collect();
         let counter = Arc::new(AtomicU64::new(0));
 
-        for source in &sources {
+        let guards: Vec<_> = sources.iter().flat_map(|source| {
             let pipeline = source
                 .map(|x| x * 2)
                 .filter(|x| x % 2 == 0)
                 .scan(0u64, |acc, x| acc + x);
 
-            for _ in 0..10 {
+            let counter = counter.clone();
+            (0..10).map(move |_| {
                 let cnt = counter.clone();
-                pipeline.watch(move |_| {
+                pipeline.subscribe(move |_| {
                     cnt.fetch_add(1, Ordering::Relaxed);
-                });
-            }
-        }
+                })
+            }).collect::<Vec<_>>()
+        }).collect();
 
         let mut i = 0u64;
         b.iter(|| {
@@ -159,6 +166,8 @@ fn bench_complex_graph(c: &mut Criterion) {
                 source.set(black_box(i));
             }
         });
+
+        drop(guards);
     });
 }
 
@@ -176,7 +185,7 @@ fn bench_pairwise_chain(c: &mut Criterion) {
 
         let counter = Arc::new(AtomicU64::new(0));
         let cnt = counter.clone();
-        p5.watch(move |_| {
+        let _guard = p5.subscribe(move |_| {
             cnt.fetch_add(1, Ordering::Relaxed);
         });
 
@@ -201,23 +210,27 @@ fn bench_parallel_heavy_callbacks(c: &mut Criterion) {
                     .map(|_| Arc::new(AtomicU64::new(0)))
                     .collect();
 
-                for result in &results {
+                let guards: Vec<_> = results.iter().map(|result| {
                     let r = result.clone();
-                    source.watch(move |x| {
-                        // Simulate expensive work - can't be optimized away
-                        let mut sum = *x;
-                        for _ in 0..10000 {
-                            sum = sum.wrapping_mul(31).wrapping_add(17);
+                    source.subscribe(move |signal| {
+                        if let Signal::Value(x) = signal {
+                            // Simulate expensive work - can't be optimized away
+                            let mut sum = **x;
+                            for _ in 0..10000 {
+                                sum = sum.wrapping_mul(31).wrapping_add(17);
+                            }
+                            r.store(sum, Ordering::Relaxed);
                         }
-                        r.store(sum, Ordering::Relaxed);
-                    });
-                }
+                    })
+                }).collect();
 
                 let mut i = 0u64;
                 b.iter(|| {
                     i += 1;
                     source.set(black_box(i));
                 });
+
+                drop(guards);
             },
         );
 
@@ -231,23 +244,27 @@ fn bench_parallel_heavy_callbacks(c: &mut Criterion) {
                     .map(|_| Arc::new(AtomicU64::new(0)))
                     .collect();
 
-                for result in &results {
+                let guards: Vec<_> = results.iter().map(|result| {
                     let r = result.clone();
-                    parallel.watch(move |x| {
-                        // Simulate expensive work - can't be optimized away
-                        let mut sum = *x;
-                        for _ in 0..10000 {
-                            sum = sum.wrapping_mul(31).wrapping_add(17);
+                    parallel.subscribe(move |signal| {
+                        if let Signal::Value(x) = signal {
+                            // Simulate expensive work - can't be optimized away
+                            let mut sum = **x;
+                            for _ in 0..10000 {
+                                sum = sum.wrapping_mul(31).wrapping_add(17);
+                            }
+                            r.store(sum, Ordering::Relaxed);
                         }
-                        r.store(sum, Ordering::Relaxed);
-                    });
-                }
+                    })
+                }).collect();
 
                 let mut i = 0u64;
                 b.iter(|| {
                     i += 1;
                     source.set(black_box(i));
                 });
+
+                drop(guards);
             },
         );
     }

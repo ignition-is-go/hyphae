@@ -37,7 +37,7 @@ pub trait SwitchMapExt<T>: Watchable<T> {
             }
             if let Some(c) = weak.upgrade() {
                 match signal {
-                    Signal::Value(value) => c.notify(Signal::Value(value.clone())),
+                    Signal::Value(_) => c.notify(signal.clone()),
                     Signal::Complete => {
                         // Set inner complete bit with CAS loop
                         loop {
@@ -95,7 +95,7 @@ pub trait SwitchMapExt<T>: Watchable<T> {
                         }
                     };
 
-                    let inner = f(outer_value);
+                    let inner = f(outer_value.as_ref());
 
                     // Subscribe to new inner for values and completion
                     let weak_inner = weak.clone();
@@ -107,7 +107,7 @@ pub trait SwitchMapExt<T>: Watchable<T> {
                         }
                         if let Some(c) = weak_inner.upgrade() {
                             match signal {
-                                Signal::Value(value) => c.notify(Signal::Value(value.clone())),
+                                Signal::Value(_) => c.notify(signal.clone()),
                                 Signal::Complete => {
                                     loop {
                                         let old = state_for_inner.load(Ordering::SeqCst);

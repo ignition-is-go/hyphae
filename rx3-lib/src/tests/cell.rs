@@ -25,7 +25,7 @@ fn test_cell_watch_immediate() {
     let r = received.clone();
     let _guard = cell.subscribe(move |signal| {
         if let Signal::Value(v) = signal {
-            r.store(*v, Ordering::SeqCst);
+            r.store(**v, Ordering::SeqCst);
         }
     });
 
@@ -41,7 +41,7 @@ fn test_cell_watch_on_set() {
     let r = received.clone();
     let _guard = cell.subscribe(move |signal| {
         if let Signal::Value(v) = signal {
-            r.store(*v, Ordering::SeqCst);
+            r.store(**v, Ordering::SeqCst);
         }
     });
 

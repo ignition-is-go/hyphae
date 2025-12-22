@@ -21,8 +21,8 @@ pub trait DedupedExt<T>: Watchable<T> {
                         if first.swap(false, Ordering::SeqCst) {
                             return;
                         }
-                        if *value != d.get() {
-                            d.notify(Signal::Value(value.clone()));
+                        if **value != d.get() {
+                            d.notify(signal.clone()); // Arc clone, no deep copy
                         }
                     }
                     Signal::Complete => d.notify(Signal::Complete),

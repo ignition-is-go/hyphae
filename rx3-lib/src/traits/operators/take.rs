@@ -17,18 +17,18 @@ pub trait TakeExt<T>: Watchable<T> {
         let guard = self.subscribe(move |signal| {
             if let Some(c) = weak.upgrade() {
                 match signal {
-                    Signal::Value(value) => {
+                    Signal::Value(_) => {
                         let prev = remaining.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
                             if n > 0 { Some(n - 1) } else { None }
                         });
                         match prev {
                             Ok(1) => {
                                 // This was the last one
-                                c.notify(Signal::Value(value.clone()));
+                                c.notify(signal.clone());
                                 c.notify(Signal::Complete);
                             }
                             Ok(_) => {
-                                c.notify(Signal::Value(value.clone()));
+                                c.notify(signal.clone());
                             }
                             Err(_) => {
                                 // Already exhausted

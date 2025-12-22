@@ -20,7 +20,7 @@ pub trait DebounceExt<T>: Watchable<T> {
             match signal {
                 Signal::Value(value) => {
                     let my_gen = generation.fetch_add(1, Ordering::SeqCst) + 1;
-                    let value = value.clone();
+                    let value = value.clone(); // Arc clone
                     let weak = weak.clone();
                     let generation = generation.clone();
 
@@ -28,7 +28,7 @@ pub trait DebounceExt<T>: Watchable<T> {
                         thread::sleep(duration);
                         if generation.load(Ordering::SeqCst) == my_gen {
                             if let Some(c) = weak.upgrade() {
-                                c.notify(Signal::Value(value));
+                                c.notify(Signal::value_arc(value));
                             }
                         }
                     });
@@ -68,7 +68,7 @@ mod tests {
         let r = received.clone();
         let _guard = debounced.subscribe(move |signal| {
             if let Signal::Value(v) = signal {
-                r.store(*v, Ordering::SeqCst);
+                r.store(**v, Ordering::SeqCst);
             }
         });
 

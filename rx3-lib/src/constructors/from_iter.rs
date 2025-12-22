@@ -23,7 +23,7 @@ where
             thread::sleep(delay);
             // Exit when cell is dropped
             let Some(c) = weak.upgrade() else { break };
-            c.notify(Signal::Value(value));
+            c.notify(Signal::value(value));
         }
         // Complete when iterator exhausted
         if let Some(c) = weak.upgrade() {

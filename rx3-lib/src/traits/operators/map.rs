@@ -31,7 +31,7 @@ pub trait MapExt<T>: Watchable<T> {
                         if first.swap(false, Ordering::SeqCst) {
                             return;
                         }
-                        d.notify(Signal::Value(transform(value)));
+                        d.notify(Signal::value(transform(value.as_ref())));
                     }
                     Signal::Complete => d.notify(Signal::Complete),
                     Signal::Error(e) => d.notify(Signal::Error(e.clone())),

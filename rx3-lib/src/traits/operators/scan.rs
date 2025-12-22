@@ -27,9 +27,9 @@ pub trait ScanExt<T>: Watchable<T> {
                             return;
                         }
                         let current = (**acc.load()).clone();
-                        let next = f(&current, value);
+                        let next = f(&current, value.as_ref());
                         acc.store(Arc::new(next.clone()));
-                        c.notify(Signal::Value(next));
+                        c.notify(Signal::value(next));
                     }
                     Signal::Complete => c.notify(Signal::Complete),
                     Signal::Error(e) => c.notify(Signal::Error(e.clone())),

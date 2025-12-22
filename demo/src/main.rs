@@ -16,7 +16,7 @@ fn main() {
     // Subscriber 2: panics on value 2
     let _g2 = cell.subscribe(|signal| {
         if let Signal::Value(v) = signal {
-            if *v == 2 {
+            if **v == 2 {
                 panic!("Subscriber 2 panics on value 2!");
             }
             println!("  Subscriber 2: got {}", v);

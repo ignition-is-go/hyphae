@@ -1,6 +1,6 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::collections::VecDeque;
+use crossbeam::queue::SegQueue;
 use crate::cell::{Cell, CellImmutable, CellMutable};
 use crate::signal::Signal;
 use super::{Gettable, Watchable};
@@ -18,9 +18,9 @@ pub trait ZipExt<T>: Watchable<T> {
         let initial = (self.get(), other.get());
         let derived = Cell::<(T, U), CellMutable>::new(initial);
 
-        // Queues to buffer values
-        let left_queue: Arc<Mutex<VecDeque<T>>> = Arc::new(Mutex::new(VecDeque::new()));
-        let right_queue: Arc<Mutex<VecDeque<U>>> = Arc::new(Mutex::new(VecDeque::new()));
+        // Lock-free queues to buffer values
+        let left_queue: Arc<SegQueue<T>> = Arc::new(SegQueue::new());
+        let right_queue: Arc<SegQueue<U>> = Arc::new(SegQueue::new());
 
         // Subscribe to self
         let weak1 = derived.downgrade();
@@ -34,13 +34,10 @@ pub trait ZipExt<T>: Watchable<T> {
                         if first1.swap(false, Ordering::SeqCst) {
                             return;
                         }
-                        let mut rq = rq1.lock().unwrap();
-                        if let Some(right) = rq.pop_front() {
-                            drop(rq);
-                            d.notify(Signal::Value((value.clone(), right)));
+                        if let Some(right) = rq1.pop() {
+                            d.notify(Signal::value((value.as_ref().clone(), right)));
                         } else {
-                            drop(rq);
-                            lq1.lock().unwrap().push_back(value.clone());
+                            lq1.push(value.as_ref().clone());
                         }
                     }
                     // Complete when EITHER source completes (no more pairs possible)
@@ -63,13 +60,10 @@ pub trait ZipExt<T>: Watchable<T> {
                         if first2.swap(false, Ordering::SeqCst) {
                             return;
                         }
-                        let mut lq = lq2.lock().unwrap();
-                        if let Some(left) = lq.pop_front() {
-                            drop(lq);
-                            d.notify(Signal::Value((left, value.clone())));
+                        if let Some(left) = lq2.pop() {
+                            d.notify(Signal::value((left, value.as_ref().clone())));
                         } else {
-                            drop(lq);
-                            rq2.lock().unwrap().push_back(value.clone());
+                            rq2.push(value.as_ref().clone());
                         }
                     }
                     Signal::Complete => d.notify(Signal::Complete),

@@ -17,7 +17,7 @@ pub fn interval(duration: Duration) -> Cell<u64, CellImmutable> {
             count += 1;
             // Exit when cell is dropped
             let Some(c) = weak.upgrade() else { break };
-            c.notify(Signal::Value(count));
+            c.notify(Signal::value(count));
         }
     });
 

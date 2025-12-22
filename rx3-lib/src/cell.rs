@@ -186,8 +186,9 @@ impl<T: Clone + Send + Sync + 'static, M: Send + Sync + 'static> Cell<T, M> {
         }
 
         match &signal {
-            Signal::Value(value) => {
-                self.inner.value.store(Arc::new(value.clone()));
+            Signal::Value(arc_value) => {
+                // Arc clone = refcount bump, no deep copy
+                self.inner.value.store(arc_value.clone());
             }
             Signal::Complete => {
                 self.inner.completed.store(true, Ordering::SeqCst);
@@ -223,8 +224,8 @@ impl<T: Clone + Send + Sync + 'static, U: Send + Sync + 'static> Gettable<T> for
 
 impl<T: Clone + Send + Sync + 'static, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
     fn subscribe(&self, callback: impl Fn(&Signal<T>) + Send + Sync + 'static) -> SubscriptionGuard {
-        // Send current value immediately
-        callback(&Signal::Value(self.get()));
+        // Send current value immediately (Arc clone, no deep copy)
+        callback(&Signal::Value(self.inner.value.load_full()));
 
         // If already complete or errored, send that signal too
         if self.is_complete() {
@@ -264,7 +265,7 @@ impl<T: Clone + Send + Sync + 'static, U: Send + Sync + 'static> Watchable<T> fo
 
 impl<T: Clone + Send + Sync + 'static> Mutable<T> for Cell<T, CellMutable> {
     fn set(&self, value: T) {
-        self.notify(Signal::Value(value));
+        self.notify(Signal::value(value)); // Wraps in Arc
     }
 
     fn complete(&self) {
