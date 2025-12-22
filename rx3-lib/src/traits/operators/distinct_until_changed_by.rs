@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use arc_swap::ArcSwap;
 
@@ -75,6 +75,7 @@ mod tests {
     #[derive(Clone)]
     struct User {
         id: u32,
+        #[allow(dead_code)]
         name: String,
     }
 
