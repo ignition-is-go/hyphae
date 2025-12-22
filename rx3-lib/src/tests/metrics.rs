@@ -1,4 +1,4 @@
-use crate::{Cell, Mutable, Watchable};
+use crate::{Cell, Gettable, Mutable, Watchable};
 use std::thread;
 use std::time::Duration;
 
@@ -125,4 +125,113 @@ fn test_metrics_with_multiple_subscribers() {
     // The slowest subscriber should be the 2ms one
     let slowest = metrics.slowest_subscriber_ns();
     assert!(slowest >= 1_500_000, "Expected at least 1.5ms from slowest subscriber, got {}ns", slowest);
+}
+
+#[test]
+fn test_last_notify_time() {
+    let cell = Cell::with_metrics(0);
+    let metrics = cell.metrics().unwrap();
+
+    assert_eq!(metrics.last_notify_time_ns(), 0);
+
+    let _guard = cell.subscribe(|_| {
+        thread::sleep(Duration::from_millis(5));
+    });
+    cell.set(1);
+
+    let last = metrics.last_notify_time_ns();
+    assert!(last >= 4_000_000, "Expected at least 4ms, got {}ns", last);
+}
+
+#[test]
+fn test_is_backed_up_false_without_metrics() {
+    let cell = Cell::new(0);
+    // Without metrics, is_backed_up always returns false
+    assert!(!cell.is_backed_up());
+}
+
+#[test]
+fn test_is_backed_up_false_initially() {
+    let cell = Cell::with_metrics(0);
+    // No notify yet, so not backed up
+    assert!(!cell.is_backed_up());
+}
+
+#[test]
+fn test_is_backed_up_with_slow_subscriber() {
+    let cell = Cell::with_metrics(0);
+
+    let _guard = cell.subscribe(|_| {
+        thread::sleep(Duration::from_millis(5));
+    });
+
+    // First set - triggers slow notify
+    cell.set(1);
+
+    // 5ms > 1ms default threshold, so should be backed up
+    assert!(cell.is_backed_up());
+}
+
+#[test]
+fn test_is_backed_up_threshold_custom() {
+    let cell = Cell::with_metrics(0);
+
+    let _guard = cell.subscribe(|_| {
+        thread::sleep(Duration::from_millis(5));
+    });
+
+    cell.set(1);
+
+    // 5ms < 10ms threshold, so not backed up
+    assert!(!cell.is_backed_up_threshold(Duration::from_millis(10)));
+
+    // 5ms > 2ms threshold, so backed up
+    assert!(cell.is_backed_up_threshold(Duration::from_millis(2)));
+}
+
+#[test]
+fn test_try_set_succeeds_when_not_backed_up() {
+    let cell = Cell::with_metrics(0);
+
+    // No previous notify, so try_set should succeed
+    assert!(cell.try_set(1).is_ok());
+    assert_eq!(cell.get(), 1);
+}
+
+#[test]
+fn test_try_set_fails_when_backed_up() {
+    let cell = Cell::with_metrics(0);
+
+    let _guard = cell.subscribe(|_| {
+        thread::sleep(Duration::from_millis(5));
+    });
+
+    // First set succeeds (no previous slow notify)
+    assert!(cell.try_set(1).is_ok());
+
+    // Second try_set fails because previous notify was slow (5ms > 1ms)
+    let result = cell.try_set(2);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err(), 2); // Value returned on error
+
+    // Cell still has old value
+    assert_eq!(cell.get(), 1);
+}
+
+#[test]
+fn test_try_set_threshold() {
+    let cell = Cell::with_metrics(0);
+
+    let _guard = cell.subscribe(|_| {
+        thread::sleep(Duration::from_millis(5));
+    });
+
+    cell.set(1);
+
+    // 5ms < 10ms threshold, so try_set_threshold should succeed
+    assert!(cell.try_set_threshold(2, Duration::from_millis(10)).is_ok());
+    assert_eq!(cell.get(), 2);
+
+    // Now 5ms > 2ms threshold, so should fail
+    assert!(cell.try_set_threshold(3, Duration::from_millis(2)).is_err());
 }

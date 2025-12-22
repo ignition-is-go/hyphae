@@ -130,6 +130,55 @@ impl<T: Clone + Send + Sync + 'static> Cell<T, CellMutable> {
         *self.inner.name.lock().unwrap() = Some(name.into());
         self
     }
+
+    /// Check if the cell appears backed up based on last notify time.
+    ///
+    /// Returns true if metrics are enabled and the last notify took longer
+    /// than 1ms (the default threshold). Use `is_backed_up_threshold()` for
+    /// a custom threshold.
+    ///
+    /// Returns false if metrics are not enabled.
+    pub fn is_backed_up(&self) -> bool {
+        self.is_backed_up_threshold(std::time::Duration::from_millis(1))
+    }
+
+    /// Check if the cell is backed up with a custom threshold.
+    ///
+    /// Returns true if metrics are enabled and the last notify duration
+    /// exceeded the given threshold.
+    pub fn is_backed_up_threshold(&self, threshold: std::time::Duration) -> bool {
+        self.inner
+            .metrics
+            .as_ref()
+            .map(|m| m.last_notify_time_ns() > threshold.as_nanos() as u64)
+            .unwrap_or(false)
+    }
+
+    /// Try to set a value, rejecting if the cell appears backed up.
+    ///
+    /// Uses the default 1ms threshold. Returns `Err(value)` if the cell
+    /// is backed up (last notify took > 1ms), allowing the caller to
+    /// handle backpressure.
+    pub fn try_set(&self, value: T) -> Result<(), T> {
+        if self.is_backed_up() {
+            Err(value)
+        } else {
+            self.set(value);
+            Ok(())
+        }
+    }
+
+    /// Try to set a value with a custom backpressure threshold.
+    ///
+    /// Returns `Err(value)` if the last notify duration exceeded the threshold.
+    pub fn try_set_threshold(&self, value: T, threshold: std::time::Duration) -> Result<(), T> {
+        if self.is_backed_up_threshold(threshold) {
+            Err(value)
+        } else {
+            self.set(value);
+            Ok(())
+        }
+    }
 }
 
 impl<T, M> Clone for Cell<T, M> {

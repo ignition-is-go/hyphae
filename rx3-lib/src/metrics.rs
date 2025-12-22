@@ -22,6 +22,9 @@ pub struct CellMetrics {
 
     /// Current number of subscribers
     subscriber_count: AtomicU64,
+
+    /// Duration of the last notify() call (nanoseconds)
+    last_notify_time_ns: AtomicU64,
 }
 
 impl CellMetrics {
@@ -35,6 +38,7 @@ impl CellMetrics {
     pub fn record_notify(&self, duration_ns: u64) {
         self.notify_count.fetch_add(1, Ordering::Relaxed);
         self.total_notify_time_ns.fetch_add(duration_ns, Ordering::Relaxed);
+        self.last_notify_time_ns.store(duration_ns, Ordering::Relaxed);
     }
 
     /// Update slowest subscriber using compare-and-swap to track the maximum.
@@ -96,12 +100,18 @@ impl CellMetrics {
         self.subscriber_count.load(Ordering::Relaxed)
     }
 
-    /// Reset timing metrics (notify_count, total_notify_time_ns, slowest_subscriber_ns).
+    /// Get the duration of the last notify() call (nanoseconds).
+    pub fn last_notify_time_ns(&self) -> u64 {
+        self.last_notify_time_ns.load(Ordering::Relaxed)
+    }
+
+    /// Reset timing metrics (notify_count, total_notify_time_ns, slowest_subscriber_ns, last_notify_time_ns).
     ///
     /// Note: subscriber_count is NOT reset as it tracks current state.
     pub fn reset_timing(&self) {
         self.notify_count.store(0, Ordering::Relaxed);
         self.total_notify_time_ns.store(0, Ordering::Relaxed);
         self.slowest_subscriber_ns.store(0, Ordering::Relaxed);
+        self.last_notify_time_ns.store(0, Ordering::Relaxed);
     }
 }
