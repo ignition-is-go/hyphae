@@ -85,7 +85,7 @@ pub use metrics::CellMetrics;
 pub use signal::Signal;
 pub use subscription::SubscriptionGuard;
 pub use traits::{
-    AuditExt, BackpressureExt, BufferCountExt, BufferTimeExt, CatchErrorExt, ConcatExt,
+    join_vec, AuditExt, BackpressureExt, BufferCountExt, BufferTimeExt, CatchErrorExt, ConcatExt,
     DebounceExt, DedupedExt, DelayExt, DepNode, DistinctExt, DistinctUntilChangedByExt, FilterExt,
     FinalizeExt, FirstExt, Gettable, JoinExt, LastExt, MapErrExt, MapExt, MapOkExt, MergeExt,
     MergeMapExt, Mutable, PairwiseExt, ParallelCell, ParallelExt, RetryExt, SampleExt, ScanExt,
