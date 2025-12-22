@@ -57,8 +57,10 @@
 
 #[macro_use]
 pub mod flat;
+pub mod bounded_input;
 pub mod cell;
 pub mod constructors;
+pub mod metrics;
 pub mod signal;
 pub mod subscription;
 pub mod traits;
@@ -66,8 +68,10 @@ pub mod traits;
 #[cfg(test)]
 mod tests;
 
+pub use bounded_input::{BoundedInput, BoundedInputMetrics, OverflowPolicy};
 pub use cell::{Cell, CellImmutable, CellMutable};
 pub use constructors::{from_iter_with_delay, interval};
+pub use metrics::CellMetrics;
 pub use signal::Signal;
 pub use subscription::SubscriptionGuard;
 pub use traits::{

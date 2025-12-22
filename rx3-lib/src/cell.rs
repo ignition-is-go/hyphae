@@ -11,6 +11,7 @@ use std::{
 };
 use uuid::Uuid;
 
+use crate::metrics::CellMetrics;
 use crate::signal::Signal;
 use crate::subscription::SubscriptionGuard;
 use crate::traits::{DepNode, Gettable, Mutable, Watchable};
@@ -35,6 +36,8 @@ pub(crate) struct CellInner<T> {
     pub(crate) errored: AtomicBool,
     /// The error, if any.
     pub(crate) error: Mutex<Option<Arc<anyhow::Error>>>,
+    /// Optional metrics for observability.
+    pub(crate) metrics: Option<Arc<CellMetrics>>,
 }
 
 /// A reactive cell that holds a value and notifies subscribers on change.
@@ -90,6 +93,25 @@ impl<T: Clone + Send + Sync + 'static> Cell<T, CellMutable> {
                 completed: AtomicBool::new(false),
                 errored: AtomicBool::new(false),
                 error: Mutex::new(None),
+                metrics: None,
+            }),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Create a new mutable cell with metrics collection enabled.
+    pub fn with_metrics(initial_value: T) -> Self {
+        Self {
+            inner: Arc::new(CellInner {
+                id: Uuid::new_v4(),
+                subscribers: DashMap::new(),
+                value: ArcSwap::from_pointee(initial_value),
+                name: Mutex::new(None),
+                owned: DashMap::new(),
+                completed: AtomicBool::new(false),
+                errored: AtomicBool::new(false),
+                error: Mutex::new(None),
+                metrics: Some(Arc::new(CellMetrics::new())),
             }),
             _marker: PhantomData,
         }
@@ -127,6 +149,14 @@ impl<T, M> Cell<T, M> {
             inner: Arc::downgrade(&self.inner),
             _marker: PhantomData,
         }
+    }
+
+    /// Get metrics if enabled for this cell.
+    ///
+    /// Returns `None` if the cell was created without metrics.
+    /// Use `Cell::with_metrics()` to create a cell with metrics enabled.
+    pub fn metrics(&self) -> Option<&CellMetrics> {
+        self.inner.metrics.as_ref().map(|m| m.as_ref())
     }
 
     /// Take ownership of a subscription guard, dropping it when this cell is dropped.
@@ -185,6 +215,9 @@ impl<T: Clone + Send + Sync + 'static, M: Send + Sync + 'static> Cell<T, M> {
             return;
         }
 
+        // Start timing if metrics enabled
+        let notify_start = self.inner.metrics.as_ref().map(|_| std::time::Instant::now());
+
         match &signal {
             Signal::Value(arc_value) => {
                 // Arc clone = refcount bump, no deep copy
@@ -209,9 +242,22 @@ impl<T: Clone + Send + Sync + 'static, M: Send + Sync + 'static> Cell<T, M> {
 
         // Call each callback, catching panics so one bad callback doesn't kill the rest
         for callback in callbacks {
+            let sub_start = self.inner.metrics.as_ref().map(|_| std::time::Instant::now());
+
             let _ = catch_unwind(AssertUnwindSafe(|| {
                 callback(&signal);
             }));
+
+            // Record subscriber timing
+            if let (Some(metrics), Some(start)) = (&self.inner.metrics, sub_start) {
+                let elapsed = start.elapsed().as_nanos() as u64;
+                metrics.update_slowest_subscriber(elapsed);
+            }
+        }
+
+        // Record overall notify timing
+        if let (Some(metrics), Some(start)) = (&self.inner.metrics, notify_start) {
+            metrics.record_notify(start.elapsed().as_nanos() as u64);
         }
     }
 }
@@ -239,15 +285,30 @@ impl<T: Clone + Send + Sync + 'static, U: Send + Sync + 'static> Watchable<T> fo
         let id = Uuid::new_v4();
         self.inner.subscribers.insert(id, Box::new(Subscriber::new(callback)));
 
+        // Record subscriber added if metrics enabled
+        if let Some(metrics) = &self.inner.metrics {
+            metrics.record_subscriber_added();
+        }
+
         let source: Arc<dyn DepNode> = Arc::new(self.clone());
         let cell = self.clone();
+        let metrics = self.inner.metrics.clone();
         SubscriptionGuard::new(id, source, move || {
             cell.inner.subscribers.remove(&id);
+            // Record subscriber removed if metrics enabled
+            if let Some(m) = &metrics {
+                m.record_subscriber_removed();
+            }
         })
     }
 
     fn unsubscribe(&self, id: Uuid) {
-        self.inner.subscribers.remove(&id);
+        if self.inner.subscribers.remove(&id).is_some() {
+            // Record subscriber removed if metrics enabled
+            if let Some(metrics) = &self.inner.metrics {
+                metrics.record_subscriber_removed();
+            }
+        }
     }
 
     fn is_complete(&self) -> bool {
