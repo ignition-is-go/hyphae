@@ -1,6 +1,7 @@
 // Re-export base traits for use by operator modules
 pub(crate) use super::{Gettable, Watchable};
 
+mod backpressure;
 mod buffer_count;
 mod concat;
 mod debounce;
@@ -30,6 +31,7 @@ mod try_map;
 mod with_latest_from;
 mod zip;
 
+pub use backpressure::BackpressureExt;
 pub use buffer_count::BufferCountExt;
 pub use concat::ConcatExt;
 pub use debounce::DebounceExt;
