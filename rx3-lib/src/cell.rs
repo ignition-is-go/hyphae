@@ -8,6 +8,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex, Weak,
     },
+    time::Duration,
 };
 use uuid::Uuid;
 
@@ -15,6 +16,19 @@ use crate::metrics::CellMetrics;
 use crate::signal::Signal;
 use crate::subscription::SubscriptionGuard;
 use crate::traits::{DepNode, Gettable, Mutable, Watchable};
+
+/// Information about a slow subscriber callback.
+#[derive(Debug, Clone)]
+pub struct SlowSubscriberAlert {
+    /// The subscriber ID.
+    pub subscriber_id: Uuid,
+    /// How long the subscriber took (nanoseconds).
+    pub duration_ns: u64,
+    /// The configured threshold (nanoseconds).
+    pub threshold_ns: u64,
+}
+
+type SlowSubscriberCallback = Arc<dyn Fn(SlowSubscriberAlert) + Send + Sync>;
 
 #[derive(Debug, Clone)]
 pub struct CellMutable;
@@ -38,6 +52,10 @@ pub(crate) struct CellInner<T> {
     pub(crate) error: Mutex<Option<Arc<anyhow::Error>>>,
     /// Optional metrics for observability.
     pub(crate) metrics: Option<Arc<CellMetrics>>,
+    /// Slow subscriber threshold (nanoseconds). None = disabled.
+    pub(crate) slow_subscriber_threshold_ns: ArcSwap<Option<u64>>,
+    /// Callback for slow subscriber alerts.
+    pub(crate) slow_subscriber_callback: ArcSwap<Option<SlowSubscriberCallback>>,
 }
 
 /// A reactive cell that holds a value and notifies subscribers on change.
@@ -94,6 +112,8 @@ impl<T: Clone + Send + Sync + 'static> Cell<T, CellMutable> {
                 errored: AtomicBool::new(false),
                 error: Mutex::new(None),
                 metrics: None,
+                slow_subscriber_threshold_ns: ArcSwap::from_pointee(None),
+                slow_subscriber_callback: ArcSwap::from_pointee(None),
             }),
             _marker: PhantomData,
         }
@@ -112,9 +132,44 @@ impl<T: Clone + Send + Sync + 'static> Cell<T, CellMutable> {
                 errored: AtomicBool::new(false),
                 error: Mutex::new(None),
                 metrics: Some(Arc::new(CellMetrics::new())),
+                slow_subscriber_threshold_ns: ArcSwap::from_pointee(None),
+                slow_subscriber_callback: ArcSwap::from_pointee(None),
             }),
             _marker: PhantomData,
         }
+    }
+
+    /// Configure slow subscriber detection.
+    ///
+    /// When any subscriber callback takes longer than `threshold`, the `callback`
+    /// is invoked with details about the slow subscriber.
+    ///
+    /// Note: This requires metrics to be enabled. If metrics are not enabled,
+    /// subscriber timing is not tracked and slow subscriber detection will not work.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rx3::{Cell, Mutable};
+    /// use std::time::Duration;
+    ///
+    /// let cell = Cell::with_metrics(0);
+    /// cell.on_slow_subscriber(Duration::from_millis(10), |alert| {
+    ///     eprintln!("Slow subscriber {:?} took {}ms",
+    ///         alert.subscriber_id,
+    ///         alert.duration_ns / 1_000_000);
+    /// });
+    /// ```
+    pub fn on_slow_subscriber<F>(&self, threshold: Duration, callback: F)
+    where
+        F: Fn(SlowSubscriberAlert) + Send + Sync + 'static,
+    {
+        self.inner
+            .slow_subscriber_threshold_ns
+            .store(Arc::new(Some(threshold.as_nanos() as u64)));
+        self.inner
+            .slow_subscriber_callback
+            .store(Arc::new(Some(Arc::new(callback))));
     }
 
     /// Lock this mutable cell, converting it to an immutable cell.
@@ -281,26 +336,45 @@ impl<T: Clone + Send + Sync + 'static, M: Send + Sync + 'static> Cell<T, M> {
             }
         }
 
-        // Collect callbacks first to release DashMap lock before calling them
+        // Collect callbacks with IDs first to release DashMap lock before calling them
         let callbacks: Vec<_> = self
             .inner
             .subscribers
             .iter()
-            .map(|entry| Arc::clone(&entry.value().callback))
+            .map(|entry| (*entry.key(), Arc::clone(&entry.value().callback)))
             .collect();
 
+        // Load slow subscriber config once
+        let slow_threshold = (**self.inner.slow_subscriber_threshold_ns.load()).clone();
+        let slow_callback = (**self.inner.slow_subscriber_callback.load()).clone();
+
         // Call each callback, catching panics so one bad callback doesn't kill the rest
-        for callback in callbacks {
+        for (subscriber_id, callback) in callbacks {
             let sub_start = self.inner.metrics.as_ref().map(|_| std::time::Instant::now());
 
             let _ = catch_unwind(AssertUnwindSafe(|| {
                 callback(&signal);
             }));
 
-            // Record subscriber timing
+            // Record subscriber timing and check for slow subscribers
             if let (Some(metrics), Some(start)) = (&self.inner.metrics, sub_start) {
                 let elapsed = start.elapsed().as_nanos() as u64;
                 metrics.update_slowest_subscriber(elapsed);
+
+                // Check slow subscriber threshold
+                if let (Some(threshold), Some(callback)) = (&slow_threshold, &slow_callback) {
+                    if elapsed > *threshold {
+                        let alert = SlowSubscriberAlert {
+                            subscriber_id,
+                            duration_ns: elapsed,
+                            threshold_ns: *threshold,
+                        };
+                        // Catch panics in the alert callback too
+                        let _ = catch_unwind(AssertUnwindSafe(|| {
+                            callback(alert);
+                        }));
+                    }
+                }
             }
         }
 

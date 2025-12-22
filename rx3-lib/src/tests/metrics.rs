@@ -1,4 +1,6 @@
 use crate::{Cell, Gettable, Mutable, Watchable};
+use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -234,4 +236,59 @@ fn test_try_set_threshold() {
 
     // Now 5ms > 2ms threshold, so should fail
     assert!(cell.try_set_threshold(3, Duration::from_millis(2)).is_err());
+}
+
+#[test]
+fn test_slow_subscriber_callback() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let cell = Cell::with_metrics(0);
+
+    let alert_count = Arc::new(AtomicUsize::new(0));
+    let last_duration = Arc::new(AtomicU64::new(0));
+
+    let ac = alert_count.clone();
+    let ld = last_duration.clone();
+    cell.on_slow_subscriber(Duration::from_millis(2), move |alert| {
+        ac.fetch_add(1, Ordering::SeqCst);
+        ld.store(alert.duration_ns, Ordering::SeqCst);
+    });
+
+    // Add a slow subscriber
+    let _guard = cell.subscribe(|_| {
+        thread::sleep(Duration::from_millis(5));
+    });
+
+    // First set triggers the slow subscriber
+    cell.set(1);
+
+    // Alert should have been triggered (5ms > 2ms threshold)
+    assert_eq!(alert_count.load(Ordering::SeqCst), 1);
+    assert!(last_duration.load(Ordering::SeqCst) >= 4_000_000); // At least 4ms in ns
+}
+
+#[test]
+fn test_slow_subscriber_callback_not_triggered_for_fast() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let cell = Cell::with_metrics(0);
+
+    let alert_count = Arc::new(AtomicUsize::new(0));
+
+    let ac = alert_count.clone();
+    cell.on_slow_subscriber(Duration::from_millis(100), move |_alert| {
+        ac.fetch_add(1, Ordering::SeqCst);
+    });
+
+    // Add a fast subscriber
+    let _guard = cell.subscribe(|_| {
+        // Fast - no sleep
+    });
+
+    cell.set(1);
+    cell.set(2);
+    cell.set(3);
+
+    // No alerts - all subscribers were fast
+    assert_eq!(alert_count.load(Ordering::SeqCst), 0);
 }
