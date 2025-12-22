@@ -1,8 +1,6 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
-use super::{Gettable, Watchable};
+use crate::cell::{Cell, CellImmutable};
+
+use super::{DistinctUntilChangedByExt, Watchable};
 
 pub trait DedupedExt<T>: Watchable<T> {
     fn deduped(&self) -> Cell<T, CellImmutable>
@@ -10,29 +8,7 @@ pub trait DedupedExt<T>: Watchable<T> {
         T: Clone + PartialEq + Send + Sync + 'static,
         Self: Clone + Send + Sync + 'static,
     {
-        let derived = Cell::<T, CellMutable>::new(self.get());
-
-        let weak = derived.downgrade();
-        let first = Arc::new(AtomicBool::new(true));
-        let guard = self.subscribe(move |signal| {
-            if let Some(d) = weak.upgrade() {
-                match signal {
-                    Signal::Value(value) => {
-                        if first.swap(false, Ordering::SeqCst) {
-                            return;
-                        }
-                        if **value != d.get() {
-                            d.notify(signal.clone()); // Arc clone, no deep copy
-                        }
-                    }
-                    Signal::Complete => d.notify(Signal::Complete),
-                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
-                }
-            }
-        });
-        derived.own(guard);
-
-        derived.lock()
+        self.distinct_until_changed_by(|a, b| a == b)
     }
 }
 
@@ -41,7 +17,7 @@ impl<T, W: Watchable<T>> DedupedExt<T> for W {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Mutable;
+    use crate::{Mutable, Signal};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
 
@@ -66,5 +42,22 @@ mod tests {
 
         source.set(2); // same - blocked
         assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn test_deduped_propagates_completion() {
+        let source = Cell::new(0);
+        let deduped = source.deduped();
+
+        let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let c = completed.clone();
+        let _guard = deduped.subscribe(move |signal| {
+            if let Signal::Complete = signal {
+                c.store(true, Ordering::SeqCst);
+            }
+        });
+
+        source.complete();
+        assert!(completed.load(Ordering::SeqCst));
     }
 }

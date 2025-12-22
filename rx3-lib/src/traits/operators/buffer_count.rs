@@ -9,7 +9,7 @@ use crate::signal::Signal;
 use super::Watchable;
 
 pub trait BufferCountExt<T>: Watchable<T> {
-    /// Collect values into chunks of size `count` before emitting.
+    /// Collect values into non-overlapping chunks of size `count`.
     ///
     /// Emits a `Vec<T>` containing exactly `count` elements each time.
     /// On completion, emits any remaining buffered values (may be less than `count`).
