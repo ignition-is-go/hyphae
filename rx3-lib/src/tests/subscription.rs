@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use crate::{Cell, Mutable, Watchable};
+use crate::{Cell, Mutable, Signal, Watchable};
 
 #[test]
 fn test_subscribe_returns_guard() {
@@ -9,8 +9,10 @@ fn test_subscribe_returns_guard() {
     let received = Arc::new(AtomicU64::new(0));
 
     let r = received.clone();
-    let guard = source.subscribe(move |v| {
-        r.store(*v, Ordering::SeqCst);
+    let guard = source.subscribe(move |signal| {
+        if let Signal::Value(v) = signal {
+            r.store(*v, Ordering::SeqCst);
+        }
     });
 
     assert_eq!(received.load(Ordering::SeqCst), 0);
@@ -29,8 +31,10 @@ fn test_guard_unsubscribes_on_drop() {
 
     {
         let r = received.clone();
-        let _guard = source.subscribe(move |v| {
-            r.store(*v, Ordering::SeqCst);
+        let _guard = source.subscribe(move |signal| {
+            if let Signal::Value(v) = signal {
+                r.store(*v, Ordering::SeqCst);
+            }
         });
 
         source.set(1);
@@ -48,8 +52,10 @@ fn test_guard_leak_prevents_unsubscribe() {
     let received = Arc::new(AtomicU64::new(0));
 
     let r = received.clone();
-    let guard = source.subscribe(move |v| {
-        r.store(*v, Ordering::SeqCst);
+    let guard = source.subscribe(move |signal| {
+        if let Signal::Value(v) = signal {
+            r.store(*v, Ordering::SeqCst);
+        }
     });
 
     let _id = guard.leak(); // prevent auto-unsubscribe
@@ -64,8 +70,10 @@ fn test_guard_manual_unsubscribe() {
     let received = Arc::new(AtomicU64::new(0));
 
     let r = received.clone();
-    let guard = source.subscribe(move |v| {
-        r.store(*v, Ordering::SeqCst);
+    let guard = source.subscribe(move |signal| {
+        if let Signal::Value(v) = signal {
+            r.store(*v, Ordering::SeqCst);
+        }
     });
 
     source.set(1);

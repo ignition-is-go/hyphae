@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 use crate::cell::{Cell, CellImmutable, CellMutable};
+use crate::signal::Signal;
 use super::Watchable;
 
 pub trait ThrottleExt<T>: Watchable<T> {
@@ -15,28 +16,26 @@ pub trait ThrottleExt<T>: Watchable<T> {
 
         let can_emit = Arc::new(AtomicBool::new(true));
         let weak = cell.downgrade();
-        let guard = self.subscribe(move |value| {
-            if let Some(c) = weak.upgrade()
-                && can_emit.swap(false, Ordering::SeqCst) {
-                    c.notify(value.clone());
-
-                    let can_emit = can_emit.clone();
-                    thread::spawn(move || {
-                        thread::sleep(duration);
-                        can_emit.store(true, Ordering::SeqCst);
-                    });
-                }
-        });
-        cell.own(guard);
-
-        // Propagate source completion
-        let weak = cell.downgrade();
-        let complete_guard = self.on_complete(move || {
+        let guard = self.subscribe(move |signal| {
             if let Some(c) = weak.upgrade() {
-                c.complete();
+                match signal {
+                    Signal::Value(value) => {
+                        if can_emit.swap(false, Ordering::SeqCst) {
+                            c.notify(Signal::Value(value.clone()));
+
+                            let can_emit = can_emit.clone();
+                            thread::spawn(move || {
+                                thread::sleep(duration);
+                                can_emit.store(true, Ordering::SeqCst);
+                            });
+                        }
+                    }
+                    Signal::Complete => c.notify(Signal::Complete),
+                    Signal::Error(e) => c.notify(Signal::Error(e.clone())),
+                }
             }
         });
-        cell.own(complete_guard);
+        cell.own(guard);
 
         cell.lock()
     }

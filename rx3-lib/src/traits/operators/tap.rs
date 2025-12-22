@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use crate::cell::{Cell, CellImmutable, CellMutable};
+use crate::signal::Signal;
 use super::Watchable;
 
 pub trait TapExt<T>: Watchable<T> {
@@ -13,25 +14,22 @@ pub trait TapExt<T>: Watchable<T> {
 
         let weak = cell.downgrade();
         let first = Arc::new(AtomicBool::new(true));
-        let guard = self.subscribe(move |value| {
-            if first.swap(false, Ordering::SeqCst) {
-                return;
-            }
+        let guard = self.subscribe(move |signal| {
             if let Some(c) = weak.upgrade() {
-                f(value);
-                c.notify(value.clone());
+                match signal {
+                    Signal::Value(value) => {
+                        if first.swap(false, Ordering::SeqCst) {
+                            return;
+                        }
+                        f(value);
+                        c.notify(Signal::Value(value.clone()));
+                    }
+                    Signal::Complete => c.notify(Signal::Complete),
+                    Signal::Error(e) => c.notify(Signal::Error(e.clone())),
+                }
             }
         });
         cell.own(guard);
-
-        // Propagate source completion
-        let weak = cell.downgrade();
-        let complete_guard = self.on_complete(move || {
-            if let Some(c) = weak.upgrade() {
-                c.complete();
-            }
-        });
-        cell.own(complete_guard);
 
         cell.lock()
     }

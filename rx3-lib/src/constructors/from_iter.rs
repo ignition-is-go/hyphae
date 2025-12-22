@@ -1,5 +1,6 @@
 use std::{thread, time::Duration};
 use crate::cell::{Cell, CellImmutable, CellMutable};
+use crate::signal::Signal;
 
 /// Creates a cell that emits each value from the iterator with a delay between emissions.
 ///
@@ -22,11 +23,11 @@ where
             thread::sleep(delay);
             // Exit when cell is dropped
             let Some(c) = weak.upgrade() else { break };
-            c.notify(value);
+            c.notify(Signal::Value(value));
         }
         // Complete when iterator exhausted
         if let Some(c) = weak.upgrade() {
-            c.complete();
+            c.notify(Signal::Complete);
         }
     });
 

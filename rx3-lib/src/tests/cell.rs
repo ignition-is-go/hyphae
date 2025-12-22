@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use crate::{Cell, DepNode, Gettable, Mutable};
+use crate::{Cell, DepNode, Gettable, Mutable, Signal};
 use crate::traits::Watchable;
 
 #[test]
@@ -19,12 +19,14 @@ fn test_cell_set() {
 
 #[test]
 fn test_cell_watch_immediate() {
-    let cell = Cell::new(42);
+    let cell = Cell::new(42u64);
     let received = Arc::new(AtomicU64::new(0));
 
     let r = received.clone();
-    let _guard = cell.subscribe(move |v| {
-        r.store(*v, Ordering::SeqCst);
+    let _guard = cell.subscribe(move |signal| {
+        if let Signal::Value(v) = signal {
+            r.store(*v, Ordering::SeqCst);
+        }
     });
 
     // Watch should call immediately with current value
@@ -33,12 +35,14 @@ fn test_cell_watch_immediate() {
 
 #[test]
 fn test_cell_watch_on_set() {
-    let cell = Cell::new(0);
+    let cell = Cell::new(0u64);
     let received = Arc::new(AtomicU64::new(0));
 
     let r = received.clone();
-    let _guard = cell.subscribe(move |v| {
-        r.store(*v, Ordering::SeqCst);
+    let _guard = cell.subscribe(move |signal| {
+        if let Signal::Value(v) = signal {
+            r.store(*v, Ordering::SeqCst);
+        }
     });
 
     cell.set(99);
@@ -52,8 +56,10 @@ fn test_cell_multiple_watchers() {
 
     let _guards: Vec<_> = (0..10).map(|_| {
         let c = count.clone();
-        cell.subscribe(move |_| {
-            c.fetch_add(1, Ordering::SeqCst);
+        cell.subscribe(move |signal| {
+            if let Signal::Value(_) = signal {
+                c.fetch_add(1, Ordering::SeqCst);
+            }
         })
     }).collect();
 
@@ -71,8 +77,10 @@ fn test_cell_unsubscribe() {
     let count = Arc::new(AtomicU64::new(0));
 
     let c = count.clone();
-    let guard = cell.subscribe(move |_| {
-        c.fetch_add(1, Ordering::SeqCst);
+    let guard = cell.subscribe(move |signal| {
+        if let Signal::Value(_) = signal {
+            c.fetch_add(1, Ordering::SeqCst);
+        }
     });
 
     assert_eq!(count.load(Ordering::SeqCst), 1); // immediate call

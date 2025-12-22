@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use crate::cell::{Cell, CellImmutable, CellMutable};
+use crate::signal::Signal;
 use super::{Gettable, Watchable};
 
 // Lock-free completion state packed into a single u64:
@@ -29,140 +30,140 @@ pub trait SwitchMapExt<T>: Watchable<T> {
         // Subscribe to first inner (generation 0)
         let weak = cell.downgrade();
         let state_for_first = state.clone();
-        let first_guard = first_inner.subscribe(move |value| {
+        let first_guard = first_inner.subscribe(move |signal| {
             let current = state_for_first.load(Ordering::SeqCst);
-            if current & GEN_MASK == 0
-                && let Some(c) = weak.upgrade() {
-                    c.notify(value.clone());
-                }
-        });
-        cell.own(first_guard);
-
-        // Track first inner completion (gen 0)
-        let weak = cell.downgrade();
-        let state_for_first_complete = state.clone();
-        let first_inner_complete = first_inner.on_complete(move || {
-            loop {
-                let old = state_for_first_complete.load(Ordering::SeqCst);
-                if old & GEN_MASK != 0 {
-                    return; // Generation changed, not current
-                }
-                if old & INNER_COMPLETE_BIT != 0 {
-                    return; // Already marked complete
-                }
-                let new = old | INNER_COMPLETE_BIT;
-                if state_for_first_complete
-                    .compare_exchange(old, new, Ordering::SeqCst, Ordering::SeqCst)
-                    .is_ok()
-                {
-                    // Successfully marked inner complete - check if both complete
-                    if new & OUTER_COMPLETE_BIT != 0
-                        && let Some(c) = weak.upgrade() {
-                            c.complete();
+            if current & GEN_MASK != 0 {
+                return; // Generation changed, not current
+            }
+            if let Some(c) = weak.upgrade() {
+                match signal {
+                    Signal::Value(value) => c.notify(Signal::Value(value.clone())),
+                    Signal::Complete => {
+                        // Set inner complete bit with CAS loop
+                        loop {
+                            let old = state_for_first.load(Ordering::SeqCst);
+                            if old & GEN_MASK != 0 {
+                                return; // Generation changed
+                            }
+                            if old & INNER_COMPLETE_BIT != 0 {
+                                return; // Already marked complete
+                            }
+                            let new = old | INNER_COMPLETE_BIT;
+                            if state_for_first
+                                .compare_exchange(old, new, Ordering::SeqCst, Ordering::SeqCst)
+                                .is_ok()
+                            {
+                                if new & OUTER_COMPLETE_BIT != 0 {
+                                    c.notify(Signal::Complete);
+                                }
+                                return;
+                            }
                         }
-                    return;
+                    }
+                    Signal::Error(e) => c.notify(Signal::Error(e.clone())),
                 }
-                // CAS failed, retry
             }
         });
-        cell.own(first_inner_complete);
+        cell.own(first_guard);
 
         // Single subscription to outer handles both value switching and completion tracking
         let weak = cell.downgrade();
         let f = Arc::new(f);
         let state_for_outer = state.clone();
         let first = Arc::new(AtomicBool::new(true));
-        let outer_guard = self.subscribe(move |outer_value| {
-            if first.swap(false, Ordering::SeqCst) {
-                return;
-            }
-
-            let Some(c) = weak.upgrade() else { return };
-
-            // Increment generation, clear inner_complete, preserve outer_complete
-            let my_gen = loop {
-                let old = state_for_outer.load(Ordering::SeqCst);
-                let outer_bit = old & OUTER_COMPLETE_BIT;
-                let old_gen = old & GEN_MASK;
-                let new_gen = old_gen + 1;
-                let new = new_gen | outer_bit; // new gen, outer preserved, inner cleared
-                if state_for_outer
-                    .compare_exchange(old, new, Ordering::SeqCst, Ordering::SeqCst)
-                    .is_ok()
-                {
-                    break new_gen;
-                }
-            };
-
-            let inner = f(outer_value);
-
-            // Subscribe to new inner for values
-            let weak_inner = weak.clone();
-            let state_for_value = state_for_outer.clone();
-            let value_guard = inner.subscribe(move |value| {
-                let current = state_for_value.load(Ordering::SeqCst);
-                if current & GEN_MASK == my_gen
-                    && let Some(c) = weak_inner.upgrade() {
-                        c.notify(value.clone());
-                    }
-            });
-            c.own(value_guard);
-
-            // Track new inner's completion
-            let weak_inner = weak.clone();
-            let state_for_complete = state_for_outer.clone();
-            let complete_guard = inner.on_complete(move || {
-                loop {
-                    let old = state_for_complete.load(Ordering::SeqCst);
-                    if old & GEN_MASK != my_gen {
-                        return; // Generation changed, not current
-                    }
-                    if old & INNER_COMPLETE_BIT != 0 {
-                        return; // Already marked complete
-                    }
-                    let new = old | INNER_COMPLETE_BIT;
-                    if state_for_complete
-                        .compare_exchange(old, new, Ordering::SeqCst, Ordering::SeqCst)
-                        .is_ok()
-                    {
-                        // Successfully marked inner complete - check if both complete
-                        if new & OUTER_COMPLETE_BIT != 0
-                            && let Some(c) = weak_inner.upgrade() {
-                                c.complete();
-                            }
+        let outer_guard = self.subscribe(move |signal| {
+            match signal {
+                Signal::Value(outer_value) => {
+                    if first.swap(false, Ordering::SeqCst) {
                         return;
                     }
-                    // CAS failed, retry
-                }
-            });
-            c.own(complete_guard);
-        });
-        cell.own(outer_guard);
 
-        // When outer completes, set outer_complete bit
-        let weak = cell.downgrade();
-        let outer_complete_guard = self.on_complete(move || {
-            loop {
-                let old = state.load(Ordering::SeqCst);
-                if old & OUTER_COMPLETE_BIT != 0 {
-                    return; // Already complete
-                }
-                let new = old | OUTER_COMPLETE_BIT;
-                if state
-                    .compare_exchange(old, new, Ordering::SeqCst, Ordering::SeqCst)
-                    .is_ok()
-                {
-                    // Successfully marked outer complete - check if both complete
-                    if new & INNER_COMPLETE_BIT != 0
-                        && let Some(c) = weak.upgrade() {
-                            c.complete();
+                    let Some(c) = weak.upgrade() else { return };
+
+                    // Increment generation, clear inner_complete, preserve outer_complete
+                    let my_gen = loop {
+                        let old = state_for_outer.load(Ordering::SeqCst);
+                        let outer_bit = old & OUTER_COMPLETE_BIT;
+                        let old_gen = old & GEN_MASK;
+                        let new_gen = old_gen + 1;
+                        let new = new_gen | outer_bit; // new gen, outer preserved, inner cleared
+                        if state_for_outer
+                            .compare_exchange(old, new, Ordering::SeqCst, Ordering::SeqCst)
+                            .is_ok()
+                        {
+                            break new_gen;
                         }
-                    return;
+                    };
+
+                    let inner = f(outer_value);
+
+                    // Subscribe to new inner for values and completion
+                    let weak_inner = weak.clone();
+                    let state_for_inner = state_for_outer.clone();
+                    let value_guard = inner.subscribe(move |signal| {
+                        let current = state_for_inner.load(Ordering::SeqCst);
+                        if current & GEN_MASK != my_gen {
+                            return; // Generation changed, not current
+                        }
+                        if let Some(c) = weak_inner.upgrade() {
+                            match signal {
+                                Signal::Value(value) => c.notify(Signal::Value(value.clone())),
+                                Signal::Complete => {
+                                    loop {
+                                        let old = state_for_inner.load(Ordering::SeqCst);
+                                        if old & GEN_MASK != my_gen {
+                                            return;
+                                        }
+                                        if old & INNER_COMPLETE_BIT != 0 {
+                                            return;
+                                        }
+                                        let new = old | INNER_COMPLETE_BIT;
+                                        if state_for_inner
+                                            .compare_exchange(old, new, Ordering::SeqCst, Ordering::SeqCst)
+                                            .is_ok()
+                                        {
+                                            if new & OUTER_COMPLETE_BIT != 0 {
+                                                c.notify(Signal::Complete);
+                                            }
+                                            return;
+                                        }
+                                    }
+                                }
+                                Signal::Error(e) => c.notify(Signal::Error(e.clone())),
+                            }
+                        }
+                    });
+                    c.own(value_guard);
                 }
-                // CAS failed, retry
+                Signal::Complete => {
+                    // Set outer complete bit with CAS loop
+                    loop {
+                        let old = state_for_outer.load(Ordering::SeqCst);
+                        if old & OUTER_COMPLETE_BIT != 0 {
+                            return;
+                        }
+                        let new = old | OUTER_COMPLETE_BIT;
+                        if state_for_outer
+                            .compare_exchange(old, new, Ordering::SeqCst, Ordering::SeqCst)
+                            .is_ok()
+                        {
+                            if new & INNER_COMPLETE_BIT != 0 {
+                                if let Some(c) = weak.upgrade() {
+                                    c.notify(Signal::Complete);
+                                }
+                            }
+                            return;
+                        }
+                    }
+                }
+                Signal::Error(e) => {
+                    if let Some(c) = weak.upgrade() {
+                        c.notify(Signal::Error(e.clone()));
+                    }
+                }
             }
         });
-        cell.own(outer_complete_guard);
+        cell.own(outer_guard);
 
         cell.lock()
     }

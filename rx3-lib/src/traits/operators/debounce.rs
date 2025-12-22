@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 use crate::cell::{Cell, CellImmutable, CellMutable};
+use crate::signal::Signal;
 use super::Watchable;
 
 pub trait DebounceExt<T>: Watchable<T> {
@@ -15,30 +16,36 @@ pub trait DebounceExt<T>: Watchable<T> {
 
         let generation = Arc::new(AtomicU64::new(0));
         let weak = cell.downgrade();
-        let guard = self.subscribe(move |value| {
-            let my_gen = generation.fetch_add(1, Ordering::SeqCst) + 1;
-            let value = value.clone();
-            let weak = weak.clone();
-            let generation = generation.clone();
+        let guard = self.subscribe(move |signal| {
+            match signal {
+                Signal::Value(value) => {
+                    let my_gen = generation.fetch_add(1, Ordering::SeqCst) + 1;
+                    let value = value.clone();
+                    let weak = weak.clone();
+                    let generation = generation.clone();
 
-            thread::spawn(move || {
-                thread::sleep(duration);
-                if generation.load(Ordering::SeqCst) == my_gen
-                    && let Some(c) = weak.upgrade() {
-                        c.notify(value);
+                    thread::spawn(move || {
+                        thread::sleep(duration);
+                        if generation.load(Ordering::SeqCst) == my_gen {
+                            if let Some(c) = weak.upgrade() {
+                                c.notify(Signal::Value(value));
+                            }
+                        }
+                    });
+                }
+                Signal::Complete => {
+                    if let Some(c) = weak.upgrade() {
+                        c.notify(Signal::Complete);
                     }
-            });
-        });
-        cell.own(guard);
-
-        // Propagate source completion
-        let weak = cell.downgrade();
-        let complete_guard = self.on_complete(move || {
-            if let Some(c) = weak.upgrade() {
-                c.complete();
+                }
+                Signal::Error(e) => {
+                    if let Some(c) = weak.upgrade() {
+                        c.notify(Signal::Error(e.clone()));
+                    }
+                }
             }
         });
-        cell.own(complete_guard);
+        cell.own(guard);
 
         cell.lock()
     }
@@ -59,8 +66,10 @@ mod tests {
         let received = Arc::new(AtomicU64::new(0));
 
         let r = received.clone();
-        let _guard = debounced.subscribe(move |v| {
-            r.store(*v, Ordering::SeqCst);
+        let _guard = debounced.subscribe(move |signal| {
+            if let Signal::Value(v) = signal {
+                r.store(*v, Ordering::SeqCst);
+            }
         });
 
         // Rapid updates

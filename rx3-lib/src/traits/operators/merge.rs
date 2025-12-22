@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use crate::cell::{Cell, CellImmutable, CellMutable};
+use crate::signal::Signal;
 use super::Watchable;
 
 // Completion state flags for merge (both must complete)
@@ -18,15 +19,29 @@ pub trait MergeExt<T>: Watchable<T> {
         let initial = self.get();
         let derived = Cell::<T, CellMutable>::new(initial);
 
+        let complete_state = Arc::new(AtomicU8::new(0));
+
         // Subscribe to self
         let weak1 = derived.downgrade();
         let first1 = Arc::new(AtomicBool::new(true));
-        let guard1 = self.subscribe(move |value| {
-            if first1.swap(false, Ordering::SeqCst) {
-                return;
-            }
+        let cs1 = complete_state.clone();
+        let guard1 = self.subscribe(move |signal| {
             if let Some(d) = weak1.upgrade() {
-                d.notify(value.clone());
+                match signal {
+                    Signal::Value(value) => {
+                        if first1.swap(false, Ordering::SeqCst) {
+                            return;
+                        }
+                        d.notify(Signal::Value(value.clone()));
+                    }
+                    Signal::Complete => {
+                        let prev = cs1.fetch_or(SELF_COMPLETE, Ordering::SeqCst);
+                        if prev == OTHER_COMPLETE {
+                            d.notify(Signal::Complete);
+                        }
+                    }
+                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
+                }
             }
         });
         derived.own(guard1);
@@ -34,43 +49,26 @@ pub trait MergeExt<T>: Watchable<T> {
         // Subscribe to other
         let weak2 = derived.downgrade();
         let first2 = Arc::new(AtomicBool::new(true));
-        let guard2 = other.subscribe(move |value| {
-            if first2.swap(false, Ordering::SeqCst) {
-                return;
-            }
+        let guard2 = other.subscribe(move |signal| {
             if let Some(d) = weak2.upgrade() {
-                d.notify(value.clone());
+                match signal {
+                    Signal::Value(value) => {
+                        if first2.swap(false, Ordering::SeqCst) {
+                            return;
+                        }
+                        d.notify(Signal::Value(value.clone()));
+                    }
+                    Signal::Complete => {
+                        let prev = complete_state.fetch_or(OTHER_COMPLETE, Ordering::SeqCst);
+                        if prev == SELF_COMPLETE {
+                            d.notify(Signal::Complete);
+                        }
+                    }
+                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
+                }
             }
         });
         derived.own(guard2);
-
-        // Complete when BOTH sources complete - use atomic fetch_or to avoid TOCTOU race
-        let complete_state = Arc::new(AtomicU8::new(0));
-
-        let weak = derived.downgrade();
-        let cs = complete_state.clone();
-        let complete_guard1 = self.on_complete(move || {
-            let prev = cs.fetch_or(SELF_COMPLETE, Ordering::SeqCst);
-            if prev == OTHER_COMPLETE {
-                // Other was already complete, now both are done
-                if let Some(d) = weak.upgrade() {
-                    d.complete();
-                }
-            }
-        });
-        derived.own(complete_guard1);
-
-        let weak = derived.downgrade();
-        let complete_guard2 = other.on_complete(move || {
-            let prev = complete_state.fetch_or(OTHER_COMPLETE, Ordering::SeqCst);
-            if prev == SELF_COMPLETE {
-                // Self was already complete, now both are done
-                if let Some(d) = weak.upgrade() {
-                    d.complete();
-                }
-            }
-        });
-        derived.own(complete_guard2);
 
         derived.lock()
     }

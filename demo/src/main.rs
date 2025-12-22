@@ -1,4 +1,4 @@
-use rx3::{Cell, DepNode, JoinExt, MapExt, Mutable, Watchable, flat};
+use rx3::{Cell, DepNode, JoinExt, MapExt, Mutable, Signal, Watchable, flat};
 
 fn main() {
     println!("=== Panic Isolation Demo ===\n");
@@ -7,21 +7,27 @@ fn main() {
     let cell = Cell::new(0);
 
     // Subscriber 1: prints normally
-    let _g1 = cell.subscribe(|v| {
-        println!("  Subscriber 1: got {}", v);
+    let _g1 = cell.subscribe(|signal| {
+        if let Signal::Value(v) = signal {
+            println!("  Subscriber 1: got {}", v);
+        }
     });
 
     // Subscriber 2: panics on value 2
-    let _g2 = cell.subscribe(|v| {
-        if *v == 2 {
-            panic!("Subscriber 2 panics on value 2!");
+    let _g2 = cell.subscribe(|signal| {
+        if let Signal::Value(v) = signal {
+            if *v == 2 {
+                panic!("Subscriber 2 panics on value 2!");
+            }
+            println!("  Subscriber 2: got {}", v);
         }
-        println!("  Subscriber 2: got {}", v);
     });
 
     // Subscriber 3: prints normally
-    let _g3 = cell.subscribe(|v| {
-        println!("  Subscriber 3: got {}", v);
+    let _g3 = cell.subscribe(|signal| {
+        if let Signal::Value(v) = signal {
+            println!("  Subscriber 3: got {}", v);
+        }
     });
 
     println!("Setting value to 1:");

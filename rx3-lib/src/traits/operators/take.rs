@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::cell::{Cell, CellImmutable, CellMutable};
+use crate::signal::Signal;
 use super::Watchable;
 
 pub trait TakeExt<T>: Watchable<T> {
@@ -13,23 +14,29 @@ pub trait TakeExt<T>: Watchable<T> {
 
         let remaining = Arc::new(AtomicUsize::new(count));
         let weak = cell.downgrade();
-        let guard = self.subscribe(move |value| {
+        let guard = self.subscribe(move |signal| {
             if let Some(c) = weak.upgrade() {
-                let prev = remaining.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                    if n > 0 { Some(n - 1) } else { None }
-                });
-                match prev {
-                    Ok(1) => {
-                        // This was the last one
-                        c.notify(value.clone());
-                        c.complete();
+                match signal {
+                    Signal::Value(value) => {
+                        let prev = remaining.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                            if n > 0 { Some(n - 1) } else { None }
+                        });
+                        match prev {
+                            Ok(1) => {
+                                // This was the last one
+                                c.notify(Signal::Value(value.clone()));
+                                c.notify(Signal::Complete);
+                            }
+                            Ok(_) => {
+                                c.notify(Signal::Value(value.clone()));
+                            }
+                            Err(_) => {
+                                // Already exhausted
+                            }
+                        }
                     }
-                    Ok(_) => {
-                        c.notify(value.clone());
-                    }
-                    Err(_) => {
-                        // Already exhausted
-                    }
+                    Signal::Complete => c.notify(Signal::Complete),
+                    Signal::Error(e) => c.notify(Signal::Error(e.clone())),
                 }
             }
         });
@@ -55,8 +62,10 @@ mod tests {
         let count = Arc::new(AtomicU64::new(0));
 
         let c = count.clone();
-        let _guard = taken.subscribe(move |_| {
-            c.fetch_add(1, AtomicOrdering::SeqCst);
+        let _guard = taken.subscribe(move |signal| {
+            if let Signal::Value(_) = signal {
+                c.fetch_add(1, AtomicOrdering::SeqCst);
+            }
         });
 
         // Initial watch call counts as 1
@@ -77,8 +86,10 @@ mod tests {
         let completed = Arc::new(AtomicBool::new(false));
 
         let c = completed.clone();
-        let _guard = taken.on_complete(move || {
-            c.store(true, AtomicOrdering::SeqCst);
+        let _guard = taken.subscribe(move |signal| {
+            if let Signal::Complete = signal {
+                c.store(true, AtomicOrdering::SeqCst);
+            }
         });
 
         assert!(!taken.is_complete());

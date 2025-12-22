@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use crate::cell::{Cell, CellImmutable, CellMutable};
+use crate::signal::Signal;
 use super::Watchable;
 
 pub trait TakeWhileExt<T>: Watchable<T> {
@@ -17,34 +18,29 @@ pub trait TakeWhileExt<T>: Watchable<T> {
         let stopped = Arc::new(AtomicBool::new(false));
         let weak = derived.downgrade();
         let first = Arc::new(AtomicBool::new(true));
-        let guard = self.subscribe(move |value| {
-            if first.swap(false, Ordering::SeqCst) {
-                return;
-            }
-            if stopped.load(Ordering::SeqCst) {
-                return;
-            }
-            if !predicate(value) {
-                stopped.store(true, Ordering::SeqCst);
-                if let Some(d) = weak.upgrade() {
-                    d.complete();
-                }
-                return;
-            }
+        let guard = self.subscribe(move |signal| {
             if let Some(d) = weak.upgrade() {
-                d.notify(value.clone());
+                match signal {
+                    Signal::Value(value) => {
+                        if first.swap(false, Ordering::SeqCst) {
+                            return;
+                        }
+                        if stopped.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        if !predicate(value) {
+                            stopped.store(true, Ordering::SeqCst);
+                            d.notify(Signal::Complete);
+                            return;
+                        }
+                        d.notify(Signal::Value(value.clone()));
+                    }
+                    Signal::Complete => d.notify(Signal::Complete),
+                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
+                }
             }
         });
         derived.own(guard);
-
-        // Propagate source completion
-        let weak = derived.downgrade();
-        let complete_guard = self.on_complete(move || {
-            if let Some(d) = weak.upgrade() {
-                d.complete();
-            }
-        });
-        derived.own(complete_guard);
 
         derived.lock()
     }
@@ -82,8 +78,10 @@ mod tests {
         let completed = Arc::new(AtomicBool::new(false));
 
         let c = completed.clone();
-        let _guard = taken.on_complete(move || {
-            c.store(true, Ordering::SeqCst);
+        let _guard = taken.subscribe(move |signal| {
+            if let Signal::Complete = signal {
+                c.store(true, Ordering::SeqCst);
+            }
         });
 
         assert!(!taken.is_complete());

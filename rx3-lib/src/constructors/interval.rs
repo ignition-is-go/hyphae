@@ -1,5 +1,6 @@
 use std::{thread, time::Duration};
 use crate::cell::{Cell, CellImmutable, CellMutable};
+use crate::signal::Signal;
 
 /// Creates a cell that emits 0, 1, 2, ... on the given interval.
 ///
@@ -16,7 +17,7 @@ pub fn interval(duration: Duration) -> Cell<u64, CellImmutable> {
             count += 1;
             // Exit when cell is dropped
             let Some(c) = weak.upgrade() else { break };
-            c.notify(count);
+            c.notify(Signal::Value(count));
         }
     });
 

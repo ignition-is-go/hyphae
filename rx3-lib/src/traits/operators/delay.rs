@@ -12,26 +12,17 @@ pub trait DelayExt<T>: Watchable<T> {
         let cell = Cell::<T, CellMutable>::new(self.get());
 
         let weak = cell.downgrade();
-        let guard = self.subscribe(move |value| {
-            let value = value.clone();
+        let guard = self.subscribe(move |signal| {
+            let signal = signal.clone();
             let weak = weak.clone();
             thread::spawn(move || {
                 thread::sleep(duration);
                 if let Some(c) = weak.upgrade() {
-                    c.notify(value);
+                    c.notify(signal);
                 }
             });
         });
         cell.own(guard);
-
-        // Propagate source completion
-        let weak = cell.downgrade();
-        let complete_guard = self.on_complete(move || {
-            if let Some(c) = weak.upgrade() {
-                c.complete();
-            }
-        });
-        cell.own(complete_guard);
 
         cell.lock()
     }
@@ -42,7 +33,7 @@ impl<T, W: Watchable<T>> DelayExt<T> for W {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Mutable;
+    use crate::{Mutable, Signal};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -53,8 +44,10 @@ mod tests {
         let received = Arc::new(AtomicU64::new(0));
 
         let r = received.clone();
-        let _guard = delayed.subscribe(move |v| {
-            r.store(*v, Ordering::SeqCst);
+        let _guard = delayed.subscribe(move |signal| {
+            if let Signal::Value(v) = signal {
+                r.store(*v, Ordering::SeqCst);
+            }
         });
 
         // Wait for the initial delayed value (0) to arrive before triggering a new one.

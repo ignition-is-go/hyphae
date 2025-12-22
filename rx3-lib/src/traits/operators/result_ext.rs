@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use crate::cell::{Cell, CellImmutable, CellMutable};
+use crate::signal::Signal;
 use super::Watchable;
 
 /// Extension trait for transforming Ok values in Result cells.
@@ -22,28 +23,25 @@ pub trait MapOkExt<T, E>: Watchable<Result<T, E>> {
 
         let weak = derived.downgrade();
         let first = Arc::new(AtomicBool::new(true));
-        let guard = self.subscribe(move |result| {
-            if first.swap(false, Ordering::SeqCst) {
-                return;
-            }
+        let guard = self.subscribe(move |signal| {
             if let Some(d) = weak.upgrade() {
-                let mapped = match result {
-                    Ok(v) => Ok(f(v)),
-                    Err(e) => Err(e.clone()),
-                };
-                d.notify(mapped);
+                match signal {
+                    Signal::Value(result) => {
+                        if first.swap(false, Ordering::SeqCst) {
+                            return;
+                        }
+                        let mapped = match result {
+                            Ok(v) => Ok(f(v)),
+                            Err(e) => Err(e.clone()),
+                        };
+                        d.notify(Signal::Value(mapped));
+                    }
+                    Signal::Complete => d.notify(Signal::Complete),
+                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
+                }
             }
         });
         derived.own(guard);
-
-        // Propagate source completion
-        let weak = derived.downgrade();
-        let complete_guard = self.on_complete(move || {
-            if let Some(d) = weak.upgrade() {
-                d.complete();
-            }
-        });
-        derived.own(complete_guard);
 
         derived.lock()
     }
@@ -75,28 +73,25 @@ pub trait MapErrExt<T, E>: Watchable<Result<T, E>> {
 
         let weak = derived.downgrade();
         let first = Arc::new(AtomicBool::new(true));
-        let guard = self.subscribe(move |result| {
-            if first.swap(false, Ordering::SeqCst) {
-                return;
-            }
+        let guard = self.subscribe(move |signal| {
             if let Some(d) = weak.upgrade() {
-                let mapped = match result {
-                    Ok(v) => Ok(v.clone()),
-                    Err(e) => Err(f(e)),
-                };
-                d.notify(mapped);
+                match signal {
+                    Signal::Value(result) => {
+                        if first.swap(false, Ordering::SeqCst) {
+                            return;
+                        }
+                        let mapped = match result {
+                            Ok(v) => Ok(v.clone()),
+                            Err(e) => Err(f(e)),
+                        };
+                        d.notify(Signal::Value(mapped));
+                    }
+                    Signal::Complete => d.notify(Signal::Complete),
+                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
+                }
             }
         });
         derived.own(guard);
-
-        // Propagate source completion
-        let weak = derived.downgrade();
-        let complete_guard = self.on_complete(move || {
-            if let Some(d) = weak.upgrade() {
-                d.complete();
-            }
-        });
-        derived.own(complete_guard);
 
         derived.lock()
     }
@@ -129,28 +124,25 @@ pub trait CatchErrorExt<T, E>: Watchable<Result<T, E>> {
 
         let weak = derived.downgrade();
         let first = Arc::new(AtomicBool::new(true));
-        let guard = self.subscribe(move |result| {
-            if first.swap(false, Ordering::SeqCst) {
-                return;
-            }
+        let guard = self.subscribe(move |signal| {
             if let Some(d) = weak.upgrade() {
-                let value = match result {
-                    Ok(v) => v.clone(),
-                    Err(e) => f(e),
-                };
-                d.notify(value);
+                match signal {
+                    Signal::Value(result) => {
+                        if first.swap(false, Ordering::SeqCst) {
+                            return;
+                        }
+                        let value = match result {
+                            Ok(v) => v.clone(),
+                            Err(e) => f(e),
+                        };
+                        d.notify(Signal::Value(value));
+                    }
+                    Signal::Complete => d.notify(Signal::Complete),
+                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
+                }
             }
         });
         derived.own(guard);
-
-        // Propagate source completion
-        let weak = derived.downgrade();
-        let complete_guard = self.on_complete(move || {
-            if let Some(d) = weak.upgrade() {
-                d.complete();
-            }
-        });
-        derived.own(complete_guard);
 
         derived.lock()
     }
@@ -180,28 +172,25 @@ pub trait UnwrapOrExt<T, E>: Watchable<Result<T, E>> {
 
         let weak = derived.downgrade();
         let first = Arc::new(AtomicBool::new(true));
-        let guard = self.subscribe(move |result| {
-            if first.swap(false, Ordering::SeqCst) {
-                return;
-            }
+        let guard = self.subscribe(move |signal| {
             if let Some(d) = weak.upgrade() {
-                let value = match result {
-                    Ok(v) => v.clone(),
-                    Err(_) => default.clone(),
-                };
-                d.notify(value);
+                match signal {
+                    Signal::Value(result) => {
+                        if first.swap(false, Ordering::SeqCst) {
+                            return;
+                        }
+                        let value = match result {
+                            Ok(v) => v.clone(),
+                            Err(_) => default.clone(),
+                        };
+                        d.notify(Signal::Value(value));
+                    }
+                    Signal::Complete => d.notify(Signal::Complete),
+                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
+                }
             }
         });
         derived.own(guard);
-
-        // Propagate source completion
-        let weak = derived.downgrade();
-        let complete_guard = self.on_complete(move || {
-            if let Some(d) = weak.upgrade() {
-                d.complete();
-            }
-        });
-        derived.own(complete_guard);
 
         derived.lock()
     }
@@ -222,28 +211,25 @@ pub trait UnwrapOrExt<T, E>: Watchable<Result<T, E>> {
 
         let weak = derived.downgrade();
         let first = Arc::new(AtomicBool::new(true));
-        let guard = self.subscribe(move |result| {
-            if first.swap(false, Ordering::SeqCst) {
-                return;
-            }
+        let guard = self.subscribe(move |signal| {
             if let Some(d) = weak.upgrade() {
-                let value = match result {
-                    Ok(v) => v.clone(),
-                    Err(e) => f(e),
-                };
-                d.notify(value);
+                match signal {
+                    Signal::Value(result) => {
+                        if first.swap(false, Ordering::SeqCst) {
+                            return;
+                        }
+                        let value = match result {
+                            Ok(v) => v.clone(),
+                            Err(e) => f(e),
+                        };
+                        d.notify(Signal::Value(value));
+                    }
+                    Signal::Complete => d.notify(Signal::Complete),
+                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
+                }
             }
         });
         derived.own(guard);
-
-        // Propagate source completion
-        let weak = derived.downgrade();
-        let complete_guard = self.on_complete(move || {
-            if let Some(d) = weak.upgrade() {
-                d.complete();
-            }
-        });
-        derived.own(complete_guard);
 
         derived.lock()
     }

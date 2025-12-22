@@ -1,4 +1,5 @@
 use crate::cell::{Cell, CellImmutable, CellMutable};
+use crate::signal::Signal;
 use super::Watchable;
 
 pub trait FirstExt<T>: Watchable<T> {
@@ -11,7 +12,7 @@ pub trait FirstExt<T>: Watchable<T> {
         let derived = Cell::<T, CellMutable>::new(self.get());
 
         // Already got first value - complete immediately
-        derived.complete();
+        derived.notify(Signal::Complete);
 
         derived.lock()
     }

@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::VecDeque;
 use crate::cell::{Cell, CellImmutable, CellMutable};
+use crate::signal::Signal;
 use super::{Gettable, Watchable};
 
 pub trait ZipExt<T>: Watchable<T> {
@@ -26,19 +27,26 @@ pub trait ZipExt<T>: Watchable<T> {
         let first1 = Arc::new(AtomicBool::new(true));
         let lq1 = left_queue.clone();
         let rq1 = right_queue.clone();
-        let guard1 = self.subscribe(move |value| {
-            if first1.swap(false, Ordering::SeqCst) {
-                return;
-            }
-            let mut rq = rq1.lock().unwrap();
-            if let Some(right) = rq.pop_front() {
-                drop(rq);
-                if let Some(d) = weak1.upgrade() {
-                    d.notify((value.clone(), right));
+        let guard1 = self.subscribe(move |signal| {
+            if let Some(d) = weak1.upgrade() {
+                match signal {
+                    Signal::Value(value) => {
+                        if first1.swap(false, Ordering::SeqCst) {
+                            return;
+                        }
+                        let mut rq = rq1.lock().unwrap();
+                        if let Some(right) = rq.pop_front() {
+                            drop(rq);
+                            d.notify(Signal::Value((value.clone(), right)));
+                        } else {
+                            drop(rq);
+                            lq1.lock().unwrap().push_back(value.clone());
+                        }
+                    }
+                    // Complete when EITHER source completes (no more pairs possible)
+                    Signal::Complete => d.notify(Signal::Complete),
+                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
                 }
-            } else {
-                drop(rq);
-                lq1.lock().unwrap().push_back(value.clone());
             }
         });
         derived.own(guard1);
@@ -48,39 +56,28 @@ pub trait ZipExt<T>: Watchable<T> {
         let first2 = Arc::new(AtomicBool::new(true));
         let lq2 = left_queue;
         let rq2 = right_queue;
-        let guard2 = other.subscribe(move |value| {
-            if first2.swap(false, Ordering::SeqCst) {
-                return;
-            }
-            let mut lq = lq2.lock().unwrap();
-            if let Some(left) = lq.pop_front() {
-                drop(lq);
-                if let Some(d) = weak2.upgrade() {
-                    d.notify((left, value.clone()));
+        let guard2 = other.subscribe(move |signal| {
+            if let Some(d) = weak2.upgrade() {
+                match signal {
+                    Signal::Value(value) => {
+                        if first2.swap(false, Ordering::SeqCst) {
+                            return;
+                        }
+                        let mut lq = lq2.lock().unwrap();
+                        if let Some(left) = lq.pop_front() {
+                            drop(lq);
+                            d.notify(Signal::Value((left, value.clone())));
+                        } else {
+                            drop(lq);
+                            rq2.lock().unwrap().push_back(value.clone());
+                        }
+                    }
+                    Signal::Complete => d.notify(Signal::Complete),
+                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
                 }
-            } else {
-                drop(lq);
-                rq2.lock().unwrap().push_back(value.clone());
             }
         });
         derived.own(guard2);
-
-        // Complete when EITHER source completes (no more pairs possible)
-        let weak = derived.downgrade();
-        let complete_guard1 = self.on_complete(move || {
-            if let Some(d) = weak.upgrade() {
-                d.complete();
-            }
-        });
-        derived.own(complete_guard1);
-
-        let weak = derived.downgrade();
-        let complete_guard2 = other.on_complete(move || {
-            if let Some(d) = weak.upgrade() {
-                d.complete();
-            }
-        });
-        derived.own(complete_guard2);
 
         derived.lock()
     }

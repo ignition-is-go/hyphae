@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use arc_swap::ArcSwap;
 use crate::cell::{Cell, CellImmutable, CellMutable};
+use crate::signal::Signal;
 use super::Watchable;
 
 pub trait PairwiseExt<T>: Watchable<T> {
@@ -14,23 +15,20 @@ pub trait PairwiseExt<T>: Watchable<T> {
 
         let prev = Arc::new(ArcSwap::from_pointee(initial));
         let weak = cell.downgrade();
-        let guard = self.subscribe(move |value| {
+        let guard = self.subscribe(move |signal| {
             if let Some(c) = weak.upgrade() {
-                let previous = (**prev.load()).clone();
-                prev.store(Arc::new(value.clone()));
-                c.notify((previous, value.clone()));
+                match signal {
+                    Signal::Value(value) => {
+                        let previous = (**prev.load()).clone();
+                        prev.store(Arc::new(value.clone()));
+                        c.notify(Signal::Value((previous, value.clone())));
+                    }
+                    Signal::Complete => c.notify(Signal::Complete),
+                    Signal::Error(e) => c.notify(Signal::Error(e.clone())),
+                }
             }
         });
         cell.own(guard);
-
-        // Propagate source completion
-        let weak = cell.downgrade();
-        let complete_guard = self.on_complete(move || {
-            if let Some(c) = weak.upgrade() {
-                c.complete();
-            }
-        });
-        cell.own(complete_guard);
 
         cell.lock()
     }

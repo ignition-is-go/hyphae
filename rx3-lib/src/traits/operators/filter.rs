@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use crate::cell::{Cell, CellImmutable, CellMutable};
+use crate::signal::Signal;
 use super::Watchable;
 
 pub trait FilterExt<T>: Watchable<T> {
@@ -14,25 +15,23 @@ pub trait FilterExt<T>: Watchable<T> {
         let weak = cell.downgrade();
         let predicate = Arc::new(predicate);
         let first = Arc::new(AtomicBool::new(true));
-        let guard = self.subscribe(move |value| {
-            if first.swap(false, Ordering::SeqCst) {
-                return;
-            }
-            if let Some(c) = weak.upgrade()
-                && predicate(value) {
-                    c.notify(value.clone());
+        let guard = self.subscribe(move |signal| {
+            if let Some(c) = weak.upgrade() {
+                match signal {
+                    Signal::Value(value) => {
+                        if first.swap(false, Ordering::SeqCst) {
+                            return;
+                        }
+                        if predicate(value) {
+                            c.notify(Signal::Value(value.clone()));
+                        }
+                    }
+                    Signal::Complete => c.notify(Signal::Complete),
+                    Signal::Error(e) => c.notify(Signal::Error(e.clone())),
                 }
+            }
         });
         cell.own(guard);
-
-        // Propagate source completion
-        let weak = cell.downgrade();
-        let complete_guard = self.on_complete(move || {
-            if let Some(c) = weak.upgrade() {
-                c.complete();
-            }
-        });
-        cell.own(complete_guard);
 
         cell.lock()
     }
@@ -49,13 +48,15 @@ mod tests {
 
     #[test]
     fn test_filter_passes_matching() {
-        let source = Cell::new(10);
+        let source = Cell::new(10u64);
         let evens = source.filter(|x| x % 2 == 0);
         let received = Arc::new(AtomicU64::new(0));
 
         let r = received.clone();
-        let _guard = evens.subscribe(move |v| {
-            r.store(*v, Ordering::SeqCst);
+        let _guard = evens.subscribe(move |signal| {
+            if let Signal::Value(v) = signal {
+                r.store(*v, Ordering::SeqCst);
+            }
         });
 
         assert_eq!(received.load(Ordering::SeqCst), 10);
@@ -71,8 +72,10 @@ mod tests {
         let received = Arc::new(AtomicU64::new(0));
 
         let r = received.clone();
-        let _guard = evens.subscribe(move |v| {
-            r.store(*v, Ordering::SeqCst);
+        let _guard = evens.subscribe(move |signal| {
+            if let Signal::Value(v) = signal {
+                r.store(*v, Ordering::SeqCst);
+            }
         });
 
         source.set(3); // odd - should not pass

@@ -1,7 +1,12 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use crate::cell::{Cell, CellImmutable, CellMutable};
+use crate::signal::Signal;
 use super::{Gettable, Watchable};
+
+// Completion state flags for join (both must complete)
+const SELF_COMPLETE: u8 = 0b01;
+const OTHER_COMPLETE: u8 = 0b10;
 
 pub trait JoinExt<T>: Watchable<T> {
     fn join<U, M>(&self, other: &Cell<U, M>) -> Cell<(T, U), CellImmutable>
@@ -14,16 +19,30 @@ pub trait JoinExt<T>: Watchable<T> {
         let initial = (self.get(), other.get());
         let derived = Cell::<(T, U), CellMutable>::new(initial);
 
+        let complete_state = Arc::new(AtomicU8::new(0));
+
         // Subscribe to self
         let weak1 = derived.downgrade();
         let other1 = other.clone();
         let first1 = Arc::new(AtomicBool::new(true));
-        let guard1 = self.subscribe(move |a| {
-            if first1.swap(false, Ordering::SeqCst) {
-                return;
-            }
+        let cs1 = complete_state.clone();
+        let guard1 = self.subscribe(move |signal| {
             if let Some(d) = weak1.upgrade() {
-                d.notify((a.clone(), other1.get()));
+                match signal {
+                    Signal::Value(a) => {
+                        if first1.swap(false, Ordering::SeqCst) {
+                            return;
+                        }
+                        d.notify(Signal::Value((a.clone(), other1.get())));
+                    }
+                    Signal::Complete => {
+                        let prev = cs1.fetch_or(SELF_COMPLETE, Ordering::SeqCst);
+                        if prev == OTHER_COMPLETE {
+                            d.notify(Signal::Complete);
+                        }
+                    }
+                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
+                }
             }
         });
         derived.own(guard1);
@@ -32,41 +51,26 @@ pub trait JoinExt<T>: Watchable<T> {
         let weak2 = derived.downgrade();
         let self2 = self.clone();
         let first2 = Arc::new(AtomicBool::new(true));
-        let guard2 = other.subscribe(move |b| {
-            if first2.swap(false, Ordering::SeqCst) {
-                return;
-            }
+        let guard2 = other.subscribe(move |signal| {
             if let Some(d) = weak2.upgrade() {
-                d.notify((self2.get(), b.clone()));
+                match signal {
+                    Signal::Value(b) => {
+                        if first2.swap(false, Ordering::SeqCst) {
+                            return;
+                        }
+                        d.notify(Signal::Value((self2.get(), b.clone())));
+                    }
+                    Signal::Complete => {
+                        let prev = complete_state.fetch_or(OTHER_COMPLETE, Ordering::SeqCst);
+                        if prev == SELF_COMPLETE {
+                            d.notify(Signal::Complete);
+                        }
+                    }
+                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
+                }
             }
         });
         derived.own(guard2);
-
-        // Complete when BOTH sources complete
-        let self_complete = Arc::new(AtomicBool::new(false));
-        let other_complete = Arc::new(AtomicBool::new(false));
-
-        let weak = derived.downgrade();
-        let sc = self_complete.clone();
-        let oc = other_complete.clone();
-        let complete_guard1 = self.on_complete(move || {
-            sc.store(true, Ordering::SeqCst);
-            if oc.load(Ordering::SeqCst)
-                && let Some(d) = weak.upgrade() {
-                    d.complete();
-                }
-        });
-        derived.own(complete_guard1);
-
-        let weak = derived.downgrade();
-        let complete_guard2 = other.on_complete(move || {
-            other_complete.store(true, Ordering::SeqCst);
-            if self_complete.load(Ordering::SeqCst)
-                && let Some(d) = weak.upgrade() {
-                    d.complete();
-                }
-        });
-        derived.own(complete_guard2);
 
         derived.lock()
     }

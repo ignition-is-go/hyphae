@@ -1,6 +1,7 @@
 use rayon::prelude::*;
 use std::sync::Arc;
 use crate::cell::{Cell, CellMutable};
+use crate::signal::Signal;
 use crate::subscription::SubscriptionGuard;
 use super::{Gettable, Watchable};
 
@@ -14,7 +15,7 @@ impl<T: Clone + Send + Sync + 'static> ParallelCell<T> {
         self.inner.get()
     }
 
-    pub fn subscribe(&self, callback: impl Fn(&T) + Send + Sync + 'static) -> SubscriptionGuard {
+    pub fn subscribe(&self, callback: impl Fn(&Signal<T>) + Send + Sync + 'static) -> SubscriptionGuard {
         self.inner.subscribe(callback)
     }
 }
@@ -30,7 +31,8 @@ impl<T> Clone for ParallelCell<T> {
 impl<T: Clone + Send + Sync + 'static> ParallelCell<T> {
     /// Notify all subscribers in parallel using Rayon.
     pub fn notify(&self, value: T) {
-        self.inner.inner.value.store(Arc::new(value.clone()));
+        let signal = Signal::Value(value);
+        self.inner.inner.value.store(Arc::new(signal.value().unwrap().clone()));
 
         // Collect subscribers and notify in parallel
         let callbacks: Vec<_> = self.inner.inner.subscribers.iter()
@@ -38,7 +40,7 @@ impl<T: Clone + Send + Sync + 'static> ParallelCell<T> {
             .collect();
 
         callbacks.par_iter().for_each(|callback| {
-            callback(&value);
+            callback(&signal);
         });
     }
 }
@@ -54,29 +56,27 @@ pub trait ParallelExt<T>: Watchable<T> {
         let parallel = ParallelCell { inner };
 
         let weak = parallel.inner.downgrade();
-        let guard = self.subscribe(move |value| {
+        let guard = self.subscribe(move |signal| {
             if let Some(inner) = weak.upgrade() {
-                inner.inner.value.store(Arc::new(value.clone()));
+                match signal {
+                    Signal::Value(value) => {
+                        inner.inner.value.store(Arc::new(value.clone()));
 
-                let callbacks: Vec<_> = inner.inner.subscribers.iter()
-                    .map(|entry| Arc::clone(&entry.value().callback))
-                    .collect();
+                        let callbacks: Vec<_> = inner.inner.subscribers.iter()
+                            .map(|entry| Arc::clone(&entry.value().callback))
+                            .collect();
 
-                callbacks.par_iter().for_each(|callback| {
-                    callback(value);
-                });
+                        let signal = Signal::Value(value.clone());
+                        callbacks.par_iter().for_each(|callback| {
+                            callback(&signal);
+                        });
+                    }
+                    Signal::Complete => inner.notify(Signal::Complete),
+                    Signal::Error(e) => inner.notify(Signal::Error(e.clone())),
+                }
             }
         });
         parallel.inner.own(guard);
-
-        // Propagate source completion
-        let weak = parallel.inner.downgrade();
-        let complete_guard = self.on_complete(move || {
-            if let Some(inner) = weak.upgrade() {
-                inner.complete();
-            }
-        });
-        parallel.inner.own(complete_guard);
 
         parallel
     }

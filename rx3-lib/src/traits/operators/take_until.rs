@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use crate::cell::{Cell, CellImmutable, CellMutable};
+use crate::signal::Signal;
 use super::Watchable;
 
 pub trait TakeUntilExt<T>: Watchable<T> {
@@ -21,13 +22,19 @@ pub trait TakeUntilExt<T>: Watchable<T> {
         let stopped_clone = stopped.clone();
         let notifier_first = Arc::new(AtomicBool::new(true));
         let weak_for_notifier = derived.downgrade();
-        let notifier_guard = notifier.subscribe(move |_| {
-            if notifier_first.swap(false, Ordering::SeqCst) {
-                return;
-            }
-            stopped_clone.store(true, Ordering::SeqCst);
-            if let Some(d) = weak_for_notifier.upgrade() {
-                d.complete();
+        let notifier_guard = notifier.subscribe(move |signal| {
+            match signal {
+                Signal::Value(_) => {
+                    if notifier_first.swap(false, Ordering::SeqCst) {
+                        return;
+                    }
+                    stopped_clone.store(true, Ordering::SeqCst);
+                    if let Some(d) = weak_for_notifier.upgrade() {
+                        d.notify(Signal::Complete);
+                    }
+                }
+                // Don't propagate notifier's complete/error
+                _ => {}
             }
         });
         derived.own(notifier_guard);
@@ -35,27 +42,24 @@ pub trait TakeUntilExt<T>: Watchable<T> {
         // Subscribe to source
         let weak = derived.downgrade();
         let first = Arc::new(AtomicBool::new(true));
-        let guard = self.subscribe(move |value| {
-            if first.swap(false, Ordering::SeqCst) {
-                return;
-            }
-            if stopped.load(Ordering::SeqCst) {
-                return;
-            }
+        let guard = self.subscribe(move |signal| {
             if let Some(d) = weak.upgrade() {
-                d.notify(value.clone());
+                match signal {
+                    Signal::Value(value) => {
+                        if first.swap(false, Ordering::SeqCst) {
+                            return;
+                        }
+                        if stopped.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        d.notify(Signal::Value(value.clone()));
+                    }
+                    Signal::Complete => d.notify(Signal::Complete),
+                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
+                }
             }
         });
         derived.own(guard);
-
-        // Propagate source completion
-        let weak = derived.downgrade();
-        let complete_guard = self.on_complete(move || {
-            if let Some(d) = weak.upgrade() {
-                d.complete();
-            }
-        });
-        derived.own(complete_guard);
 
         derived.lock()
     }
@@ -95,8 +99,10 @@ mod tests {
         let completed = Arc::new(AtomicBool::new(false));
 
         let c = completed.clone();
-        let _guard = taken.on_complete(move || {
-            c.store(true, Ordering::SeqCst);
+        let _guard = taken.subscribe(move |signal| {
+            if let Signal::Complete = signal {
+                c.store(true, Ordering::SeqCst);
+            }
         });
 
         assert!(!taken.is_complete());

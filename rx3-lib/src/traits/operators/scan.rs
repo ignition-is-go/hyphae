@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use arc_swap::ArcSwap;
 use crate::cell::{Cell, CellImmutable, CellMutable};
+use crate::signal::Signal;
 use super::Watchable;
 
 pub trait ScanExt<T>: Watchable<T> {
@@ -18,27 +19,24 @@ pub trait ScanExt<T>: Watchable<T> {
         let acc = Arc::new(ArcSwap::from_pointee(first_acc));
         let weak = cell.downgrade();
         let first = Arc::new(AtomicBool::new(true));
-        let guard = self.subscribe(move |value| {
-            if first.swap(false, Ordering::SeqCst) {
-                return;
-            }
+        let guard = self.subscribe(move |signal| {
             if let Some(c) = weak.upgrade() {
-                let current = (**acc.load()).clone();
-                let next = f(&current, value);
-                acc.store(Arc::new(next.clone()));
-                c.notify(next);
+                match signal {
+                    Signal::Value(value) => {
+                        if first.swap(false, Ordering::SeqCst) {
+                            return;
+                        }
+                        let current = (**acc.load()).clone();
+                        let next = f(&current, value);
+                        acc.store(Arc::new(next.clone()));
+                        c.notify(Signal::Value(next));
+                    }
+                    Signal::Complete => c.notify(Signal::Complete),
+                    Signal::Error(e) => c.notify(Signal::Error(e.clone())),
+                }
             }
         });
         cell.own(guard);
-
-        // Propagate source completion
-        let weak = cell.downgrade();
-        let complete_guard = self.on_complete(move || {
-            if let Some(c) = weak.upgrade() {
-                c.complete();
-            }
-        });
-        cell.own(complete_guard);
 
         cell.lock()
     }

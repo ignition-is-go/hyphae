@@ -11,6 +11,7 @@ use std::{
 };
 use uuid::Uuid;
 
+use crate::signal::Signal;
 use crate::subscription::SubscriptionGuard;
 use crate::traits::{DepNode, Gettable, Mutable, Watchable};
 
@@ -30,8 +31,10 @@ pub(crate) struct CellInner<T> {
     pub(crate) owned: DashMap<Uuid, SubscriptionGuard>,
     /// Whether this cell has completed (no more values will be emitted).
     pub(crate) completed: AtomicBool,
-    /// Callbacks to invoke when this cell completes.
-    pub(crate) on_complete: DashMap<Uuid, Box<dyn Fn() + Send + Sync>>,
+    /// Whether this cell has errored.
+    pub(crate) errored: AtomicBool,
+    /// The error, if any.
+    pub(crate) error: Mutex<Option<Arc<anyhow::Error>>>,
 }
 
 /// A reactive cell that holds a value and notifies subscribers on change.
@@ -64,11 +67,11 @@ impl<T, M> Clone for WeakCell<T, M> {
 }
 
 pub(crate) struct Subscriber<T> {
-    pub(crate) callback: Arc<dyn Fn(&T) + Send + Sync>,
+    pub(crate) callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>,
 }
 
 impl<T> Subscriber<T> {
-    pub(crate) fn new(callback: impl Fn(&T) + Send + Sync + 'static) -> Self {
+    pub(crate) fn new(callback: impl Fn(&Signal<T>) + Send + Sync + 'static) -> Self {
         Self {
             callback: Arc::new(callback),
         }
@@ -85,7 +88,8 @@ impl<T: Clone + Send + Sync + 'static> Cell<T, CellMutable> {
                 name: Mutex::new(None),
                 owned: DashMap::new(),
                 completed: AtomicBool::new(false),
-                on_complete: DashMap::new(),
+                errored: AtomicBool::new(false),
+                error: Mutex::new(None),
             }),
             _marker: PhantomData,
         }
@@ -171,10 +175,28 @@ impl<T: Clone + Send + Sync + 'static> Cell<T, CellImmutable> {
 }
 
 impl<T: Clone + Send + Sync + 'static, M: Send + Sync + 'static> Cell<T, M> {
-    /// Internal: store value and notify subscribers
+    /// Emit a signal to all subscribers.
+    ///
+    /// This is the unified notification mechanism for values, completion, and errors.
     #[doc(hidden)]
-    pub fn notify(&self, value: T) {
-        self.inner.value.store(Arc::new(value.clone()));
+    pub fn notify(&self, signal: Signal<T>) {
+        // Don't emit anything after completion or error
+        if self.inner.completed.load(Ordering::SeqCst) || self.inner.errored.load(Ordering::SeqCst) {
+            return;
+        }
+
+        match &signal {
+            Signal::Value(value) => {
+                self.inner.value.store(Arc::new(value.clone()));
+            }
+            Signal::Complete => {
+                self.inner.completed.store(true, Ordering::SeqCst);
+            }
+            Signal::Error(err) => {
+                self.inner.errored.store(true, Ordering::SeqCst);
+                *self.inner.error.lock().unwrap() = Some(err.clone());
+            }
+        }
 
         // Collect callbacks first to release DashMap lock before calling them
         let callbacks: Vec<_> = self
@@ -187,7 +209,7 @@ impl<T: Clone + Send + Sync + 'static, M: Send + Sync + 'static> Cell<T, M> {
         // Call each callback, catching panics so one bad callback doesn't kill the rest
         for callback in callbacks {
             let _ = catch_unwind(AssertUnwindSafe(|| {
-                callback(&value);
+                callback(&signal);
             }));
         }
     }
@@ -200,8 +222,19 @@ impl<T: Clone + Send + Sync + 'static, U: Send + Sync + 'static> Gettable<T> for
 }
 
 impl<T: Clone + Send + Sync + 'static, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
-    fn subscribe(&self, callback: impl Fn(&T) + Send + Sync + 'static) -> SubscriptionGuard {
-        callback(&self.get());
+    fn subscribe(&self, callback: impl Fn(&Signal<T>) + Send + Sync + 'static) -> SubscriptionGuard {
+        // Send current value immediately
+        callback(&Signal::Value(self.get()));
+
+        // If already complete or errored, send that signal too
+        if self.is_complete() {
+            callback(&Signal::Complete);
+        } else if self.is_error() {
+            if let Some(err) = self.error() {
+                callback(&Signal::Error(err));
+            }
+        }
+
         let id = Uuid::new_v4();
         self.inner.subscribers.insert(id, Box::new(Subscriber::new(callback)));
 
@@ -216,67 +249,29 @@ impl<T: Clone + Send + Sync + 'static, U: Send + Sync + 'static> Watchable<T> fo
         self.inner.subscribers.remove(&id);
     }
 
-    fn on_complete(&self, callback: impl Fn() + Send + Sync + 'static) -> SubscriptionGuard {
-        let id = Uuid::new_v4();
-        self.inner.on_complete.insert(id, Box::new(callback));
-
-        // Check after insert: if already complete, we must call the callback ourselves
-        // because complete() may have already finished iterating.
-        // Use atomic remove to ensure exactly-once: whoever successfully removes it, calls it.
-        if self.is_complete()
-            && let Some((_, cb)) = self.inner.on_complete.remove(&id) {
-                let _ = catch_unwind(AssertUnwindSafe(cb));
-            }
-
-        let source: Arc<dyn DepNode> = Arc::new(self.clone());
-        let cell = self.clone();
-        SubscriptionGuard::new(id, source, move || {
-            cell.inner.on_complete.remove(&id);
-        })
-    }
-
     fn is_complete(&self) -> bool {
         self.inner.completed.load(Ordering::SeqCst)
     }
-}
 
-impl<T: Clone + Send + Sync + 'static, M: Send + Sync + 'static> Cell<T, M> {
-    /// Mark this cell as complete. No more values should be emitted after this.
-    /// Calls all registered on_complete callbacks.
-    ///
-    /// This is pub(crate) so operators can complete derived cells internally.
-    /// For user-facing completion of mutable cells, use the `Mutable::complete` method.
-    pub(crate) fn complete(&self) {
-        // Only complete once
-        if self.inner.completed.swap(true, Ordering::SeqCst) {
-            return;
-        }
+    fn is_error(&self) -> bool {
+        self.inner.errored.load(Ordering::SeqCst)
+    }
 
-        // Collect callback ids first to avoid holding iterator lock during callbacks
-        let ids: Vec<_> = self
-            .inner
-            .on_complete
-            .iter()
-            .map(|entry| *entry.key())
-            .collect();
-
-        // Remove and call each callback.
-        // Atomic remove ensures exactly-once: if on_complete() races with us,
-        // whoever successfully removes the callback is responsible for calling it.
-        for id in ids {
-            if let Some((_, cb)) = self.inner.on_complete.remove(&id) {
-                let _ = catch_unwind(AssertUnwindSafe(cb));
-            }
-        }
+    fn error(&self) -> Option<Arc<anyhow::Error>> {
+        self.inner.error.lock().unwrap().clone()
     }
 }
 
 impl<T: Clone + Send + Sync + 'static> Mutable<T> for Cell<T, CellMutable> {
     fn set(&self, value: T) {
-        self.notify(value);
+        self.notify(Signal::Value(value));
     }
 
     fn complete(&self) {
-        Cell::complete(self)
+        self.notify(Signal::Complete);
+    }
+
+    fn fail(&self, error: impl Into<anyhow::Error>) {
+        self.notify(Signal::error(error));
     }
 }

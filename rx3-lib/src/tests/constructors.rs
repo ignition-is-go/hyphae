@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::thread;
 
-use crate::{interval, from_iter_with_delay};
+use crate::{interval, from_iter_with_delay, Signal};
 use crate::traits::Watchable;
 
 #[test]
@@ -12,8 +12,10 @@ fn test_interval_emits_incrementing() {
     let received = Arc::new(AtomicU64::new(0));
 
     let r = received.clone();
-    let _guard = ticker.subscribe(move |v| {
-        r.store(*v, Ordering::SeqCst);
+    let _guard = ticker.subscribe(move |signal| {
+        if let Signal::Value(v) = signal {
+            r.store(*v, Ordering::SeqCst);
+        }
     });
 
     assert_eq!(received.load(Ordering::SeqCst), 0);
@@ -29,8 +31,10 @@ fn test_from_iter_with_delay_emits_all() {
     let received = Arc::new(AtomicU64::new(0));
 
     let r = received.clone();
-    let _guard = items.subscribe(move |v| {
-        r.store(*v, Ordering::SeqCst);
+    let _guard = items.subscribe(move |signal| {
+        if let Signal::Value(v) = signal {
+            r.store(*v, Ordering::SeqCst);
+        }
     });
 
     // Initial value

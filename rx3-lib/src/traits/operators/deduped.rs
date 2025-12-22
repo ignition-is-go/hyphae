@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use crate::cell::{Cell, CellImmutable, CellMutable};
+use crate::signal::Signal;
 use super::{Gettable, Watchable};
 
 pub trait DedupedExt<T>: Watchable<T> {
@@ -13,25 +14,23 @@ pub trait DedupedExt<T>: Watchable<T> {
 
         let weak = derived.downgrade();
         let first = Arc::new(AtomicBool::new(true));
-        let guard = self.subscribe(move |value| {
-            if first.swap(false, Ordering::SeqCst) {
-                return;
-            }
-            if let Some(d) = weak.upgrade()
-                && *value != d.get() {
-                    d.notify(value.clone());
+        let guard = self.subscribe(move |signal| {
+            if let Some(d) = weak.upgrade() {
+                match signal {
+                    Signal::Value(value) => {
+                        if first.swap(false, Ordering::SeqCst) {
+                            return;
+                        }
+                        if *value != d.get() {
+                            d.notify(Signal::Value(value.clone()));
+                        }
+                    }
+                    Signal::Complete => d.notify(Signal::Complete),
+                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
                 }
+            }
         });
         derived.own(guard);
-
-        // Propagate source completion
-        let weak = derived.downgrade();
-        let complete_guard = self.on_complete(move || {
-            if let Some(d) = weak.upgrade() {
-                d.complete();
-            }
-        });
-        derived.own(complete_guard);
 
         derived.lock()
     }

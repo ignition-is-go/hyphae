@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use crate::{Cell, Gettable, MapExt, Mutable};
+use crate::{Cell, Gettable, MapExt, Mutable, Signal};
 use crate::traits::Watchable;
 
 // ============================================================================
@@ -134,8 +134,10 @@ fn test_parent_cell_outlives_derived() {
     let source = Cell::new(0u64);
     let derived = source.map(|v| *v * 2);
 
-    let _guard = derived.subscribe(move |v| {
-        r.store(*v, Ordering::SeqCst);
+    let _guard = derived.subscribe(move |signal| {
+        if let Signal::Value(v) = signal {
+            r.store(*v, Ordering::SeqCst);
+        }
     });
 
     source.set(5);

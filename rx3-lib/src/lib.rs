@@ -14,7 +14,7 @@
 //! ## Quick Start
 //!
 //! ```rust
-//! use rx3::{Cell, MapExt, Mutable, Watchable, JoinExt, flat};
+//! use rx3::{Cell, MapExt, Mutable, Watchable, JoinExt, Signal, flat};
 //!
 //! // Create reactive cells
 //! let x = Cell::new(5).with_name("x");
@@ -27,8 +27,10 @@
 //! let sum = x.join(&y).map(flat!(|a, b| a + b)).with_name("sum");
 //!
 //! // Subscribe to changes (guard auto-unsubscribes on drop)
-//! let _guard = sum.subscribe(|value| {
-//!     println!("Sum changed to: {}", value);
+//! let _guard = sum.subscribe(|signal| {
+//!     if let Signal::Value(value) = signal {
+//!         println!("Sum changed to: {}", value);
+//!     }
 //! });
 //!
 //! // Updates propagate automatically
@@ -57,6 +59,7 @@
 pub mod flat;
 pub mod cell;
 pub mod constructors;
+pub mod signal;
 pub mod subscription;
 pub mod traits;
 
@@ -65,6 +68,7 @@ mod tests;
 
 pub use cell::{Cell, CellImmutable, CellMutable};
 pub use constructors::{from_iter_with_delay, interval};
+pub use signal::Signal;
 pub use subscription::SubscriptionGuard;
 pub use traits::{
     CatchErrorExt, DebounceExt, DedupedExt, DelayExt, DepNode, FilterExt, FirstExt, Gettable,
