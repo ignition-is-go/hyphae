@@ -76,9 +76,10 @@ pub use signal::Signal;
 pub use subscription::SubscriptionGuard;
 pub use traits::{
     BackpressureExt, BufferCountExt, BufferTimeExt, CatchErrorExt, ConcatExt, DebounceExt,
-    DedupedExt, DelayExt, DepNode, DistinctUntilChangedByExt, FilterExt, FirstExt, Gettable,
-    JoinExt, LastExt, MapErrExt, MapExt, MapOkExt, MergeExt, MergeMapExt, Mutable, PairwiseExt,
-    ParallelCell, ParallelExt, RetryExt, SampleExt, ScanExt, SkipExt, StateMachineBuilder,
-    StateTransitionExt, SwitchMapExt, TakeExt, TakeUntilExt, TakeWhileExt, TapExt, ThrottleExt,
-    TimeoutExt, TryMapExt, UnwrapOrExt, Watchable, WithLatestFromExt, ZipExt,
+    DedupedExt, DelayExt, DepNode, DistinctExt, DistinctUntilChangedByExt, FilterExt, FinalizeExt,
+    FirstExt, Gettable, JoinExt, LastExt, MapErrExt, MapExt, MapOkExt, MergeExt, MergeMapExt,
+    Mutable, PairwiseExt, ParallelCell, ParallelExt, RetryExt, SampleExt, ScanExt, SkipExt,
+    SkipWhileExt, StateMachineBuilder, StateTransitionExt, SwitchMapExt, TakeExt, TakeUntilExt,
+    TakeWhileExt, TapExt, ThrottleExt, TimeoutExt, TryMapExt, UnwrapOrExt, Watchable, WindowExt,
+    WithLatestFromExt, ZipExt,
 };
