@@ -1,20 +1,15 @@
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
-use super::Watchable;
+use crate::cell::{Cell, CellImmutable};
+use super::{TakeExt, Watchable};
 
 pub trait FirstExt<T>: Watchable<T> {
     /// Take only the first value, then complete.
+    /// Equivalent to `take(1)`.
     fn first(&self) -> Cell<T, CellImmutable>
     where
         T: Clone + Send + Sync + 'static,
         Self: Clone + Send + Sync + 'static,
     {
-        let derived = Cell::<T, CellMutable>::new(self.get());
-
-        // Already got first value - complete immediately
-        derived.notify(Signal::Complete);
-
-        derived.lock()
+        self.take(1)
     }
 }
 

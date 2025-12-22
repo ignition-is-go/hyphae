@@ -1,36 +1,18 @@
-use std::sync::Arc;
-use arc_swap::ArcSwap;
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
-use super::Watchable;
+use crate::cell::{Cell, CellImmutable};
+use super::{ScanExt, Watchable};
 
 pub trait PairwiseExt<T>: Watchable<T> {
+    /// Emit pairs of (previous, current) values.
+    /// Equivalent to `scan` with pair accumulation.
     fn pairwise(&self) -> Cell<(T, T), CellImmutable>
     where
         T: Clone + Send + Sync + 'static,
         Self: Clone + Send + Sync + 'static,
     {
         let initial = self.get();
-        let cell = Cell::<(T, T), CellMutable>::new((initial.clone(), initial.clone()));
-
-        let prev = Arc::new(ArcSwap::from_pointee(initial));
-        let weak = cell.downgrade();
-        let guard = self.subscribe(move |signal| {
-            if let Some(c) = weak.upgrade() {
-                match signal {
-                    Signal::Value(value) => {
-                        let previous = (**prev.load()).clone();
-                        prev.store(Arc::new(value.clone()));
-                        c.notify(Signal::Value((previous, value.clone())));
-                    }
-                    Signal::Complete => c.notify(Signal::Complete),
-                    Signal::Error(e) => c.notify(Signal::Error(e.clone())),
-                }
-            }
-        });
-        cell.own(guard);
-
-        cell.lock()
+        self.scan((initial.clone(), initial), |(_prev, current), new| {
+            (current.clone(), new.clone())
+        })
     }
 }
 

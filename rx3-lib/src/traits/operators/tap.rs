@@ -1,37 +1,18 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
-use super::Watchable;
+use crate::cell::{Cell, CellImmutable};
+use super::{MapExt, Watchable};
 
 pub trait TapExt<T>: Watchable<T> {
+    /// Perform a side effect for each value without modifying it.
+    /// Equivalent to `map(|x| { f(x); x.clone() })`.
     fn tap(&self, f: impl Fn(&T) + Send + Sync + 'static) -> Cell<T, CellImmutable>
     where
         T: Clone + Send + Sync + 'static,
         Self: Clone + Send + Sync + 'static,
     {
-        let cell = Cell::<T, CellMutable>::new(self.get());
-
-        let weak = cell.downgrade();
-        let first = Arc::new(AtomicBool::new(true));
-        let guard = self.subscribe(move |signal| {
-            if let Some(c) = weak.upgrade() {
-                match signal {
-                    Signal::Value(value) => {
-                        if first.swap(false, Ordering::SeqCst) {
-                            return;
-                        }
-                        f(value);
-                        c.notify(Signal::Value(value.clone()));
-                    }
-                    Signal::Complete => c.notify(Signal::Complete),
-                    Signal::Error(e) => c.notify(Signal::Error(e.clone())),
-                }
-            }
-        });
-        cell.own(guard);
-
-        cell.lock()
+        self.map(move |x| {
+            f(x);
+            x.clone()
+        })
     }
 }
 

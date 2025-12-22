@@ -1,12 +1,10 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
-use super::Watchable;
+use crate::cell::{Cell, CellImmutable};
+use super::{MapExt, Watchable};
 
 /// Extension trait for transforming Ok values in Result cells.
 pub trait MapOkExt<T, E>: Watchable<Result<T, E>> {
     /// Transform the Ok value, passing through Err unchanged.
+    /// Equivalent to `map(|r| r.as_ref().map(f).map_or_else(|e| Err(e.clone()), Ok))`.
     fn map_ok<U, F>(&self, f: F) -> Cell<Result<U, E>, CellImmutable>
     where
         T: Clone + 'static,
@@ -15,35 +13,10 @@ pub trait MapOkExt<T, E>: Watchable<Result<T, E>> {
         F: Fn(&T) -> U + Send + Sync + 'static,
         Self: Clone + Send + Sync + 'static,
     {
-        let initial = match &self.get() {
+        self.map(move |r| match r {
             Ok(v) => Ok(f(v)),
             Err(e) => Err(e.clone()),
-        };
-        let derived = Cell::<Result<U, E>, CellMutable>::new(initial);
-
-        let weak = derived.downgrade();
-        let first = Arc::new(AtomicBool::new(true));
-        let guard = self.subscribe(move |signal| {
-            if let Some(d) = weak.upgrade() {
-                match signal {
-                    Signal::Value(result) => {
-                        if first.swap(false, Ordering::SeqCst) {
-                            return;
-                        }
-                        let mapped = match result {
-                            Ok(v) => Ok(f(v)),
-                            Err(e) => Err(e.clone()),
-                        };
-                        d.notify(Signal::Value(mapped));
-                    }
-                    Signal::Complete => d.notify(Signal::Complete),
-                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
-                }
-            }
-        });
-        derived.own(guard);
-
-        derived.lock()
+        })
     }
 }
 
@@ -57,43 +30,19 @@ where
 /// Extension trait for transforming Err values in Result cells.
 pub trait MapErrExt<T, E>: Watchable<Result<T, E>> {
     /// Transform the Err value, passing through Ok unchanged.
+    /// Equivalent to `map(|r| r.clone().map_err(|e| f(&e)))`.
     fn map_err<E2, F>(&self, f: F) -> Cell<Result<T, E2>, CellImmutable>
     where
         T: Clone + Send + Sync + 'static,
-        E: 'static,
+        E: Clone + Send + Sync + 'static,
         E2: Clone + Send + Sync + 'static,
         F: Fn(&E) -> E2 + Send + Sync + 'static,
         Self: Clone + Send + Sync + 'static,
     {
-        let initial = match &self.get() {
+        self.map(move |r| match r {
             Ok(v) => Ok(v.clone()),
             Err(e) => Err(f(e)),
-        };
-        let derived = Cell::<Result<T, E2>, CellMutable>::new(initial);
-
-        let weak = derived.downgrade();
-        let first = Arc::new(AtomicBool::new(true));
-        let guard = self.subscribe(move |signal| {
-            if let Some(d) = weak.upgrade() {
-                match signal {
-                    Signal::Value(result) => {
-                        if first.swap(false, Ordering::SeqCst) {
-                            return;
-                        }
-                        let mapped = match result {
-                            Ok(v) => Ok(v.clone()),
-                            Err(e) => Err(f(e)),
-                        };
-                        d.notify(Signal::Value(mapped));
-                    }
-                    Signal::Complete => d.notify(Signal::Complete),
-                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
-                }
-            }
-        });
-        derived.own(guard);
-
-        derived.lock()
+        })
     }
 }
 
@@ -107,44 +56,18 @@ where
 /// Extension trait for recovering from errors.
 pub trait CatchErrorExt<T, E>: Watchable<Result<T, E>> {
     /// Recover from errors by providing a fallback value.
-    ///
     /// Converts `Cell<Result<T, E>>` to `Cell<T>` by handling errors.
     fn catch_error<F>(&self, f: F) -> Cell<T, CellImmutable>
     where
         T: Clone + Send + Sync + 'static,
-        E: 'static,
+        E: Clone + Send + Sync + 'static,
         F: Fn(&E) -> T + Send + Sync + 'static,
         Self: Clone + Send + Sync + 'static,
     {
-        let initial = match &self.get() {
+        self.map(move |r| match r {
             Ok(v) => v.clone(),
             Err(e) => f(e),
-        };
-        let derived = Cell::<T, CellMutable>::new(initial);
-
-        let weak = derived.downgrade();
-        let first = Arc::new(AtomicBool::new(true));
-        let guard = self.subscribe(move |signal| {
-            if let Some(d) = weak.upgrade() {
-                match signal {
-                    Signal::Value(result) => {
-                        if first.swap(false, Ordering::SeqCst) {
-                            return;
-                        }
-                        let value = match result {
-                            Ok(v) => v.clone(),
-                            Err(e) => f(e),
-                        };
-                        d.notify(Signal::Value(value));
-                    }
-                    Signal::Complete => d.notify(Signal::Complete),
-                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
-                }
-            }
-        });
-        derived.own(guard);
-
-        derived.lock()
+        })
     }
 }
 
@@ -161,77 +84,25 @@ pub trait UnwrapOrExt<T, E>: Watchable<Result<T, E>> {
     fn unwrap_or(&self, default: T) -> Cell<T, CellImmutable>
     where
         T: Clone + Send + Sync + 'static,
-        E: 'static,
+        E: Clone + Send + Sync + 'static,
         Self: Clone + Send + Sync + 'static,
     {
-        let initial = match self.get() {
-            Ok(v) => v,
+        self.map(move |r| match r {
+            Ok(v) => v.clone(),
             Err(_) => default.clone(),
-        };
-        let derived = Cell::<T, CellMutable>::new(initial);
-
-        let weak = derived.downgrade();
-        let first = Arc::new(AtomicBool::new(true));
-        let guard = self.subscribe(move |signal| {
-            if let Some(d) = weak.upgrade() {
-                match signal {
-                    Signal::Value(result) => {
-                        if first.swap(false, Ordering::SeqCst) {
-                            return;
-                        }
-                        let value = match result {
-                            Ok(v) => v.clone(),
-                            Err(_) => default.clone(),
-                        };
-                        d.notify(Signal::Value(value));
-                    }
-                    Signal::Complete => d.notify(Signal::Complete),
-                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
-                }
-            }
-        });
-        derived.own(guard);
-
-        derived.lock()
+        })
     }
 
     /// Unwrap Ok values, computing a fallback for Err.
+    /// Equivalent to `catch_error(f)`.
     fn unwrap_or_else<F>(&self, f: F) -> Cell<T, CellImmutable>
     where
         T: Clone + Send + Sync + 'static,
-        E: 'static,
+        E: Clone + Send + Sync + 'static,
         F: Fn(&E) -> T + Send + Sync + 'static,
         Self: Clone + Send + Sync + 'static,
     {
-        let initial = match &self.get() {
-            Ok(v) => v.clone(),
-            Err(e) => f(e),
-        };
-        let derived = Cell::<T, CellMutable>::new(initial);
-
-        let weak = derived.downgrade();
-        let first = Arc::new(AtomicBool::new(true));
-        let guard = self.subscribe(move |signal| {
-            if let Some(d) = weak.upgrade() {
-                match signal {
-                    Signal::Value(result) => {
-                        if first.swap(false, Ordering::SeqCst) {
-                            return;
-                        }
-                        let value = match result {
-                            Ok(v) => v.clone(),
-                            Err(e) => f(e),
-                        };
-                        d.notify(Signal::Value(value));
-                    }
-                    Signal::Complete => d.notify(Signal::Complete),
-                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
-                }
-            }
-        });
-        derived.own(guard);
-
-        derived.lock()
+        self.catch_error(f)
     }
 }
 
