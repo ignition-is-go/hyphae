@@ -18,4 +18,6 @@ disallowed_types = "deny"
 anyhow = "1.0.100"
 arc-swap = "1.7.1"
 dashmap = "6.1.0"
+flume = "0.11"
+futures-core = "0.3"
 uuid = { version = "1.19.0", features = ["v4"] }

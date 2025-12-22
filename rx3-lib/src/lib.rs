@@ -57,6 +57,8 @@
 
 #[macro_use]
 pub mod flat;
+#[cfg(feature = "async")]
+pub mod async_support;
 pub mod bounded_input;
 pub mod bounded_output;
 pub mod cell;
@@ -71,6 +73,8 @@ pub mod traits;
 #[cfg(test)]
 mod tests;
 
+#[cfg(feature = "async")]
+pub use async_support::{AsyncWatchableExt, CellStream};
 pub use bounded_input::{BoundedInput, BoundedInputMetrics, OverflowPolicy};
 pub use bounded_output::BoundedOutput;
 pub use cell::{Cell, CellImmutable, CellMutable, SlowSubscriberAlert};

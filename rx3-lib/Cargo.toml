@@ -12,11 +12,17 @@ workspace = true
 name = "rx3"
 path = "src/lib.rs"
 
+[features]
+default = []
+async = ["flume", "futures-core"]
+
 [dependencies]
 anyhow = "1"
 arc-swap.workspace = true
 crossbeam = "0.8"
 dashmap.workspace = true
+flume = { workspace = true, optional = true }
+futures-core = { workspace = true, optional = true }
 rayon = "1.10"
 uuid.workspace = true
 
