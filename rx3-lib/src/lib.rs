@@ -75,8 +75,9 @@ pub use metrics::CellMetrics;
 pub use signal::Signal;
 pub use subscription::SubscriptionGuard;
 pub use traits::{
-    CatchErrorExt, DebounceExt, DedupedExt, DelayExt, DepNode, FilterExt, FirstExt, Gettable,
-    JoinExt, MapErrExt, MapExt, MapOkExt, MergeExt, MergeMapExt, Mutable, PairwiseExt,
-    ParallelCell, ParallelExt, ScanExt, SkipExt, SwitchMapExt, TakeExt, TakeUntilExt,
-    TakeWhileExt, TapExt, ThrottleExt, TryMapExt, UnwrapOrExt, Watchable, ZipExt,
+    BufferCountExt, CatchErrorExt, ConcatExt, DebounceExt, DedupedExt, DelayExt, DepNode,
+    DistinctUntilChangedByExt, FilterExt, FirstExt, Gettable, JoinExt, MapErrExt, MapExt,
+    MapOkExt, MergeExt, MergeMapExt, Mutable, PairwiseExt, ParallelCell, ParallelExt, SampleExt,
+    ScanExt, SkipExt, SwitchMapExt, TakeExt, TakeUntilExt, TakeWhileExt, TapExt, ThrottleExt,
+    TryMapExt, UnwrapOrExt, Watchable, WithLatestFromExt, ZipExt,
 };

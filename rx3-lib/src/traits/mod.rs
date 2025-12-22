@@ -10,8 +10,9 @@ pub use watchable::{Gettable, Watchable};
 
 // Re-export all operators for convenience
 pub use operators::{
-    CatchErrorExt, DebounceExt, DedupedExt, DelayExt, FilterExt, FirstExt, JoinExt, MapErrExt,
-    MapExt, MapOkExt, MergeExt, MergeMapExt, PairwiseExt, ParallelCell, ParallelExt, ScanExt,
-    SkipExt, SwitchMapExt, TakeExt, TakeUntilExt, TakeWhileExt, TapExt, ThrottleExt, TryMapExt,
-    UnwrapOrExt, ZipExt,
+    BufferCountExt, CatchErrorExt, ConcatExt, DebounceExt, DedupedExt, DelayExt,
+    DistinctUntilChangedByExt, FilterExt, FirstExt, JoinExt, MapErrExt, MapExt, MapOkExt,
+    MergeExt, MergeMapExt, PairwiseExt, ParallelCell, ParallelExt, SampleExt, ScanExt, SkipExt,
+    SwitchMapExt, TakeExt, TakeUntilExt, TakeWhileExt, TapExt, ThrottleExt, TryMapExt,
+    UnwrapOrExt, WithLatestFromExt, ZipExt,
 };
