@@ -59,6 +59,8 @@
 pub mod flat;
 pub mod bounded_input;
 pub mod cell;
+pub mod cell_map;
+pub mod cell_set;
 pub mod constructors;
 pub mod metrics;
 pub mod signal;
@@ -70,6 +72,8 @@ mod tests;
 
 pub use bounded_input::{BoundedInput, BoundedInputMetrics, OverflowPolicy};
 pub use cell::{Cell, CellImmutable, CellMutable};
+pub use cell_map::{CellMap, MapDiff};
+pub use cell_set::{CellSet, SetDiff};
 pub use constructors::{from_iter_with_delay, interval};
 pub use metrics::CellMetrics;
 pub use signal::Signal;
