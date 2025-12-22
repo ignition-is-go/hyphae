@@ -1,6 +1,7 @@
 // Re-export base traits for use by operator modules
 pub(crate) use super::{Gettable, Watchable};
 
+mod audit;
 mod backpressure;
 mod buffer_count;
 mod buffer_time;
@@ -39,6 +40,7 @@ mod window;
 mod with_latest_from;
 mod zip;
 
+pub use audit::AuditExt;
 pub use backpressure::BackpressureExt;
 pub use buffer_count::BufferCountExt;
 pub use buffer_time::BufferTimeExt;
