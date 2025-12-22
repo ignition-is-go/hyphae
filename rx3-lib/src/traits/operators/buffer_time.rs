@@ -1,0 +1,166 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
+
+use crossbeam::queue::SegQueue;
+
+use crate::cell::{Cell, CellImmutable, CellMutable};
+use crate::signal::Signal;
+
+use super::Watchable;
+
+pub trait BufferTimeExt<T>: Watchable<T> {
+    /// Collect values over a time window before emitting.
+    ///
+    /// Emits a `Vec<T>` containing all values received during each time window.
+    /// Empty windows emit an empty Vec.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rx3::{Cell, Mutable, BufferTimeExt};
+    /// use std::time::Duration;
+    ///
+    /// let source = Cell::new(0);
+    /// let buffered = source.buffer_time(Duration::from_millis(100));
+    ///
+    /// source.set(1);
+    /// source.set(2);
+    /// // After 100ms, emits [1, 2]
+    /// ```
+    fn buffer_time(&self, duration: Duration) -> Cell<Vec<T>, CellImmutable>
+    where
+        T: Clone + Send + Sync + 'static,
+        Self: Clone + Send + Sync + 'static,
+    {
+        let derived = Cell::<Vec<T>, CellMutable>::new(Vec::new());
+
+        let weak = derived.downgrade();
+        let buffer: Arc<SegQueue<T>> = Arc::new(SegQueue::new());
+        let first = Arc::new(AtomicBool::new(true));
+        let completed = Arc::new(AtomicBool::new(false));
+
+        // Spawn timer thread
+        let buffer2 = buffer.clone();
+        let weak2 = derived.downgrade();
+        let comp = completed.clone();
+        thread::spawn(move || {
+            while !comp.load(Ordering::SeqCst) {
+                thread::sleep(duration);
+                if comp.load(Ordering::SeqCst) {
+                    break;
+                }
+                if let Some(d) = weak2.upgrade() {
+                    let mut chunk = Vec::new();
+                    while let Some(v) = buffer2.pop() {
+                        chunk.push(v);
+                    }
+                    d.notify(Signal::value(chunk));
+                } else {
+                    break;
+                }
+            }
+        });
+
+        let guard = self.subscribe(move |signal| {
+            if let Some(d) = weak.upgrade() {
+                match signal {
+                    Signal::Value(value) => {
+                        if first.swap(false, Ordering::SeqCst) {
+                            return;
+                        }
+                        buffer.push((**value).clone());
+                    }
+                    Signal::Complete => {
+                        completed.store(true, Ordering::SeqCst);
+                        // Emit remaining buffer
+                        let mut remainder = Vec::new();
+                        while let Some(v) = buffer.pop() {
+                            remainder.push(v);
+                        }
+                        if !remainder.is_empty() {
+                            d.notify(Signal::value(remainder));
+                        }
+                        d.notify(Signal::Complete);
+                    }
+                    Signal::Error(e) => {
+                        completed.store(true, Ordering::SeqCst);
+                        d.notify(Signal::Error(e.clone()));
+                    }
+                }
+            }
+        });
+        derived.own(guard);
+
+        derived.lock()
+    }
+}
+
+impl<T, W: Watchable<T>> BufferTimeExt<T> for W {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Mutable;
+    use std::sync::Mutex;
+
+    #[test]
+    fn test_buffer_time() {
+        let source = Cell::new(0);
+        let buffered = source.buffer_time(Duration::from_millis(50));
+
+        let emissions = Arc::new(Mutex::new(Vec::<Vec<i32>>::new()));
+        let e = emissions.clone();
+        let _guard = buffered.subscribe(move |signal| {
+            if let Signal::Value(v) = signal {
+                e.lock().unwrap().push((**v).clone());
+            }
+        });
+
+        // Initial empty
+        assert_eq!(emissions.lock().unwrap().len(), 1);
+
+        // Add values
+        source.set(1);
+        source.set(2);
+        source.set(3);
+
+        // Wait for buffer to emit
+        thread::sleep(Duration::from_millis(70));
+
+        let emitted = emissions.lock().unwrap();
+        // Should have initial empty + one buffered emission
+        assert!(emitted.len() >= 2);
+        // Find the non-empty emission
+        let non_empty: Vec<_> = emitted.iter().filter(|v| !v.is_empty()).collect();
+        assert!(!non_empty.is_empty());
+        assert_eq!(non_empty[0], &vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_buffer_time_emits_remainder_on_complete() {
+        let source = Cell::new(0);
+        let buffered = source.buffer_time(Duration::from_millis(100));
+
+        let emissions = Arc::new(Mutex::new(Vec::<Vec<i32>>::new()));
+        let e = emissions.clone();
+        let _guard = buffered.subscribe(move |signal| {
+            if let Signal::Value(v) = signal {
+                e.lock().unwrap().push((**v).clone());
+            }
+        });
+
+        source.set(1);
+        source.set(2);
+
+        // Complete before timer
+        source.complete();
+
+        // Should have emitted remainder
+        let emitted = emissions.lock().unwrap();
+        let non_empty: Vec<_> = emitted.iter().filter(|v| !v.is_empty()).collect();
+        assert!(!non_empty.is_empty());
+        assert_eq!(non_empty[0], &vec![1, 2]);
+    }
+}
