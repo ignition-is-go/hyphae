@@ -13,7 +13,7 @@ pub trait WithLatestFromExt<T>: Watchable<T> {
     /// # Example
     ///
     /// ```
-    /// use rx3::{Cell, Mutable, Gettable, WithLatestFromExt};
+    /// use hypha::{Cell, Mutable, Gettable, WithLatestFromExt};
     ///
     /// let clicks = Cell::new(0u32);
     /// let mouse_pos = Cell::new((0, 0));

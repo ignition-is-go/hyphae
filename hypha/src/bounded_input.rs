@@ -107,7 +107,7 @@ struct BoundedInputInner<T> {
 /// # Example
 ///
 /// ```
-/// use rx3::{BoundedInput, OverflowPolicy, Watchable, Signal};
+/// use hypha::{BoundedInput, OverflowPolicy, Watchable, Signal};
 ///
 /// let input = BoundedInput::new(0, 10, OverflowPolicy::DropOldest);
 ///

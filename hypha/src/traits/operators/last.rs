@@ -18,7 +18,7 @@ pub trait LastExt<T>: Watchable<T> {
     /// # Example
     ///
     /// ```
-    /// use rx3::{Cell, Mutable, Gettable, LastExt};
+    /// use hypha::{Cell, Mutable, Gettable, LastExt};
     ///
     /// let source = Cell::new(0);
     /// let last = source.last();
@@ -71,7 +71,7 @@ pub trait LastExt<T>: Watchable<T> {
     /// # Example
     ///
     /// ```
-    /// use rx3::{Cell, Mutable, Gettable, LastExt};
+    /// use hypha::{Cell, Mutable, Gettable, LastExt};
     ///
     /// let source = Cell::new(0);
     /// let last = source.last_or(999);

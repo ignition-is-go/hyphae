@@ -17,7 +17,7 @@ pub trait BackpressureExt<T>: Watchable<T> {
     /// # Example
     ///
     /// ```
-    /// use rx3::{Cell, Mutable, Gettable, BackpressureExt};
+    /// use hypha::{Cell, Mutable, Gettable, BackpressureExt};
     ///
     /// let source = Cell::new(0);
     /// let buffered = source.drop_oldest(3);
@@ -75,7 +75,7 @@ pub trait BackpressureExt<T>: Watchable<T> {
     /// # Example
     ///
     /// ```
-    /// use rx3::{Cell, Mutable, Gettable, BackpressureExt};
+    /// use hypha::{Cell, Mutable, Gettable, BackpressureExt};
     ///
     /// let source = Cell::new(0);
     /// let buffered = source.drop_newest(3);
@@ -135,7 +135,7 @@ pub trait BackpressureExt<T>: Watchable<T> {
     /// # Example
     ///
     /// ```
-    /// use rx3::{Cell, Mutable, Gettable, BackpressureExt};
+    /// use hypha::{Cell, Mutable, Gettable, BackpressureExt};
     ///
     /// let source = Cell::new(0);
     /// let latest = source.sample_latest();

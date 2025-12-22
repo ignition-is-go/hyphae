@@ -14,12 +14,12 @@ use crate::traits::Watchable;
 ///
 /// Instead of processing values in a callback, values are buffered in a channel
 /// and can be pulled by the consumer at their own pace. Useful for decoupling
-/// rx3 notification from slow I/O or processing.
+/// hypha notification from slow I/O or processing.
 ///
 /// # Example
 ///
 /// ```
-/// use rx3::{Cell, Mutable, BoundedOutput};
+/// use hypha::{Cell, Mutable, BoundedOutput};
 /// use std::time::Duration;
 ///
 /// let cell = Cell::new(0);

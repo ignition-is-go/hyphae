@@ -17,7 +17,7 @@ pub trait BufferCountExt<T>: Watchable<T> {
     /// # Example
     ///
     /// ```
-    /// use rx3::{Cell, Mutable, Gettable, BufferCountExt};
+    /// use hypha::{Cell, Mutable, Gettable, BufferCountExt};
     ///
     /// let source = Cell::new(0);
     /// let buffered = source.buffer_count(3);

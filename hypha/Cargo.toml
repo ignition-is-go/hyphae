@@ -1,5 +1,5 @@
 [package]
-name = "rx3"
+name = "hypha"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -9,7 +9,7 @@ license.workspace = true
 workspace = true
 
 [lib]
-name = "rx3"
+name = "hypha"
 path = "src/lib.rs"
 
 [features]

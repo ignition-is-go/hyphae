@@ -19,7 +19,7 @@ pub trait AuditExt<T>: Watchable<T> {
     /// # Example
     ///
     /// ```
-    /// use rx3::{Cell, Mutable, AuditExt, Watchable};
+    /// use hypha::{Cell, Mutable, AuditExt, Watchable};
     /// use std::time::Duration;
     ///
     /// let source = Cell::new(0);

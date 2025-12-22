@@ -17,7 +17,7 @@ pub trait DistinctExt<T>: Watchable<T> {
     /// # Example
     ///
     /// ```
-    /// use rx3::{Cell, Mutable, DistinctExt, Watchable};
+    /// use hypha::{Cell, Mutable, DistinctExt, Watchable};
     ///
     /// let source = Cell::new(0);
     /// let distinct = source.distinct();

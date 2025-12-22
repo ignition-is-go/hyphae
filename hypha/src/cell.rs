@@ -150,7 +150,7 @@ impl<T: Clone + Send + Sync + 'static> Cell<T, CellMutable> {
     /// # Example
     ///
     /// ```
-    /// use rx3::{Cell, Mutable};
+    /// use hypha::{Cell, Mutable};
     /// use std::time::Duration;
     ///
     /// let cell = Cell::with_metrics(0);

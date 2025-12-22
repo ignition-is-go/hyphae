@@ -1,4 +1,4 @@
-use rx3::{Cell, DepNode, JoinExt, MapExt, Mutable, Signal, Watchable, flat};
+use hypha::{Cell, DepNode, JoinExt, MapExt, Mutable, Signal, Watchable, flat};
 
 fn main() {
     println!("=== Panic Isolation Demo ===\n");

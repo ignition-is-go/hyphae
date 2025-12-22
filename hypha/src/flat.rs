@@ -4,7 +4,7 @@
 /// This macro generates the nested pattern from a flat parameter list:
 ///
 /// ```
-/// use rx3::{Cell, Gettable, JoinExt, MapExt, flat};
+/// use hypha::{Cell, Gettable, JoinExt, MapExt, flat};
 ///
 /// let a = Cell::new(1);
 /// let b = Cell::new(2);

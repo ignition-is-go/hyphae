@@ -13,7 +13,7 @@ pub trait TryMapExt<T>: Watchable<T> {
     ///
     /// # Example
     /// ```
-    /// use rx3::{Cell, Mutable, TryMapExt, Gettable};
+    /// use hypha::{Cell, Mutable, TryMapExt, Gettable};
     ///
     /// let source = Cell::new(10i32);
     /// let parsed = source.try_map(|v| {

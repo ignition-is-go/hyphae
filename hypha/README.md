@@ -1,4 +1,4 @@
-# rx3
+# hypha
 
 A lock-free reactive programming library for Rust with dependency tracking.
 
@@ -13,7 +13,7 @@ A lock-free reactive programming library for Rust with dependency tracking.
 ## Quick Start
 
 ```rust
-use rx3::{Cell, combine, traits::{Mutable, Watchable}};
+use hypha::{Cell, combine, traits::{Mutable, Watchable}};
 
 // Create reactive cells
 let x = Cell::new(5).with_name("x");

@@ -19,7 +19,7 @@ pub trait BufferTimeExt<T>: Watchable<T> {
     /// # Example
     ///
     /// ```
-    /// use rx3::{Cell, Mutable, BufferTimeExt};
+    /// use hypha::{Cell, Mutable, BufferTimeExt};
     /// use std::time::Duration;
     ///
     /// let source = Cell::new(0);

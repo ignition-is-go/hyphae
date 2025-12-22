@@ -15,7 +15,7 @@ pub trait FinalizeExt<T>: Watchable<T> {
     /// # Example
     ///
     /// ```
-    /// use rx3::{Cell, Mutable, FinalizeExt, Watchable};
+    /// use hypha::{Cell, Mutable, FinalizeExt, Watchable};
     /// use std::sync::Arc;
     /// use std::sync::atomic::{AtomicBool, Ordering};
     ///

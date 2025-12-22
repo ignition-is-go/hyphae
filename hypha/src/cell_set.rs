@@ -41,7 +41,7 @@ where
 /// # Example
 ///
 /// ```
-/// use rx3::{CellSet, Gettable, Watchable, Signal};
+/// use hypha::{CellSet, Gettable, Watchable, Signal};
 ///
 /// let set = CellSet::<String>::new();
 ///

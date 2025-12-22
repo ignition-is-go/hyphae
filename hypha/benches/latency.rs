@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
-use rx3::{Cell, FilterExt, MapExt, Mutable, ParallelExt, ScanExt, Signal, Watchable};
+use hypha::{Cell, FilterExt, MapExt, Mutable, ParallelExt, ScanExt, Signal, Watchable};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -172,7 +172,7 @@ fn bench_complex_graph(c: &mut Criterion) {
 }
 
 fn bench_pairwise_chain(c: &mut Criterion) {
-    use rx3::PairwiseExt;
+    use hypha::PairwiseExt;
 
     c.bench_function("pairwise chain depth 10", |b| {
         let source = Cell::new(0u64);

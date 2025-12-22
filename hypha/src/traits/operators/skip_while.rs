@@ -14,7 +14,7 @@ pub trait SkipWhileExt<T>: Watchable<T> {
     /// # Example
     ///
     /// ```
-    /// use rx3::{Cell, Mutable, SkipWhileExt, Watchable};
+    /// use hypha::{Cell, Mutable, SkipWhileExt, Watchable};
     ///
     /// let source = Cell::new(0);
     /// let skipped = source.skip_while(|v| *v < 3);

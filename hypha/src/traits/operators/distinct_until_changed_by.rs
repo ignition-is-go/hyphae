@@ -16,7 +16,7 @@ pub trait DistinctUntilChangedByExt<T>: Watchable<T> {
     /// # Example
     ///
     /// ```
-    /// use rx3::{Cell, Mutable, Gettable, DistinctUntilChangedByExt};
+    /// use hypha::{Cell, Mutable, Gettable, DistinctUntilChangedByExt};
     ///
     /// #[derive(Clone)]
     /// struct User { id: u32, name: String }

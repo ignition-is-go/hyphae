@@ -96,7 +96,7 @@ pub trait StateTransitionExt<S>: Watchable<S> {
     /// # Example
     ///
     /// ```
-    /// use rx3::{Cell, Mutable, Gettable, StateTransitionExt};
+    /// use hypha::{Cell, Mutable, Gettable, StateTransitionExt};
     ///
     /// #[derive(Clone, PartialEq, Eq, Hash, Debug)]
     /// enum State { Idle, Loading, Ready, Error }

@@ -1,4 +1,4 @@
-//! # rx3 - Lock-Free Reactive Programming Library
+//! # hypha - Lock-Free Reactive Programming Library
 //!
 //! A high-performance, type-safe reactive programming library featuring true lock-free operations,
 //! heterogeneous cell combinations, and comprehensive dependency tracking.
@@ -14,7 +14,7 @@
 //! ## Quick Start
 //!
 //! ```rust
-//! use rx3::{Cell, MapExt, Mutable, Watchable, JoinExt, Signal, flat};
+//! use hypha::{Cell, MapExt, Mutable, Watchable, JoinExt, Signal, flat};
 //!
 //! // Create reactive cells
 //! let x = Cell::new(5).with_name("x");
@@ -42,7 +42,7 @@
 //! Use `join()` to combine cells, and the `flat!` macro to avoid nested tuple destructuring:
 //!
 //! ```rust
-//! use rx3::{Cell, Gettable, JoinExt, MapExt, flat};
+//! use hypha::{Cell, Gettable, JoinExt, MapExt, flat};
 //!
 //! let a = Cell::new(1);
 //! let b = Cell::new(2);

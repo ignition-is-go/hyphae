@@ -15,7 +15,7 @@ pub trait RetryExt<T>: Watchable<T> {
     /// # Example
     ///
     /// ```
-    /// use rx3::{Cell, Mutable, RetryExt, Watchable};
+    /// use hypha::{Cell, Mutable, RetryExt, Watchable};
     ///
     /// let source = Cell::new(0);
     /// let retried = source.retry(3);
@@ -91,7 +91,7 @@ pub trait RetryExt<T>: Watchable<T> {
     /// # Example
     ///
     /// ```
-    /// use rx3::{Cell, Mutable, RetryExt, Watchable};
+    /// use hypha::{Cell, Mutable, RetryExt, Watchable};
     ///
     /// let source = Cell::new(0);
     /// let retried = source.retry_when(|_err, attempt| {

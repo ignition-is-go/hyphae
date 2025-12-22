@@ -15,7 +15,7 @@ pub trait ConcatExt<T>: Watchable<T> {
     /// # Example
     ///
     /// ```
-    /// use rx3::{Cell, Mutable, Gettable, ConcatExt};
+    /// use hypha::{Cell, Mutable, Gettable, ConcatExt};
     ///
     /// let first = Cell::new(1);
     /// let second = Cell::new(100);

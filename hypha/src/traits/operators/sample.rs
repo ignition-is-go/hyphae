@@ -12,7 +12,7 @@ pub trait SampleExt<T>: Watchable<T> {
     /// # Example
     ///
     /// ```
-    /// use rx3::{Cell, Mutable, Gettable, SampleExt};
+    /// use hypha::{Cell, Mutable, Gettable, SampleExt};
     ///
     /// let source = Cell::new(0);
     /// let ticker = Cell::new(());

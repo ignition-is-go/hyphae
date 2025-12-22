@@ -14,7 +14,7 @@ pub trait WindowExt<T>: Watchable<T> {
     /// # Example
     ///
     /// ```
-    /// use rx3::{Cell, Mutable, Gettable, WindowExt};
+    /// use hypha::{Cell, Mutable, Gettable, WindowExt};
     ///
     /// let source = Cell::new(0);
     /// let windowed = source.window(3);

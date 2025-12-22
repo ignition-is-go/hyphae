@@ -45,7 +45,7 @@ where
 /// # Example
 ///
 /// ```
-/// use rx3::{CellMap, Gettable, Watchable, Signal};
+/// use hypha::{CellMap, Gettable, Watchable, Signal};
 ///
 /// let map = CellMap::<String, i32>::new();
 ///

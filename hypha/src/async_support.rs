@@ -1,4 +1,4 @@
-//! Async/await integration for rx3.
+//! Async/await integration for hypha.
 //!
 //! This module provides async Stream adapters for Cells, enabling use with
 //! async runtimes like tokio, async-std, or smol.
@@ -40,7 +40,7 @@ pub trait AsyncWatchableExt<T>: Watchable<T> {
     /// # Example
     ///
     /// ```ignore
-    /// use rx3::{Cell, Mutable, AsyncWatchableExt};
+    /// use hypha::{Cell, Mutable, AsyncWatchableExt};
     /// use futures::StreamExt;
     ///
     /// async fn example() {

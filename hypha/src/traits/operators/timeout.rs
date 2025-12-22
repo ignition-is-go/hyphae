@@ -17,7 +17,7 @@ pub trait TimeoutExt<T>: Watchable<T> {
     /// # Example
     ///
     /// ```
-    /// use rx3::{Cell, Mutable, TimeoutExt, Signal, Watchable};
+    /// use hypha::{Cell, Mutable, TimeoutExt, Signal, Watchable};
     /// use std::time::Duration;
     /// use std::sync::Arc;
     /// use std::sync::atomic::{AtomicBool, Ordering};
