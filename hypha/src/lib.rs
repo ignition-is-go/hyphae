@@ -78,7 +78,7 @@ pub use async_support::{AsyncWatchableExt, CellStream};
 pub use bounded_input::{BoundedInput, BoundedInputMetrics, OverflowPolicy};
 pub use bounded_output::BoundedOutput;
 pub use cell::{Cell, CellImmutable, CellMutable, SlowSubscriberAlert};
-pub use cell_map::{CellMap, MapDiff};
+pub use cell_map::{CellMap, MapDiff, SelectExt};
 pub use cell_set::{CellSet, SetDiff};
 pub use constructors::{from_iter_with_delay, interval};
 pub use metrics::CellMetrics;

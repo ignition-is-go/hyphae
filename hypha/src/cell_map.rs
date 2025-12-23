@@ -9,12 +9,17 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 
+use uuid::Uuid;
+
 use crate::cell::{Cell, CellImmutable, CellMutable, WeakCell};
-use crate::traits::Mutable;
+use crate::subscription::SubscriptionGuard;
+use crate::traits::{Mutable, Watchable};
 
 /// Diff notification for map changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MapDiff<K, V> {
+    /// Initial snapshot of all entries when subscribing.
+    Initial { entries: Vec<(K, V)> },
     /// A new key was inserted.
     Insert { key: K, value: V },
     /// A key was removed.
@@ -38,6 +43,8 @@ where
     diffs_cell: Cell<Option<MapDiff<K, V>>, CellMutable>,
     /// Cell for length.
     len_cell: Cell<usize, CellMutable>,
+    /// Subscription guards owned by this map (dropped when map drops).
+    owned: DashMap<Uuid, SubscriptionGuard>,
 }
 
 /// A reactive HashMap with per-key observability.
@@ -84,9 +91,15 @@ where
                 entries_cell: Cell::new(Vec::new()),
                 diffs_cell: Cell::new(None),
                 len_cell: Cell::new(0),
+                owned: DashMap::new(),
             }),
             _marker: PhantomData,
         }
+    }
+
+    /// Own a subscription guard, keeping it alive as long as this CellMap exists.
+    pub(crate) fn own(&self, guard: SubscriptionGuard) {
+        self.inner.owned.insert(Uuid::new_v4(), guard);
     }
 
     /// Insert a key-value pair, returning the old value if present.
@@ -251,6 +264,41 @@ where
     pub fn get_value(&self, key: &K) -> Option<V> {
         self.inner.data.get(key).map(|r| r.value().clone())
     }
+
+    /// Subscribe to diffs with an initial snapshot.
+    ///
+    /// The callback is first called with `MapDiff::Initial` containing all current
+    /// entries, then called with subsequent diffs as the map changes.
+    ///
+    /// Returns a guard that cancels the subscription when dropped.
+    pub fn subscribe_diffs<F>(&self, callback: F) -> SubscriptionGuard
+    where
+        F: Fn(&MapDiff<K, V>) + Send + Sync + 'static,
+    {
+        // Emit initial snapshot
+        let entries: Vec<(K, V)> = self
+            .inner
+            .data
+            .iter()
+            .map(|r| (r.key().clone(), r.value().clone()))
+            .collect();
+        callback(&MapDiff::Initial { entries });
+
+        // Subscribe to subsequent diffs
+        let diffs = self.diffs();
+        let first = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        diffs.subscribe(move |signal| {
+            // Skip the first signal (the current value from Cell subscription)
+            if first.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+            if let crate::Signal::Value(arc_opt) = signal {
+                if let Some(diff) = arc_opt.as_ref() {
+                    callback(diff);
+                }
+            }
+        })
+    }
 }
 
 impl<K, V, M> Clone for CellMap<K, V, M>
@@ -266,10 +314,97 @@ where
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// SelectExt - Extension trait for filtering CellMap values
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Extension trait for filtering CellMap values reactively.
+pub trait SelectExt<K, V>
+where
+    K: Hash + Eq + Clone + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+{
+    /// Create a filtered view of this CellMap.
+    ///
+    /// Returns an immutable `CellMap` containing only entries where the
+    /// predicate returns `true`. The filtered map automatically updates
+    /// when the source map changes.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use hypha::{CellMap, Gettable, SelectExt};
+    ///
+    /// let map = CellMap::<String, i32>::new();
+    /// map.insert("small".to_string(), 5);
+    /// map.insert("large".to_string(), 100);
+    ///
+    /// let large_values = map.select(|v| *v > 50);
+    /// assert_eq!(large_values.entries().get().len(), 1);
+    ///
+    /// // Adding a large value updates the filtered map
+    /// map.insert("huge".to_string(), 1000);
+    /// assert_eq!(large_values.entries().get().len(), 2);
+    /// ```
+    fn select<F>(&self, predicate: F) -> CellMap<K, V, CellImmutable>
+    where
+        F: Fn(&V) -> bool + Send + Sync + 'static;
+}
+
+impl<K, V, M> SelectExt<K, V> for CellMap<K, V, M>
+where
+    K: Hash + Eq + Clone + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+{
+    fn select<F>(&self, predicate: F) -> CellMap<K, V, CellImmutable>
+    where
+        F: Fn(&V) -> bool + Send + Sync + 'static,
+    {
+        let filtered = CellMap::<K, V, CellMutable>::new();
+        let predicate = Arc::new(predicate);
+
+        // Subscribe to diffs (which emits Initial first with all current entries)
+        let filtered_clone = filtered.clone();
+        let guard = self.subscribe_diffs(move |diff| {
+            match diff {
+                MapDiff::Initial { entries } => {
+                    for (key, value) in entries {
+                        if predicate(value) {
+                            filtered_clone.insert(key.clone(), value.clone());
+                        }
+                    }
+                }
+                MapDiff::Insert { key, value } => {
+                    if predicate(value) {
+                        filtered_clone.insert(key.clone(), value.clone());
+                    }
+                }
+                MapDiff::Remove { key, .. } => {
+                    filtered_clone.remove(key);
+                }
+                MapDiff::Update { key, new_value, .. } => {
+                    if predicate(new_value) {
+                        filtered_clone.insert(key.clone(), new_value.clone());
+                    } else {
+                        filtered_clone.remove(key);
+                    }
+                }
+            }
+        });
+
+        // Own the guard so it stays alive as long as the filtered map exists
+        filtered.own(guard);
+
+        // Return locked (immutable) view
+        filtered.lock()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::traits::{Gettable, Watchable};
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
@@ -377,6 +512,37 @@ mod tests {
     }
 
     #[test]
+    fn test_cellmap_subscribe_diffs() {
+        let map = CellMap::<String, i32>::new();
+        map.insert("a".to_string(), 1);
+        map.insert("b".to_string(), 2);
+
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let received_clone = received.clone();
+
+        let _guard = map.subscribe_diffs(move |diff| {
+            received_clone.lock().unwrap().push(diff.clone());
+        });
+
+        // Should have received Initial with both entries
+        let diffs = received.lock().unwrap();
+        assert_eq!(diffs.len(), 1);
+        match &diffs[0] {
+            MapDiff::Initial { entries } => {
+                assert_eq!(entries.len(), 2);
+            }
+            _ => panic!("Expected Initial diff"),
+        }
+        drop(diffs);
+
+        // Insert should trigger diff
+        map.insert("c".to_string(), 3);
+        let diffs = received.lock().unwrap();
+        assert_eq!(diffs.len(), 2);
+        assert!(matches!(&diffs[1], MapDiff::Insert { key, value } if key == "c" && *value == 3));
+    }
+
+    #[test]
     fn test_cellmap_len() {
         let map = CellMap::<String, i32>::new();
         let len = map.len();
@@ -420,5 +586,117 @@ mod tests {
 
         assert_eq!(cell1.get(), Some(42));
         assert_eq!(cell2.get(), Some(42));
+    }
+
+    #[test]
+    fn test_cellmap_select_initial() {
+        let map = CellMap::<String, i32>::new();
+        map.insert("a".to_string(), 5);
+        map.insert("b".to_string(), 15);
+        map.insert("c".to_string(), 25);
+
+        let filtered = map.select(|v| *v > 10);
+
+        // Should have only b and c
+        assert_eq!(filtered.entries().get().len(), 2);
+        assert!(filtered.contains_key(&"b".to_string()));
+        assert!(filtered.contains_key(&"c".to_string()));
+        assert!(!filtered.contains_key(&"a".to_string()));
+    }
+
+    #[test]
+    fn test_cellmap_select_insert() {
+        let map = CellMap::<String, i32>::new();
+        let filtered = map.select(|v| *v > 10);
+
+        assert_eq!(filtered.entries().get().len(), 0);
+
+        // Insert non-matching
+        map.insert("a".to_string(), 5);
+        assert_eq!(filtered.entries().get().len(), 0);
+
+        // Insert matching
+        map.insert("b".to_string(), 15);
+        assert_eq!(filtered.entries().get().len(), 1);
+        assert!(filtered.contains_key(&"b".to_string()));
+    }
+
+    #[test]
+    fn test_cellmap_select_remove() {
+        let map = CellMap::<String, i32>::new();
+        map.insert("a".to_string(), 15);
+        map.insert("b".to_string(), 25);
+
+        let filtered = map.select(|v| *v > 10);
+        assert_eq!(filtered.entries().get().len(), 2);
+
+        // Remove a matching item
+        map.remove(&"a".to_string());
+        assert_eq!(filtered.entries().get().len(), 1);
+        assert!(!filtered.contains_key(&"a".to_string()));
+        assert!(filtered.contains_key(&"b".to_string()));
+    }
+
+    #[test]
+    fn test_cellmap_select_update_matching_to_non_matching() {
+        let map = CellMap::<String, i32>::new();
+        map.insert("a".to_string(), 15);
+
+        let filtered = map.select(|v| *v > 10);
+        assert_eq!(filtered.entries().get().len(), 1);
+
+        // Update to non-matching value
+        map.insert("a".to_string(), 5);
+        assert_eq!(filtered.entries().get().len(), 0);
+    }
+
+    #[test]
+    fn test_cellmap_select_update_non_matching_to_matching() {
+        let map = CellMap::<String, i32>::new();
+        map.insert("a".to_string(), 5);
+
+        let filtered = map.select(|v| *v > 10);
+        assert_eq!(filtered.entries().get().len(), 0);
+
+        // Update to matching value
+        map.insert("a".to_string(), 15);
+        assert_eq!(filtered.entries().get().len(), 1);
+        assert!(filtered.contains_key(&"a".to_string()));
+    }
+
+    #[test]
+    fn test_cellmap_select_entries_observable() {
+        let map = CellMap::<String, i32>::new();
+        let filtered = map.select(|v| *v > 10);
+        let entries = filtered.entries();
+
+        let count = Arc::new(AtomicUsize::new(0));
+        let c = count.clone();
+        let _guard = entries.subscribe(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        });
+
+        assert_eq!(count.load(Ordering::SeqCst), 1); // Initial
+
+        // Insert matching
+        map.insert("a".to_string(), 15);
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+
+        // Insert non-matching - filtered should NOT change
+        map.insert("b".to_string(), 5);
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn test_cellmap_select_on_locked_map() {
+        let map = CellMap::<String, i32>::new();
+        map.insert("a".to_string(), 5);
+        map.insert("b".to_string(), 15);
+
+        let locked = map.lock();
+        let filtered = locked.select(|v| *v > 10);
+
+        assert_eq!(filtered.entries().get().len(), 1);
+        assert!(filtered.contains_key(&"b".to_string()));
     }
 }
