@@ -133,10 +133,10 @@ where
         self.inner.len_cell.set(self.inner.data.len());
 
         // Notify per-key observers
-        if let Some(weak) = self.inner.key_cells.get(&key) {
-            if let Some(cell) = weak.upgrade() {
-                cell.set(Some(value));
-            }
+        if let Some(weak) = self.inner.key_cells.get(&key)
+            && let Some(cell) = weak.upgrade()
+        {
+            cell.set(Some(value));
         }
 
         old
@@ -166,10 +166,10 @@ where
             self.inner.len_cell.set(self.inner.data.len());
 
             // Notify per-key observers
-            if let Some(weak) = self.inner.key_cells.get(&k) {
-                if let Some(cell) = weak.upgrade() {
-                    cell.set(None);
-                }
+            if let Some(weak) = self.inner.key_cells.get(&k)
+                && let Some(cell) = weak.upgrade()
+            {
+                cell.set(None);
             }
 
             Some(old_value)
@@ -208,10 +208,10 @@ where
     /// Multiple calls with the same key return the same underlying Cell.
     pub fn get(&self, key: &K) -> Cell<Option<V>, CellImmutable> {
         // Check cache first
-        if let Some(weak) = self.inner.key_cells.get(key) {
-            if let Some(cell) = weak.upgrade() {
-                return cell.lock();
-            }
+        if let Some(weak) = self.inner.key_cells.get(key)
+            && let Some(cell) = weak.upgrade()
+        {
+            return cell.lock();
         }
 
         // Create new cell with current value
@@ -292,10 +292,10 @@ where
             if first.swap(false, std::sync::atomic::Ordering::SeqCst) {
                 return;
             }
-            if let crate::Signal::Value(arc_opt) = signal {
-                if let Some(diff) = arc_opt.as_ref() {
-                    callback(diff);
-                }
+            if let crate::Signal::Value(arc_opt) = signal
+                && let Some(diff) = arc_opt.as_ref()
+            {
+                callback(diff);
             }
         })
     }

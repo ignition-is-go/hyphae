@@ -1,3 +1,4 @@
+use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -5,6 +6,37 @@ use crate::cell::{Cell, CellImmutable, CellMutable};
 use crate::signal::Signal;
 
 use super::Watchable;
+
+/// A callback that can only be called once, implemented lock-free.
+struct OnceCallback<F> {
+    called: AtomicBool,
+    callback: UnsafeCell<Option<F>>,
+}
+
+// Safety: The atomic bool ensures only one thread can access the callback
+unsafe impl<F: Send> Send for OnceCallback<F> {}
+unsafe impl<F: Send> Sync for OnceCallback<F> {}
+
+impl<F: FnOnce()> OnceCallback<F> {
+    fn new(f: F) -> Self {
+        Self {
+            called: AtomicBool::new(false),
+            callback: UnsafeCell::new(Some(f)),
+        }
+    }
+
+    fn call(&self) {
+        if !self.called.swap(true, Ordering::SeqCst) {
+            // Safety: called is now true, so no other thread can enter this block
+            // The atomic swap ensures exclusive access to the UnsafeCell
+            unsafe {
+                if let Some(cb) = (*self.callback.get()).take() {
+                    cb();
+                }
+            }
+        }
+    }
+}
 
 pub trait FinalizeExt<T>: Watchable<T> {
     /// Execute a callback when the stream completes or errors.
@@ -41,7 +73,7 @@ pub trait FinalizeExt<T>: Watchable<T> {
 
         let weak = derived.downgrade();
         let first = Arc::new(AtomicBool::new(true));
-        let callback = Arc::new(std::sync::Mutex::new(Some(callback)));
+        let callback = Arc::new(OnceCallback::new(callback));
 
         let guard = self.subscribe(move |signal| {
             if let Some(d) = weak.upgrade() {
@@ -53,15 +85,11 @@ pub trait FinalizeExt<T>: Watchable<T> {
                         d.notify(Signal::Value(value.clone()));
                     }
                     Signal::Complete => {
-                        if let Some(cb) = callback.lock().unwrap().take() {
-                            cb();
-                        }
+                        callback.call();
                         d.notify(Signal::Complete);
                     }
                     Signal::Error(e) => {
-                        if let Some(cb) = callback.lock().unwrap().take() {
-                            cb();
-                        }
+                        callback.call();
                         d.notify(Signal::Error(e.clone()));
                     }
                 }

@@ -10,14 +10,21 @@ use crate::signal::Signal;
 
 use super::Watchable;
 
+/// Type alias for transition handler callbacks.
+type TransitionFn<S> = Arc<dyn Fn(&S, &S) + Send + Sync>;
+/// Type alias for state enter/exit callbacks.
+type StateFn<S> = Arc<dyn Fn(&S) + Send + Sync>;
+/// Type alias for guard condition callbacks.
+type GuardFn<S> = Arc<dyn Fn(&S, &S) -> bool + Send + Sync>;
+
 /// Builder for defining state machine transitions.
 pub struct StateMachineBuilder<S> {
-    transitions: HashMap<(S, S), Arc<dyn Fn(&S, &S) + Send + Sync>>,
-    on_enter: HashMap<S, Arc<dyn Fn(&S) + Send + Sync>>,
-    on_exit: HashMap<S, Arc<dyn Fn(&S) + Send + Sync>>,
-    guards: HashMap<(S, S), Arc<dyn Fn(&S, &S) -> bool + Send + Sync>>,
-    on_any_enter: Vec<Arc<dyn Fn(&S) + Send + Sync>>,
-    on_invalid: Option<Arc<dyn Fn(&S, &S) + Send + Sync>>,
+    transitions: HashMap<(S, S), TransitionFn<S>>,
+    on_enter: HashMap<S, StateFn<S>>,
+    on_exit: HashMap<S, StateFn<S>>,
+    guards: HashMap<(S, S), GuardFn<S>>,
+    on_any_enter: Vec<StateFn<S>>,
+    on_invalid: Option<TransitionFn<S>>,
 }
 
 impl<S: Eq + Hash + Clone + Send + Sync + 'static> StateMachineBuilder<S> {
@@ -157,10 +164,10 @@ pub trait StateTransitionExt<S>: Watchable<S> {
                         }
 
                         // Check guard if defined
-                        if let Some(guard_fn) = guards.get(&key) {
-                            if !guard_fn(&*current, &**next) {
-                                return; // Guard rejected
-                            }
+                        if let Some(guard_fn) = guards.get(&key)
+                            && !guard_fn(&*current, &**next)
+                        {
+                            return; // Guard rejected
                         }
 
                         // Valid transition - execute handlers

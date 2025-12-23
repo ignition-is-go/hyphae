@@ -147,10 +147,10 @@ pub trait SwitchMapExt<T>: Watchable<T> {
                             .compare_exchange(old, new, Ordering::SeqCst, Ordering::SeqCst)
                             .is_ok()
                         {
-                            if new & INNER_COMPLETE_BIT != 0 {
-                                if let Some(c) = weak.upgrade() {
-                                    c.notify(Signal::Complete);
-                                }
+                            if new & INNER_COMPLETE_BIT != 0
+                                && let Some(c) = weak.upgrade()
+                            {
+                                c.notify(Signal::Complete);
                             }
                             return;
                         }

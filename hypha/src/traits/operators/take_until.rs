@@ -23,18 +23,15 @@ pub trait TakeUntilExt<T>: Watchable<T> {
         let notifier_first = Arc::new(AtomicBool::new(true));
         let weak_for_notifier = derived.downgrade();
         let notifier_guard = notifier.subscribe(move |signal| {
-            match signal {
-                Signal::Value(_) => {
-                    if notifier_first.swap(false, Ordering::SeqCst) {
-                        return;
-                    }
-                    stopped_clone.store(true, Ordering::SeqCst);
-                    if let Some(d) = weak_for_notifier.upgrade() {
-                        d.notify(Signal::Complete);
-                    }
+            // Only react to values, ignore notifier's complete/error
+            if let Signal::Value(_) = signal {
+                if notifier_first.swap(false, Ordering::SeqCst) {
+                    return;
                 }
-                // Don't propagate notifier's complete/error
-                _ => {}
+                stopped_clone.store(true, Ordering::SeqCst);
+                if let Some(d) = weak_for_notifier.upgrade() {
+                    d.notify(Signal::Complete);
+                }
             }
         });
         derived.own(notifier_guard);

@@ -6,7 +6,7 @@ use std::{
     panic::{catch_unwind, AssertUnwindSafe},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex, Weak,
+        Arc, Weak,
     },
     time::Duration,
 };
@@ -41,7 +41,7 @@ pub(crate) struct CellInner<T> {
     pub(crate) id: Uuid,
     pub(crate) subscribers: DashMap<Uuid, Box<Subscriber<T>>>,
     pub(crate) value: ArcSwap<T>,
-    pub(crate) name: Mutex<Option<Arc<str>>>,
+    pub(crate) name: ArcSwap<Option<Arc<str>>>,
     /// Subscription guards owned by this cell (dropped when cell drops, provides dependency tracking).
     pub(crate) owned: DashMap<Uuid, SubscriptionGuard>,
     /// Whether this cell has completed (no more values will be emitted).
@@ -49,7 +49,7 @@ pub(crate) struct CellInner<T> {
     /// Whether this cell has errored.
     pub(crate) errored: AtomicBool,
     /// The error, if any.
-    pub(crate) error: Mutex<Option<Arc<anyhow::Error>>>,
+    pub(crate) error: ArcSwap<Option<Arc<anyhow::Error>>>,
     /// Optional metrics for observability.
     pub(crate) metrics: Option<Arc<CellMetrics>>,
     /// Slow subscriber threshold (nanoseconds). None = disabled.
@@ -87,8 +87,11 @@ impl<T, M> Clone for WeakCell<T, M> {
     }
 }
 
+/// Type alias for subscriber callback functions.
+pub(crate) type SubscriberCallback<T> = Arc<dyn Fn(&Signal<T>) + Send + Sync>;
+
 pub(crate) struct Subscriber<T> {
-    pub(crate) callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>,
+    pub(crate) callback: SubscriberCallback<T>,
 }
 
 impl<T> Subscriber<T> {
@@ -106,11 +109,11 @@ impl<T: Clone + Send + Sync + 'static> Cell<T, CellMutable> {
                 id: Uuid::new_v4(),
                 subscribers: DashMap::new(),
                 value: ArcSwap::from_pointee(initial_value),
-                name: Mutex::new(None),
+                name: ArcSwap::from_pointee(None),
                 owned: DashMap::new(),
                 completed: AtomicBool::new(false),
                 errored: AtomicBool::new(false),
-                error: Mutex::new(None),
+                error: ArcSwap::from_pointee(None),
                 metrics: None,
                 slow_subscriber_threshold_ns: ArcSwap::from_pointee(None),
                 slow_subscriber_callback: ArcSwap::from_pointee(None),
@@ -126,11 +129,11 @@ impl<T: Clone + Send + Sync + 'static> Cell<T, CellMutable> {
                 id: Uuid::new_v4(),
                 subscribers: DashMap::new(),
                 value: ArcSwap::from_pointee(initial_value),
-                name: Mutex::new(None),
+                name: ArcSwap::from_pointee(None),
                 owned: DashMap::new(),
                 completed: AtomicBool::new(false),
                 errored: AtomicBool::new(false),
-                error: Mutex::new(None),
+                error: ArcSwap::from_pointee(None),
                 metrics: Some(Arc::new(CellMetrics::new())),
                 slow_subscriber_threshold_ns: ArcSwap::from_pointee(None),
                 slow_subscriber_callback: ArcSwap::from_pointee(None),
@@ -182,7 +185,7 @@ impl<T: Clone + Send + Sync + 'static> Cell<T, CellMutable> {
     }
 
     pub fn with_name(self, name: impl Into<Arc<str>>) -> Self {
-        *self.inner.name.lock().unwrap() = Some(name.into());
+        self.inner.name.store(Arc::new(Some(name.into())));
         self
     }
 
@@ -279,7 +282,7 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
     }
 
     fn name(&self) -> Option<String> {
-        self.inner.name.lock().unwrap().as_ref().map(|s| s.to_string())
+        (**self.inner.name.load()).as_ref().map(|s| s.to_string())
     }
 
     fn deps(&self) -> Vec<Arc<dyn DepNode>> {
@@ -303,7 +306,7 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
 
 impl<T: Clone + Send + Sync + 'static> Cell<T, CellImmutable> {
     pub fn with_name(self, name: impl Into<Arc<str>>) -> Self {
-        *self.inner.name.lock().unwrap() = Some(name.into());
+        self.inner.name.store(Arc::new(Some(name.into())));
         self
     }
 }
@@ -332,7 +335,7 @@ impl<T: Clone + Send + Sync + 'static, M: Send + Sync + 'static> Cell<T, M> {
             }
             Signal::Error(err) => {
                 self.inner.errored.store(true, Ordering::SeqCst);
-                *self.inner.error.lock().unwrap() = Some(err.clone());
+                self.inner.error.store(Arc::new(Some(err.clone())));
             }
         }
 
@@ -345,7 +348,7 @@ impl<T: Clone + Send + Sync + 'static, M: Send + Sync + 'static> Cell<T, M> {
             .collect();
 
         // Load slow subscriber config once
-        let slow_threshold = (**self.inner.slow_subscriber_threshold_ns.load()).clone();
+        let slow_threshold = **self.inner.slow_subscriber_threshold_ns.load();
         let slow_callback = (**self.inner.slow_subscriber_callback.load()).clone();
 
         // Call each callback, catching panics so one bad callback doesn't kill the rest
@@ -362,18 +365,18 @@ impl<T: Clone + Send + Sync + 'static, M: Send + Sync + 'static> Cell<T, M> {
                 metrics.update_slowest_subscriber(elapsed);
 
                 // Check slow subscriber threshold
-                if let (Some(threshold), Some(callback)) = (&slow_threshold, &slow_callback) {
-                    if elapsed > *threshold {
-                        let alert = SlowSubscriberAlert {
-                            subscriber_id,
-                            duration_ns: elapsed,
-                            threshold_ns: *threshold,
-                        };
-                        // Catch panics in the alert callback too
-                        let _ = catch_unwind(AssertUnwindSafe(|| {
-                            callback(alert);
-                        }));
-                    }
+                if let (Some(threshold), Some(callback)) = (&slow_threshold, &slow_callback)
+                    && elapsed > *threshold
+                {
+                    let alert = SlowSubscriberAlert {
+                        subscriber_id,
+                        duration_ns: elapsed,
+                        threshold_ns: *threshold,
+                    };
+                    // Catch panics in the alert callback too
+                    let _ = catch_unwind(AssertUnwindSafe(|| {
+                        callback(alert);
+                    }));
                 }
             }
         }
@@ -399,10 +402,10 @@ impl<T: Clone + Send + Sync + 'static, U: Send + Sync + 'static> Watchable<T> fo
         // If already complete or errored, send that signal too
         if self.is_complete() {
             callback(&Signal::Complete);
-        } else if self.is_error() {
-            if let Some(err) = self.error() {
-                callback(&Signal::Error(err));
-            }
+        } else if self.is_error()
+            && let Some(err) = self.error()
+        {
+            callback(&Signal::Error(err));
         }
 
         let id = Uuid::new_v4();
@@ -443,7 +446,7 @@ impl<T: Clone + Send + Sync + 'static, U: Send + Sync + 'static> Watchable<T> fo
     }
 
     fn error(&self) -> Option<Arc<anyhow::Error>> {
-        self.inner.error.lock().unwrap().clone()
+        (**self.inner.error.load()).clone()
     }
 }
 

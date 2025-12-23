@@ -311,12 +311,7 @@ impl<T: Clone + Send + Sync + 'static> DepNode for BoundedInput<T> {
     }
 
     fn name(&self) -> Option<String> {
-        self.inner
-            .cell
-            .inner
-            .name
-            .lock()
-            .unwrap()
+        (**self.inner.cell.inner.name.load())
             .as_ref()
             .map(|s| s.to_string())
     }

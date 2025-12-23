@@ -15,13 +15,13 @@ use super::Watchable;
 ///
 /// # Example
 /// ```
-/// use hypha::{Cell, Mutable, join_vec};
+/// use hypha::{Cell, Mutable, Gettable, join_vec};
 ///
 /// let a = Cell::new(1);
 /// let b = Cell::new(2);
 /// let c = Cell::new(3);
 ///
-/// let combined = join_vec(vec![a.lock(), b.lock(), c.lock()]);
+/// let combined = join_vec(vec![a.clone().lock(), b.lock(), c.lock()]);
 /// assert_eq!(combined.get(), vec![1, 2, 3]);
 ///
 /// a.set(10);

@@ -99,10 +99,10 @@ where
             self.inner.len_cell.set(self.inner.data.len());
 
             // Notify membership observers
-            if let Some(weak) = self.inner.membership_cells.get(&value) {
-                if let Some(cell) = weak.upgrade() {
-                    cell.set(true);
-                }
+            if let Some(weak) = self.inner.membership_cells.get(&value)
+                && let Some(cell) = weak.upgrade()
+            {
+                cell.set(true);
             }
         }
 
@@ -125,10 +125,10 @@ where
             self.inner.len_cell.set(self.inner.data.len());
 
             // Notify membership observers
-            if let Some(weak) = self.inner.membership_cells.get(value) {
-                if let Some(cell) = weak.upgrade() {
-                    cell.set(false);
-                }
+            if let Some(weak) = self.inner.membership_cells.get(value)
+                && let Some(cell) = weak.upgrade()
+            {
+                cell.set(false);
             }
         }
 
@@ -163,10 +163,10 @@ where
     /// Multiple calls with the same value return the same underlying Cell.
     pub fn contains(&self, value: &T) -> Cell<bool, CellImmutable> {
         // Check cache first
-        if let Some(weak) = self.inner.membership_cells.get(value) {
-            if let Some(cell) = weak.upgrade() {
-                return cell.lock();
-            }
+        if let Some(weak) = self.inner.membership_cells.get(value)
+            && let Some(cell) = weak.upgrade()
+        {
+            return cell.lock();
         }
 
         // Create new cell with current membership status

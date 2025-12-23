@@ -83,10 +83,10 @@ pub trait MergeMapExt<T>: Watchable<T> {
                 }
                 Signal::Complete => {
                     outer_complete.store(true, Ordering::SeqCst);
-                    if active_inners.load(Ordering::SeqCst) == 0 {
-                        if let Some(c) = weak_outer.upgrade() {
-                            c.notify(Signal::Complete);
-                        }
+                    if active_inners.load(Ordering::SeqCst) == 0
+                        && let Some(c) = weak_outer.upgrade()
+                    {
+                        c.notify(Signal::Complete);
                     }
                 }
                 Signal::Error(e) => {

@@ -1,7 +1,8 @@
-use std::collections::HashSet;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use dashmap::DashSet;
 
 use crate::cell::{Cell, CellImmutable, CellMutable};
 use crate::signal::Signal;
@@ -36,14 +37,11 @@ pub trait DistinctExt<T>: Watchable<T> {
         let derived = Cell::<T, CellMutable>::new(self.get());
 
         let weak = derived.downgrade();
-        let seen: Arc<Mutex<HashSet<T>>> = Arc::new(Mutex::new(HashSet::new()));
+        let seen: Arc<DashSet<T>> = Arc::new(DashSet::new());
         let first = Arc::new(AtomicBool::new(true));
 
         // Add initial value to seen set
-        {
-            let mut s = seen.lock().unwrap();
-            s.insert(self.get());
-        }
+        seen.insert(self.get());
 
         let guard = self.subscribe(move |signal| {
             if let Some(d) = weak.upgrade() {
@@ -52,8 +50,7 @@ pub trait DistinctExt<T>: Watchable<T> {
                         if first.swap(false, Ordering::SeqCst) {
                             return;
                         }
-                        let mut s = seen.lock().unwrap();
-                        if s.insert((**value).clone()) {
+                        if seen.insert((**value).clone()) {
                             // Value was not in set, emit it
                             d.notify(Signal::Value(value.clone()));
                         }

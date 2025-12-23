@@ -56,10 +56,11 @@ pub trait TimeoutExt<T>: Watchable<T> {
         thread::spawn(move || {
             let start_gen = gen_clone.load(Ordering::SeqCst);
             thread::sleep(duration);
-            if !comp.load(Ordering::SeqCst) && gen_clone.load(Ordering::SeqCst) == start_gen {
-                if let Some(d) = weak2.upgrade() {
-                    d.notify(Signal::error(anyhow::anyhow!("timeout")));
-                }
+            if !comp.load(Ordering::SeqCst)
+                && gen_clone.load(Ordering::SeqCst) == start_gen
+                && let Some(d) = weak2.upgrade()
+            {
+                d.notify(Signal::error(anyhow::anyhow!("timeout")));
             }
         });
 
@@ -80,11 +81,11 @@ pub trait TimeoutExt<T>: Watchable<T> {
                         let comp = completed.clone();
                         thread::spawn(move || {
                             thread::sleep(duration);
-                            if !comp.load(Ordering::SeqCst) && gen2.load(Ordering::SeqCst) == new_gen
+                            if !comp.load(Ordering::SeqCst)
+                                && gen2.load(Ordering::SeqCst) == new_gen
+                                && let Some(d2) = weak3.upgrade()
                             {
-                                if let Some(d2) = weak3.upgrade() {
-                                    d2.notify(Signal::error(anyhow::anyhow!("timeout")));
-                                }
+                                d2.notify(Signal::error(anyhow::anyhow!("timeout")));
                             }
                         });
                     }
