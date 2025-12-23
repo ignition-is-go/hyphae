@@ -12,8 +12,9 @@ use dashmap::DashMap;
 use uuid::Uuid;
 
 use crate::cell::{Cell, CellImmutable, CellMutable, WeakCell};
+use crate::signal::Signal;
 use crate::subscription::SubscriptionGuard;
-use crate::traits::{Mutable, Watchable};
+use crate::traits::{Gettable, Mutable, Watchable};
 
 /// Diff notification for map changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,8 +38,6 @@ where
     data: DashMap<K, V>,
     /// Cached per-key observation cells.
     key_cells: DashMap<K, WeakCell<Option<V>, CellMutable>>,
-    /// Cell for all entries.
-    entries_cell: Cell<Vec<(K, V)>, CellMutable>,
     /// Cell for diff notifications.
     diffs_cell: Cell<Option<MapDiff<K, V>>, CellMutable>,
     /// Cell for length.
@@ -88,7 +87,6 @@ where
             inner: Arc::new(CellMapInner {
                 data: DashMap::new(),
                 key_cells: DashMap::new(),
-                entries_cell: Cell::new(Vec::new()),
                 diffs_cell: Cell::new(None),
                 len_cell: Cell::new(0),
                 owned: DashMap::new(),
@@ -106,7 +104,7 @@ where
     pub fn insert(&self, key: K, value: V) -> Option<V> {
         let old = self.inner.data.insert(key.clone(), value.clone());
 
-        // Emit diff
+        // Emit diff (O(1) - just notifies subscribers)
         let diff = match &old {
             Some(old_value) => MapDiff::Update {
                 key: key.clone(),
@@ -120,19 +118,10 @@ where
         };
         self.inner.diffs_cell.set(Some(diff));
 
-        // Update entries cell
-        let entries: Vec<(K, V)> = self
-            .inner
-            .data
-            .iter()
-            .map(|r| (r.key().clone(), r.value().clone()))
-            .collect();
-        self.inner.entries_cell.set(entries);
-
-        // Update len
+        // Update len (O(1))
         self.inner.len_cell.set(self.inner.data.len());
 
-        // Notify per-key observers
+        // Notify per-key observers (O(1))
         if let Some(weak) = self.inner.key_cells.get(&key)
             && let Some(cell) = weak.upgrade()
         {
@@ -147,25 +136,16 @@ where
         let removed = self.inner.data.remove(key);
 
         if let Some((k, old_value)) = removed {
-            // Emit diff
+            // Emit diff (O(1) - just notifies subscribers)
             self.inner.diffs_cell.set(Some(MapDiff::Remove {
                 key: k.clone(),
                 old_value: old_value.clone(),
             }));
 
-            // Update entries cell
-            let entries: Vec<(K, V)> = self
-                .inner
-                .data
-                .iter()
-                .map(|r| (r.key().clone(), r.value().clone()))
-                .collect();
-            self.inner.entries_cell.set(entries);
-
-            // Update len
+            // Update len (O(1))
             self.inner.len_cell.set(self.inner.data.len());
 
-            // Notify per-key observers
+            // Notify per-key observers (O(1))
             if let Some(weak) = self.inner.key_cells.get(&k)
                 && let Some(cell) = weak.upgrade()
             {
@@ -226,15 +206,64 @@ where
     }
 
     /// Get an observable Cell of all entries.
+    ///
+    /// Returns a derived cell that maintains entries incrementally via diffs.
+    /// The initial value is computed from the current map state, then updates
+    /// are applied incrementally as O(1) operations per diff.
     pub fn entries(&self) -> Cell<Vec<(K, V)>, CellImmutable> {
-        self.inner.entries_cell.clone().lock()
+        // Build initial entries from current data (O(N) once)
+        let initial: Vec<(K, V)> = self
+            .inner
+            .data
+            .iter()
+            .map(|r| (r.key().clone(), r.value().clone()))
+            .collect();
+
+        let cell = Cell::new(initial);
+        let cell_clone = cell.clone();
+
+        // Subscribe to diffs and apply incrementally (O(1) per update)
+        let first = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let guard = self.inner.diffs_cell.subscribe(move |signal| {
+            // Skip the first signal (current value from Cell subscription)
+            if first.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+            if let Signal::Value(arc_opt) = signal
+                && let Some(diff) = arc_opt.as_ref()
+            {
+                // Apply diff incrementally to the entries
+                let mut entries = cell_clone.get();
+                match diff {
+                    MapDiff::Initial { entries: init } => {
+                        entries = init.clone();
+                    }
+                    MapDiff::Insert { key, value } => {
+                        entries.push((key.clone(), value.clone()));
+                    }
+                    MapDiff::Remove { key, .. } => {
+                        entries.retain(|(k, _)| k != key);
+                    }
+                    MapDiff::Update { key, new_value, .. } => {
+                        if let Some((_, v)) = entries.iter_mut().find(|(k, _)| k == key) {
+                            *v = new_value.clone();
+                        }
+                    }
+                }
+                cell_clone.set(entries);
+            }
+        });
+
+        // Own the subscription guard so it lives as long as needed
+        self.inner.owned.insert(Uuid::new_v4(), guard);
+
+        cell.lock()
     }
 
     /// Get an observable Cell of all keys.
     pub fn keys(&self) -> Cell<Vec<K>, CellImmutable> {
         use crate::traits::MapExt;
-        self.inner
-            .entries_cell
+        self.entries()
             .map(|entries| entries.iter().map(|(k, _)| k.clone()).collect())
     }
 

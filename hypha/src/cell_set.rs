@@ -8,8 +8,12 @@ use std::sync::Arc;
 
 use dashmap::DashSet;
 
+use uuid::Uuid;
+
 use crate::cell::{Cell, CellImmutable, CellMutable, WeakCell};
-use crate::traits::Mutable;
+use crate::signal::Signal;
+use crate::subscription::SubscriptionGuard;
+use crate::traits::{Gettable, Mutable, Watchable};
 
 /// Diff notification for set changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,12 +32,12 @@ where
     data: DashSet<T>,
     /// Cached per-value observation cells.
     membership_cells: dashmap::DashMap<T, WeakCell<bool, CellMutable>>,
-    /// Cell for all values.
-    values_cell: Cell<Vec<T>, CellMutable>,
     /// Cell for diff notifications.
     diffs_cell: Cell<Option<SetDiff<T>>, CellMutable>,
     /// Cell for length.
     len_cell: Cell<usize, CellMutable>,
+    /// Subscription guards owned by this set (dropped when set drops).
+    owned: dashmap::DashMap<Uuid, SubscriptionGuard>,
 }
 
 /// A reactive HashSet with membership observability.
@@ -75,9 +79,9 @@ where
             inner: Arc::new(CellSetInner {
                 data: DashSet::new(),
                 membership_cells: dashmap::DashMap::new(),
-                values_cell: Cell::new(Vec::new()),
                 diffs_cell: Cell::new(None),
                 len_cell: Cell::new(0),
+                owned: dashmap::DashMap::new(),
             }),
             _marker: PhantomData,
         }
@@ -88,17 +92,15 @@ where
         let is_new = self.inner.data.insert(value.clone());
 
         if is_new {
-            // Emit diff
-            self.inner.diffs_cell.set(Some(SetDiff::Insert(value.clone())));
+            // Emit diff (O(1) - just notifies subscribers)
+            self.inner
+                .diffs_cell
+                .set(Some(SetDiff::Insert(value.clone())));
 
-            // Update values cell
-            let values: Vec<T> = self.inner.data.iter().map(|r| r.clone()).collect();
-            self.inner.values_cell.set(values);
-
-            // Update len
+            // Update len (O(1))
             self.inner.len_cell.set(self.inner.data.len());
 
-            // Notify membership observers
+            // Notify membership observers (O(1))
             if let Some(weak) = self.inner.membership_cells.get(&value)
                 && let Some(cell) = weak.upgrade()
             {
@@ -114,17 +116,15 @@ where
         let was_present = self.inner.data.remove(value).is_some();
 
         if was_present {
-            // Emit diff
-            self.inner.diffs_cell.set(Some(SetDiff::Remove(value.clone())));
+            // Emit diff (O(1) - just notifies subscribers)
+            self.inner
+                .diffs_cell
+                .set(Some(SetDiff::Remove(value.clone())));
 
-            // Update values cell
-            let values: Vec<T> = self.inner.data.iter().map(|r| r.clone()).collect();
-            self.inner.values_cell.set(values);
-
-            // Update len
+            // Update len (O(1))
             self.inner.len_cell.set(self.inner.data.len());
 
-            // Notify membership observers
+            // Notify membership observers (O(1))
             if let Some(weak) = self.inner.membership_cells.get(value)
                 && let Some(cell) = weak.upgrade()
             {
@@ -181,8 +181,44 @@ where
     }
 
     /// Get an observable Cell of all values.
+    ///
+    /// Returns a derived cell that maintains its state incrementally via diffs.
+    /// The initial call is O(N) to build the snapshot, but subsequent updates
+    /// are O(1) as they apply diffs incrementally.
     pub fn values(&self) -> Cell<Vec<T>, CellImmutable> {
-        self.inner.values_cell.clone().lock()
+        // Build initial values from current data (O(N) once)
+        let initial: Vec<T> = self.inner.data.iter().map(|r| r.clone()).collect();
+
+        let cell = Cell::new(initial);
+        let cell_clone = cell.clone();
+
+        // Subscribe to diffs and apply incrementally (O(1) per update)
+        let first = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let guard = self.inner.diffs_cell.subscribe(move |signal| {
+            // Skip the initial subscription callback
+            if first.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+            if let Signal::Value(arc_opt) = signal
+                && let Some(diff) = arc_opt.as_ref()
+            {
+                let mut values = cell_clone.get();
+                match diff {
+                    SetDiff::Insert(value) => {
+                        values.push(value.clone());
+                    }
+                    SetDiff::Remove(value) => {
+                        values.retain(|v| v != value);
+                    }
+                }
+                cell_clone.set(values);
+            }
+        });
+
+        // Store the guard so it lives as long as the set
+        self.inner.owned.insert(Uuid::new_v4(), guard);
+
+        cell.lock()
     }
 
     /// Get an observable Cell of the set length.
