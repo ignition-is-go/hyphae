@@ -288,7 +288,7 @@ mod tests {
 
         // Get cell before value exists
         let is_member = set.contains(&"a".to_string());
-        assert_eq!(is_member.get(), false);
+        assert!(!is_member.get());
 
         let count = Arc::new(AtomicUsize::new(0));
         let c = count.clone();
@@ -300,7 +300,7 @@ mod tests {
 
         // Insert should trigger update
         set.insert("a".to_string());
-        assert_eq!(is_member.get(), true);
+        assert!(is_member.get());
         assert_eq!(count.load(Ordering::SeqCst), 2);
 
         // Duplicate insert should not trigger
@@ -309,7 +309,7 @@ mod tests {
 
         // Remove should trigger
         set.remove(&"a".to_string());
-        assert_eq!(is_member.get(), false);
+        assert!(!is_member.get());
         assert_eq!(count.load(Ordering::SeqCst), 3);
     }
 
@@ -369,7 +369,7 @@ mod tests {
         let locked = set.lock();
 
         // Can still observe
-        assert_eq!(locked.contains(&"a".to_string()).get(), true);
+        assert!(locked.contains(&"a".to_string()).get());
         assert_eq!(locked.values().get().len(), 1);
 
         // But can't mutate - these methods don't exist on CellImmutable
@@ -386,7 +386,7 @@ mod tests {
         // Both should reflect same updates
         set.insert("a".to_string());
 
-        assert_eq!(cell1.get(), true);
-        assert_eq!(cell2.get(), true);
+        assert!(cell1.get());
+        assert!(cell2.get());
     }
 }

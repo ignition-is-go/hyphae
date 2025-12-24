@@ -84,6 +84,7 @@ pub trait ConcatExt<T>: Watchable<T> {
 impl<T, W: Watchable<T>> ConcatExt<T> for W {}
 
 #[cfg(test)]
+#[allow(clippy::disallowed_types)]
 mod tests {
     use super::*;
     use crate::Mutable;

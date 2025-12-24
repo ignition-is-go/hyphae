@@ -31,7 +31,7 @@ fn test_concurrent_writers() {
 
     // Cell should have some value (last write wins, but we don't know which)
     let final_value = cell.get();
-    assert!(final_value < (num_threads * writes_per_thread) as u64);
+    assert!(final_value < num_threads * writes_per_thread);
 }
 
 #[test]
