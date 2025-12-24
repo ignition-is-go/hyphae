@@ -1,6 +1,5 @@
-use crate::cell::{Cell, CellImmutable};
-
 use super::{DistinctUntilChangedByExt, Watchable};
+use crate::cell::{Cell, CellImmutable};
 
 pub trait DedupedExt<T>: Watchable<T> {
     fn deduped(&self) -> Cell<T, CellImmutable>
@@ -16,10 +15,13 @@ impl<T, W: Watchable<T>> DedupedExt<T> for W {}
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
+
     use super::*;
     use crate::{Mutable, Signal};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::Arc;
 
     #[test]
     fn test_deduped_blocks_duplicates() {

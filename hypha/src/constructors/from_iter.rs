@@ -1,6 +1,9 @@
 use std::{thread, time::Duration};
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
+
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    signal::Signal,
+};
 
 /// Creates a cell that emits each value from the iterator with a delay between emissions.
 ///

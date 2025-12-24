@@ -37,8 +37,10 @@ impl CellMetrics {
     #[inline]
     pub fn record_notify(&self, duration_ns: u64) {
         self.notify_count.fetch_add(1, Ordering::Relaxed);
-        self.total_notify_time_ns.fetch_add(duration_ns, Ordering::Relaxed);
-        self.last_notify_time_ns.store(duration_ns, Ordering::Relaxed);
+        self.total_notify_time_ns
+            .fetch_add(duration_ns, Ordering::Relaxed);
+        self.last_notify_time_ns
+            .store(duration_ns, Ordering::Relaxed);
     }
 
     /// Update slowest subscriber using compare-and-swap to track the maximum.

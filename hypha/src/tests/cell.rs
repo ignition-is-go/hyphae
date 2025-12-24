@@ -1,8 +1,9 @@
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
-use crate::{Cell, DepNode, Gettable, Mutable, Signal};
-use crate::traits::Watchable;
+use crate::{Cell, DepNode, Gettable, Mutable, Signal, traits::Watchable};
 
 #[test]
 fn test_cell_new_and_get() {
@@ -54,14 +55,16 @@ fn test_cell_multiple_watchers() {
     let cell = Cell::new(0u64);
     let count = Arc::new(AtomicU64::new(0));
 
-    let _guards: Vec<_> = (0..10).map(|_| {
-        let c = count.clone();
-        cell.subscribe(move |signal| {
-            if let Signal::Value(_) = signal {
-                c.fetch_add(1, Ordering::SeqCst);
-            }
+    let _guards: Vec<_> = (0..10)
+        .map(|_| {
+            let c = count.clone();
+            cell.subscribe(move |signal| {
+                if let Signal::Value(_) = signal {
+                    c.fetch_add(1, Ordering::SeqCst);
+                }
+            })
         })
-    }).collect();
+        .collect();
 
     // 10 watchers called immediately
     assert_eq!(count.load(Ordering::SeqCst), 10);

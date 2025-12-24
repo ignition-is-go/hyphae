@@ -1,21 +1,24 @@
-use arc_swap::ArcSwap;
-use dashmap::DashMap;
 use std::{
     fmt::Debug,
     marker::PhantomData,
-    panic::{catch_unwind, AssertUnwindSafe},
+    panic::{AssertUnwindSafe, catch_unwind},
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc, Weak,
+        atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
+
+use arc_swap::ArcSwap;
+use dashmap::DashMap;
 use uuid::Uuid;
 
-use crate::metrics::CellMetrics;
-use crate::signal::Signal;
-use crate::subscription::SubscriptionGuard;
-use crate::traits::{DepNode, Gettable, Mutable, Watchable};
+use crate::{
+    metrics::CellMetrics,
+    signal::Signal,
+    subscription::SubscriptionGuard,
+    traits::{DepNode, Gettable, Mutable, Watchable},
+};
 
 /// Information about a slow subscriber callback.
 #[derive(Debug, Clone)]
@@ -74,7 +77,10 @@ impl<T, M> WeakCell<T, M> {
     /// Try to upgrade to a strong Cell reference.
     /// Returns None if the Cell has been dropped.
     pub fn upgrade(&self) -> Option<Cell<T, M>> {
-        self.inner.upgrade().map(|inner| Cell { inner, _marker: PhantomData })
+        self.inner.upgrade().map(|inner| Cell {
+            inner,
+            _marker: PhantomData,
+        })
     }
 }
 
@@ -318,12 +324,17 @@ impl<T: Clone + Send + Sync + 'static, M: Send + Sync + 'static> Cell<T, M> {
     #[doc(hidden)]
     pub fn notify(&self, signal: Signal<T>) {
         // Don't emit anything after completion or error
-        if self.inner.completed.load(Ordering::SeqCst) || self.inner.errored.load(Ordering::SeqCst) {
+        if self.inner.completed.load(Ordering::SeqCst) || self.inner.errored.load(Ordering::SeqCst)
+        {
             return;
         }
 
         // Start timing if metrics enabled
-        let notify_start = self.inner.metrics.as_ref().map(|_| std::time::Instant::now());
+        let notify_start = self
+            .inner
+            .metrics
+            .as_ref()
+            .map(|_| std::time::Instant::now());
 
         match &signal {
             Signal::Value(arc_value) => {
@@ -353,7 +364,11 @@ impl<T: Clone + Send + Sync + 'static, M: Send + Sync + 'static> Cell<T, M> {
 
         // Call each callback, catching panics so one bad callback doesn't kill the rest
         for (subscriber_id, callback) in callbacks {
-            let sub_start = self.inner.metrics.as_ref().map(|_| std::time::Instant::now());
+            let sub_start = self
+                .inner
+                .metrics
+                .as_ref()
+                .map(|_| std::time::Instant::now());
 
             let _ = catch_unwind(AssertUnwindSafe(|| {
                 callback(&signal);
@@ -395,7 +410,10 @@ impl<T: Clone + Send + Sync + 'static, U: Send + Sync + 'static> Gettable<T> for
 }
 
 impl<T: Clone + Send + Sync + 'static, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
-    fn subscribe(&self, callback: impl Fn(&Signal<T>) + Send + Sync + 'static) -> SubscriptionGuard {
+    fn subscribe(
+        &self,
+        callback: impl Fn(&Signal<T>) + Send + Sync + 'static,
+    ) -> SubscriptionGuard {
         // Send current value immediately (Arc clone, no deep copy)
         callback(&Signal::Value(self.inner.value.load_full()));
 
@@ -409,7 +427,9 @@ impl<T: Clone + Send + Sync + 'static, U: Send + Sync + 'static> Watchable<T> fo
         }
 
         let id = Uuid::new_v4();
-        self.inner.subscribers.insert(id, Box::new(Subscriber::new(callback)));
+        self.inner
+            .subscribers
+            .insert(id, Box::new(Subscriber::new(callback)));
 
         // Record subscriber added if metrics enabled
         if let Some(metrics) = &self.inner.metrics {

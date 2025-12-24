@@ -3,15 +3,20 @@
 //! Use `BoundedInput` at ingestion points where external producers may outpace consumers.
 //! Supports configurable overflow policies: Block, DropOldest, DropNewest, Error.
 
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+};
+
 use crossbeam::queue::ArrayQueue;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
-use crate::subscription::SubscriptionGuard;
-use crate::traits::{DepNode, Gettable, Mutable, Watchable};
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    signal::Signal,
+    subscription::SubscriptionGuard,
+    traits::{DepNode, Gettable, Mutable, Watchable},
+};
 
 /// Policy for handling buffer overflow in BoundedInput.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -322,7 +327,10 @@ impl<T: Clone + Send + Sync + 'static> DepNode for BoundedInput<T> {
 }
 
 impl<T: Clone + Send + Sync + 'static> Watchable<T> for BoundedInput<T> {
-    fn subscribe(&self, callback: impl Fn(&Signal<T>) + Send + Sync + 'static) -> SubscriptionGuard {
+    fn subscribe(
+        &self,
+        callback: impl Fn(&Signal<T>) + Send + Sync + 'static,
+    ) -> SubscriptionGuard {
         self.inner.cell.subscribe(callback)
     }
 

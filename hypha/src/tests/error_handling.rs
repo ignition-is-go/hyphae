@@ -1,6 +1,4 @@
-use crate::{
-    Cell, Gettable, Mutable, TryMapExt, MapOkExt, MapErrExt, CatchErrorExt, UnwrapOrExt,
-};
+use crate::{CatchErrorExt, Cell, Gettable, MapErrExt, MapOkExt, Mutable, TryMapExt, UnwrapOrExt};
 
 // ============================================================================
 // TryMap
@@ -9,9 +7,7 @@ use crate::{
 #[test]
 fn test_try_map_success() {
     let source = Cell::new(10i32);
-    let result = source.try_map(|v| -> Result<String, &str> {
-        Ok(v.to_string())
-    });
+    let result = source.try_map(|v| -> Result<String, &str> { Ok(v.to_string()) });
 
     assert_eq!(result.get(), Ok("10".to_string()));
 

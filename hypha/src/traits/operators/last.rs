@@ -1,12 +1,15 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use arc_swap::ArcSwap;
 
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
-
 use super::Watchable;
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    signal::Signal,
+};
 
 pub trait LastExt<T>: Watchable<T> {
     /// Emit only the last value before completion.
@@ -123,9 +126,10 @@ impl<T, W: Watchable<T>> LastExt<T> for W {}
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
     use super::*;
     use crate::{Gettable, Mutable};
-    use std::sync::atomic::{AtomicU32, Ordering};
 
     #[test]
     fn test_last() {

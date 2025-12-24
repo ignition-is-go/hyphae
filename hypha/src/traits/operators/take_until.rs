@@ -1,8 +1,13 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
 use super::Watchable;
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    signal::Signal,
+};
 
 pub trait TakeUntilExt<T>: Watchable<T> {
     /// Take values until the notifier emits, then stop.

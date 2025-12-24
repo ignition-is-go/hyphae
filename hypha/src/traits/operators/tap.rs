@@ -1,5 +1,5 @@
-use crate::cell::{Cell, CellImmutable};
 use super::{MapExt, Watchable};
+use crate::cell::{Cell, CellImmutable};
 
 pub trait TapExt<T>: Watchable<T> {
     /// Perform a side effect for each value without modifying it.
@@ -20,10 +20,13 @@ impl<T, W: Watchable<T>> TapExt<T> for W {}
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
+
     use super::*;
     use crate::{Gettable, Mutable};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::Arc;
 
     #[test]
     fn test_tap_side_effect() {

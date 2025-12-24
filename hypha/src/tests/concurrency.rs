@@ -1,6 +1,10 @@
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Barrier};
-use std::thread;
+use std::{
+    sync::{
+        Arc, Barrier,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
+    thread,
+};
 
 use crate::{Cell, Gettable, MapExt, Mutable, Signal, Watchable};
 
@@ -266,8 +270,15 @@ fn test_concurrent_map_chain_integrity() {
         handle.join().unwrap();
     }
 
-    assert_eq!(errors.load(Ordering::Relaxed), 0, "Map chain produced invalid values");
-    assert_eq!(checks.load(Ordering::Relaxed), (num_threads * operations) as u64);
+    assert_eq!(
+        errors.load(Ordering::Relaxed),
+        0,
+        "Map chain produced invalid values"
+    );
+    assert_eq!(
+        checks.load(Ordering::Relaxed),
+        (num_threads * operations) as u64
+    );
 }
 
 // ============================================================================
@@ -505,12 +516,14 @@ fn test_concurrent_complete_signals() {
 
     let cc = complete_count.clone();
     let vc = value_count.clone();
-    let _guard = taken.subscribe(move |signal| {
-        match signal {
-            Signal::Value(_) => { vc.fetch_add(1, Ordering::SeqCst); }
-            Signal::Complete => { cc.fetch_add(1, Ordering::SeqCst); }
-            _ => {}
+    let _guard = taken.subscribe(move |signal| match signal {
+        Signal::Value(_) => {
+            vc.fetch_add(1, Ordering::SeqCst);
         }
+        Signal::Complete => {
+            cc.fetch_add(1, Ordering::SeqCst);
+        }
+        _ => {}
     });
 
     // Send more than 5 values from multiple threads
@@ -686,7 +699,7 @@ fn barrage_subscriber_explosion() {
 
 #[test]
 fn barrage_interleaved_operators() {
-    use crate::{FilterExt, ScanExt, TakeExt, SkipExt, DedupedExt};
+    use crate::{DedupedExt, FilterExt, ScanExt, SkipExt, TakeExt};
 
     let source = Cell::new(0u64);
     let num_threads = 8;
@@ -706,14 +719,18 @@ fn barrage_interleaved_operators() {
                     0 => {
                         let p = source.map(|x| x * 2).take(100);
                         let _g = p.subscribe(move |s| {
-                            if let Signal::Complete = s { cc.fetch_add(1, Ordering::Relaxed); }
+                            if let Signal::Complete = s {
+                                cc.fetch_add(1, Ordering::Relaxed);
+                            }
                         });
                         Box::new(move || p.get())
                     }
                     1 => {
                         let p = source.filter(|x| x % 2 == 0).skip(5);
                         let _g = p.subscribe(move |s| {
-                            if let Signal::Value(_) = s { vc.fetch_add(1, Ordering::Relaxed); }
+                            if let Signal::Value(_) = s {
+                                vc.fetch_add(1, Ordering::Relaxed);
+                            }
                         });
                         Box::new(move || p.get())
                     }

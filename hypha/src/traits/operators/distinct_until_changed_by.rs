@@ -1,12 +1,15 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use arc_swap::ArcSwap;
 
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
-
 use super::Watchable;
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    signal::Signal,
+};
 
 pub trait DistinctUntilChangedByExt<T>: Watchable<T> {
     /// Like `deduped()` but with a custom comparator.
@@ -68,9 +71,10 @@ impl<T, W: Watchable<T>> DistinctUntilChangedByExt<T> for W {}
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use super::*;
     use crate::Mutable;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     #[derive(Clone)]
     struct User {

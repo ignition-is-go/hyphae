@@ -1,8 +1,9 @@
 use std::sync::Arc;
+
 use uuid::Uuid;
+
 use super::DepNode;
-use crate::signal::Signal;
-use crate::subscription::SubscriptionGuard;
+use crate::{signal::Signal, subscription::SubscriptionGuard};
 
 /// Read the current value from a reactive cell.
 pub trait Gettable<T> {
@@ -12,7 +13,8 @@ pub trait Gettable<T> {
 /// Core reactive cell trait - subscribe to changes.
 pub trait Watchable<T>: Clone + Gettable<T> + DepNode + Sized + Send + Sync + 'static {
     /// Subscribe to all signals (values, completion, errors). Returns a guard that unsubscribes when dropped.
-    fn subscribe(&self, callback: impl Fn(&Signal<T>) + Send + Sync + 'static) -> SubscriptionGuard;
+    fn subscribe(&self, callback: impl Fn(&Signal<T>) + Send + Sync + 'static)
+    -> SubscriptionGuard;
 
     /// Unsubscribe by ID (for internal use).
     fn unsubscribe(&self, id: Uuid);

@@ -1,10 +1,17 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::thread;
-use std::time::Duration;
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    thread,
+    time::Duration,
+};
+
 use super::Watchable;
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    signal::Signal,
+};
 
 pub trait DebounceExt<T>: Watchable<T> {
     fn debounce(&self, duration: Duration) -> Cell<T, CellImmutable>
@@ -55,9 +62,10 @@ impl<T, W: Watchable<T>> DebounceExt<T> for W {}
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicU64;
+
     use super::*;
     use crate::Mutable;
-    use std::sync::atomic::AtomicU64;
 
     #[test]
     fn test_debounce_waits_for_pause() {

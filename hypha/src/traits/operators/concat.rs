@@ -1,10 +1,13 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use super::Watchable;
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    signal::Signal,
+};
 
 pub trait ConcatExt<T>: Watchable<T> {
     /// Sequential stream composition - subscribe to second source after first completes.
@@ -86,9 +89,10 @@ impl<T, W: Watchable<T>> ConcatExt<T> for W {}
 #[cfg(test)]
 #[allow(clippy::disallowed_types)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
     use crate::Mutable;
-    use std::sync::Mutex;
 
     #[test]
     fn test_concat() {

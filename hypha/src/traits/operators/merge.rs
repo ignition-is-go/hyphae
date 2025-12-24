@@ -1,8 +1,13 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicU8, Ordering},
+};
+
 use super::Watchable;
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    signal::Signal,
+};
 
 // Completion state flags for merge (both must complete)
 const SELF_COMPLETE: u8 = 0b01;

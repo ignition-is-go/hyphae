@@ -1,8 +1,13 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+
 use super::Watchable;
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    signal::Signal,
+};
 
 pub trait SkipExt<T>: Watchable<T> {
     fn skip(&self, count: usize) -> Cell<T, CellImmutable>
@@ -40,10 +45,13 @@ impl<T, W: Watchable<T>> SkipExt<T> for W {}
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering as AtomicOrdering},
+    };
+
     use super::*;
     use crate::Mutable;
-    use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-    use std::sync::Arc;
 
     #[test]
     fn test_skip_ignores_first_n() {

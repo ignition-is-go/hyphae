@@ -1,10 +1,17 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
-use std::time::Duration;
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
+    time::Duration,
+};
+
 use super::Watchable;
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    signal::Signal,
+};
 
 pub trait ThrottleExt<T>: Watchable<T> {
     fn throttle(&self, duration: Duration) -> Cell<T, CellImmutable>
@@ -45,9 +52,10 @@ impl<T, W: Watchable<T>> ThrottleExt<T> for W {}
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicU64;
+
     use super::*;
     use crate::Mutable;
-    use std::sync::atomic::AtomicU64;
 
     #[test]
     fn test_throttle_limits_rate() {
@@ -67,6 +75,10 @@ mod tests {
 
         // Should have limited emissions
         let emissions = count.load(Ordering::SeqCst);
-        assert!(emissions < 10, "throttle should limit emissions, got {}", emissions);
+        assert!(
+            emissions < 10,
+            "throttle should limit emissions, got {}",
+            emissions
+        );
     }
 }

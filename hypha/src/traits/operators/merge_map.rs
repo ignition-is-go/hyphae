@@ -1,8 +1,13 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
+
 use super::{Gettable, Watchable};
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    signal::Signal,
+};
 
 pub trait MergeMapExt<T>: Watchable<T> {
     fn merge_map<U, F>(&self, f: F) -> Cell<U, CellImmutable>
@@ -54,7 +59,9 @@ pub trait MergeMapExt<T>: Watchable<T> {
                         return;
                     }
 
-                    let Some(c) = weak_outer.upgrade() else { return };
+                    let Some(c) = weak_outer.upgrade() else {
+                        return;
+                    };
 
                     // Increment active count before creating inner
                     ai2.fetch_add(1, Ordering::SeqCst);

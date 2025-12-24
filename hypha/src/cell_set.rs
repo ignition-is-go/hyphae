@@ -2,18 +2,17 @@
 //!
 //! `CellSet` wraps a concurrent HashSet where membership changes can be observed.
 
-use std::hash::Hash;
-use std::marker::PhantomData;
-use std::sync::Arc;
+use std::{hash::Hash, marker::PhantomData, sync::Arc};
 
 use dashmap::DashSet;
-
 use uuid::Uuid;
 
-use crate::cell::{Cell, CellImmutable, CellMutable, WeakCell};
-use crate::signal::Signal;
-use crate::subscription::SubscriptionGuard;
-use crate::traits::{Gettable, Mutable, Watchable};
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable, WeakCell},
+    signal::Signal,
+    subscription::SubscriptionGuard,
+    traits::{Gettable, Mutable, Watchable},
+};
 
 /// Diff notification for set changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -258,9 +257,10 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
     use crate::traits::{Gettable, Watchable};
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn test_cellset_basic() {

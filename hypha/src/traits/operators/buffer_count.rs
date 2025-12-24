@@ -1,12 +1,15 @@
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 
 use crossbeam::queue::SegQueue;
 
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
-
 use super::Watchable;
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    signal::Signal,
+};
 
 pub trait BufferCountExt<T>: Watchable<T> {
     /// Collect values into non-overlapping chunks of size `count`.
@@ -90,10 +93,10 @@ impl<T, W: Watchable<T>> BufferCountExt<T> for W {}
 #[cfg(test)]
 #[allow(clippy::disallowed_types)]
 mod tests {
+    use std::sync::{Mutex, atomic::AtomicUsize};
+
     use super::*;
     use crate::Mutable;
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::Mutex;
 
     #[test]
     fn test_buffer_count() {
@@ -136,16 +139,14 @@ mod tests {
 
         let e = emissions.clone();
         let c = completed.clone();
-        let _guard = buffered.subscribe(move |signal| {
-            match signal {
-                Signal::Value(v) => {
-                    e.lock().unwrap().push((**v).clone());
-                }
-                Signal::Complete => {
-                    c.fetch_add(1, Ordering::SeqCst);
-                }
-                _ => {}
+        let _guard = buffered.subscribe(move |signal| match signal {
+            Signal::Value(v) => {
+                e.lock().unwrap().push((**v).clone());
             }
+            Signal::Complete => {
+                c.fetch_add(1, Ordering::SeqCst);
+            }
+            _ => {}
         });
 
         source.set(1);

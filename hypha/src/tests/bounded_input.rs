@@ -1,6 +1,9 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+
 use crate::{BoundedInput, Gettable, OverflowPolicy, Signal, Watchable};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 
 #[test]
 fn test_basic_push_and_get() {

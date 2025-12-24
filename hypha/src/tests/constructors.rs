@@ -1,10 +1,13 @@
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
-use std::thread;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    thread,
+    time::Duration,
+};
 
-use crate::{interval, from_iter_with_delay, Signal};
-use crate::traits::Watchable;
+use crate::{Signal, from_iter_with_delay, interval, traits::Watchable};
 
 #[test]
 fn test_interval_emits_incrementing() {

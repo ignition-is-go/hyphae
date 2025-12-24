@@ -1,14 +1,19 @@
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+    thread,
+    time::Duration,
+};
 
 use arc_swap::ArcSwap;
 
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
-
 use super::Watchable;
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    signal::Signal,
+};
 
 pub trait AuditExt<T>: Watchable<T> {
     /// Like throttle but emits the LAST value in the window.
@@ -92,9 +97,10 @@ impl<T, W: Watchable<T>> AuditExt<T> for W {}
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicU32;
+
     use super::*;
     use crate::{Gettable, Mutable};
-    use std::sync::atomic::AtomicU32;
 
     #[test]
     fn test_audit_emits_last() {

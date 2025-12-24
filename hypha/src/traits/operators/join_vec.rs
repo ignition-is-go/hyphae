@@ -1,11 +1,14 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
-use crate::traits::Mutable;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 
 use super::Watchable;
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    signal::Signal,
+    traits::Mutable,
+};
 
 /// Combines a vector of cells into a single cell that emits `Vec<T>`.
 ///
@@ -89,12 +92,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::Gettable;
-    use crate::Mutable;
+    use crate::{Mutable, traits::Gettable};
 
     #[test]
     fn test_join_vec_empty() {
-        let combined: Cell<Vec<i32>, CellImmutable> = join_vec::<i32, Cell<i32, CellImmutable>>(vec![]);
+        let combined: Cell<Vec<i32>, CellImmutable> =
+            join_vec::<i32, Cell<i32, CellImmutable>>(vec![]);
         assert_eq!(combined.get(), Vec::<i32>::new());
         assert!(combined.is_complete());
     }

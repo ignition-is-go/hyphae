@@ -1,7 +1,5 @@
+use super::{super::operators::MapExt, Gettable, Watchable};
 use crate::cell::{Cell, CellImmutable};
-
-use super::{Gettable, Watchable};
-use super::super::operators::MapExt;
 
 pub trait SampleExt<T>: Watchable<T> {
     /// Sample the source whenever the notifier emits.
@@ -44,9 +42,10 @@ impl<T, W: Watchable<T>> SampleExt<T> for W {}
 #[cfg(test)]
 #[allow(clippy::disallowed_types)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use super::*;
     use crate::{Mutable, Signal};
-    use std::sync::{Arc, Mutex};
 
     #[test]
     fn test_sample() {

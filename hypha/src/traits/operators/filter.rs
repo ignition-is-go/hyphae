@@ -1,11 +1,19 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
 use super::Watchable;
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    signal::Signal,
+};
 
 pub trait FilterExt<T>: Watchable<T> {
-    fn filter(&self, predicate: impl Fn(&T) -> bool + Send + Sync + 'static) -> Cell<T, CellImmutable>
+    fn filter(
+        &self,
+        predicate: impl Fn(&T) -> bool + Send + Sync + 'static,
+    ) -> Cell<T, CellImmutable>
     where
         T: Clone + Send + Sync + 'static,
         Self: Clone + Send + Sync + 'static,
@@ -41,10 +49,13 @@ impl<T, W: Watchable<T>> FilterExt<T> for W {}
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
+
     use super::*;
     use crate::Mutable;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::Arc;
 
     #[test]
     fn test_filter_passes_matching() {

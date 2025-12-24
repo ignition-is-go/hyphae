@@ -1,14 +1,19 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
+    time::Duration,
+};
 
 use crossbeam::queue::SegQueue;
 
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
-
 use super::Watchable;
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    signal::Signal,
+};
 
 pub trait BufferTimeExt<T>: Watchable<T> {
     /// Collect values over a time window before emitting.
@@ -102,9 +107,10 @@ impl<T, W: Watchable<T>> BufferTimeExt<T> for W {}
 #[cfg(test)]
 #[allow(clippy::disallowed_types)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
     use crate::Mutable;
-    use std::sync::Mutex;
 
     #[test]
     fn test_buffer_time() {

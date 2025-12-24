@@ -1,9 +1,15 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
 use crossbeam::queue::SegQueue;
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
+
 use super::{Gettable, Watchable};
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    signal::Signal,
+};
 
 pub trait ZipExt<T>: Watchable<T> {
     /// Zip with another cell - pairs values in order.

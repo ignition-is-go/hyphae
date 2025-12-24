@@ -7,9 +7,7 @@
 
 use futures_core::Stream;
 
-use crate::signal::Signal;
-use crate::subscription::SubscriptionGuard;
-use crate::traits::Watchable;
+use crate::{signal::Signal, subscription::SubscriptionGuard, traits::Watchable};
 
 /// A Stream adapter for watching Cell values.
 ///
@@ -101,16 +99,19 @@ impl<T, W: Watchable<T>> AsyncWatchableExt<T> for W {}
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        pin::Pin,
+        task::{Context, Poll, Waker},
+    };
+
+    use futures_core::Stream;
+
     use super::*;
     use crate::{Cell, Mutable};
-    use futures_core::Stream;
-    use std::pin::Pin;
-    use std::task::{Context, Poll, Waker};
 
     // Simple test waker that does nothing
     fn noop_waker() -> Waker {
-        use std::sync::Arc;
-        use std::task::Wake;
+        use std::{sync::Arc, task::Wake};
 
         struct NoopWaker;
         impl Wake for NoopWaker {

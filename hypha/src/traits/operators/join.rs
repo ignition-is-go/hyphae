@@ -1,8 +1,13 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicU8, Ordering},
+};
+
 use super::{Gettable, Watchable};
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    signal::Signal,
+};
 
 // Completion state flags for join (both must complete)
 const SELF_COMPLETE: u8 = 0b01;
@@ -81,7 +86,7 @@ impl<T, W: Watchable<T>> JoinExt<T> for W {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MapExt, Mutable, flat};
+    use crate::{MapExt, Mutable};
 
     #[test]
     fn test_join_combines_cells() {
@@ -106,7 +111,11 @@ mod tests {
         let d = Cell::new(4);
 
         // flat!(|a, b, c, d| ...) expands to |(((a, b), c), d)| ...
-        let sum = a.join(&b).join(&c).join(&d).map(flat!(|a, b, c, d| a + b + c + d));
+        let sum = a
+            .join(&b)
+            .join(&c)
+            .join(&d)
+            .map(flat!(|a, b, c, d| a + b + c + d));
 
         assert_eq!(sum.get(), 10);
     }

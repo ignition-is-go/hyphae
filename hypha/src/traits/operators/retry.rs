@@ -1,10 +1,13 @@
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
-
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 
 use super::Watchable;
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    signal::Signal,
+};
 
 pub trait RetryExt<T>: Watchable<T> {
     /// Retry on error up to max_attempts times.
@@ -167,9 +170,10 @@ impl<T, W: Watchable<T>> RetryExt<T> for W {}
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicU32;
+
     use super::*;
     use crate::Mutable;
-    use std::sync::atomic::AtomicU32;
 
     #[test]
     fn test_retry_passes_values() {

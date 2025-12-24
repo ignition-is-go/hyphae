@@ -1,5 +1,5 @@
-use crate::cell::{Cell, CellImmutable};
 use super::{TakeExt, Watchable};
+use crate::cell::{Cell, CellImmutable};
 
 pub trait FirstExt<T>: Watchable<T> {
     /// Take only the first value, then complete.

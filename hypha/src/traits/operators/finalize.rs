@@ -1,11 +1,16 @@
-use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
+use std::{
+    cell::UnsafeCell,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use super::Watchable;
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    signal::Signal,
+};
 
 /// A callback that can only be called once, implemented lock-free.
 struct OnceCallback<F> {

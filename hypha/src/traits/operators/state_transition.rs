@@ -1,14 +1,19 @@
-use std::collections::HashMap;
-use std::hash::Hash;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    hash::Hash,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use arc_swap::ArcSwap;
 
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
-
 use super::Watchable;
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    signal::Signal,
+};
 
 /// Type alias for transition handler callbacks.
 type TransitionFn<S> = Arc<dyn Fn(&S, &S) + Send + Sync>;
@@ -210,9 +215,10 @@ impl<S, W: Watchable<S>> StateTransitionExt<S> for W {}
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
     use super::*;
     use crate::Mutable;
-    use std::sync::atomic::{AtomicU32, Ordering};
 
     #[derive(Clone, PartialEq, Eq, Hash, Debug)]
     enum State {

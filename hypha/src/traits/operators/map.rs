@@ -1,8 +1,13 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
 use super::Watchable;
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    signal::Signal,
+};
 
 pub trait MapExt<T>: Watchable<T> {
     fn map<U: Clone + Send + Sync + 'static>(
@@ -49,8 +54,7 @@ impl<T, W: Watchable<T>> MapExt<T> for W {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::DepNode;
-    use crate::{Gettable, Mutable};
+    use crate::{Gettable, Mutable, traits::DepNode};
 
     #[test]
     fn test_map_transform() {
@@ -66,10 +70,7 @@ mod tests {
     #[test]
     fn test_map_chain() {
         let source = Cell::new(1);
-        let result = source
-            .map(|x| x + 1)
-            .map(|x| x * 2)
-            .map(|x| x + 10);
+        let result = source.map(|x| x + 1).map(|x| x * 2).map(|x| x + 10);
 
         assert_eq!(result.get(), 14); // ((1 + 1) * 2) + 10
 

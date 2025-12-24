@@ -1,7 +1,7 @@
-use std::thread;
-use std::time::Duration;
-use crate::cell::{Cell, CellImmutable, CellMutable};
+use std::{thread, time::Duration};
+
 use super::Watchable;
+use crate::cell::{Cell, CellImmutable, CellMutable};
 
 pub trait DelayExt<T>: Watchable<T> {
     fn delay(&self, duration: Duration) -> Cell<T, CellImmutable>
@@ -32,10 +32,13 @@ impl<T, W: Watchable<T>> DelayExt<T> for W {}
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
+
     use super::*;
     use crate::{Mutable, Signal};
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     #[test]
     fn test_delay_delays_emission() {

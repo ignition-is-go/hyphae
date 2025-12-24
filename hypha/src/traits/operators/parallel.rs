@@ -1,9 +1,13 @@
-use rayon::prelude::*;
 use std::sync::Arc;
-use crate::cell::{Cell, CellMutable};
-use crate::signal::Signal;
-use crate::subscription::SubscriptionGuard;
+
+use rayon::prelude::*;
+
 use super::{Gettable, Watchable};
+use crate::{
+    cell::{Cell, CellMutable},
+    signal::Signal,
+    subscription::SubscriptionGuard,
+};
 
 /// A cell that notifies subscribers in parallel using Rayon.
 pub struct ParallelCell<T> {
@@ -15,7 +19,10 @@ impl<T: Clone + Send + Sync + 'static> ParallelCell<T> {
         self.inner.get()
     }
 
-    pub fn subscribe(&self, callback: impl Fn(&Signal<T>) + Send + Sync + 'static) -> SubscriptionGuard {
+    pub fn subscribe(
+        &self,
+        callback: impl Fn(&Signal<T>) + Send + Sync + 'static,
+    ) -> SubscriptionGuard {
         self.inner.subscribe(callback)
     }
 }
@@ -35,7 +42,11 @@ impl<T: Clone + Send + Sync + 'static> ParallelCell<T> {
         self.inner.inner.value.store(signal.arc().unwrap().clone());
 
         // Collect subscribers and notify in parallel
-        let callbacks: Vec<_> = self.inner.inner.subscribers.iter()
+        let callbacks: Vec<_> = self
+            .inner
+            .inner
+            .subscribers
+            .iter()
             .map(|entry| Arc::clone(&entry.value().callback))
             .collect();
 
@@ -62,7 +73,10 @@ pub trait ParallelExt<T>: Watchable<T> {
                     Signal::Value(value) => {
                         inner.inner.value.store(value.clone()); // Arc clone
 
-                        let callbacks: Vec<_> = inner.inner.subscribers.iter()
+                        let callbacks: Vec<_> = inner
+                            .inner
+                            .subscribers
+                            .iter()
                             .map(|entry| Arc::clone(&entry.value().callback))
                             .collect();
 

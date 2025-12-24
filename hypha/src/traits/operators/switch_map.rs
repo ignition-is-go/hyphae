@@ -1,8 +1,13 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+};
+
 use super::{Gettable, Watchable};
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    signal::Signal,
+};
 
 // Lock-free completion state packed into a single u64:
 // - Bits 0-61: generation (max 2^62-1)
@@ -108,27 +113,30 @@ pub trait SwitchMapExt<T>: Watchable<T> {
                         if let Some(c) = weak_inner.upgrade() {
                             match signal {
                                 Signal::Value(_) => c.notify(signal.clone()),
-                                Signal::Complete => {
-                                    loop {
-                                        let old = state_for_inner.load(Ordering::SeqCst);
-                                        if old & GEN_MASK != my_gen {
-                                            return;
-                                        }
-                                        if old & INNER_COMPLETE_BIT != 0 {
-                                            return;
-                                        }
-                                        let new = old | INNER_COMPLETE_BIT;
-                                        if state_for_inner
-                                            .compare_exchange(old, new, Ordering::SeqCst, Ordering::SeqCst)
-                                            .is_ok()
-                                        {
-                                            if new & OUTER_COMPLETE_BIT != 0 {
-                                                c.notify(Signal::Complete);
-                                            }
-                                            return;
-                                        }
+                                Signal::Complete => loop {
+                                    let old = state_for_inner.load(Ordering::SeqCst);
+                                    if old & GEN_MASK != my_gen {
+                                        return;
                                     }
-                                }
+                                    if old & INNER_COMPLETE_BIT != 0 {
+                                        return;
+                                    }
+                                    let new = old | INNER_COMPLETE_BIT;
+                                    if state_for_inner
+                                        .compare_exchange(
+                                            old,
+                                            new,
+                                            Ordering::SeqCst,
+                                            Ordering::SeqCst,
+                                        )
+                                        .is_ok()
+                                    {
+                                        if new & OUTER_COMPLETE_BIT != 0 {
+                                            c.notify(Signal::Complete);
+                                        }
+                                        return;
+                                    }
+                                },
                                 Signal::Error(e) => c.notify(Signal::Error(e.clone())),
                             }
                         }

@@ -1,5 +1,5 @@
-use crate::cell::{Cell, CellImmutable};
 use super::{ScanExt, Watchable};
+use crate::cell::{Cell, CellImmutable};
 
 pub trait PairwiseExt<T>: Watchable<T> {
     /// Emit pairs of (previous, current) values.

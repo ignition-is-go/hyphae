@@ -1,12 +1,17 @@
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
-
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+    thread,
+    time::Duration,
+};
 
 use super::Watchable;
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    signal::Signal,
+};
 
 pub trait TimeoutExt<T>: Watchable<T> {
     /// Error if no emission within the specified duration.
@@ -110,9 +115,10 @@ impl<T, W: Watchable<T>> TimeoutExt<T> for W {}
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicU32;
+
     use super::*;
     use crate::Mutable;
-    use std::sync::atomic::AtomicU32;
 
     #[test]
     fn test_timeout_no_timeout_when_active() {

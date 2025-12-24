@@ -1,8 +1,13 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+
 use super::Watchable;
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    signal::Signal,
+};
 
 pub trait TakeExt<T>: Watchable<T> {
     fn take(&self, count: usize) -> Cell<T, CellImmutable>
@@ -18,9 +23,10 @@ pub trait TakeExt<T>: Watchable<T> {
             if let Some(c) = weak.upgrade() {
                 match signal {
                     Signal::Value(_) => {
-                        let prev = remaining.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                            if n > 0 { Some(n - 1) } else { None }
-                        });
+                        let prev =
+                            remaining.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                                if n > 0 { Some(n - 1) } else { None }
+                            });
                         match prev {
                             Ok(1) => {
                                 // This was the last one
@@ -50,10 +56,13 @@ impl<T, W: Watchable<T>> TakeExt<T> for W {}
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering},
+    };
+
     use super::*;
     use crate::Mutable;
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
-    use std::sync::Arc;
 
     #[test]
     fn test_take_limits_emissions() {

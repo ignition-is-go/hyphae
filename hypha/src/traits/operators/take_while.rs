@@ -1,8 +1,13 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
 use super::Watchable;
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    signal::Signal,
+};
 
 pub trait TakeWhileExt<T>: Watchable<T> {
     /// Take values while predicate returns true, then stop.
@@ -50,9 +55,10 @@ impl<T, W: Watchable<T>> TakeWhileExt<T> for W {}
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicBool;
+
     use super::*;
     use crate::{Gettable, Mutable};
-    use std::sync::atomic::AtomicBool;
 
     #[test]
     fn test_take_while() {

@@ -1,12 +1,15 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use crossbeam::queue::ArrayQueue;
 
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
-
 use super::Watchable;
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    signal::Signal,
+};
 
 pub trait BackpressureExt<T>: Watchable<T> {
     /// Buffer values with drop-oldest strategy when capacity is reached.
@@ -183,9 +186,10 @@ impl<T, W: Watchable<T>> BackpressureExt<T> for W {}
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
     use super::*;
     use crate::{Gettable, Mutable};
-    use std::sync::atomic::{AtomicU32, Ordering};
 
     #[test]
     fn test_drop_oldest() {

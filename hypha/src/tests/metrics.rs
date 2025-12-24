@@ -1,8 +1,10 @@
+use std::{
+    sync::{Arc, atomic::AtomicU64},
+    thread,
+    time::Duration,
+};
+
 use crate::{Cell, Gettable, Mutable, Watchable};
-use std::sync::atomic::AtomicU64;
-use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
 
 #[test]
 fn test_metrics_disabled_by_default() {
@@ -82,7 +84,11 @@ fn test_slowest_subscriber_tracking() {
 
     // Should have recorded the slow subscriber (at least 5ms = 5_000_000ns)
     let slowest = metrics.slowest_subscriber_ns();
-    assert!(slowest >= 4_000_000, "Expected at least 4ms, got {}ns", slowest);
+    assert!(
+        slowest >= 4_000_000,
+        "Expected at least 4ms, got {}ns",
+        slowest
+    );
 }
 
 #[test]
@@ -126,7 +132,11 @@ fn test_metrics_with_multiple_subscribers() {
 
     // The slowest subscriber should be the 2ms one
     let slowest = metrics.slowest_subscriber_ns();
-    assert!(slowest >= 1_500_000, "Expected at least 1.5ms from slowest subscriber, got {}ns", slowest);
+    assert!(
+        slowest >= 1_500_000,
+        "Expected at least 1.5ms from slowest subscriber, got {}ns",
+        slowest
+    );
 }
 
 #[test]

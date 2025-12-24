@@ -1,10 +1,13 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use super::Watchable;
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    signal::Signal,
+};
 
 pub trait SkipWhileExt<T>: Watchable<T> {
     /// Skip values while the predicate returns true.
@@ -68,9 +71,10 @@ impl<T, W: Watchable<T>> SkipWhileExt<T> for W {}
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicU32;
+
     use super::*;
     use crate::Mutable;
-    use std::sync::atomic::AtomicU32;
 
     #[test]
     fn test_skip_while() {

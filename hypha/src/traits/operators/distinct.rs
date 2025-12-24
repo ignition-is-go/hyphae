@@ -1,13 +1,18 @@
-use std::hash::Hash;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::{
+    hash::Hash,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use dashmap::DashSet;
 
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
-
 use super::Watchable;
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    signal::Signal,
+};
 
 pub trait DistinctExt<T>: Watchable<T> {
     /// Filter out values that have already been emitted.
@@ -70,9 +75,10 @@ impl<T, W: Watchable<T>> DistinctExt<T> for W {}
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicU32;
+
     use super::*;
     use crate::Mutable;
-    use std::sync::atomic::AtomicU32;
 
     #[test]
     fn test_distinct() {

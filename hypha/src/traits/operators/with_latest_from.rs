@@ -1,7 +1,5 @@
+use super::{super::operators::MapExt, Gettable, Watchable};
 use crate::cell::{Cell, CellImmutable};
-
-use super::{Gettable, Watchable};
-use super::super::operators::MapExt;
 
 pub trait WithLatestFromExt<T>: Watchable<T> {
     /// When source emits, pair with the latest value from another cell.
@@ -43,9 +41,10 @@ impl<T, W: Watchable<T>> WithLatestFromExt<T> for W {}
 #[cfg(test)]
 #[allow(clippy::disallowed_types)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
     use crate::{Mutable, Signal};
-    use std::sync::Mutex;
 
     #[test]
     fn test_with_latest_from() {
@@ -62,7 +61,10 @@ mod tests {
         });
 
         // Initial combined value
-        assert_eq!(emissions.lock().unwrap().clone(), vec![(0, "a".to_string())]);
+        assert_eq!(
+            emissions.lock().unwrap().clone(),
+            vec![(0, "a".to_string())]
+        );
 
         // Other changes - no emission
         other.set("b".to_string());
@@ -71,10 +73,10 @@ mod tests {
 
         // Source changes - emits with latest other
         source.set(1);
-        assert_eq!(emissions.lock().unwrap().clone(), vec![
-            (0, "a".to_string()),
-            (1, "c".to_string()),
-        ]);
+        assert_eq!(
+            emissions.lock().unwrap().clone(),
+            vec![(0, "a".to_string()), (1, "c".to_string()),]
+        );
 
         // Other changes again - no emission
         other.set("d".to_string());
@@ -82,10 +84,13 @@ mod tests {
 
         // Source changes - emits with latest other
         source.set(2);
-        assert_eq!(emissions.lock().unwrap().clone(), vec![
-            (0, "a".to_string()),
-            (1, "c".to_string()),
-            (2, "d".to_string()),
-        ]);
+        assert_eq!(
+            emissions.lock().unwrap().clone(),
+            vec![
+                (0, "a".to_string()),
+                (1, "c".to_string()),
+                (2, "d".to_string()),
+            ]
+        );
     }
 }

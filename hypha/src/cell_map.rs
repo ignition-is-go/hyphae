@@ -3,18 +3,17 @@
 //! `CellMap` wraps a concurrent HashMap where each entry can be individually observed.
 //! Changes to keys trigger reactive updates to observers.
 
-use std::hash::Hash;
-use std::marker::PhantomData;
-use std::sync::Arc;
+use std::{hash::Hash, marker::PhantomData, sync::Arc};
 
 use dashmap::DashMap;
-
 use uuid::Uuid;
 
-use crate::cell::{Cell, CellImmutable, CellMutable, WeakCell};
-use crate::signal::Signal;
-use crate::subscription::SubscriptionGuard;
-use crate::traits::{Gettable, Mutable, Watchable};
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable, WeakCell},
+    signal::Signal,
+    subscription::SubscriptionGuard,
+    traits::{Gettable, Mutable, Watchable},
+};
 
 /// Diff notification for map changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -394,29 +393,27 @@ where
 
         // Subscribe to diffs (which emits Initial first with all current entries)
         let filtered_clone = filtered.clone();
-        let guard = self.subscribe_diffs(move |diff| {
-            match diff {
-                MapDiff::Initial { entries } => {
-                    for (key, value) in entries {
-                        if predicate(value) {
-                            filtered_clone.insert(key.clone(), value.clone());
-                        }
-                    }
-                }
-                MapDiff::Insert { key, value } => {
+        let guard = self.subscribe_diffs(move |diff| match diff {
+            MapDiff::Initial { entries } => {
+                for (key, value) in entries {
                     if predicate(value) {
                         filtered_clone.insert(key.clone(), value.clone());
                     }
                 }
-                MapDiff::Remove { key, .. } => {
-                    filtered_clone.remove(key);
+            }
+            MapDiff::Insert { key, value } => {
+                if predicate(value) {
+                    filtered_clone.insert(key.clone(), value.clone());
                 }
-                MapDiff::Update { key, new_value, .. } => {
-                    if predicate(new_value) {
-                        filtered_clone.insert(key.clone(), new_value.clone());
-                    } else {
-                        filtered_clone.remove(key);
-                    }
+            }
+            MapDiff::Remove { key, .. } => {
+                filtered_clone.remove(key);
+            }
+            MapDiff::Update { key, new_value, .. } => {
+                if predicate(new_value) {
+                    filtered_clone.insert(key.clone(), new_value.clone());
+                } else {
+                    filtered_clone.remove(key);
                 }
             }
         });
@@ -432,10 +429,13 @@ where
 #[cfg(test)]
 #[allow(clippy::disallowed_types)]
 mod tests {
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+
     use super::*;
     use crate::traits::{Gettable, Watchable};
-    use std::sync::Mutex;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn test_cellmap_basic() {

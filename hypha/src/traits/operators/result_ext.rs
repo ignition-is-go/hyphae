@@ -1,5 +1,5 @@
-use crate::cell::{Cell, CellImmutable};
 use super::{MapExt, Watchable};
+use crate::cell::{Cell, CellImmutable};
 
 /// Extension trait for transforming Ok values in Result cells.
 pub trait MapOkExt<T, E>: Watchable<Result<T, E>> {
@@ -25,7 +25,8 @@ where
     T: Clone + Send + Sync + 'static,
     E: Clone + Send + Sync + 'static,
     W: Watchable<Result<T, E>>,
-{}
+{
+}
 
 /// Extension trait for transforming Err values in Result cells.
 pub trait MapErrExt<T, E>: Watchable<Result<T, E>> {
@@ -51,7 +52,8 @@ where
     T: Clone + Send + Sync + 'static,
     E: Clone + Send + Sync + 'static,
     W: Watchable<Result<T, E>>,
-{}
+{
+}
 
 /// Extension trait for recovering from errors.
 pub trait CatchErrorExt<T, E>: Watchable<Result<T, E>> {
@@ -76,7 +78,8 @@ where
     T: Clone + Send + Sync + 'static,
     E: Clone + Send + Sync + 'static,
     W: Watchable<Result<T, E>>,
-{}
+{
+}
 
 /// Extension trait for unwrapping Result cells with defaults.
 pub trait UnwrapOrExt<T, E>: Watchable<Result<T, E>> {
@@ -111,4 +114,5 @@ where
     T: Clone + Send + Sync + 'static,
     E: Clone + Send + Sync + 'static,
     W: Watchable<Result<T, E>>,
-{}
+{
+}

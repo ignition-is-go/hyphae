@@ -1,7 +1,9 @@
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use crate::{Cell, Gettable, MapExt, Mutable, Signal};
-use crate::traits::Watchable;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
+
+use crate::{Cell, Gettable, MapExt, Mutable, Signal, traits::Watchable};
 
 // ============================================================================
 // WeakCell Tests
@@ -108,8 +110,14 @@ fn test_chained_operators_drop_correctly() {
 
     {
         let _final = source
-            .map(move |v| { c1.fetch_add(1, Ordering::SeqCst); *v * 2 })
-            .map(move |v| { c2.fetch_add(1, Ordering::SeqCst); *v + 1 });
+            .map(move |v| {
+                c1.fetch_add(1, Ordering::SeqCst);
+                *v * 2
+            })
+            .map(move |v| {
+                c2.fetch_add(1, Ordering::SeqCst);
+                *v + 1
+            });
 
         // Both maps called once on creation
         assert_eq!(map1_count.load(Ordering::SeqCst), 1);

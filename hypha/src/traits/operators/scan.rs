@@ -1,9 +1,15 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
 use arc_swap::ArcSwap;
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
+
 use super::Watchable;
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    signal::Signal,
+};
 
 pub trait ScanExt<T>: Watchable<T> {
     fn scan<U, F>(&self, initial: U, f: F) -> Cell<U, CellImmutable>

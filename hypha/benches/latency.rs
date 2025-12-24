@@ -1,7 +1,10 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
+
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use hypha::{Cell, FilterExt, MapExt, Mutable, ParallelExt, ScanExt, Signal, Watchable};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 
 fn bench_single_cell_propagation(c: &mut Criterion) {
     c.bench_function("single cell set + watch", |b| {
@@ -58,12 +61,14 @@ fn bench_fan_out(c: &mut Criterion) {
                 let source = Cell::new(0u64);
                 let counter = Arc::new(AtomicU64::new(0));
 
-                let guards: Vec<_> = (0..num_subscribers).map(|_| {
-                    let cnt = counter.clone();
-                    source.subscribe(move |_| {
-                        cnt.fetch_add(1, Ordering::Relaxed);
+                let guards: Vec<_> = (0..num_subscribers)
+                    .map(|_| {
+                        let cnt = counter.clone();
+                        source.subscribe(move |_| {
+                            cnt.fetch_add(1, Ordering::Relaxed);
+                        })
                     })
-                }).collect();
+                    .collect();
 
                 let mut i = 0u64;
                 b.iter(|| {
@@ -83,12 +88,14 @@ fn bench_fan_out(c: &mut Criterion) {
                 let parallel = source.parallel();
                 let counter = Arc::new(AtomicU64::new(0));
 
-                let guards: Vec<_> = (0..num_subscribers).map(|_| {
-                    let cnt = counter.clone();
-                    parallel.subscribe(move |_| {
-                        cnt.fetch_add(1, Ordering::Relaxed);
+                let guards: Vec<_> = (0..num_subscribers)
+                    .map(|_| {
+                        let cnt = counter.clone();
+                        parallel.subscribe(move |_| {
+                            cnt.fetch_add(1, Ordering::Relaxed);
+                        })
                     })
-                }).collect();
+                    .collect();
 
                 let mut i = 0u64;
                 b.iter(|| {
@@ -115,13 +122,16 @@ fn bench_fan_in(c: &mut Criterion) {
                 let counter = Arc::new(AtomicU64::new(0));
 
                 // Each source maps and the watcher counts
-                let guards: Vec<_> = sources.iter().map(|source| {
-                    let cnt = counter.clone();
-                    let mapped = source.map(|x| x * 2);
-                    mapped.subscribe(move |_| {
-                        cnt.fetch_add(1, Ordering::Relaxed);
+                let guards: Vec<_> = sources
+                    .iter()
+                    .map(|source| {
+                        let cnt = counter.clone();
+                        let mapped = source.map(|x| x * 2);
+                        mapped.subscribe(move |_| {
+                            cnt.fetch_add(1, Ordering::Relaxed);
+                        })
                     })
-                }).collect();
+                    .collect();
 
                 let mut i = 0u64;
                 b.iter(|| {
@@ -140,35 +150,43 @@ fn bench_fan_in(c: &mut Criterion) {
 }
 
 fn bench_complex_graph(c: &mut Criterion) {
-    c.bench_function("complex graph: 100 sources -> map -> filter -> scan -> 10 watchers each", |b| {
-        let sources: Vec<_> = (0..100).map(|i| Cell::new(i as u64)).collect();
-        let counter = Arc::new(AtomicU64::new(0));
+    c.bench_function(
+        "complex graph: 100 sources -> map -> filter -> scan -> 10 watchers each",
+        |b| {
+            let sources: Vec<_> = (0..100).map(|i| Cell::new(i as u64)).collect();
+            let counter = Arc::new(AtomicU64::new(0));
 
-        let guards: Vec<_> = sources.iter().flat_map(|source| {
-            let pipeline = source
-                .map(|x| x * 2)
-                .filter(|x| x % 2 == 0)
-                .scan(0u64, |acc, x| acc + x);
+            let guards: Vec<_> = sources
+                .iter()
+                .flat_map(|source| {
+                    let pipeline = source
+                        .map(|x| x * 2)
+                        .filter(|x| x % 2 == 0)
+                        .scan(0u64, |acc, x| acc + x);
 
-            let counter = counter.clone();
-            (0..10).map(move |_| {
-                let cnt = counter.clone();
-                pipeline.subscribe(move |_| {
-                    cnt.fetch_add(1, Ordering::Relaxed);
+                    let counter = counter.clone();
+                    (0..10)
+                        .map(move |_| {
+                            let cnt = counter.clone();
+                            pipeline.subscribe(move |_| {
+                                cnt.fetch_add(1, Ordering::Relaxed);
+                            })
+                        })
+                        .collect::<Vec<_>>()
                 })
-            }).collect::<Vec<_>>()
-        }).collect();
+                .collect();
 
-        let mut i = 0u64;
-        b.iter(|| {
-            i += 1;
-            for source in &sources {
-                source.set(black_box(i));
-            }
-        });
+            let mut i = 0u64;
+            b.iter(|| {
+                i += 1;
+                for source in &sources {
+                    source.set(black_box(i));
+                }
+            });
 
-        drop(guards);
-    });
+            drop(guards);
+        },
+    );
 }
 
 fn bench_pairwise_chain(c: &mut Criterion) {
@@ -210,19 +228,22 @@ fn bench_parallel_heavy_callbacks(c: &mut Criterion) {
                     .map(|_| Arc::new(AtomicU64::new(0)))
                     .collect();
 
-                let guards: Vec<_> = results.iter().map(|result| {
-                    let r = result.clone();
-                    source.subscribe(move |signal| {
-                        if let Signal::Value(x) = signal {
-                            // Simulate expensive work - can't be optimized away
-                            let mut sum = **x;
-                            for _ in 0..10000 {
-                                sum = sum.wrapping_mul(31).wrapping_add(17);
+                let guards: Vec<_> = results
+                    .iter()
+                    .map(|result| {
+                        let r = result.clone();
+                        source.subscribe(move |signal| {
+                            if let Signal::Value(x) = signal {
+                                // Simulate expensive work - can't be optimized away
+                                let mut sum = **x;
+                                for _ in 0..10000 {
+                                    sum = sum.wrapping_mul(31).wrapping_add(17);
+                                }
+                                r.store(sum, Ordering::Relaxed);
                             }
-                            r.store(sum, Ordering::Relaxed);
-                        }
+                        })
                     })
-                }).collect();
+                    .collect();
 
                 let mut i = 0u64;
                 b.iter(|| {
@@ -244,19 +265,22 @@ fn bench_parallel_heavy_callbacks(c: &mut Criterion) {
                     .map(|_| Arc::new(AtomicU64::new(0)))
                     .collect();
 
-                let guards: Vec<_> = results.iter().map(|result| {
-                    let r = result.clone();
-                    parallel.subscribe(move |signal| {
-                        if let Signal::Value(x) = signal {
-                            // Simulate expensive work - can't be optimized away
-                            let mut sum = **x;
-                            for _ in 0..10000 {
-                                sum = sum.wrapping_mul(31).wrapping_add(17);
+                let guards: Vec<_> = results
+                    .iter()
+                    .map(|result| {
+                        let r = result.clone();
+                        parallel.subscribe(move |signal| {
+                            if let Signal::Value(x) = signal {
+                                // Simulate expensive work - can't be optimized away
+                                let mut sum = **x;
+                                for _ in 0..10000 {
+                                    sum = sum.wrapping_mul(31).wrapping_add(17);
+                                }
+                                r.store(sum, Ordering::Relaxed);
                             }
-                            r.store(sum, Ordering::Relaxed);
-                        }
+                        })
                     })
-                }).collect();
+                    .collect();
 
                 let mut i = 0u64;
                 b.iter(|| {

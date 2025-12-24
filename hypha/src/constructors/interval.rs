@@ -1,6 +1,9 @@
 use std::{thread, time::Duration};
-use crate::cell::{Cell, CellImmutable, CellMutable};
-use crate::signal::Signal;
+
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    signal::Signal,
+};
 
 /// Creates a cell that emits 0, 1, 2, ... on the given interval.
 ///

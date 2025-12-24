@@ -3,12 +3,11 @@
 //! `BoundedOutput` creates a subscriber that writes to a bounded channel,
 //! allowing consumers to pull values at their own pace.
 
-use crossbeam::channel::{self, Receiver, TryRecvError};
 use std::time::Duration;
 
-use crate::signal::Signal;
-use crate::subscription::SubscriptionGuard;
-use crate::traits::Watchable;
+use crossbeam::channel::{self, Receiver, TryRecvError};
+
+use crate::{signal::Signal, subscription::SubscriptionGuard, traits::Watchable};
 
 /// A bounded output channel for receiving values from a Cell.
 ///

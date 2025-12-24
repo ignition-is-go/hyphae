@@ -1,8 +1,7 @@
 use std::collections::VecDeque;
 
-use crate::cell::{Cell, CellImmutable};
-
 use super::{MapExt, ScanExt, Watchable};
+use crate::cell::{Cell, CellImmutable};
 
 pub trait WindowExt<T>: Watchable<T> {
     /// Collect values into a sliding window of size `count`.
