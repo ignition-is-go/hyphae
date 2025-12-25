@@ -59,7 +59,7 @@ pub trait ParallelExt<T>: Watchable<T> {
         let guard = self.subscribe(move |signal| {
             if let Some(inner) = weak.upgrade() {
                 match signal {
-                    Signal::Value(value) => {
+                    Signal::Value(value, _) => {
                         inner.inner.value.store(value.clone()); // Arc clone
 
                         let callbacks: Vec<_> = inner.inner.subscribers.iter()

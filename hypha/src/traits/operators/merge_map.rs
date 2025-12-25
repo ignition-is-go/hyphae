@@ -27,7 +27,7 @@ pub trait MergeMapExt<T>: Watchable<T> {
         let first_inner_guard = first_inner.subscribe(move |signal| {
             if let Some(c) = weak.upgrade() {
                 match signal {
-                    Signal::Value(_) => c.notify(signal.clone()),
+                    Signal::Value(_, _) => c.notify(signal.clone()),
                     Signal::Complete => {
                         let remaining = ai.fetch_sub(1, Ordering::SeqCst) - 1;
                         if remaining == 0 && oc.load(Ordering::SeqCst) {
@@ -49,7 +49,7 @@ pub trait MergeMapExt<T>: Watchable<T> {
         let ai2 = active_inners.clone();
         let outer_guard = self.subscribe(move |signal| {
             match signal {
-                Signal::Value(outer_value) => {
+                Signal::Value(outer_value, _) => {
                     if first.swap(false, Ordering::SeqCst) {
                         return;
                     }
@@ -68,7 +68,7 @@ pub trait MergeMapExt<T>: Watchable<T> {
                     let inner_guard = inner.subscribe(move |signal| {
                         if let Some(c) = weak_inner.upgrade() {
                             match signal {
-                                Signal::Value(_) => c.notify(signal.clone()),
+                                Signal::Value(_, _) => c.notify(signal.clone()),
                                 Signal::Complete => {
                                     let remaining = ai_inner.fetch_sub(1, Ordering::SeqCst) - 1;
                                     if remaining == 0 && oc_inner.load(Ordering::SeqCst) {

@@ -24,6 +24,7 @@ dashmap.workspace = true
 flume = { workspace = true, optional = true }
 futures-core = { workspace = true, optional = true }
 rayon = "1.10"
+tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]

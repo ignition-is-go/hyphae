@@ -39,13 +39,13 @@ pub trait RetryExt<T>: Watchable<T> {
         let guard = self.subscribe(move |signal| {
             if let Some(d) = weak.upgrade() {
                 match signal {
-                    Signal::Value(value) => {
+                    Signal::Value(value, ctx) => {
                         if first.swap(false, Ordering::SeqCst) {
                             return;
                         }
                         // Reset attempts on successful value
                         attempts.store(0, Ordering::SeqCst);
-                        d.notify(Signal::Value(value.clone()));
+                        d.notify(Signal::Value(value.clone(), ctx.clone()));
                     }
                     Signal::Complete => d.notify(Signal::Complete),
                     Signal::Error(e) => {
@@ -60,9 +60,9 @@ pub trait RetryExt<T>: Watchable<T> {
                             let guard2 = source.subscribe(move |sig| {
                                 if let Some(d2) = weak2.upgrade() {
                                     match sig {
-                                        Signal::Value(v) => {
+                                        Signal::Value(v, ctx) => {
                                             attempts2.store(0, Ordering::SeqCst);
-                                            d2.notify(Signal::Value(v.clone()));
+                                            d2.notify(Signal::Value(v.clone(), ctx.clone()));
                                         }
                                         Signal::Complete => d2.notify(Signal::Complete),
                                         Signal::Error(e2) => {
@@ -117,12 +117,12 @@ pub trait RetryExt<T>: Watchable<T> {
         let guard = self.subscribe(move |signal| {
             if let Some(d) = weak.upgrade() {
                 match signal {
-                    Signal::Value(value) => {
+                    Signal::Value(value, ctx) => {
                         if first.swap(false, Ordering::SeqCst) {
                             return;
                         }
                         attempts.store(0, Ordering::SeqCst);
-                        d.notify(Signal::Value(value.clone()));
+                        d.notify(Signal::Value(value.clone(), ctx.clone()));
                     }
                     Signal::Complete => d.notify(Signal::Complete),
                     Signal::Error(e) => {
@@ -135,9 +135,9 @@ pub trait RetryExt<T>: Watchable<T> {
                             let guard2 = source.subscribe(move |sig| {
                                 if let Some(d2) = weak2.upgrade() {
                                     match sig {
-                                        Signal::Value(v) => {
+                                        Signal::Value(v, ctx) => {
                                             attempts2.store(0, Ordering::SeqCst);
-                                            d2.notify(Signal::Value(v.clone()));
+                                            d2.notify(Signal::Value(v.clone(), ctx.clone()));
                                         }
                                         Signal::Complete => d2.notify(Signal::Complete),
                                         Signal::Error(e2) => {
@@ -179,7 +179,7 @@ mod tests {
         let count = Arc::new(AtomicU32::new(0));
         let c = count.clone();
         let _guard = retried.subscribe(move |signal| {
-            if let Signal::Value(_) = signal {
+            if let Signal::Value(_, _) = signal {
                 c.fetch_add(1, Ordering::SeqCst);
             }
         });

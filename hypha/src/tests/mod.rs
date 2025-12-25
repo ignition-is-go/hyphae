@@ -4,5 +4,6 @@ mod concurrency;
 mod constructors;
 mod disposal;
 mod error_handling;
+mod glitch_free;
 mod metrics;
 mod subscription;

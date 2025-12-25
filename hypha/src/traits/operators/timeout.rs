@@ -67,13 +67,13 @@ pub trait TimeoutExt<T>: Watchable<T> {
         let guard = self.subscribe(move |signal| {
             if let Some(d) = weak.upgrade() {
                 match signal {
-                    Signal::Value(value) => {
+                    Signal::Value(value, ctx) => {
                         if first.swap(false, Ordering::SeqCst) {
                             return;
                         }
                         // Increment generation to cancel pending timeout
                         let new_gen = generation.fetch_add(1, Ordering::SeqCst) + 1;
-                        d.notify(Signal::Value(value.clone()));
+                        d.notify(Signal::Value(value.clone(), ctx.clone()));
 
                         // Spawn new timeout thread
                         let gen2 = generation.clone();

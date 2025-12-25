@@ -406,7 +406,7 @@ fn test_no_lost_updates() {
 
     let s = sum.clone();
     let _guard = cell.subscribe(move |signal| {
-        if let Signal::Value(v) = signal {
+        if let Signal::Value(v, _) = signal {
             s.fetch_add(**v, Ordering::Relaxed);
         }
     });
@@ -436,7 +436,7 @@ fn test_subscriber_sees_consistent_state() {
     let _inc = inconsistencies.clone();
 
     let _guard = sum.subscribe(move |signal| {
-        if let Signal::Value(v) = signal {
+        if let Signal::Value(v, _) = signal {
             // Value should always be even (both a and b updated together)
             // This test is checking that we can at least read without crashing
             let _ = **v;
@@ -507,7 +507,7 @@ fn test_concurrent_complete_signals() {
     let vc = value_count.clone();
     let _guard = taken.subscribe(move |signal| {
         match signal {
-            Signal::Value(_) => { vc.fetch_add(1, Ordering::SeqCst); }
+            Signal::Value(_, _) => { vc.fetch_add(1, Ordering::SeqCst); }
             Signal::Complete => { cc.fetch_add(1, Ordering::SeqCst); }
             _ => {}
         }
@@ -713,7 +713,7 @@ fn barrage_interleaved_operators() {
                     1 => {
                         let p = source.filter(|x| x % 2 == 0).skip(5);
                         let _g = p.subscribe(move |s| {
-                            if let Signal::Value(_) = s { vc.fetch_add(1, Ordering::Relaxed); }
+                            if let Signal::Value(_, _) = s { vc.fetch_add(1, Ordering::Relaxed); }
                         });
                         Box::new(move || p.get())
                     }
@@ -825,7 +825,7 @@ fn barrage_notification_storm() {
         .map(|i| {
             let wd = work_done.clone();
             source.subscribe(move |signal| {
-                if let Signal::Value(v) = signal {
+                if let Signal::Value(v, _) = signal {
                     // Do some computation
                     let mut x = **v;
                     for _ in 0..100 {

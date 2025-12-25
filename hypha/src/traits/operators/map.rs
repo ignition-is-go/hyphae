@@ -21,17 +21,22 @@ pub trait MapExt<T>: Watchable<T> {
         } else {
             derived
         };
+        let derived_id = derived.id();
 
         let weak = derived.downgrade();
         let first = Arc::new(AtomicBool::new(true));
         let guard = self.subscribe(move |signal| {
             if let Some(d) = weak.upgrade() {
                 match signal {
-                    Signal::Value(value) => {
+                    Signal::Value(value, ctx) => {
                         if first.swap(false, Ordering::SeqCst) {
                             return;
                         }
-                        d.notify(Signal::value(transform(value.as_ref())));
+                        // Transform and propagate, preserving transaction context
+                        let new_value = Arc::new(transform(value.as_ref()));
+                        // Update context path if in transaction
+                        let new_ctx = ctx.as_ref().and_then(|c| c.push(derived_id));
+                        d.notify(Signal::Value(new_value, new_ctx));
                     }
                     Signal::Complete => d.notify(Signal::Complete),
                     Signal::Error(e) => d.notify(Signal::Error(e.clone())),

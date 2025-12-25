@@ -78,11 +78,11 @@ pub trait FinalizeExt<T>: Watchable<T> {
         let guard = self.subscribe(move |signal| {
             if let Some(d) = weak.upgrade() {
                 match signal {
-                    Signal::Value(value) => {
+                    Signal::Value(value, ctx) => {
                         if first.swap(false, Ordering::SeqCst) {
                             return;
                         }
-                        d.notify(Signal::Value(value.clone()));
+                        d.notify(Signal::Value(value.clone(), ctx.clone()));
                     }
                     Signal::Complete => {
                         callback.call();

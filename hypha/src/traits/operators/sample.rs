@@ -56,7 +56,7 @@ mod tests {
         let emissions = Arc::new(Mutex::new(Vec::new()));
         let e = emissions.clone();
         let _guard = sampled.subscribe(move |signal| {
-            if let Signal::Value(v) = signal {
+            if let Signal::Value(v, _) = signal {
                 e.lock().unwrap().push(**v);
             }
         });

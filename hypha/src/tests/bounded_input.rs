@@ -21,7 +21,7 @@ fn test_subscribe_receives_values() {
     let received_clone = received.clone();
 
     let _guard = input.subscribe(move |signal| {
-        if let Signal::Value(v) = signal {
+        if let Signal::Value(v, _) = signal {
             received_clone.store(**v, Ordering::SeqCst);
         }
     });

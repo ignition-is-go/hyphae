@@ -1,5 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use tracing::trace;
+
 use crate::cell::{Cell, CellImmutable, CellMutable};
 use crate::signal::Signal;
 use super::{Gettable, Watchable};
@@ -22,6 +24,7 @@ pub trait SwitchMapExt<T>: Watchable<T> {
     {
         let first_inner = f(&self.get());
         let cell = Cell::<U, CellMutable>::new(first_inner.get());
+        let cell_id = cell.id();
 
         // Packed state: generation (bits 0-61), inner_complete (bit 62), outer_complete (bit 63)
         // All completion logic uses CAS loops on this single atomic for lock-free operation
@@ -37,7 +40,11 @@ pub trait SwitchMapExt<T>: Watchable<T> {
             }
             if let Some(c) = weak.upgrade() {
                 match signal {
-                    Signal::Value(_) => c.notify(signal.clone()),
+                    Signal::Value(value, ctx) => {
+                        // Propagate transaction context, updating path
+                        let new_ctx = ctx.as_ref().and_then(|c| c.push(cell_id));
+                        c.notify(Signal::Value(value.clone(), new_ctx));
+                    }
                     Signal::Complete => {
                         // Set inner complete bit with CAS loop
                         loop {
@@ -73,12 +80,21 @@ pub trait SwitchMapExt<T>: Watchable<T> {
         let first = Arc::new(AtomicBool::new(true));
         let outer_guard = self.subscribe(move |signal| {
             match signal {
-                Signal::Value(outer_value) => {
+                Signal::Value(outer_value, outer_ctx) => {
                     if first.swap(false, Ordering::SeqCst) {
                         return;
                     }
 
                     let Some(c) = weak.upgrade() else { return };
+
+                    // Log transaction context for switch_map
+                    if let Some(ctx) = &outer_ctx {
+                        trace!(
+                            cell = %cell_id,
+                            txid = %ctx.txid,
+                            "switch_map switching inner cell mid-transaction"
+                        );
+                    }
 
                     // Increment generation, clear inner_complete, preserve outer_complete
                     let my_gen = loop {
@@ -107,7 +123,11 @@ pub trait SwitchMapExt<T>: Watchable<T> {
                         }
                         if let Some(c) = weak_inner.upgrade() {
                             match signal {
-                                Signal::Value(_) => c.notify(signal.clone()),
+                                Signal::Value(value, ctx) => {
+                                    // Propagate transaction context, updating path
+                                    let new_ctx = ctx.as_ref().and_then(|c| c.push(cell_id));
+                                    c.notify(Signal::Value(value.clone(), new_ctx));
+                                }
                                 Signal::Complete => {
                                     loop {
                                         let old = state_for_inner.load(Ordering::SeqCst);

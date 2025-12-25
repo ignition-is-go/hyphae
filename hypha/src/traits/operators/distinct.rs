@@ -46,13 +46,13 @@ pub trait DistinctExt<T>: Watchable<T> {
         let guard = self.subscribe(move |signal| {
             if let Some(d) = weak.upgrade() {
                 match signal {
-                    Signal::Value(value) => {
+                    Signal::Value(value, ctx) => {
                         if first.swap(false, Ordering::SeqCst) {
                             return;
                         }
                         if seen.insert((**value).clone()) {
-                            // Value was not in set, emit it
-                            d.notify(Signal::Value(value.clone()));
+                            // Value was not in set, emit it with transaction context
+                            d.notify(Signal::Value(value.clone(), ctx.clone()));
                         }
                     }
                     Signal::Complete => d.notify(Signal::Complete),
@@ -82,7 +82,7 @@ mod tests {
         let count = Arc::new(AtomicU32::new(0));
         let c = count.clone();
         let _guard = distinct.subscribe(move |signal| {
-            if let Signal::Value(_) = signal {
+            if let Signal::Value(_, _) = signal {
                 c.fetch_add(1, Ordering::SeqCst);
             }
         });

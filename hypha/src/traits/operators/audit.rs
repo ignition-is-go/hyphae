@@ -46,7 +46,7 @@ pub trait AuditExt<T>: Watchable<T> {
         let guard = self.subscribe(move |signal| {
             if let Some(d) = weak.upgrade() {
                 match signal {
-                    Signal::Value(value) => {
+                    Signal::Value(value, _) => {
                         if first.swap(false, Ordering::SeqCst) {
                             return;
                         }
@@ -104,7 +104,7 @@ mod tests {
         let emissions = Arc::new(AtomicU32::new(0));
         let e = emissions.clone();
         let _guard = audited.subscribe(move |signal| {
-            if let Signal::Value(_) = signal {
+            if let Signal::Value(_, _) = signal {
                 e.fetch_add(1, Ordering::SeqCst);
             }
         });

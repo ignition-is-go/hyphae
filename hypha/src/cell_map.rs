@@ -292,7 +292,7 @@ where
             if first.swap(false, std::sync::atomic::Ordering::SeqCst) {
                 return;
             }
-            if let crate::Signal::Value(arc_opt) = signal
+            if let crate::Signal::Value(arc_opt, _) = signal
                 && let Some(diff) = arc_opt.as_ref()
             {
                 callback(diff);

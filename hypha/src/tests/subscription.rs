@@ -10,7 +10,7 @@ fn test_subscribe_returns_guard() {
 
     let r = received.clone();
     let guard = source.subscribe(move |signal| {
-        if let Signal::Value(v) = signal {
+        if let Signal::Value(v, _) = signal {
             r.store(**v, Ordering::SeqCst);
         }
     });
@@ -32,7 +32,7 @@ fn test_guard_unsubscribes_on_drop() {
     {
         let r = received.clone();
         let _guard = source.subscribe(move |signal| {
-            if let Signal::Value(v) = signal {
+            if let Signal::Value(v, _) = signal {
                 r.store(**v, Ordering::SeqCst);
             }
         });
@@ -53,7 +53,7 @@ fn test_guard_leak_prevents_unsubscribe() {
 
     let r = received.clone();
     let guard = source.subscribe(move |signal| {
-        if let Signal::Value(v) = signal {
+        if let Signal::Value(v, _) = signal {
             r.store(**v, Ordering::SeqCst);
         }
     });
@@ -71,7 +71,7 @@ fn test_guard_manual_unsubscribe() {
 
     let r = received.clone();
     let guard = source.subscribe(move |signal| {
-        if let Signal::Value(v) = signal {
+        if let Signal::Value(v, _) = signal {
             r.store(**v, Ordering::SeqCst);
         }
     });

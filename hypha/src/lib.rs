@@ -28,7 +28,7 @@
 //!
 //! // Subscribe to changes (guard auto-unsubscribes on drop)
 //! let _guard = sum.subscribe(|signal| {
-//!     if let Signal::Value(value) = signal {
+//!     if let Signal::Value(value, _) = signal {
 //!         println!("Sum changed to: {}", value);
 //!     }
 //! });
@@ -69,6 +69,7 @@ pub mod metrics;
 pub mod signal;
 pub mod subscription;
 pub mod traits;
+pub mod transaction;
 
 #[cfg(test)]
 mod tests;
@@ -93,3 +94,4 @@ pub use traits::{
     TakeUntilExt, TakeWhileExt, TapExt, ThrottleExt, TimeoutExt, TryMapExt, UnwrapOrExt, Watchable,
     WindowExt, WithLatestFromExt, ZipExt,
 };
+pub use transaction::{TxContext, TxId, TxState};

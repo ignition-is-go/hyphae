@@ -44,7 +44,7 @@ pub trait LastExt<T>: Watchable<T> {
         let guard = self.subscribe(move |signal| {
             if let Some(d) = weak.upgrade() {
                 match signal {
-                    Signal::Value(value) => {
+                    Signal::Value(value, _) => {
                         if first.swap(false, Ordering::SeqCst) {
                             return;
                         }
@@ -94,7 +94,7 @@ pub trait LastExt<T>: Watchable<T> {
         let guard = self.subscribe(move |signal| {
             if let Some(d) = weak.upgrade() {
                 match signal {
-                    Signal::Value(value) => {
+                    Signal::Value(value, _) => {
                         if first.swap(false, Ordering::SeqCst) {
                             return;
                         }
@@ -135,7 +135,7 @@ mod tests {
         let value_emissions = Arc::new(AtomicU32::new(0));
         let ve = value_emissions.clone();
         let _guard = last.subscribe(move |signal| {
-            if let Signal::Value(_) = signal {
+            if let Signal::Value(_, _) = signal {
                 ve.fetch_add(1, Ordering::SeqCst);
             }
         });

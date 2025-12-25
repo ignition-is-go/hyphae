@@ -8,14 +8,14 @@ fn main() {
 
     // Subscriber 1: prints normally
     let _g1 = cell.subscribe(|signal| {
-        if let Signal::Value(v) = signal {
+        if let Signal::Value(v, _) = signal {
             println!("  Subscriber 1: got {}", v);
         }
     });
 
     // Subscriber 2: panics on value 2
     let _g2 = cell.subscribe(|signal| {
-        if let Signal::Value(v) = signal {
+        if let Signal::Value(v, _) = signal {
             if **v == 2 {
                 panic!("Subscriber 2 panics on value 2!");
             }
@@ -25,7 +25,7 @@ fn main() {
 
     // Subscriber 3: prints normally
     let _g3 = cell.subscribe(|signal| {
-        if let Signal::Value(v) = signal {
+        if let Signal::Value(v, _) = signal {
             println!("  Subscriber 3: got {}", v);
         }
     });

@@ -24,7 +24,7 @@ pub trait TakeUntilExt<T>: Watchable<T> {
         let weak_for_notifier = derived.downgrade();
         let notifier_guard = notifier.subscribe(move |signal| {
             // Only react to values, ignore notifier's complete/error
-            if let Signal::Value(_) = signal {
+            if let Signal::Value(_, _) = signal {
                 if notifier_first.swap(false, Ordering::SeqCst) {
                     return;
                 }
@@ -42,7 +42,7 @@ pub trait TakeUntilExt<T>: Watchable<T> {
         let guard = self.subscribe(move |signal| {
             if let Some(d) = weak.upgrade() {
                 match signal {
-                    Signal::Value(_) => {
+                    Signal::Value(_, _) => {
                         if first.swap(false, Ordering::SeqCst) {
                             return;
                         }

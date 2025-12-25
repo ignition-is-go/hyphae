@@ -17,7 +17,7 @@ pub trait SkipExt<T>: Watchable<T> {
         let guard = self.subscribe(move |signal| {
             if let Some(c) = weak.upgrade() {
                 match signal {
-                    Signal::Value(_) => {
+                    Signal::Value(_, _) => {
                         let prev = to_skip.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
                             if n > 0 { Some(n - 1) } else { None }
                         });

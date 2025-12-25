@@ -66,7 +66,7 @@ pub trait BufferTimeExt<T>: Watchable<T> {
         let guard = self.subscribe(move |signal| {
             if let Some(d) = weak.upgrade() {
                 match signal {
-                    Signal::Value(value) => {
+                    Signal::Value(value, _) => {
                         if first.swap(false, Ordering::SeqCst) {
                             return;
                         }
@@ -113,7 +113,7 @@ mod tests {
         let emissions = Arc::new(Mutex::new(Vec::<Vec<i32>>::new()));
         let e = emissions.clone();
         let _guard = buffered.subscribe(move |signal| {
-            if let Signal::Value(v) = signal {
+            if let Signal::Value(v, _) = signal {
                 e.lock().unwrap().push((**v).clone());
             }
         });
@@ -146,7 +146,7 @@ mod tests {
         let emissions = Arc::new(Mutex::new(Vec::<Vec<i32>>::new()));
         let e = emissions.clone();
         let _guard = buffered.subscribe(move |signal| {
-            if let Signal::Value(v) = signal {
+            if let Signal::Value(v, _) = signal {
                 e.lock().unwrap().push((**v).clone());
             }
         });

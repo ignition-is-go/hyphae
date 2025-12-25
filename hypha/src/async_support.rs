@@ -62,7 +62,7 @@ pub trait AsyncWatchableExt<T>: Watchable<T> {
         let (sender, receiver) = flume::unbounded();
 
         let guard = self.subscribe(move |signal| {
-            if let Signal::Value(value) = signal {
+            if let Signal::Value(value, _) = signal {
                 let _ = sender.send((**value).clone());
             }
         });
@@ -85,7 +85,7 @@ pub trait AsyncWatchableExt<T>: Watchable<T> {
         let (sender, receiver) = flume::bounded(capacity);
 
         let guard = self.subscribe(move |signal| {
-            if let Signal::Value(value) = signal {
+            if let Signal::Value(value, _) = signal {
                 let _ = sender.send((**value).clone());
             }
         });

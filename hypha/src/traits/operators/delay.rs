@@ -45,7 +45,7 @@ mod tests {
 
         let r = received.clone();
         let _guard = delayed.subscribe(move |signal| {
-            if let Signal::Value(v) = signal {
+            if let Signal::Value(v, _) = signal {
                 r.store(**v, Ordering::SeqCst);
             }
         });

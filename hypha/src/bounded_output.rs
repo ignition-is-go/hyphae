@@ -47,7 +47,7 @@ impl<T: Clone + Send + Sync + 'static> BoundedOutput<T> {
         let (sender, receiver) = channel::bounded(capacity);
 
         let guard = source.subscribe(move |signal| {
-            if let Signal::Value(value) = signal {
+            if let Signal::Value(value, _) = signal {
                 // Send, blocking if full
                 let _ = sender.send((**value).clone());
             }
@@ -67,7 +67,7 @@ impl<T: Clone + Send + Sync + 'static> BoundedOutput<T> {
         let (sender, receiver) = channel::bounded(capacity);
 
         let guard = source.subscribe(move |signal| {
-            if let Signal::Value(value) = signal {
+            if let Signal::Value(value, _) = signal {
                 // Try to send, if full drop oldest and retry
                 if sender.try_send((**value).clone()).is_err() {
                     // Channel full - would need to implement ring buffer behavior
