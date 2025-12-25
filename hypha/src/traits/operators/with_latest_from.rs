@@ -55,7 +55,7 @@ mod tests {
         let emissions = std::sync::Arc::new(Mutex::new(Vec::new()));
         let e = emissions.clone();
         let _guard = combined.subscribe(move |signal| {
-            if let Signal::Value(v) = signal {
+            if let Signal::Value(v, _) = signal {
                 e.lock().unwrap().push((**v).clone());
             }
         });

@@ -44,11 +44,11 @@ pub trait ConcatExt<T>: Watchable<T> {
         let guard1 = self.subscribe(move |signal| {
             if let Some(d) = weak.upgrade() {
                 match signal {
-                    Signal::Value(value) => {
+                    Signal::Value(value, ctx) => {
                         if first_skip.swap(false, Ordering::SeqCst) {
                             return;
                         }
-                        d.notify(Signal::Value(value.clone()));
+                        d.notify(Signal::Value(value.clone(), ctx.clone()));
                     }
                     Signal::Complete => {
                         first_done2.store(true, Ordering::SeqCst);
@@ -58,11 +58,11 @@ pub trait ConcatExt<T>: Watchable<T> {
                         let guard2 = other.subscribe(move |signal| {
                             if let Some(d2) = weak2.upgrade() {
                                 match signal {
-                                    Signal::Value(value) => {
+                                    Signal::Value(value, ctx) => {
                                         if second_skip.swap(false, Ordering::SeqCst) {
                                             return;
                                         }
-                                        d2.notify(Signal::Value(value.clone()));
+                                        d2.notify(Signal::Value(value.clone(), ctx.clone()));
                                     }
                                     Signal::Complete => d2.notify(Signal::Complete),
                                     Signal::Error(e) => d2.notify(Signal::Error(e.clone())),
@@ -98,7 +98,7 @@ mod tests {
         let emissions = Arc::new(Mutex::new(Vec::new()));
         let e = emissions.clone();
         let _guard = combined.subscribe(move |signal| {
-            if let Signal::Value(v) = signal {
+            if let Signal::Value(v, _) = signal {
                 e.lock().unwrap().push(**v);
             }
         });

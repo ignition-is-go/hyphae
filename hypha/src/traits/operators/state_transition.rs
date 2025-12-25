@@ -144,7 +144,7 @@ pub trait StateTransitionExt<S>: Watchable<S> {
         let guard = self.subscribe(move |signal| {
             if let Some(d) = weak.upgrade() {
                 match signal {
-                    Signal::Value(next) => {
+                    Signal::Value(next, ctx) => {
                         if first.swap(false, Ordering::SeqCst) {
                             return;
                         }
@@ -191,9 +191,9 @@ pub trait StateTransitionExt<S>: Watchable<S> {
                             handler(&**next);
                         }
 
-                        // Update current state and emit
+                        // Update current state and emit with transaction context
                         current_state.store(next.clone());
-                        d.notify(Signal::Value(next.clone()));
+                        d.notify(Signal::Value(next.clone(), ctx.clone()));
                     }
                     Signal::Complete => d.notify(Signal::Complete),
                     Signal::Error(e) => d.notify(Signal::Error(e.clone())),

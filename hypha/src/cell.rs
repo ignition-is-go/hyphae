@@ -10,12 +10,14 @@ use std::{
     },
     time::Duration,
 };
+use tracing::trace;
 use uuid::Uuid;
 
 use crate::metrics::CellMetrics;
 use crate::signal::Signal;
 use crate::subscription::SubscriptionGuard;
 use crate::traits::{DepNode, Gettable, Mutable, Watchable};
+use crate::transaction::{TxContext, TxId, TxState};
 
 /// Information about a slow subscriber callback.
 #[derive(Debug, Clone)]
@@ -56,6 +58,8 @@ pub(crate) struct CellInner<T> {
     pub(crate) slow_subscriber_threshold_ns: ArcSwap<Option<u64>>,
     /// Callback for slow subscriber alerts.
     pub(crate) slow_subscriber_callback: ArcSwap<Option<SlowSubscriberCallback>>,
+    /// Transaction state for glitch-free propagation.
+    pub(crate) tx_state: TxState,
 }
 
 /// A reactive cell that holds a value and notifies subscribers on change.
@@ -117,6 +121,7 @@ impl<T: Clone + Send + Sync + 'static> Cell<T, CellMutable> {
                 metrics: None,
                 slow_subscriber_threshold_ns: ArcSwap::from_pointee(None),
                 slow_subscriber_callback: ArcSwap::from_pointee(None),
+                tx_state: TxState::new(),
             }),
             _marker: PhantomData,
         }
@@ -137,6 +142,7 @@ impl<T: Clone + Send + Sync + 'static> Cell<T, CellMutable> {
                 metrics: Some(Arc::new(CellMetrics::new())),
                 slow_subscriber_threshold_ns: ArcSwap::from_pointee(None),
                 slow_subscriber_callback: ArcSwap::from_pointee(None),
+                tx_state: TxState::new(),
             }),
             _marker: PhantomData,
         }
@@ -315,6 +321,8 @@ impl<T: Clone + Send + Sync + 'static, M: Send + Sync + 'static> Cell<T, M> {
     /// Emit a signal to all subscribers.
     ///
     /// This is the unified notification mechanism for values, completion, and errors.
+    /// When a signal carries a transaction context, derived cells can use it for
+    /// glitch-free propagation by implementing barrier synchronization.
     #[doc(hidden)]
     pub fn notify(&self, signal: Signal<T>) {
         // Don't emit anything after completion or error
@@ -326,9 +334,18 @@ impl<T: Clone + Send + Sync + 'static, M: Send + Sync + 'static> Cell<T, M> {
         let notify_start = self.inner.metrics.as_ref().map(|_| std::time::Instant::now());
 
         match &signal {
-            Signal::Value(arc_value) => {
+            Signal::Value(arc_value, ctx) => {
                 // Arc clone = refcount bump, no deep copy
                 self.inner.value.store(arc_value.clone());
+
+                // Log transaction propagation
+                if let Some(ctx) = ctx {
+                    trace!(
+                        cell = %self.inner.id,
+                        txid = %ctx.txid,
+                        "propagating value with transaction context"
+                    );
+                }
             }
             Signal::Complete => {
                 self.inner.completed.store(true, Ordering::SeqCst);
@@ -386,6 +403,16 @@ impl<T: Clone + Send + Sync + 'static, M: Send + Sync + 'static> Cell<T, M> {
             metrics.record_notify(start.elapsed().as_nanos() as u64);
         }
     }
+
+    /// Get the transaction state for this cell.
+    pub fn tx_state(&self) -> &TxState {
+        &self.inner.tx_state
+    }
+
+    /// Get the cell ID.
+    pub fn id(&self) -> Uuid {
+        self.inner.id
+    }
 }
 
 impl<T: Clone + Send + Sync + 'static, U: Send + Sync + 'static> Gettable<T> for Cell<T, U> {
@@ -396,8 +423,8 @@ impl<T: Clone + Send + Sync + 'static, U: Send + Sync + 'static> Gettable<T> for
 
 impl<T: Clone + Send + Sync + 'static, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
     fn subscribe(&self, callback: impl Fn(&Signal<T>) + Send + Sync + 'static) -> SubscriptionGuard {
-        // Send current value immediately (Arc clone, no deep copy)
-        callback(&Signal::Value(self.inner.value.load_full()));
+        // Send current value immediately (Arc clone, no deep copy, no transaction context)
+        callback(&Signal::Value(self.inner.value.load_full(), None));
 
         // If already complete or errored, send that signal too
         if self.is_complete() {
@@ -452,7 +479,30 @@ impl<T: Clone + Send + Sync + 'static, U: Send + Sync + 'static> Watchable<T> fo
 
 impl<T: Clone + Send + Sync + 'static> Mutable<T> for Cell<T, CellMutable> {
     fn set(&self, value: T) {
-        self.notify(Signal::value(value)); // Wraps in Arc
+        self.notify(Signal::value(value)); // Wraps in Arc, no transaction context
+    }
+
+    fn set_tx(&self, value: T) -> TxId {
+        use crate::transaction::finalize_transaction;
+
+        // Create a new transaction context originating from this cell
+        let ctx = TxContext::new(self.inner.id);
+        let txid = ctx.txid;
+
+        trace!(
+            cell = %self.inner.id,
+            txid = %txid,
+            "starting transaction"
+        );
+
+        // Emit the value with the transaction context
+        self.notify(Signal::value_tx(value, ctx));
+
+        // Finalize: fire any pending barriers that didn't complete naturally
+        // This handles cases where join sources don't all participate in the transaction
+        finalize_transaction(txid);
+
+        txid
     }
 
     fn complete(&self) {

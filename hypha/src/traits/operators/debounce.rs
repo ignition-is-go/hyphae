@@ -18,7 +18,7 @@ pub trait DebounceExt<T>: Watchable<T> {
         let weak = cell.downgrade();
         let guard = self.subscribe(move |signal| {
             match signal {
-                Signal::Value(value) => {
+                Signal::Value(value, _) => {
                     let my_gen = generation.fetch_add(1, Ordering::SeqCst) + 1;
                     let value = value.clone(); // Arc clone
                     let weak = weak.clone();
@@ -67,7 +67,7 @@ mod tests {
 
         let r = received.clone();
         let _guard = debounced.subscribe(move |signal| {
-            if let Signal::Value(v) = signal {
+            if let Signal::Value(v, _) = signal {
                 r.store(**v, Ordering::SeqCst);
             }
         });

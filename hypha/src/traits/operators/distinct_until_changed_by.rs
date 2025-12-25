@@ -43,7 +43,7 @@ pub trait DistinctUntilChangedByExt<T>: Watchable<T> {
         let guard = self.subscribe(move |signal| {
             if let Some(d) = weak.upgrade() {
                 match signal {
-                    Signal::Value(value) => {
+                    Signal::Value(value, _) => {
                         if first.swap(false, Ordering::SeqCst) {
                             return;
                         }

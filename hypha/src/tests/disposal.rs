@@ -135,7 +135,7 @@ fn test_parent_cell_outlives_derived() {
     let derived = source.map(|v| *v * 2);
 
     let _guard = derived.subscribe(move |signal| {
-        if let Signal::Value(v) = signal {
+        if let Signal::Value(v, _) = signal {
             r.store(**v, Ordering::SeqCst);
         }
     });

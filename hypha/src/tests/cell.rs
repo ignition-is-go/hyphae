@@ -24,7 +24,7 @@ fn test_cell_watch_immediate() {
 
     let r = received.clone();
     let _guard = cell.subscribe(move |signal| {
-        if let Signal::Value(v) = signal {
+        if let Signal::Value(v, _) = signal {
             r.store(**v, Ordering::SeqCst);
         }
     });
@@ -40,7 +40,7 @@ fn test_cell_watch_on_set() {
 
     let r = received.clone();
     let _guard = cell.subscribe(move |signal| {
-        if let Signal::Value(v) = signal {
+        if let Signal::Value(v, _) = signal {
             r.store(**v, Ordering::SeqCst);
         }
     });
@@ -57,7 +57,7 @@ fn test_cell_multiple_watchers() {
     let _guards: Vec<_> = (0..10).map(|_| {
         let c = count.clone();
         cell.subscribe(move |signal| {
-            if let Signal::Value(_) = signal {
+            if let Signal::Value(_, _) = signal {
                 c.fetch_add(1, Ordering::SeqCst);
             }
         })
@@ -78,7 +78,7 @@ fn test_cell_unsubscribe() {
 
     let c = count.clone();
     let guard = cell.subscribe(move |signal| {
-        if let Signal::Value(_) = signal {
+        if let Signal::Value(_, _) = signal {
             c.fetch_add(1, Ordering::SeqCst);
         }
     });

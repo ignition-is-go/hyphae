@@ -11,6 +11,7 @@ pub trait FilterExt<T>: Watchable<T> {
         Self: Clone + Send + Sync + 'static,
     {
         let cell = Cell::<T, CellMutable>::new(self.get());
+        let cell_id = cell.id();
 
         let weak = cell.downgrade();
         let predicate = Arc::new(predicate);
@@ -18,12 +19,14 @@ pub trait FilterExt<T>: Watchable<T> {
         let guard = self.subscribe(move |signal| {
             if let Some(c) = weak.upgrade() {
                 match signal {
-                    Signal::Value(value) => {
+                    Signal::Value(value, ctx) => {
                         if first.swap(false, Ordering::SeqCst) {
                             return;
                         }
                         if predicate(value.as_ref()) {
-                            c.notify(signal.clone()); // Arc clone, no deep copy
+                            // Propagate with updated transaction context
+                            let new_ctx = ctx.as_ref().and_then(|c| c.push(cell_id));
+                            c.notify(Signal::Value(value.clone(), new_ctx));
                         }
                     }
                     Signal::Complete => c.notify(Signal::Complete),
@@ -54,7 +57,7 @@ mod tests {
 
         let r = received.clone();
         let _guard = evens.subscribe(move |signal| {
-            if let Signal::Value(v) = signal {
+            if let Signal::Value(v, _) = signal {
                 r.store(**v, Ordering::SeqCst);
             }
         });
@@ -73,7 +76,7 @@ mod tests {
 
         let r = received.clone();
         let _guard = evens.subscribe(move |signal| {
-            if let Signal::Value(v) = signal {
+            if let Signal::Value(v, _) = signal {
                 r.store(**v, Ordering::SeqCst);
             }
         });

@@ -113,7 +113,7 @@ struct BoundedInputInner<T> {
 ///
 /// // Subscribe to receive values
 /// let _guard = input.subscribe(|signal| {
-///     if let Signal::Value(v) = signal {
+///     if let Signal::Value(v, _) = signal {
 ///         println!("Received: {}", v);
 ///     }
 /// });

@@ -46,7 +46,7 @@ pub trait BufferCountExt<T>: Watchable<T> {
         let guard = self.subscribe(move |signal| {
             if let Some(d) = weak.upgrade() {
                 match signal {
-                    Signal::Value(value) => {
+                    Signal::Value(value, _) => {
                         if first.swap(false, Ordering::SeqCst) {
                             return;
                         }
@@ -102,7 +102,7 @@ mod tests {
 
         let e = emissions.clone();
         let _guard = buffered.subscribe(move |signal| {
-            if let Signal::Value(v) = signal {
+            if let Signal::Value(v, _) = signal {
                 e.lock().unwrap().push((**v).clone());
             }
         });
@@ -137,7 +137,7 @@ mod tests {
         let c = completed.clone();
         let _guard = buffered.subscribe(move |signal| {
             match signal {
-                Signal::Value(v) => {
+                Signal::Value(v, _) => {
                     e.lock().unwrap().push((**v).clone());
                 }
                 Signal::Complete => {

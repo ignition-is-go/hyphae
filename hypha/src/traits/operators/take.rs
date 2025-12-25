@@ -17,7 +17,7 @@ pub trait TakeExt<T>: Watchable<T> {
         let guard = self.subscribe(move |signal| {
             if let Some(c) = weak.upgrade() {
                 match signal {
-                    Signal::Value(_) => {
+                    Signal::Value(_, _) => {
                         let prev = remaining.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
                             if n > 0 { Some(n - 1) } else { None }
                         });
@@ -63,7 +63,7 @@ mod tests {
 
         let c = count.clone();
         let _guard = taken.subscribe(move |signal| {
-            if let Signal::Value(_) = signal {
+            if let Signal::Value(_, _) = signal {
                 c.fetch_add(1, AtomicOrdering::SeqCst);
             }
         });

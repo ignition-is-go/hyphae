@@ -19,7 +19,7 @@ pub trait ThrottleExt<T>: Watchable<T> {
         let guard = self.subscribe(move |signal| {
             if let Some(c) = weak.upgrade() {
                 match signal {
-                    Signal::Value(_) => {
+                    Signal::Value(_, _) => {
                         if can_emit.swap(false, Ordering::SeqCst) {
                             c.notify(signal.clone());
 
