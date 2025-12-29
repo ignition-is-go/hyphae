@@ -80,7 +80,9 @@ pub use bounded_output::BoundedOutput;
 pub use cell::{Cell, CellImmutable, CellMutable, SlowSubscriberAlert};
 pub use cell_map::{CellMap, MapDiff, SelectExt};
 pub use cell_set::{CellSet, SetDiff};
-pub use constructors::{from_iter_with_delay, interval};
+pub use constructors::{
+    IntervalTick, from_iter_with_delay, interval, interval_precise, interval_precise_with_elapsed,
+};
 pub use metrics::CellMetrics;
 pub use signal::Signal;
 pub use subscription::SubscriptionGuard;
