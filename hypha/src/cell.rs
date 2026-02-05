@@ -273,7 +273,7 @@ impl<T, M> Cell<T, M> {
     }
 
     /// Take ownership of a subscription guard, dropping it when this cell is dropped.
-    pub(crate) fn own(&self, guard: SubscriptionGuard) {
+    pub fn own(&self, guard: SubscriptionGuard) {
         self.inner.owned.insert(Uuid::new_v4(), guard);
     }
 }
