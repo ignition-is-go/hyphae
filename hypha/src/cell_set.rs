@@ -11,7 +11,7 @@ use crate::{
     cell::{Cell, CellImmutable, CellMutable, WeakCell},
     signal::Signal,
     subscription::SubscriptionGuard,
-    traits::{Gettable, Mutable, Watchable},
+    traits::{CellValue, Gettable, Mutable, Watchable},
 };
 
 /// Diff notification for set changes.
@@ -25,7 +25,7 @@ pub enum SetDiff<T> {
 
 struct CellSetInner<T>
 where
-    T: Hash + Eq + Clone + Send + Sync + 'static,
+    T: Hash + Eq + CellValue,
 {
     /// The actual data storage.
     data: DashSet<T>,
@@ -62,7 +62,7 @@ where
 /// ```
 pub struct CellSet<T, M = CellMutable>
 where
-    T: Hash + Eq + Clone + Send + Sync + 'static,
+    T: Hash + Eq + CellValue,
 {
     inner: Arc<CellSetInner<T>>,
     _marker: PhantomData<M>,
@@ -70,9 +70,10 @@ where
 
 impl<T> CellSet<T, CellMutable>
 where
-    T: Hash + Eq + Clone + Send + Sync + 'static,
+    T: Hash + Eq + CellValue,
 {
     /// Create a new empty CellSet.
+    #[track_caller]
     pub fn new() -> Self {
         Self {
             inner: Arc::new(CellSetInner {
@@ -145,7 +146,7 @@ where
 
 impl<T> Default for CellSet<T, CellMutable>
 where
-    T: Hash + Eq + Clone + Send + Sync + 'static,
+    T: Hash + Eq + CellValue,
 {
     fn default() -> Self {
         Self::new()
@@ -154,12 +155,13 @@ where
 
 impl<T, M> CellSet<T, M>
 where
-    T: Hash + Eq + Clone + Send + Sync + 'static,
+    T: Hash + Eq + CellValue,
 {
     /// Get an observable Cell for membership of a specific value.
     ///
     /// Returns a `Cell<bool>` that is `true` when the value is in the set.
     /// Multiple calls with the same value return the same underlying Cell.
+    #[track_caller]
     pub fn contains(&self, value: &T) -> Cell<bool, CellImmutable> {
         // Check cache first
         if let Some(weak) = self.inner.membership_cells.get(value)
@@ -184,6 +186,7 @@ where
     /// Returns a derived cell that maintains its state incrementally via diffs.
     /// The initial call is O(N) to build the snapshot, but subsequent updates
     /// are O(1) as they apply diffs incrementally.
+    #[track_caller]
     pub fn values(&self) -> Cell<Vec<T>, CellImmutable> {
         // Build initial values from current data (O(N) once)
         let initial: Vec<T> = self.inner.data.iter().map(|r| r.clone()).collect();
@@ -245,7 +248,7 @@ where
 
 impl<T, M> Clone for CellSet<T, M>
 where
-    T: Hash + Eq + Clone + Send + Sync + 'static,
+    T: Hash + Eq + CellValue,
 {
     fn clone(&self) -> Self {
         Self {

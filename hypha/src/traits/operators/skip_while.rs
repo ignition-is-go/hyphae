@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use super::Watchable;
+use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     signal::Signal,
@@ -27,13 +27,19 @@ pub trait SkipWhileExt<T>: Watchable<T> {
     /// source.set(3); // Passes (predicate false)
     /// source.set(1); // Passes (predicate was already false once)
     /// ```
+    #[track_caller]
     fn skip_while<F>(&self, predicate: F) -> Cell<T, CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
+        T: CellValue,
         F: Fn(&T) -> bool + Send + Sync + 'static,
         Self: Clone + Send + Sync + 'static,
     {
         let derived = Cell::<T, CellMutable>::new(self.get());
+        let derived = if let Some(name) = self.name() {
+            derived.with_name(format!("{}::skip_while", name))
+        } else {
+            derived
+        };
 
         let weak = derived.downgrade();
         let skipping = Arc::new(AtomicBool::new(true));

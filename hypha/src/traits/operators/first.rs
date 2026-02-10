@@ -1,12 +1,13 @@
-use super::{TakeExt, Watchable};
+use super::{CellValue, TakeExt, Watchable};
 use crate::cell::{Cell, CellImmutable};
 
 pub trait FirstExt<T>: Watchable<T> {
     /// Take only the first value, then complete.
     /// Equivalent to `take(1)`.
+    #[track_caller]
     fn first(&self) -> Cell<T, CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
+        T: CellValue,
         Self: Clone + Send + Sync + 'static,
     {
         self.take(1)

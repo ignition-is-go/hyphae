@@ -5,7 +5,7 @@ use std::sync::{
 
 use arc_swap::ArcSwap;
 
-use super::Watchable;
+use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     signal::Signal,
@@ -21,7 +21,7 @@ pub trait DistinctUntilChangedByExt<T>: Watchable<T> {
     /// ```
     /// use hypha::{Cell, Mutable, Gettable, DistinctUntilChangedByExt};
     ///
-    /// #[derive(Clone)]
+    /// #[derive(Clone, Debug)]
     /// struct User { id: u32, name: String }
     ///
     /// let source = Cell::new(User { id: 1, name: "Alice".into() });
@@ -30,13 +30,19 @@ pub trait DistinctUntilChangedByExt<T>: Watchable<T> {
     /// source.set(User { id: 1, name: "Alicia".into() }); // Same id - blocked
     /// source.set(User { id: 2, name: "Bob".into() });    // Different id - passes
     /// ```
+    #[track_caller]
     fn distinct_until_changed_by<F>(&self, comparator: F) -> Cell<T, CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
+        T: CellValue,
         F: Fn(&T, &T) -> bool + Send + Sync + 'static,
         Self: Clone + Send + Sync + 'static,
     {
         let derived = Cell::<T, CellMutable>::new(self.get());
+        let derived = if let Some(name) = self.name() {
+            derived.with_name(format!("{}::distinct_until_changed_by", name))
+        } else {
+            derived
+        };
 
         let weak = derived.downgrade();
         let first = Arc::new(AtomicBool::new(true));
@@ -76,7 +82,7 @@ mod tests {
     use super::*;
     use crate::Mutable;
 
-    #[derive(Clone)]
+    #[derive(Clone, Debug)]
     struct User {
         id: u32,
         #[allow(dead_code)]

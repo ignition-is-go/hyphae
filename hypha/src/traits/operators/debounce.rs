@@ -7,19 +7,25 @@ use std::{
     time::Duration,
 };
 
-use super::Watchable;
+use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     signal::Signal,
 };
 
 pub trait DebounceExt<T>: Watchable<T> {
+    #[track_caller]
     fn debounce(&self, duration: Duration) -> Cell<T, CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
+        T: CellValue,
         Self: Clone + Send + Sync + 'static,
     {
         let cell = Cell::<T, CellMutable>::new(self.get());
+        let cell = if let Some(name) = self.name() {
+            cell.with_name(format!("{}::debounce", name))
+        } else {
+            cell
+        };
 
         let generation = Arc::new(AtomicU64::new(0));
         let weak = cell.downgrade();

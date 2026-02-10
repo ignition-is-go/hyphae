@@ -3,15 +3,17 @@ use std::{thread, time::Duration};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     signal::Signal,
+    traits::CellValue,
 };
 
 /// Creates a cell that emits each value from the iterator with a delay between emissions.
 ///
 /// Returns `None` if the iterator is empty.
 /// The thread automatically stops when the cell is dropped.
+#[track_caller]
 pub fn from_iter_with_delay<T, I>(iter: I, delay: Duration) -> Option<Cell<T, CellImmutable>>
 where
-    T: Clone + Send + Sync + 'static,
+    T: CellValue,
     I: IntoIterator<Item = T>,
     I::IntoIter: Send + 'static,
 {

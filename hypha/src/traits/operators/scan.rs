@@ -5,22 +5,28 @@ use std::sync::{
 
 use arc_swap::ArcSwap;
 
-use super::Watchable;
+use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     signal::Signal,
 };
 
 pub trait ScanExt<T>: Watchable<T> {
+    #[track_caller]
     fn scan<U, F>(&self, initial: U, f: F) -> Cell<U, CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
-        U: Clone + Send + Sync + 'static,
+        T: CellValue,
+        U: CellValue,
         F: Fn(&U, &T) -> U + Send + Sync + 'static,
         Self: Clone + Send + Sync + 'static,
     {
         let first_acc = f(&initial, &self.get());
         let cell = Cell::<U, CellMutable>::new(first_acc.clone());
+        let cell = if let Some(name) = self.name() {
+            cell.with_name(format!("{}::scan", name))
+        } else {
+            cell
+        };
 
         let acc = Arc::new(ArcSwap::from_pointee(first_acc));
         let weak = cell.downgrade();

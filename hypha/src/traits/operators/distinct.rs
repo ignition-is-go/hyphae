@@ -8,7 +8,7 @@ use std::{
 
 use dashmap::DashSet;
 
-use super::Watchable;
+use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     signal::Signal,
@@ -34,12 +34,18 @@ pub trait DistinctExt<T>: Watchable<T> {
     /// source.set(3);
     /// source.set(2); // Blocked - already seen
     /// ```
+    #[track_caller]
     fn distinct(&self) -> Cell<T, CellImmutable>
     where
-        T: Clone + Eq + Hash + Send + Sync + 'static,
+        T: CellValue + Eq + Hash,
         Self: Clone + Send + Sync + 'static,
     {
         let derived = Cell::<T, CellMutable>::new(self.get());
+        let derived = if let Some(name) = self.name() {
+            derived.with_name(format!("{}::distinct", name))
+        } else {
+            derived
+        };
 
         let weak = derived.downgrade();
         let seen: Arc<DashSet<T>> = Arc::new(DashSet::new());

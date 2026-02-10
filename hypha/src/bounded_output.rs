@@ -7,7 +7,11 @@ use std::time::Duration;
 
 use crossbeam::channel::{self, Receiver, TryRecvError};
 
-use crate::{signal::Signal, subscription::SubscriptionGuard, traits::Watchable};
+use crate::{
+    signal::Signal,
+    subscription::SubscriptionGuard,
+    traits::{CellValue, Watchable},
+};
 
 /// A bounded output channel for receiving values from a Cell.
 ///
@@ -36,7 +40,7 @@ pub struct BoundedOutput<T> {
     _guard: SubscriptionGuard,
 }
 
-impl<T: Clone + Send + Sync + 'static> BoundedOutput<T> {
+impl<T: CellValue> BoundedOutput<T> {
     /// Create a new bounded output from a watchable source.
     ///
     /// `capacity` determines the channel buffer size. If the buffer fills up,

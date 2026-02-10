@@ -1,9 +1,11 @@
+mod cell_value;
 mod dep_node;
 mod mutable;
 mod watchable;
 
 pub mod operators;
 
+pub use cell_value::CellValue;
 pub use dep_node::DepNode;
 pub use mutable::Mutable;
 // Re-export all operators for convenience

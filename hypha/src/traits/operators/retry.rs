@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-use super::Watchable;
+use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     signal::Signal,
@@ -27,9 +27,10 @@ pub trait RetryExt<T>: Watchable<T> {
     /// // Values pass through normally
     /// source.set(1);
     /// ```
+    #[track_caller]
     fn retry(&self, max_attempts: usize) -> Cell<T, CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
+        T: CellValue,
         Self: Clone + Send + Sync + 'static,
     {
         let derived = Cell::<T, CellMutable>::new(self.get());
@@ -103,9 +104,10 @@ pub trait RetryExt<T>: Watchable<T> {
     /// });
     /// source.set(1);
     /// ```
+    #[track_caller]
     fn retry_when<F>(&self, predicate: F) -> Cell<T, CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
+        T: CellValue,
         F: Fn(&dyn std::any::Any, usize) -> bool + Send + Sync + 'static,
         Self: Clone + Send + Sync + 'static,
     {

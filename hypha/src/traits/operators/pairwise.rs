@@ -1,12 +1,13 @@
-use super::{ScanExt, Watchable};
+use super::{CellValue, ScanExt, Watchable};
 use crate::cell::{Cell, CellImmutable};
 
 pub trait PairwiseExt<T>: Watchable<T> {
     /// Emit pairs of (previous, current) values.
     /// Equivalent to `scan` with pair accumulation.
+    #[track_caller]
     fn pairwise(&self) -> Cell<(T, T), CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
+        T: CellValue,
         Self: Clone + Send + Sync + 'static,
     {
         let initial = self.get();

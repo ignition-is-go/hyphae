@@ -1,10 +1,11 @@
-use super::{DistinctUntilChangedByExt, Watchable};
+use super::{CellValue, DistinctUntilChangedByExt, Watchable};
 use crate::cell::{Cell, CellImmutable};
 
 pub trait DedupedExt<T>: Watchable<T> {
+    #[track_caller]
     fn deduped(&self) -> Cell<T, CellImmutable>
     where
-        T: Clone + PartialEq + Send + Sync + 'static,
+        T: CellValue + PartialEq,
         Self: Clone + Send + Sync + 'static,
     {
         self.distinct_until_changed_by(|a, b| a == b)

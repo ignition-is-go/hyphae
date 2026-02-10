@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use super::Watchable;
+use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     signal::Signal,
@@ -29,9 +29,10 @@ pub trait ConcatExt<T>: Watchable<T> {
     /// first.complete(); // Switches to second
     /// second.set(200); // Emits 200
     /// ```
+    #[track_caller]
     fn concat<W2>(&self, other: &W2) -> Cell<T, CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
+        T: CellValue,
         W2: Watchable<T> + Clone + Send + Sync + 'static,
         Self: Clone + Send + Sync + 'static,
     {

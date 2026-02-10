@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 
-use super::{Gettable, Watchable};
+use super::{CellValue, Gettable, Watchable};
 use crate::{
     cell::{Cell, CellMutable},
     signal::Signal,
@@ -14,7 +14,7 @@ pub struct ParallelCell<T> {
     inner: Cell<T, CellMutable>,
 }
 
-impl<T: Clone + Send + Sync + 'static> ParallelCell<T> {
+impl<T: CellValue> ParallelCell<T> {
     pub fn get(&self) -> T {
         self.inner.get()
     }
@@ -35,7 +35,7 @@ impl<T> Clone for ParallelCell<T> {
     }
 }
 
-impl<T: Clone + Send + Sync + 'static> ParallelCell<T> {
+impl<T: CellValue> ParallelCell<T> {
     /// Notify all subscribers in parallel using Rayon.
     pub fn notify(&self, value: T) {
         let signal = Signal::value(value);
@@ -60,7 +60,7 @@ pub trait ParallelExt<T>: Watchable<T> {
     /// Convert to a parallel cell that notifies subscribers using Rayon.
     fn parallel(&self) -> ParallelCell<T>
     where
-        T: Clone + Send + Sync + 'static,
+        T: CellValue,
         Self: Clone + Send + Sync + 'static,
     {
         let inner = Cell::<T, CellMutable>::new(self.get());

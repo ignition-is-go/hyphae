@@ -3,19 +3,20 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use super::Watchable;
+use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     signal::Signal,
 };
 
 pub trait MapExt<T>: Watchable<T> {
-    fn map<U: Clone + Send + Sync + 'static>(
+    #[track_caller]
+    fn map<U: CellValue>(
         &self,
         transform: impl Fn(&T) -> U + Send + Sync + 'static,
     ) -> Cell<U, CellImmutable>
     where
-        T: Clone + 'static,
+        T: CellValue,
         Self: Clone + Send + Sync + 'static,
     {
         let initial = transform(&self.get());

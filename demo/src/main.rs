@@ -1,66 +1,167 @@
-use hypha::{Cell, DepNode, JoinExt, MapExt, Mutable, Signal, Watchable, flat};
+//! Long-running hypha demo with many cells changing value over time.
+//!
+//! Starts an inspector server and creates a graph of interconnected cells
+//! driven by interval timers at various rates. Connect the hypha-inspector
+//! TUI to the printed port to visualize the live cell graph.
 
-fn main() {
-    println!("=== Panic Isolation Demo ===\n");
-    println!("One subscriber panics, but others still receive updates.\n");
+use std::sync::Arc;
+use std::time::Duration;
 
-    let cell = Cell::new(0);
+use hypha::{
+    Cell, CellImmutable, CellMap, FilterExt, JoinExt, MapExt, PairwiseExt, ScanExt, Signal,
+    SwitchMapExt, Watchable, WindowExt, interval, join_vec,
+};
 
-    // Subscriber 1: prints normally
-    let _g1 = cell.subscribe(|signal| {
-        if let Signal::Value(v) = signal {
-            println!("  Subscriber 1: got {}", v);
-        }
-    });
+#[tokio::main]
+async fn main() {
+    let server = hypha::server::start_server("demo");
+    println!("cargo run -p hypha-inspector -- :{}", server.port());
 
-    // Subscriber 2: panics on value 2
-    let _g2 = cell.subscribe(|signal| {
-        if let Signal::Value(v) = signal {
-            if **v == 2 {
-                panic!("Subscriber 2 panics on value 2!");
+    // ── Source clocks at different rates ─────────────────────────────────
+
+    let fast = interval(Duration::from_millis(100)).with_name("fast_100ms");
+    let medium = interval(Duration::from_millis(500)).with_name("medium_500ms");
+    let slow = interval(Duration::from_millis(2000)).with_name("slow_2s");
+
+    // ── Derived: sine + cosine from fast clock ──────────────────────────
+
+    let sine = fast
+        .map(|tick| {
+            let t = *tick as f64 * 0.1;
+            (t.sin() * 100.0).round() / 100.0
+        })
+        .with_name("sine");
+
+    let cosine = fast
+        .map(|tick| {
+            let t = *tick as f64 * 0.1;
+            (t.cos() * 100.0).round() / 100.0
+        })
+        .with_name("cosine");
+
+    // ── Magnitude from sine+cosine (should always be ~1.0) ──────────────
+
+    let _magnitude = sine
+        .join(&cosine)
+        .map(|(s, c)| ((s * s + c * c).sqrt() * 1000.0).round() / 1000.0)
+        .with_name("magnitude");
+
+    // ── Running average of sine using scan ───────────────────────────────
+
+    let _running_avg = sine
+        .scan((0.0_f64, 0_u64), |state, value| {
+            let (sum, count) = state;
+            (sum + value, count + 1)
+        })
+        .map(|(sum, count)| {
+            if *count == 0 {
+                0.0
+            } else {
+                (sum / *count as f64 * 1000.0).round() / 1000.0
             }
-            println!("  Subscriber 2: got {}", v);
-        }
-    });
+        })
+        .with_name("running_avg");
 
-    // Subscriber 3: prints normally
-    let _g3 = cell.subscribe(|signal| {
+    // ── Fibonacci sequence on medium clock ───────────────────────────────
+
+    let fib = medium
+        .scan((0_u64, 1_u64), |state, _| {
+            let (a, b) = state;
+            (*b, a.wrapping_add(*b))
+        })
+        .map(|(a, _)| *a)
+        .with_name("fibonacci");
+
+    // ── Phase selector on slow clock ────────────────────────────────────
+
+    let phase = slow
+        .map(|tick| match tick % 4 {
+            0 => "rising",
+            1 => "peak",
+            2 => "falling",
+            _ => "trough",
+        })
+        .with_name("phase");
+
+    // ── Switch map: signal shape depends on phase ───────────────────────
+
+    let fast_for_switch = fast.clone();
+    let _phase_signal = phase
+        .switch_map(move |phase_name| match *phase_name {
+            "rising" => fast_for_switch.map(|t| (*t as f64 * 0.05).min(1.0)),
+            "peak" => Cell::new(1.0).lock(),
+            "falling" => fast_for_switch.map(|t| (1.0 - *t as f64 * 0.05).max(0.0)),
+            _ => Cell::new(0.0).lock(),
+        })
+        .with_name("phase_signal");
+
+    // ── Filter: only positive sine values ───────────────────────────────
+
+    let _positive_sine = sine.filter(|v| *v > 0.0).with_name("positive_sine");
+
+    // ── Pairwise velocity ───────────────────────────────────────────────
+
+    let velocity = sine
+        .pairwise()
+        .map(|(prev, curr)| ((curr - prev) * 1000.0).round() / 1000.0)
+        .with_name("velocity");
+
+    // ── Sliding window of last 5 fibonacci values ───────────────────────
+
+    let _fib_window = fib.window(5).with_name("fib_window");
+
+    // ── CellMap scoreboard driven by multiple sources ───────────────────
+
+    let scoreboard: CellMap<Arc<str>, f64> = CellMap::new();
+
+    let sb = scoreboard.clone();
+    let _g1 = sine.subscribe(move |signal| {
         if let Signal::Value(v) = signal {
-            println!("  Subscriber 3: got {}", v);
+            sb.insert("sine".into(), **v);
         }
     });
 
-    println!("Setting value to 1:");
-    cell.set(1);
+    let sb = scoreboard.clone();
+    let _g2 = cosine.subscribe(move |signal| {
+        if let Signal::Value(v) = signal {
+            sb.insert("cosine".into(), **v);
+        }
+    });
 
-    println!("\nSetting value to 2 (subscriber 2 will panic):");
-    cell.set(2);
+    let _score_entries = scoreboard.entries().with_name("scoreboard");
+    let _score_len = scoreboard.len().with_name("scoreboard_len");
 
-    println!("\nSetting value to 3 (all subscribers still work):");
-    cell.set(3);
+    // ── join_vec: combine 5 signals into a stats pipeline ───────────────
 
-    println!("\nDone! All subscribers survived the panic.");
+    let all_signals: Vec<Cell<f64, CellImmutable>> = vec![
+        sine.clone(),
+        cosine.clone(),
+        _magnitude.clone(),
+        velocity.clone(),
+    ];
+    let combined = join_vec(all_signals).with_name("all_signals");
 
-    let a = Cell::new(1).with_name("a");
+    let _stats = combined
+        .map(|values| {
+            let min = values.iter().cloned().reduce(f64::min).unwrap_or(0.0);
+            let max = values.iter().cloned().reduce(f64::max).unwrap_or(0.0);
+            let sum: f64 = values.iter().sum();
+            let avg = if values.is_empty() {
+                0.0
+            } else {
+                sum / values.len() as f64
+            };
+            (
+                (min * 100.0).round() / 100.0,
+                (max * 100.0).round() / 100.0,
+                (avg * 100.0).round() / 100.0,
+            )
+        })
+        .with_name("stats");
 
-    let b = Cell::new('A').with_name("b");
+    // ── Run forever ─────────────────────────────────────────────────────
 
-    let c = Cell::new("alpha").with_name("c");
-
-    let d = Cell::new(1.0).with_name("d");
-
-    let aa = a.join(&b);
-
-    let cc = c.join(&d);
-
-    let mega = aa.join(&cc);
-
-    let _mapped = mega.map(|((a, b), (c, d))| println!("{:?}:{:?}:{:?}:{:?}", a, b, c, d));
-
-    let flat_demo = a.join(&b).join(&c).join(&d).map(flat!(|a, b, c, d| {
-        println!("Flattened values: {:?}, {:?}, {:?}, {:?}", a, b, c, d);
-    }));
-
-    flat_demo.print_dependency_tree();
-
+    loop {
+        tokio::time::sleep(Duration::from_secs(60)).await;
+    }
 }

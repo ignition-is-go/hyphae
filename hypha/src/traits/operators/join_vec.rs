@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-use super::Watchable;
+use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     signal::Signal,
@@ -30,9 +30,10 @@ use crate::{
 /// a.set(10);
 /// assert_eq!(combined.get(), vec![10, 2, 3]);
 /// ```
+#[track_caller]
 pub fn join_vec<T, W>(cells: Vec<W>) -> Cell<Vec<T>, CellImmutable>
 where
-    T: Clone + Send + Sync + 'static,
+    T: CellValue,
     W: Watchable<T> + Clone + Send + Sync + 'static,
 {
     if cells.is_empty() {
@@ -44,6 +45,11 @@ where
     // Get initial values
     let initial: Vec<T> = cells.iter().map(|c| c.get()).collect();
     let derived = Cell::<Vec<T>, CellMutable>::new(initial);
+    let derived = if let Some(name) = cells.first().and_then(|c| c.name()) {
+        derived.with_name(format!("{}::join_vec", name))
+    } else {
+        derived
+    };
 
     let num_cells = cells.len();
     let complete_count = Arc::new(AtomicUsize::new(0));

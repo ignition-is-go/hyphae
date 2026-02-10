@@ -70,6 +70,11 @@ pub mod signal;
 pub mod subscription;
 pub mod traits;
 
+#[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
+pub mod registry;
+#[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
+pub mod server;
+
 #[cfg(test)]
 mod tests;
 
@@ -87,7 +92,7 @@ pub use metrics::CellMetrics;
 pub use signal::Signal;
 pub use subscription::SubscriptionGuard;
 pub use traits::{
-    AuditExt, BackpressureExt, BufferCountExt, BufferTimeExt, CatchErrorExt, ConcatExt,
+    AuditExt, BackpressureExt, BufferCountExt, BufferTimeExt, CatchErrorExt, CellValue, ConcatExt,
     DebounceExt, DedupedExt, DelayExt, DepNode, DistinctExt, DistinctUntilChangedByExt, FilterExt,
     FinalizeExt, FirstExt, Gettable, JoinExt, LastExt, MapErrExt, MapExt, MapOkExt, MergeExt,
     MergeMapExt, Mutable, PairwiseExt, RetryExt, SampleExt, ScanExt, SkipExt, SkipWhileExt,

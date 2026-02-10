@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use super::Watchable;
+use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     signal::Signal,
@@ -11,14 +11,20 @@ use crate::{
 
 pub trait TakeWhileExt<T>: Watchable<T> {
     /// Take values while predicate returns true, then stop.
+    #[track_caller]
     fn take_while<F>(&self, predicate: F) -> Cell<T, CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
+        T: CellValue,
         F: Fn(&T) -> bool + Send + Sync + 'static,
         Self: Clone + Send + Sync + 'static,
     {
         let initial = self.get();
         let derived = Cell::<T, CellMutable>::new(initial);
+        let derived = if let Some(name) = self.name() {
+            derived.with_name(format!("{}::take_while", name))
+        } else {
+            derived
+        };
 
         let stopped = Arc::new(AtomicBool::new(false));
         let weak = derived.downgrade();

@@ -5,7 +5,7 @@ use std::sync::{
 
 use crossbeam::queue::SegQueue;
 
-use super::Watchable;
+use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     signal::Signal,
@@ -32,14 +32,20 @@ pub trait BufferCountExt<T>: Watchable<T> {
     /// source.set(5);
     /// source.set(6); // Emits [4, 5, 6]
     /// ```
+    #[track_caller]
     fn buffer_count(&self, count: usize) -> Cell<Vec<T>, CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
+        T: CellValue,
         Self: Clone + Send + Sync + 'static,
     {
         assert!(count > 0, "buffer_count must be positive");
 
         let derived = Cell::<Vec<T>, CellMutable>::new(Vec::new());
+        let derived = if let Some(name) = self.name() {
+            derived.with_name(format!("{}::buffer_count", name))
+        } else {
+            derived
+        };
 
         let weak = derived.downgrade();
         let buffer: Arc<SegQueue<T>> = Arc::new(SegQueue::new());

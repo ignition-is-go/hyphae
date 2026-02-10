@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use super::{MapExt, ScanExt, Watchable};
+use super::{CellValue, MapExt, ScanExt, Watchable};
 use crate::cell::{Cell, CellImmutable};
 
 pub trait WindowExt<T>: Watchable<T> {
@@ -29,9 +29,10 @@ pub trait WindowExt<T>: Watchable<T> {
     /// source.set(3);
     /// assert_eq!(windowed.get(), vec![1, 2, 3]);  // Sliding window
     /// ```
+    #[track_caller]
     fn window(&self, count: usize) -> Cell<Vec<T>, CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
+        T: CellValue,
         Self: Clone + Send + Sync + 'static,
     {
         assert!(count > 0, "window size must be positive");

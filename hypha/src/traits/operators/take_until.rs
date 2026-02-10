@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use super::Watchable;
+use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     signal::Signal,
@@ -11,10 +11,11 @@ use crate::{
 
 pub trait TakeUntilExt<T>: Watchable<T> {
     /// Take values until the notifier emits, then stop.
+    #[track_caller]
     fn take_until<U, M>(&self, notifier: &Cell<U, M>) -> Cell<T, CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
-        U: Clone + Send + Sync + 'static,
+        T: CellValue,
+        U: CellValue,
         M: Send + Sync + 'static,
         Self: Clone + Send + Sync + 'static,
     {

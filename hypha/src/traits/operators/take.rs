@@ -3,19 +3,25 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use super::Watchable;
+use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     signal::Signal,
 };
 
 pub trait TakeExt<T>: Watchable<T> {
+    #[track_caller]
     fn take(&self, count: usize) -> Cell<T, CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
+        T: CellValue,
         Self: Clone + Send + Sync + 'static,
     {
         let cell = Cell::<T, CellMutable>::new(self.get());
+        let cell = if let Some(name) = self.name() {
+            cell.with_name(format!("{}::take", name))
+        } else {
+            cell
+        };
 
         let remaining = Arc::new(AtomicUsize::new(count));
         let weak = cell.downgrade();

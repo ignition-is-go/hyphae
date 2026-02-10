@@ -9,7 +9,7 @@ use std::{
 
 use arc_swap::ArcSwap;
 
-use super::Watchable;
+use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     signal::Signal,
@@ -35,9 +35,10 @@ pub trait AuditExt<T>: Watchable<T> {
     /// source.set(3);
     /// // After 100ms, emits 3 (the last value)
     /// ```
+    #[track_caller]
     fn audit(&self, duration: Duration) -> Cell<T, CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
+        T: CellValue,
         Self: Clone + Send + Sync + 'static,
     {
         let derived = Cell::<T, CellMutable>::new(self.get());

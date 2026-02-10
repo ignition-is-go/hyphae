@@ -1,4 +1,4 @@
-use super::{super::operators::MapExt, Gettable, Watchable};
+use super::{super::operators::MapExt, CellValue, Gettable, Watchable};
 use crate::cell::{Cell, CellImmutable};
 
 pub trait WithLatestFromExt<T>: Watchable<T> {
@@ -23,10 +23,11 @@ pub trait WithLatestFromExt<T>: Watchable<T> {
     /// mouse_pos.set((30, 40)); // No emission
     /// clicks.set(1);           // Emits (1, (30, 40))
     /// ```
+    #[track_caller]
     fn with_latest_from<U, W2>(&self, other: &W2) -> Cell<(T, U), CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
-        U: Clone + Send + Sync + 'static,
+        T: CellValue,
+        U: CellValue,
         W2: Gettable<U> + Clone + Send + Sync + 'static,
         Self: Clone + Send + Sync + 'static,
     {

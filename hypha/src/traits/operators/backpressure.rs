@@ -5,7 +5,7 @@ use std::sync::{
 
 use crossbeam::queue::ArrayQueue;
 
-use super::Watchable;
+use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     signal::Signal,
@@ -31,9 +31,10 @@ pub trait BackpressureExt<T>: Watchable<T> {
     /// source.set(3);
     /// source.set(4); // Drops 1, keeps 2,3,4
     /// ```
+    #[track_caller]
     fn drop_oldest(&self, capacity: usize) -> Cell<T, CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
+        T: CellValue,
         Self: Clone + Send + Sync + 'static,
     {
         assert!(capacity > 0, "capacity must be positive");
@@ -89,9 +90,10 @@ pub trait BackpressureExt<T>: Watchable<T> {
     /// source.set(3);
     /// source.set(4); // Dropped, buffer has 1,2,3
     /// ```
+    #[track_caller]
     fn drop_newest(&self, capacity: usize) -> Cell<T, CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
+        T: CellValue,
         Self: Clone + Send + Sync + 'static,
     {
         assert!(capacity > 0, "capacity must be positive");
@@ -149,9 +151,10 @@ pub trait BackpressureExt<T>: Watchable<T> {
     /// // Consumer reads when ready - gets 3, skipped 1 and 2
     /// assert_eq!(latest.get(), 3);
     /// ```
+    #[track_caller]
     fn sample_latest(&self) -> Cell<T, CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
+        T: CellValue,
         Self: Clone + Send + Sync + 'static,
     {
         // Since Cell already uses ArcSwap, this is essentially a passthrough

@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU8, Ordering},
 };
 
-use super::Watchable;
+use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     signal::Signal,
@@ -15,14 +15,20 @@ const OTHER_COMPLETE: u8 = 0b10;
 
 pub trait MergeExt<T>: Watchable<T> {
     /// Merge with another cell - emit from whichever updates.
+    #[track_caller]
     fn merge<M>(&self, other: &Cell<T, M>) -> Cell<T, CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
+        T: CellValue,
         M: Send + Sync + 'static,
         Self: Clone + Send + Sync + 'static,
     {
         let initial = self.get();
         let derived = Cell::<T, CellMutable>::new(initial);
+        let derived = if let Some(name) = self.name() {
+            derived.with_name(format!("{}::merge", name))
+        } else {
+            derived
+        };
 
         let complete_state = Arc::new(AtomicU8::new(0));
 

@@ -5,6 +5,7 @@
 
 use std::{hash::Hash, marker::PhantomData, sync::Arc};
 
+use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use uuid::Uuid;
 
@@ -12,7 +13,7 @@ use crate::{
     cell::{Cell, CellImmutable, CellMutable, WeakCell},
     signal::Signal,
     subscription::SubscriptionGuard,
-    traits::{Gettable, Mutable, Watchable},
+    traits::{CellValue, Gettable, Mutable, Watchable},
 };
 
 /// Diff notification for map changes.
@@ -30,8 +31,8 @@ pub enum MapDiff<K, V> {
 
 struct CellMapInner<K, V>
 where
-    K: Hash + Eq + Clone + Send + Sync + 'static,
-    V: Clone + Send + Sync + 'static,
+    K: Hash + Eq + CellValue,
+    V: CellValue,
 {
     /// The actual data storage.
     data: DashMap<K, V>,
@@ -43,6 +44,8 @@ where
     len_cell: Cell<usize, CellMutable>,
     /// Subscription guards owned by this map (dropped when map drops).
     owned: DashMap<Uuid, SubscriptionGuard>,
+    /// Optional name for debugging.
+    name: ArcSwap<Option<Arc<str>>>,
 }
 
 /// A reactive HashMap with per-key observability.
@@ -68,8 +71,8 @@ where
 /// ```
 pub struct CellMap<K, V, M = CellMutable>
 where
-    K: Hash + Eq + Clone + Send + Sync + 'static,
-    V: Clone + Send + Sync + 'static,
+    K: Hash + Eq + CellValue,
+    V: CellValue,
 {
     inner: Arc<CellMapInner<K, V>>,
     _marker: PhantomData<M>,
@@ -77,18 +80,30 @@ where
 
 impl<K, V> CellMap<K, V, CellMutable>
 where
-    K: Hash + Eq + Clone + Send + Sync + 'static,
-    V: Clone + Send + Sync + 'static,
+    K: Hash + Eq + CellValue,
+    V: CellValue,
 {
     /// Create a new empty CellMap.
+    #[track_caller]
     pub fn new() -> Self {
+        let diffs_cell = Cell::new(None);
+        let len_cell = Cell::new(0);
+
+        // Mark len_cell as owned by diffs_cell so it doesn't appear as an orphan root
+        #[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
+        {
+            use crate::traits::DepNode;
+            crate::registry::registry().mark_owned(len_cell.id(), diffs_cell.id());
+        }
+
         Self {
             inner: Arc::new(CellMapInner {
                 data: DashMap::new(),
                 key_cells: DashMap::new(),
-                diffs_cell: Cell::new(None),
-                len_cell: Cell::new(0),
+                diffs_cell,
+                len_cell,
                 owned: DashMap::new(),
+                name: ArcSwap::from_pointee(None),
             }),
             _marker: PhantomData,
         }
@@ -96,6 +111,12 @@ where
 
     /// Own a subscription guard, keeping it alive as long as this CellMap exists.
     pub(crate) fn own(&self, guard: SubscriptionGuard) {
+        #[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
+        {
+            use crate::traits::DepNode;
+            // Use diffs_cell as the CellMap's representative identity in the inspector
+            crate::registry::registry().mark_owned(guard.source().id(), self.inner.diffs_cell.id());
+        }
         self.inner.owned.insert(Uuid::new_v4(), guard);
     }
 
@@ -157,6 +178,21 @@ where
         }
     }
 
+    /// Give this CellMap a name for debugging. Names its internal cells accordingly.
+    pub fn with_name(self, name: impl Into<Arc<str>>) -> Self {
+        let name: Arc<str> = name.into();
+        self.inner
+            .diffs_cell
+            .clone()
+            .with_name(format!("{}::diffs", name));
+        self.inner
+            .len_cell
+            .clone()
+            .with_name(format!("{}::len", name));
+        self.inner.name.store(Arc::new(Some(name)));
+        self
+    }
+
     /// Lock the map to prevent further mutations.
     pub fn lock(self) -> CellMap<K, V, CellImmutable> {
         CellMap {
@@ -168,8 +204,8 @@ where
 
 impl<K, V> Default for CellMap<K, V, CellMutable>
 where
-    K: Hash + Eq + Clone + Send + Sync + 'static,
-    V: Clone + Send + Sync + 'static,
+    K: Hash + Eq + CellValue,
+    V: CellValue,
 {
     fn default() -> Self {
         Self::new()
@@ -178,13 +214,14 @@ where
 
 impl<K, V, M> CellMap<K, V, M>
 where
-    K: Hash + Eq + Clone + Send + Sync + 'static,
-    V: Clone + Send + Sync + 'static,
+    K: Hash + Eq + CellValue,
+    V: CellValue,
 {
     /// Get an observable Cell for a specific key.
     ///
     /// Returns a `Cell<Option<V>>` that updates whenever the key's value changes.
     /// Multiple calls with the same key return the same underlying Cell.
+    #[track_caller]
     pub fn get(&self, key: &K) -> Cell<Option<V>, CellImmutable> {
         // Check cache first
         if let Some(weak) = self.inner.key_cells.get(key)
@@ -196,6 +233,17 @@ where
         // Create new cell with current value
         let current = self.inner.data.get(key).map(|r| r.value().clone());
         let cell = Cell::new(current);
+        if let Some(map_name) = (**self.inner.name.load()).as_ref() {
+            cell.clone().with_name(format!("{}[{:?}]", map_name, key));
+        }
+
+        // Mark per-key cell as owned by diffs_cell so it doesn't appear as an orphan root
+        #[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
+        {
+            use crate::traits::DepNode;
+            crate::registry::registry().mark_owned(cell.id(), self.inner.diffs_cell.id());
+        }
+
         let weak = cell.downgrade();
 
         // Cache it
@@ -209,6 +257,7 @@ where
     /// Returns a derived cell that maintains entries incrementally via diffs.
     /// The initial value is computed from the current map state, then updates
     /// are applied incrementally as O(1) operations per diff.
+    #[track_caller]
     pub fn entries(&self) -> Cell<Vec<(K, V)>, CellImmutable> {
         // Build initial entries from current data (O(N) once)
         let initial: Vec<(K, V)> = self
@@ -219,6 +268,9 @@ where
             .collect();
 
         let cell = Cell::new(initial);
+        if let Some(map_name) = (**self.inner.name.load()).as_ref() {
+            cell.clone().with_name(format!("{}::entries", map_name));
+        }
         let cell_clone = cell.clone();
 
         // Subscribe to diffs and apply incrementally (O(1) per update)
@@ -253,13 +305,14 @@ where
             }
         });
 
-        // Own the subscription guard so it lives as long as needed
-        self.inner.owned.insert(Uuid::new_v4(), guard);
+        // Own the subscription guard — this also marks diffs_cell as owned by entries cell
+        cell.own(guard);
 
         cell.lock()
     }
 
     /// Get an observable Cell of all keys.
+    #[track_caller]
     pub fn keys(&self) -> Cell<Vec<K>, CellImmutable> {
         use crate::traits::MapExt;
         self.entries()
@@ -331,8 +384,8 @@ where
 
 impl<K, V, M> Clone for CellMap<K, V, M>
 where
-    K: Hash + Eq + Clone + Send + Sync + 'static,
-    V: Clone + Send + Sync + 'static,
+    K: Hash + Eq + CellValue,
+    V: CellValue,
 {
     fn clone(&self) -> Self {
         Self {
@@ -349,8 +402,8 @@ where
 /// Extension trait for filtering CellMap values reactively.
 pub trait SelectExt<K, V>
 where
-    K: Hash + Eq + Clone + Send + Sync + 'static,
-    V: Clone + Send + Sync + 'static,
+    K: Hash + Eq + CellValue,
+    V: CellValue,
 {
     /// Create a filtered view of this CellMap.
     ///
@@ -374,6 +427,7 @@ where
     /// map.insert("huge".to_string(), 1000);
     /// assert_eq!(large_values.entries().get().len(), 2);
     /// ```
+    #[track_caller]
     fn select<F>(&self, predicate: F) -> CellMap<K, V, CellImmutable>
     where
         F: Fn(&V) -> bool + Send + Sync + 'static;
@@ -381,14 +435,20 @@ where
 
 impl<K, V, M> SelectExt<K, V> for CellMap<K, V, M>
 where
-    K: Hash + Eq + Clone + Send + Sync + 'static,
-    V: Clone + Send + Sync + 'static,
+    K: Hash + Eq + CellValue,
+    V: CellValue,
 {
+    #[track_caller]
     fn select<F>(&self, predicate: F) -> CellMap<K, V, CellImmutable>
     where
         F: Fn(&V) -> bool + Send + Sync + 'static,
     {
         let filtered = CellMap::<K, V, CellMutable>::new();
+        if let Some(parent_name) = (**self.inner.name.load()).as_ref() {
+            filtered
+                .clone()
+                .with_name(format!("{}::select", parent_name));
+        }
         let predicate = Arc::new(predicate);
 
         // Subscribe to diffs (which emits Initial first with all current entries)

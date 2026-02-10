@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU8, Ordering},
 };
 
-use super::{Gettable, Watchable};
+use super::{CellValue, Gettable, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     signal::Signal,
@@ -14,15 +14,21 @@ const SELF_COMPLETE: u8 = 0b01;
 const OTHER_COMPLETE: u8 = 0b10;
 
 pub trait JoinExt<T>: Watchable<T> {
+    #[track_caller]
     fn join<U, M>(&self, other: &Cell<U, M>) -> Cell<(T, U), CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
-        U: Clone + Send + Sync + 'static,
+        T: CellValue,
+        U: CellValue,
         M: Send + Sync + 'static,
         Self: Clone + Send + Sync + 'static,
     {
         let initial = (self.get(), other.get());
         let derived = Cell::<(T, U), CellMutable>::new(initial);
+        let derived = if let Some(name) = self.name() {
+            derived.with_name(format!("{}::join", name))
+        } else {
+            derived
+        };
 
         let complete_state = Arc::new(AtomicU8::new(0));
 

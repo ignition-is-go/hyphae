@@ -5,7 +5,7 @@ use std::sync::{
 
 use arc_swap::ArcSwap;
 
-use super::Watchable;
+use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     signal::Signal,
@@ -33,9 +33,10 @@ pub trait LastExt<T>: Watchable<T> {
     ///
     /// assert_eq!(last.get(), 3);
     /// ```
+    #[track_caller]
     fn last(&self) -> Cell<T, CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
+        T: CellValue,
         Self: Clone + Send + Sync + 'static,
     {
         let derived = Cell::<T, CellMutable>::new(self.get());
@@ -83,9 +84,10 @@ pub trait LastExt<T>: Watchable<T> {
     ///
     /// assert_eq!(last.get(), 999);
     /// ```
+    #[track_caller]
     fn last_or(&self, default: T) -> Cell<T, CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
+        T: CellValue,
         Self: Clone + Send + Sync + 'static,
     {
         let derived = Cell::<T, CellMutable>::new(self.get());

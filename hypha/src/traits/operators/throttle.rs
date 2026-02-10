@@ -7,19 +7,25 @@ use std::{
     time::Duration,
 };
 
-use super::Watchable;
+use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     signal::Signal,
 };
 
 pub trait ThrottleExt<T>: Watchable<T> {
+    #[track_caller]
     fn throttle(&self, duration: Duration) -> Cell<T, CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
+        T: CellValue,
         Self: Clone + Send + Sync + 'static,
     {
         let cell = Cell::<T, CellMutable>::new(self.get());
+        let cell = if let Some(name) = self.name() {
+            cell.with_name(format!("{}::throttle", name))
+        } else {
+            cell
+        };
 
         let can_emit = Arc::new(AtomicBool::new(true));
         let weak = cell.downgrade();

@@ -3,22 +3,28 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-use super::{Gettable, Watchable};
+use super::{CellValue, Gettable, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     signal::Signal,
 };
 
 pub trait MergeMapExt<T>: Watchable<T> {
+    #[track_caller]
     fn merge_map<U, F>(&self, f: F) -> Cell<U, CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
-        U: Clone + Send + Sync + 'static,
+        T: CellValue,
+        U: CellValue,
         F: Fn(&T) -> Cell<U, CellImmutable> + Send + Sync + 'static,
         Self: Clone + Send + Sync + 'static,
     {
         let first_inner = f(&self.get());
         let cell = Cell::<U, CellMutable>::new(first_inner.get());
+        let cell = if let Some(name) = self.name() {
+            cell.with_name(format!("{}::merge_map", name))
+        } else {
+            cell
+        };
 
         // Complete when outer completes AND all inner cells complete
         // Track: outer_complete flag + count of active (non-complete) inner cells

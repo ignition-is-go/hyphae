@@ -15,6 +15,7 @@ path = "src/lib.rs"
 [features]
 default = []
 async = ["flume", "futures-core"]
+inspector = ["serde", "serde_json", "tokio", "uuid/serde"]
 
 [dependencies]
 anyhow = "1"
@@ -23,6 +24,9 @@ crossbeam = "0.8"
 dashmap.workspace = true
 flume = { workspace = true, optional = true }
 futures-core = { workspace = true, optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+tokio = { version = "1", features = ["net", "io-util", "rt", "time", "sync", "macros"], optional = true }
 uuid.workspace = true
 
 # Native-only deps (thread pool, precise sleep)

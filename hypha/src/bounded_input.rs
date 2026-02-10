@@ -15,7 +15,7 @@ use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     signal::Signal,
     subscription::SubscriptionGuard,
-    traits::{DepNode, Gettable, Mutable, Watchable},
+    traits::{CellValue, DepNode, Gettable, Mutable, Watchable},
 };
 
 /// Policy for handling buffer overflow in BoundedInput.
@@ -143,12 +143,13 @@ impl<T> Clone for BoundedInput<T> {
     }
 }
 
-impl<T: Clone + Send + Sync + 'static> BoundedInput<T> {
+impl<T: CellValue> BoundedInput<T> {
     /// Create a new bounded input with the given capacity and overflow policy.
     ///
     /// # Panics
     ///
     /// Panics if `capacity` is zero.
+    #[track_caller]
     pub fn new(initial_value: T, capacity: usize, policy: OverflowPolicy) -> Self {
         assert!(capacity > 0, "capacity must be positive");
 
@@ -302,7 +303,7 @@ impl<T: Clone + Send + Sync + 'static> BoundedInput<T> {
 // Trait implementations
 // ============================================================================
 
-impl<T: Clone + Send + Sync + 'static> Gettable<T> for BoundedInput<T> {
+impl<T: CellValue> Gettable<T> for BoundedInput<T> {
     fn get(&self) -> T {
         // Flush buffer first so the latest value is visible
         self.flush();
@@ -310,7 +311,7 @@ impl<T: Clone + Send + Sync + 'static> Gettable<T> for BoundedInput<T> {
     }
 }
 
-impl<T: Clone + Send + Sync + 'static> DepNode for BoundedInput<T> {
+impl<T: CellValue> DepNode for BoundedInput<T> {
     fn id(&self) -> Uuid {
         self.inner.cell.inner.id
     }
@@ -326,7 +327,7 @@ impl<T: Clone + Send + Sync + 'static> DepNode for BoundedInput<T> {
     }
 }
 
-impl<T: Clone + Send + Sync + 'static> Watchable<T> for BoundedInput<T> {
+impl<T: CellValue> Watchable<T> for BoundedInput<T> {
     fn subscribe(
         &self,
         callback: impl Fn(&Signal<T>) + Send + Sync + 'static,

@@ -9,7 +9,7 @@ use std::{
 
 use crossbeam::queue::SegQueue;
 
-use super::Watchable;
+use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     signal::Signal,
@@ -34,12 +34,18 @@ pub trait BufferTimeExt<T>: Watchable<T> {
     /// source.set(2);
     /// // After 100ms, emits [1, 2]
     /// ```
+    #[track_caller]
     fn buffer_time(&self, duration: Duration) -> Cell<Vec<T>, CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
+        T: CellValue,
         Self: Clone + Send + Sync + 'static,
     {
         let derived = Cell::<Vec<T>, CellMutable>::new(Vec::new());
+        let derived = if let Some(name) = self.name() {
+            derived.with_name(format!("{}::buffer_time", name))
+        } else {
+            derived
+        };
 
         let weak = derived.downgrade();
         let buffer: Arc<SegQueue<T>> = Arc::new(SegQueue::new());

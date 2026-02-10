@@ -5,7 +5,7 @@ use std::sync::{
 
 use crossbeam::queue::SegQueue;
 
-use super::{Gettable, Watchable};
+use super::{CellValue, Gettable, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     signal::Signal,
@@ -14,15 +14,21 @@ use crate::{
 pub trait ZipExt<T>: Watchable<T> {
     /// Zip with another cell - pairs values in order.
     /// Unlike join (which uses latest), zip pairs values 1:1.
+    #[track_caller]
     fn zip<U, M>(&self, other: &Cell<U, M>) -> Cell<(T, U), CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
-        U: Clone + Send + Sync + 'static,
+        T: CellValue,
+        U: CellValue,
         M: Send + Sync + 'static,
         Self: Clone + Send + Sync + 'static,
     {
         let initial = (self.get(), other.get());
         let derived = Cell::<(T, U), CellMutable>::new(initial);
+        let derived = if let Some(name) = self.name() {
+            derived.with_name(format!("{}::zip", name))
+        } else {
+            derived
+        };
 
         // Lock-free queues to buffer values
         let left_queue: Arc<SegQueue<T>> = Arc::new(SegQueue::new());

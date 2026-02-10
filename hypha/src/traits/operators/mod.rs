@@ -1,5 +1,5 @@
 // Re-export base traits for use by operator modules
-pub(crate) use super::{Gettable, Watchable};
+pub(crate) use super::{CellValue, Gettable, Watchable};
 
 mod audit;
 mod backpressure;

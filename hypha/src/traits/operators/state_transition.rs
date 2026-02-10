@@ -9,7 +9,7 @@ use std::{
 
 use arc_swap::ArcSwap;
 
-use super::Watchable;
+use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     signal::Signal,
@@ -32,7 +32,7 @@ pub struct StateMachineBuilder<S> {
     on_invalid: Option<TransitionFn<S>>,
 }
 
-impl<S: Eq + Hash + Clone + Send + Sync + 'static> StateMachineBuilder<S> {
+impl<S: Eq + Hash + CellValue> StateMachineBuilder<S> {
     fn new() -> Self {
         Self {
             transitions: HashMap::new(),
@@ -124,9 +124,10 @@ pub trait StateTransitionExt<S>: Watchable<S> {
     /// source.set(State::Ready);   // Valid - emits Ready
     /// source.set(State::Idle);    // Invalid - filtered out
     /// ```
+    #[track_caller]
     fn state_transition<F>(&self, configure: F) -> Cell<S, CellImmutable>
     where
-        S: Clone + Eq + Hash + Send + Sync + 'static,
+        S: CellValue + Eq + Hash,
         F: FnOnce(&mut StateMachineBuilder<S>),
         Self: Clone + Send + Sync + 'static,
     {
@@ -141,6 +142,11 @@ pub trait StateTransitionExt<S>: Watchable<S> {
         let on_invalid = builder.on_invalid;
 
         let derived = Cell::<S, CellMutable>::new(self.get());
+        let derived = if let Some(name) = self.name() {
+            derived.with_name(format!("{}::state_transition", name))
+        } else {
+            derived
+        };
 
         let weak = derived.downgrade();
         let first = Arc::new(AtomicBool::new(true));

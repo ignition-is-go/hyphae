@@ -1,4 +1,4 @@
-use super::{super::operators::MapExt, Gettable, Watchable};
+use super::{super::operators::MapExt, CellValue, Gettable, Watchable};
 use crate::cell::{Cell, CellImmutable};
 
 pub trait SampleExt<T>: Watchable<T> {
@@ -24,10 +24,11 @@ pub trait SampleExt<T>: Watchable<T> {
     /// source.set(4);
     /// ticker.set(()); // Emits 4
     /// ```
+    #[track_caller]
     fn sample<N, U>(&self, notifier: &N) -> Cell<T, CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
-        U: Clone + Send + Sync + 'static,
+        T: CellValue,
+        U: CellValue,
         N: Watchable<U> + Clone + Send + Sync + 'static,
         Self: Gettable<T> + Clone + Send + Sync + 'static,
     {

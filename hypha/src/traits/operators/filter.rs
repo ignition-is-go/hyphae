@@ -3,22 +3,28 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use super::Watchable;
+use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     signal::Signal,
 };
 
 pub trait FilterExt<T>: Watchable<T> {
+    #[track_caller]
     fn filter(
         &self,
         predicate: impl Fn(&T) -> bool + Send + Sync + 'static,
     ) -> Cell<T, CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
+        T: CellValue,
         Self: Clone + Send + Sync + 'static,
     {
         let cell = Cell::<T, CellMutable>::new(self.get());
+        let cell = if let Some(name) = self.name() {
+            cell.with_name(format!("{}::filter", name))
+        } else {
+            cell
+        };
 
         let weak = cell.downgrade();
         let predicate = Arc::new(predicate);

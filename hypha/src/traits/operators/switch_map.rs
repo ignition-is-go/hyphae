@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
-use super::{Gettable, Watchable};
+use super::{CellValue, Gettable, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     signal::Signal,
@@ -18,15 +18,21 @@ const OUTER_COMPLETE_BIT: u64 = 1 << 63;
 const GEN_MASK: u64 = (1 << 62) - 1;
 
 pub trait SwitchMapExt<T>: Watchable<T> {
+    #[track_caller]
     fn switch_map<U, F>(&self, f: F) -> Cell<U, CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
-        U: Clone + Send + Sync + 'static,
+        T: CellValue,
+        U: CellValue,
         F: Fn(&T) -> Cell<U, CellImmutable> + Send + Sync + 'static,
         Self: Clone + Send + Sync + 'static,
     {
         let first_inner = f(&self.get());
         let cell = Cell::<U, CellMutable>::new(first_inner.get());
+        let cell = if let Some(name) = self.name() {
+            cell.with_name(format!("{}::switch_map", name))
+        } else {
+            cell
+        };
 
         // Packed state: generation (bits 0-61), inner_complete (bit 62), outer_complete (bit 63)
         // All completion logic uses CAS loops on this single atomic for lock-free operation

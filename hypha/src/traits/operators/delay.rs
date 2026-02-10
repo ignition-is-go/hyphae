@@ -1,15 +1,21 @@
 use std::{thread, time::Duration};
 
-use super::Watchable;
+use super::{CellValue, Watchable};
 use crate::cell::{Cell, CellImmutable, CellMutable};
 
 pub trait DelayExt<T>: Watchable<T> {
+    #[track_caller]
     fn delay(&self, duration: Duration) -> Cell<T, CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
+        T: CellValue,
         Self: Clone + Send + Sync + 'static,
     {
         let cell = Cell::<T, CellMutable>::new(self.get());
+        let cell = if let Some(name) = self.name() {
+            cell.with_name(format!("{}::delay", name))
+        } else {
+            cell
+        };
 
         let weak = cell.downgrade();
         let guard = self.subscribe(move |signal| {

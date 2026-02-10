@@ -1,7 +1,7 @@
 use std::{
     fmt::Debug,
     marker::PhantomData,
-    panic::{AssertUnwindSafe, catch_unwind},
+    panic::{AssertUnwindSafe, Location, catch_unwind},
     sync::{
         Arc, Weak,
         atomic::{AtomicBool, Ordering},
@@ -17,7 +17,7 @@ use crate::{
     metrics::CellMetrics,
     signal::Signal,
     subscription::SubscriptionGuard,
-    traits::{DepNode, Gettable, Mutable, Watchable},
+    traits::{CellValue, DepNode, Gettable, Mutable, Watchable},
 };
 
 /// Information about a slow subscriber callback.
@@ -59,6 +59,8 @@ pub(crate) struct CellInner<T> {
     pub(crate) slow_subscriber_threshold_ns: ArcSwap<Option<u64>>,
     /// Callback for slow subscriber alerts.
     pub(crate) slow_subscriber_callback: ArcSwap<Option<SlowSubscriberCallback>>,
+    /// Source location where this cell was created (via #[track_caller]).
+    pub(crate) caller: &'static Location<'static>,
 }
 
 /// A reactive cell that holds a value and notifies subscribers on change.
@@ -108,46 +110,55 @@ impl<T> Subscriber<T> {
     }
 }
 
-impl<T: Clone + Send + Sync + 'static> Cell<T, CellMutable> {
+impl<T: CellValue> Cell<T, CellMutable> {
+    #[track_caller]
     pub fn new(initial_value: T) -> Self {
+        let inner = Arc::new(CellInner {
+            id: Uuid::new_v4(),
+            subscribers: DashMap::new(),
+            value: ArcSwap::from_pointee(initial_value),
+            name: ArcSwap::from_pointee(None),
+            owned: DashMap::new(),
+            completed: AtomicBool::new(false),
+            errored: AtomicBool::new(false),
+            error: ArcSwap::from_pointee(None),
+            metrics: None,
+            slow_subscriber_threshold_ns: ArcSwap::from_pointee(None),
+            slow_subscriber_callback: ArcSwap::from_pointee(None),
+            caller: Location::caller(),
+        });
+        #[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
+        crate::registry::registry().register(inner.id, Arc::downgrade(&inner) as Weak<dyn DepNode>);
         Self {
-            inner: Arc::new(CellInner {
-                id: Uuid::new_v4(),
-                subscribers: DashMap::new(),
-                value: ArcSwap::from_pointee(initial_value),
-                name: ArcSwap::from_pointee(None),
-                owned: DashMap::new(),
-                completed: AtomicBool::new(false),
-                errored: AtomicBool::new(false),
-                error: ArcSwap::from_pointee(None),
-                metrics: None,
-                slow_subscriber_threshold_ns: ArcSwap::from_pointee(None),
-                slow_subscriber_callback: ArcSwap::from_pointee(None),
-            }),
+            inner,
             _marker: PhantomData,
         }
     }
 
     /// Create a new mutable cell with metrics collection enabled.
+    #[track_caller]
     pub fn with_metrics(initial_value: T) -> Self {
+        let inner = Arc::new(CellInner {
+            id: Uuid::new_v4(),
+            subscribers: DashMap::new(),
+            value: ArcSwap::from_pointee(initial_value),
+            name: ArcSwap::from_pointee(None),
+            owned: DashMap::new(),
+            completed: AtomicBool::new(false),
+            errored: AtomicBool::new(false),
+            error: ArcSwap::from_pointee(None),
+            metrics: Some(Arc::new(CellMetrics::new())),
+            slow_subscriber_threshold_ns: ArcSwap::from_pointee(None),
+            slow_subscriber_callback: ArcSwap::from_pointee(None),
+            caller: Location::caller(),
+        });
+        #[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
+        crate::registry::registry().register(inner.id, Arc::downgrade(&inner) as Weak<dyn DepNode>);
         Self {
-            inner: Arc::new(CellInner {
-                id: Uuid::new_v4(),
-                subscribers: DashMap::new(),
-                value: ArcSwap::from_pointee(initial_value),
-                name: ArcSwap::from_pointee(None),
-                owned: DashMap::new(),
-                completed: AtomicBool::new(false),
-                errored: AtomicBool::new(false),
-                error: ArcSwap::from_pointee(None),
-                metrics: Some(Arc::new(CellMetrics::new())),
-                slow_subscriber_threshold_ns: ArcSwap::from_pointee(None),
-                slow_subscriber_callback: ArcSwap::from_pointee(None),
-            }),
+            inner,
             _marker: PhantomData,
         }
     }
-
     /// Configure slow subscriber detection.
     ///
     /// When any subscriber callback takes longer than `threshold`, the `callback`
@@ -274,6 +285,8 @@ impl<T, M> Cell<T, M> {
 
     /// Take ownership of a subscription guard, dropping it when this cell is dropped.
     pub fn own(&self, guard: SubscriptionGuard) {
+        #[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
+        crate::registry::registry().mark_owned(guard.source().id(), self.inner.id);
         self.inner.owned.insert(Uuid::new_v4(), guard);
     }
 }
@@ -308,16 +321,24 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
             })
             .collect()
     }
+
+    fn subscriber_count(&self) -> usize {
+        self.inner.subscribers.len()
+    }
+
+    fn owned_count(&self) -> usize {
+        self.inner.owned.len()
+    }
 }
 
-impl<T: Clone + Send + Sync + 'static> Cell<T, CellImmutable> {
+impl<T: CellValue> Cell<T, CellImmutable> {
     pub fn with_name(self, name: impl Into<Arc<str>>) -> Self {
         self.inner.name.store(Arc::new(Some(name.into())));
         self
     }
 }
 
-impl<T: Clone + Send + Sync + 'static, M: Send + Sync + 'static> Cell<T, M> {
+impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
     /// Emit a signal to all subscribers.
     ///
     /// This is the unified notification mechanism for values, completion, and errors.
@@ -403,13 +424,13 @@ impl<T: Clone + Send + Sync + 'static, M: Send + Sync + 'static> Cell<T, M> {
     }
 }
 
-impl<T: Clone + Send + Sync + 'static, U: Send + Sync + 'static> Gettable<T> for Cell<T, U> {
+impl<T: CellValue, U: Send + Sync + 'static> Gettable<T> for Cell<T, U> {
     fn get(&self) -> T {
         (**self.inner.value.load()).clone()
     }
 }
 
-impl<T: Clone + Send + Sync + 'static, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
+impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
     fn subscribe(
         &self,
         callback: impl Fn(&Signal<T>) + Send + Sync + 'static,
@@ -470,7 +491,7 @@ impl<T: Clone + Send + Sync + 'static, U: Send + Sync + 'static> Watchable<T> fo
     }
 }
 
-impl<T: Clone + Send + Sync + 'static> Mutable<T> for Cell<T, CellMutable> {
+impl<T: CellValue> Mutable<T> for Cell<T, CellMutable> {
     fn set(&self, value: T) {
         self.notify(Signal::value(value)); // Wraps in Arc
     }
@@ -481,5 +502,59 @@ impl<T: Clone + Send + Sync + 'static> Mutable<T> for Cell<T, CellMutable> {
 
     fn fail(&self, error: impl Into<anyhow::Error>) {
         self.notify(Signal::error(error));
+    }
+}
+
+// ============================================================================
+// Inspector feature: DepNode for CellInner + Drop to deregister
+// ============================================================================
+
+#[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
+impl<T: CellValue> DepNode for CellInner<T> {
+    fn id(&self) -> Uuid {
+        self.id
+    }
+
+    fn name(&self) -> Option<String> {
+        (**self.name.load()).as_ref().map(|s| s.to_string())
+    }
+
+    fn deps(&self) -> Vec<Arc<dyn DepNode>> {
+        let mut seen = std::collections::HashSet::new();
+        self.owned
+            .iter()
+            .filter_map(|entry| {
+                let source = entry.value().source();
+                let id = source.id();
+                if seen.insert(id) {
+                    Some(Arc::clone(source))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn subscriber_count(&self) -> usize {
+        self.subscribers.len()
+    }
+
+    fn owned_count(&self) -> usize {
+        self.owned.len()
+    }
+
+    fn value_debug(&self) -> Option<String> {
+        Some(format!("{:?}", &**self.value.load()))
+    }
+
+    fn caller(&self) -> Option<&'static Location<'static>> {
+        Some(self.caller)
+    }
+}
+
+#[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
+impl<T> Drop for CellInner<T> {
+    fn drop(&mut self) {
+        crate::registry::registry().deregister(&self.id);
     }
 }

@@ -1,12 +1,13 @@
-use super::{MapExt, Watchable};
+use super::{CellValue, MapExt, Watchable};
 use crate::cell::{Cell, CellImmutable};
 
 pub trait TapExt<T>: Watchable<T> {
     /// Perform a side effect for each value without modifying it.
     /// Equivalent to `map(|x| { f(x); x.clone() })`.
+    #[track_caller]
     fn tap(&self, f: impl Fn(&T) + Send + Sync + 'static) -> Cell<T, CellImmutable>
     where
-        T: Clone + Send + Sync + 'static,
+        T: CellValue,
         Self: Clone + Send + Sync + 'static,
     {
         self.map(move |x| {

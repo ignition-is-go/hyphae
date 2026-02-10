@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use super::Watchable;
+use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     signal::Signal,
@@ -31,16 +31,22 @@ pub trait TryMapExt<T>: Watchable<T> {
     ///
     /// assert_eq!(parsed.get(), Ok("10".to_string()));
     /// ```
+    #[track_caller]
     fn try_map<U, E, F>(&self, f: F) -> Cell<Result<U, E>, CellImmutable>
     where
-        T: 'static,
-        U: Clone + Send + Sync + 'static,
-        E: Clone + Send + Sync + 'static,
+        T: CellValue,
+        U: CellValue,
+        E: CellValue,
         F: Fn(&T) -> Result<U, E> + Send + Sync + 'static,
         Self: Clone + Send + Sync + 'static,
     {
         let initial = f(&self.get());
         let derived = Cell::<Result<U, E>, CellMutable>::new(initial);
+        let derived = if let Some(name) = self.name() {
+            derived.with_name(format!("{}::try_map", name))
+        } else {
+            derived
+        };
 
         let weak = derived.downgrade();
         let first = Arc::new(AtomicBool::new(true));
