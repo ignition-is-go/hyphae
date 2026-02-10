@@ -80,9 +80,9 @@ pub use bounded_output::BoundedOutput;
 pub use cell::{Cell, CellImmutable, CellMutable, SlowSubscriberAlert};
 pub use cell_map::{CellMap, MapDiff, SelectExt};
 pub use cell_set::{CellSet, SetDiff};
-pub use constructors::{
-    IntervalTick, from_iter_with_delay, interval, interval_precise, interval_precise_with_elapsed,
-};
+pub use constructors::from_iter_with_delay;
+#[cfg(not(target_arch = "wasm32"))]
+pub use constructors::{IntervalTick, interval, interval_precise, interval_precise_with_elapsed};
 pub use metrics::CellMetrics;
 pub use signal::Signal;
 pub use subscription::SubscriptionGuard;
@@ -90,8 +90,10 @@ pub use traits::{
     AuditExt, BackpressureExt, BufferCountExt, BufferTimeExt, CatchErrorExt, ConcatExt,
     DebounceExt, DedupedExt, DelayExt, DepNode, DistinctExt, DistinctUntilChangedByExt, FilterExt,
     FinalizeExt, FirstExt, Gettable, JoinExt, LastExt, MapErrExt, MapExt, MapOkExt, MergeExt,
-    MergeMapExt, Mutable, PairwiseExt, ParallelCell, ParallelExt, RetryExt, SampleExt, ScanExt,
-    SkipExt, SkipWhileExt, StateMachineBuilder, StateTransitionExt, SwitchMapExt, TakeExt,
-    TakeUntilExt, TakeWhileExt, TapExt, ThrottleExt, TimeoutExt, TryMapExt, UnwrapOrExt, Watchable,
-    WindowExt, WithLatestFromExt, ZipExt, join_vec,
+    MergeMapExt, Mutable, PairwiseExt, RetryExt, SampleExt, ScanExt, SkipExt, SkipWhileExt,
+    StateMachineBuilder, StateTransitionExt, SwitchMapExt, TakeExt, TakeUntilExt, TakeWhileExt,
+    TapExt, ThrottleExt, TimeoutExt, TryMapExt, UnwrapOrExt, Watchable, WindowExt,
+    WithLatestFromExt, ZipExt, join_vec,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use traits::{ParallelCell, ParallelExt};
