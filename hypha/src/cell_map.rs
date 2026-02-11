@@ -336,6 +336,18 @@ where
         self.inner.diffs_cell.clone().lock()
     }
 
+    /// Get a point-in-time snapshot of all entries (non-reactive).
+    ///
+    /// Unlike `entries()`, this does NOT create a Cell or subscribe to changes.
+    /// Use this for one-shot reads where you don't need live updates.
+    pub fn snapshot(&self) -> Vec<(K, V)> {
+        self.inner
+            .data
+            .iter()
+            .map(|r| (r.key().clone(), r.value().clone()))
+            .collect()
+    }
+
     /// Check if key exists (non-reactive).
     pub fn contains_key(&self, key: &K) -> bool {
         self.inner.data.contains_key(key)
