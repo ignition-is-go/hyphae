@@ -271,20 +271,31 @@ where
         if let Some(map_name) = (**self.inner.name.load()).as_ref() {
             cell.clone().with_name(format!("{}::entries", map_name));
         }
-        let cell_clone = cell.clone();
+        let weak_cell = cell.downgrade();
+
+        // Keep CellMapInner alive as long as this subscription exists.
+        // When select() uses a weak ref in its closure, the CellMapInner would otherwise
+        // be dropped once the temporary CellMap from select() goes out of scope.
+        // This keepalive ensures the filtered CellMap (and its source subscription) survive
+        // as long as the entries Cell is alive.
+        let map_keepalive = self.inner.clone();
 
         // Subscribe to diffs and apply incrementally (O(1) per update)
         let first = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let guard = self.inner.diffs_cell.subscribe(move |signal| {
+            let _ = &map_keepalive; // prevent drop until closure is dropped
             // Skip the first signal (current value from Cell subscription)
             if first.swap(false, std::sync::atomic::Ordering::SeqCst) {
                 return;
             }
+            let Some(cell) = weak_cell.upgrade() else {
+                return; // Entries cell was dropped
+            };
             if let Signal::Value(arc_opt) = signal
                 && let Some(diff) = arc_opt.as_ref()
             {
                 // Apply diff incrementally to the entries
-                let mut entries = cell_clone.get();
+                let mut entries = cell.get();
                 match diff {
                     MapDiff::Initial { entries: init } => {
                         entries = init.clone();
@@ -301,7 +312,7 @@ where
                         }
                     }
                 }
-                cell_clone.set(entries);
+                cell.set(entries);
             }
         });
 
@@ -377,10 +388,16 @@ where
             .collect();
         callback(&MapDiff::Initial { entries });
 
-        // Subscribe to subsequent diffs
+        // Subscribe to subsequent diffs.
+        // Capture a strong ref to CellMapInner so the map (and its owned subscription guards)
+        // stays alive as long as this subscription exists. Without this, if the CellMap is
+        // dropped (e.g., passed by value to subscribe_diffs then goes out of scope), the
+        // CellMapInner and its owned guards would be dropped, breaking upstream subscriptions.
+        let map_keepalive = self.inner.clone();
         let diffs = self.diffs();
         let first = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         diffs.subscribe(move |signal| {
+            let _ = &map_keepalive;
             // Skip the first signal (the current value from Cell subscription)
             if first.swap(false, std::sync::atomic::Ordering::SeqCst) {
                 return;
@@ -463,29 +480,41 @@ where
         }
         let predicate = Arc::new(predicate);
 
-        // Subscribe to diffs (which emits Initial first with all current entries)
-        let filtered_clone = filtered.clone();
-        let guard = self.subscribe_diffs(move |diff| match diff {
-            MapDiff::Initial { entries } => {
-                for (key, value) in entries {
-                    if predicate(value) {
-                        filtered_clone.insert(key.clone(), value.clone());
+        // Use a weak reference to break the self-referential cycle:
+        // Without this, CellMapInner.owned → guard → closure → filtered_clone → CellMapInner
+        // would prevent the filtered CellMap from ever being dropped.
+        // Downstream consumers (entries(), diffs()) keep CellMapInner alive via their callbacks.
+        let filtered_weak = Arc::downgrade(&filtered.inner);
+        let guard = self.subscribe_diffs(move |diff| {
+            let Some(inner) = filtered_weak.upgrade() else {
+                return; // Filtered map was dropped
+            };
+            let filtered = CellMap::<K, V, CellMutable> {
+                inner,
+                _marker: PhantomData,
+            };
+            match diff {
+                MapDiff::Initial { entries } => {
+                    for (key, value) in entries {
+                        if predicate(value) {
+                            filtered.insert(key.clone(), value.clone());
+                        }
                     }
                 }
-            }
-            MapDiff::Insert { key, value } => {
-                if predicate(value) {
-                    filtered_clone.insert(key.clone(), value.clone());
+                MapDiff::Insert { key, value } => {
+                    if predicate(value) {
+                        filtered.insert(key.clone(), value.clone());
+                    }
                 }
-            }
-            MapDiff::Remove { key, .. } => {
-                filtered_clone.remove(key);
-            }
-            MapDiff::Update { key, new_value, .. } => {
-                if predicate(new_value) {
-                    filtered_clone.insert(key.clone(), new_value.clone());
-                } else {
-                    filtered_clone.remove(key);
+                MapDiff::Remove { key, .. } => {
+                    filtered.remove(key);
+                }
+                MapDiff::Update { key, new_value, .. } => {
+                    if predicate(new_value) {
+                        filtered.insert(key.clone(), new_value.clone());
+                    } else {
+                        filtered.remove(key);
+                    }
                 }
             }
         });
@@ -800,5 +829,87 @@ mod tests {
 
         assert_eq!(filtered.entries().get().len(), 1);
         assert!(filtered.contains_key(&"b".to_string()));
+    }
+
+    /// Regression: select().entries().map() used as a temporary chain must propagate updates.
+    /// The intermediate CellMap from select() is a temporary, but the entries Cell's callback
+    /// keeps it alive via a captured Arc<CellMapInner>.
+    #[test]
+    fn test_select_entries_chain_propagates() {
+        use crate::traits::MapExt;
+
+        let store = CellMap::<String, i32>::new();
+        store.insert("a".to_string(), 1);
+        store.insert("b".to_string(), 20);
+
+        // Chain without holding the intermediate CellMap (the exact pattern from queries)
+        let result = store
+            .select(|v| *v > 10)
+            .entries()
+            .map(|entries| entries.len());
+
+        assert_eq!(result.get(), 1); // only "b"
+
+        // Insert a new matching item — should propagate through the chain
+        store.insert("c".to_string(), 30);
+        assert_eq!(result.get(), 2); // "b" and "c"
+
+        // Insert a non-matching item — should not change
+        store.insert("d".to_string(), 5);
+        assert_eq!(result.get(), 2);
+
+        // Remove a matching item
+        store.remove(&"b".to_string());
+        assert_eq!(result.get(), 1); // only "c"
+    }
+
+    /// Verify that select() CellMap is eventually dropped when all downstream consumers are dropped.
+    #[test]
+    fn test_select_no_leak_when_dropped() {
+        let store = CellMap::<String, i32>::new();
+        store.insert("a".to_string(), 1);
+
+        let initial_count = Arc::strong_count(&store.inner);
+
+        {
+            let _result = store.select(|v| *v > 0).entries();
+            // While alive, the chain should work
+            assert_eq!(_result.get().len(), 1);
+        }
+        // After dropping, the store's inner refcount should return to original
+        // (the select subscription should be cleaned up)
+        assert_eq!(Arc::strong_count(&store.inner), initial_count);
+    }
+
+    /// Regression: subscribe_diffs on a select()'d CellMap that's then dropped (passed by value).
+    /// This is the exact pattern used in the WebSocket handler: the filtered CellMap is passed
+    /// by value to subscribe_query, subscribe_diffs is called, then the CellMap goes out of scope.
+    /// The subscription must still receive updates because subscribe_diffs captures a keepalive.
+    #[test]
+    fn test_subscribe_diffs_on_dropped_select() {
+        let store = CellMap::<String, i32>::new();
+        store.insert("a".to_string(), 1);
+        store.insert("b".to_string(), 20);
+
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let received_clone = received.clone();
+
+        // Simulate the WebSocket handler pattern:
+        // select() returns a temporary, subscribe_diffs is called, then CellMap is dropped
+        let guard = store.select(|v| *v > 10).subscribe_diffs(move |diff| {
+            if let MapDiff::Insert { key, .. } = diff {
+                received_clone.lock().unwrap().push(key.clone());
+            }
+        });
+
+        // Insert a new matching item after the filtered CellMap has been dropped
+        store.insert("c".to_string(), 30);
+        assert_eq!(received.lock().unwrap().as_slice(), &["c".to_string()]);
+
+        // Non-matching should not appear
+        store.insert("d".to_string(), 5);
+        assert_eq!(received.lock().unwrap().len(), 1);
+
+        drop(guard);
     }
 }

@@ -10,7 +10,7 @@ use std::{
     net::TcpStream,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -32,7 +32,24 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
 };
+use dashmap::DashMap;
 use uuid::Uuid;
+
+/// Sort mode for the cell tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SortMode {
+    Name,
+    RecentlyUpdated,
+}
+
+impl std::fmt::Display for SortMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SortMode::Name => write!(f, "name"),
+            SortMode::RecentlyUpdated => write!(f, "recent"),
+        }
+    }
+}
 
 /// An inspector environment to connect to.
 #[derive(Clone, Debug)]
@@ -260,6 +277,15 @@ fn main() -> anyhow::Result<()> {
         Cell::new(HashSet::new()).with_name("expanded");
     let expanded_values: Cell<HashSet<Uuid>, CellMutable> =
         Cell::new(HashSet::new()).with_name("expanded_values");
+    let search_query: Cell<String, CellMutable> = Cell::new(String::new()).with_name("search_query");
+    let search_input_active: Cell<bool, CellMutable> =
+        Cell::new(false).with_name("search_input_active");
+    let sort_mode: Cell<SortMode, CellMutable> =
+        Cell::new(SortMode::Name).with_name("sort_mode");
+
+    // Shared update-order tracker: cell_id → monotonic counter value
+    let update_counter = Arc::new(AtomicU64::new(0));
+    let update_order: Arc<DashMap<Uuid, u64>> = Arc::new(DashMap::new());
 
     // Derived cells
     let snapshot_entries = snapshots.entries();
@@ -285,6 +311,8 @@ fn main() -> anyhow::Result<()> {
     let selected_for_tcp = selected_env.clone();
     let envs_for_tcp = environments.clone();
     let shutdown_tcp = shutdown.clone();
+    let update_counter_tcp = update_counter.clone();
+    let update_order_tcp = update_order.clone();
 
     std::thread::spawn(move || {
         let mut current_stream: Option<BufReader<TcpStream>> = None;
@@ -308,7 +336,9 @@ fn main() -> anyhow::Result<()> {
                 // Clear map on environment switch
                 for id in known_ids.drain() {
                     snapshots_for_tcp.remove(&id);
+                    update_order_tcp.remove(&id);
                 }
+                update_counter_tcp.store(0, Ordering::SeqCst);
 
                 if let Some(port) = target_port {
                     let host = selected
@@ -344,12 +374,15 @@ fn main() -> anyhow::Result<()> {
                     Ok(_) => {
                         if let Ok(frame) = serde_json::from_str::<DiffFrame>(&line) {
                             for cell in frame.upsert {
+                                let seq = update_counter_tcp.fetch_add(1, Ordering::SeqCst);
+                                update_order_tcp.insert(cell.id, seq);
                                 known_ids.insert(cell.id);
                                 snapshots_for_tcp.insert(cell.id, cell);
                             }
                             for id in frame.remove {
                                 known_ids.remove(&id);
                                 snapshots_for_tcp.remove(&id);
+                                update_order_tcp.remove(&id);
                             }
                         }
                     }
@@ -403,6 +436,18 @@ fn main() -> anyhow::Result<()> {
                 let tx = tx.clone();
                 move |_: &Signal<_>| { let _ = tx.try_send(UiEvent::CellChanged); }
             }),
+            search_query.subscribe({
+                let tx = tx.clone();
+                move |_: &Signal<_>| { let _ = tx.try_send(UiEvent::CellChanged); }
+            }),
+            search_input_active.subscribe({
+                let tx = tx.clone();
+                move |_: &Signal<_>| { let _ = tx.try_send(UiEvent::CellChanged); }
+            }),
+            sort_mode.subscribe({
+                let tx = tx.clone();
+                move |_: &Signal<_>| { let _ = tx.try_send(UiEvent::CellChanged); }
+            }),
             summary.subscribe({
                 let tx = tx.clone();
                 move |_: &Signal<_>| { let _ = tx.try_send(UiEvent::CellChanged); }
@@ -448,20 +493,47 @@ fn main() -> anyhow::Result<()> {
             let summary_text = summary.get();
             let expanded_set = expanded.get();
             let expanded_vals = expanded_values.get();
-            let tree_nodes = build_tree(&cells, &expanded_set, &expanded_vals);
-            let tree_len = tree_nodes.len();
-            let selected = selected_index.get().min(tree_len.saturating_sub(1));
+            let query = search_query.get();
+            let input_active = search_input_active.get();
+            let current_sort = sort_mode.get();
+            let tree_nodes = build_tree(&cells, &expanded_set, &expanded_vals, current_sort, &update_order);
+
+            // Filter tree when search is active
+            let q_lower = query.to_lowercase();
+            let (display_nodes, match_count): (Vec<&TreeNode>, usize) = if query.is_empty() {
+                let len = tree_nodes.len();
+                (tree_nodes.iter().collect(), len)
+            } else {
+                let filtered: Vec<&TreeNode> = tree_nodes
+                    .iter()
+                    .filter(|node| node_matches_search(node, &q_lower))
+                    .collect();
+                let count = filtered.len();
+                (filtered, count)
+            };
+
+            let display_len = display_nodes.len();
+            let selected = selected_index.get().min(display_len.saturating_sub(1));
 
             terminal.draw(|frame| {
                 let area = frame.area();
-                let chunks = Layout::vertical([
-                    Constraint::Length(3),
-                    Constraint::Min(0),
-                ])
-                .split(area);
+                let show_search_bar = input_active || !query.is_empty();
+                let constraints = if show_search_bar {
+                    vec![
+                        Constraint::Length(3),
+                        Constraint::Min(0),
+                        Constraint::Length(3),
+                    ]
+                } else {
+                    vec![Constraint::Length(3), Constraint::Min(0)]
+                };
+                let chunks = Layout::vertical(constraints).split(area);
 
-                render_header(frame, chunks[0], &envs, sel, &summary_text);
-                render_tree(frame, chunks[1], &tree_nodes, selected);
+                render_header(frame, chunks[0], &envs, sel, &summary_text, &query, current_sort);
+                render_tree(frame, chunks[1], &display_nodes, selected, !query.is_empty());
+                if show_search_bar {
+                    render_search_bar(frame, chunks[2], &query, input_active, match_count);
+                }
             })?;
 
             needs_render = false;
@@ -491,19 +563,81 @@ fn main() -> anyhow::Result<()> {
                 continue;
             }
 
+            // Check if we're in search input mode
+            if search_input_active.get() {
+                match key.code {
+                    KeyCode::Esc => {
+                        // Cancel search entirely
+                        search_input_active.set(false);
+                        search_query.set(String::new());
+                    }
+                    KeyCode::Enter => {
+                        // Confirm search, exit input mode but keep filter active
+                        search_input_active.set(false);
+                        selected_index.set(0);
+                    }
+                    KeyCode::Backspace => {
+                        let mut q = search_query.get();
+                        q.pop();
+                        search_query.set(q);
+                        selected_index.set(0);
+                    }
+                    KeyCode::Char(c) => {
+                        let mut q = search_query.get();
+                        q.push(c);
+                        search_query.set(q);
+                        selected_index.set(0);
+                    }
+                    _ => {}
+                }
+                needs_render = true;
+                continue;
+            }
+
             // Read current state for navigation
             let cells: Vec<CellSnapshot> =
                 snapshot_entries.get().into_iter().map(|(_, v)| v).collect();
             let expanded_set = expanded.get();
             let expanded_vals = expanded_values.get();
-            let tree_nodes = build_tree(&cells, &expanded_set, &expanded_vals);
-            let tree_len = tree_nodes.len();
+            let current_sort = sort_mode.get();
+            let tree_nodes = build_tree(&cells, &expanded_set, &expanded_vals, current_sort, &update_order);
+            let query = search_query.get();
+            let q_lower = query.to_lowercase();
+            let display_nodes: Vec<&TreeNode> = if query.is_empty() {
+                tree_nodes.iter().collect()
+            } else {
+                tree_nodes
+                    .iter()
+                    .filter(|n| node_matches_search(n, &q_lower))
+                    .collect()
+            };
+            let tree_len = display_nodes.len();
             let selected = selected_index.get().min(tree_len.saturating_sub(1));
 
             match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => {
+                KeyCode::Char('q') => {
                     shutdown.store(true, Ordering::SeqCst);
                     break;
+                }
+                KeyCode::Esc => {
+                    // If search is active, clear it; otherwise quit
+                    if !search_query.get().is_empty() {
+                        search_query.set(String::new());
+                    } else {
+                        shutdown.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                }
+                KeyCode::Char('/') => {
+                    search_input_active.set(true);
+                    search_query.set(String::new());
+                }
+                KeyCode::Char('s') => {
+                    let next = match sort_mode.get() {
+                        SortMode::Name => SortMode::RecentlyUpdated,
+                        SortMode::RecentlyUpdated => SortMode::Name,
+                    };
+                    sort_mode.set(next);
                 }
                 KeyCode::Tab => {
                     let envs = environments.get();
@@ -531,7 +665,7 @@ fn main() -> anyhow::Result<()> {
                     selected_index.set(selected.saturating_sub(1));
                 }
                 KeyCode::Left | KeyCode::Char('h') => {
-                    if let Some(node) = tree_nodes.get(selected) {
+                    if let Some(node) = display_nodes.get(selected) {
                         if node.has_children && !node.collapsed && !node.is_value_line() {
                             // Collapse this node
                             let mut set = expanded.get();
@@ -541,7 +675,7 @@ fn main() -> anyhow::Result<()> {
                             // Navigate to parent: scan backwards for the nearest
                             // node at a shallower depth
                             for i in (0..selected).rev() {
-                                if tree_nodes[i].depth < node.depth {
+                                if display_nodes[i].depth < node.depth {
                                     selected_index.set(i);
                                     break;
                                 }
@@ -550,7 +684,7 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
                 KeyCode::Right | KeyCode::Char('l') => {
-                    if let Some(node) = tree_nodes.get(selected) {
+                    if let Some(node) = display_nodes.get(selected) {
                         if node.has_children && node.collapsed {
                             let mut set = expanded.get();
                             set.insert(node.id());
@@ -561,7 +695,7 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
                 KeyCode::Enter => {
-                    if let Some(node) = tree_nodes.get(selected) {
+                    if let Some(node) = display_nodes.get(selected) {
                         match &node.kind {
                             TreeNodeKind::Cell(snapshot) if snapshot.value.is_some() => {
                                 let mut set = expanded_values.get();
@@ -585,14 +719,14 @@ fn main() -> anyhow::Result<()> {
                 KeyCode::Char('-') => {
                     // Collapse one level: un-expand all nodes at the deepest visible depth
                     let mut max_depth = 0usize;
-                    for node in &tree_nodes {
+                    for node in &display_nodes {
                         if node.has_children && !node.collapsed && !node.is_value_line() {
                             max_depth = max_depth.max(node.depth);
                         }
                     }
                     let mut set = expanded.get();
                     let mut changed = false;
-                    for node in &tree_nodes {
+                    for node in &display_nodes {
                         if node.has_children
                             && !node.collapsed
                             && !node.is_value_line()
@@ -609,14 +743,14 @@ fn main() -> anyhow::Result<()> {
                 KeyCode::Char('=') | KeyCode::Char('+') => {
                     // Expand one level: expand all collapsed nodes at the shallowest depth
                     let mut min_depth = usize::MAX;
-                    for node in &tree_nodes {
+                    for node in &display_nodes {
                         if node.collapsed && !node.is_value_line() {
                             min_depth = min_depth.min(node.depth);
                         }
                     }
                     if min_depth < usize::MAX {
                         let mut set = expanded.get();
-                        for node in &tree_nodes {
+                        for node in &display_nodes {
                             if node.collapsed
                                 && !node.is_value_line()
                                 && node.depth == min_depth
@@ -659,6 +793,8 @@ fn render_header(
     envs: &[Environment],
     selected: Option<usize>,
     summary: &str,
+    search_query: &str,
+    sort_mode: SortMode,
 ) {
     let chunks =
         Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)]).split(area);
@@ -700,14 +836,27 @@ fn render_header(
     );
     frame.render_widget(envs_paragraph, chunks[0]);
 
-    let summary_line = Line::from(vec![
+    let mut summary_spans = vec![
         Span::styled(summary, Style::default().fg(Color::Green)),
         Span::raw("  "),
         Span::styled(
-            "q:quit  j/k:nav  h/l:fold  -/+:level  Enter:value  Tab:env",
-            Style::default().fg(Color::DarkGray),
+            format!("[{}]", sort_mode),
+            Style::default().fg(Color::Yellow),
         ),
-    ]);
+        Span::raw("  "),
+    ];
+    if !search_query.is_empty() {
+        summary_spans.push(Span::styled(
+            "/:search  Esc:clear  s:sort",
+            Style::default().fg(Color::DarkGray),
+        ));
+    } else {
+        summary_spans.push(Span::styled(
+            "q:quit  j/k:nav  h/l:fold  /:search  s:sort  Tab:env",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    let summary_line = Line::from(summary_spans);
     let summary_widget = Paragraph::new(summary_line).block(
         Block::default()
             .borders(Borders::ALL)
@@ -719,8 +868,9 @@ fn render_header(
 fn render_tree(
     frame: &mut ratatui::Frame<'_>,
     area: Rect,
-    tree_nodes: &[TreeNode],
+    tree_nodes: &[&TreeNode],
     selected: usize,
+    is_filtered: bool,
 ) {
     if tree_nodes.is_empty() {
         let empty = Paragraph::new(Span::styled(
@@ -751,26 +901,28 @@ fn render_tree(
         .take(visible_height)
         .map(|(idx, node)| {
             let mut prefix = String::new();
-            for (i, &is_last) in node.is_last_at_depth.iter().enumerate() {
-                if i == node.depth {
-                    break;
+            if !is_filtered {
+                for (i, &is_last) in node.is_last_at_depth.iter().enumerate() {
+                    if i == node.depth {
+                        break;
+                    }
+                    if is_last {
+                        prefix.push_str("   ");
+                    } else {
+                        prefix.push_str("│  ");
+                    }
                 }
-                if is_last {
-                    prefix.push_str("   ");
-                } else {
-                    prefix.push_str("│  ");
-                }
-            }
-            if node.depth > 0 {
-                let is_last = node
-                    .is_last_at_depth
-                    .get(node.depth - 1)
-                    .copied()
-                    .unwrap_or(false);
-                if is_last {
-                    prefix.push_str("└─ ");
-                } else {
-                    prefix.push_str("├─ ");
+                if node.depth > 0 {
+                    let is_last = node
+                        .is_last_at_depth
+                        .get(node.depth - 1)
+                        .copied()
+                        .unwrap_or(false);
+                    if is_last {
+                        prefix.push_str("└─ ");
+                    } else {
+                        prefix.push_str("├─ ");
+                    }
                 }
             }
 
@@ -811,7 +963,7 @@ fn render_tree(
                             .fg(Color::Black)
                             .bg(Color::Cyan)
                             .add_modifier(Modifier::BOLD)
-                    } else if node.depth == 0 {
+                    } else if node.depth == 0 || is_filtered {
                         Style::default()
                             .fg(Color::Yellow)
                             .add_modifier(Modifier::BOLD)
@@ -890,6 +1042,84 @@ fn render_tree(
     frame.render_widget(list, area);
 }
 
+/// Check if a tree node matches a search query (case-insensitive substring match).
+/// Matches against cell name/display_name and caller (file location).
+fn node_matches_search(node: &TreeNode, query_lower: &str) -> bool {
+    match &node.kind {
+        TreeNodeKind::Cell(snapshot) => {
+            snapshot.display_name.to_lowercase().contains(query_lower)
+                || snapshot
+                    .name
+                    .as_ref()
+                    .is_some_and(|n| n.to_lowercase().contains(query_lower))
+                || snapshot
+                    .caller
+                    .as_ref()
+                    .is_some_and(|c| c.to_lowercase().contains(query_lower))
+        }
+        TreeNodeKind::Group { name, .. } => name.to_lowercase().contains(query_lower),
+        TreeNodeKind::ValueLine { .. } => false,
+    }
+}
+
+fn render_search_bar(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    query: &str,
+    input_active: bool,
+    match_count: usize,
+) {
+    let mut spans = vec![Span::styled(
+        " / ",
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )];
+
+    if input_active {
+        spans.push(Span::styled(
+            query,
+            Style::default().fg(Color::White),
+        ));
+        spans.push(Span::styled(
+            "█",
+            Style::default().fg(Color::Yellow),
+        ));
+    } else {
+        spans.push(Span::styled(
+            query,
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+
+    spans.push(Span::raw("  "));
+    spans.push(Span::styled(
+        format!(
+            "{} match{}",
+            match_count,
+            if match_count == 1 { "" } else { "es" }
+        ),
+        Style::default().fg(Color::DarkGray),
+    ));
+
+    if !input_active {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            "/:new search  Esc:clear",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
+    let bar = Paragraph::new(Line::from(spans)).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow))
+            .title(" Search "),
+    );
+    frame.render_widget(bar, area);
+}
+
 /// Build a flattened tree from the cell snapshots.
 /// Children are determined by `dep_ids` (cells this cell owns guards for).
 /// Roots are cells not listed in any other cell's `dep_ids`.
@@ -898,7 +1128,16 @@ fn build_tree(
     cells: &[CellSnapshot],
     expanded_set: &HashSet<Uuid>,
     expanded_values: &HashSet<Uuid>,
+    sort_mode: SortMode,
+    update_order: &DashMap<Uuid, u64>,
 ) -> Vec<TreeNode> {
+    // Snapshot the update order into a stable HashMap to avoid concurrent mutation
+    // from the TCP reader thread violating sort's total order requirement.
+    let update_order: HashMap<Uuid, u64> = update_order
+        .iter()
+        .map(|entry| (*entry.key(), *entry.value()))
+        .collect();
+
     let by_id: HashMap<Uuid, &CellSnapshot> = cells.iter().map(|c| (c.id, c)).collect();
 
     // Build children map from dep_ids (parent → deps it owns guards for).
@@ -939,12 +1178,38 @@ fn build_tree(
             .push(root);
     }
 
-    // Collect group names, sorted alphabetically
-    let mut group_names: Vec<&str> = name_groups.keys().copied().collect();
-    group_names.sort();
+    // Helper: get the most recent update order for a cell (or its group)
+    let max_update_order = |ids: &[Uuid]| -> u64 {
+        ids.iter()
+            .filter_map(|id| update_order.get(id).copied())
+            .max()
+            .unwrap_or(0)
+    };
 
-    // Sort unnamed by display_name
-    unnamed.sort_by(|a, b| a.display_name.cmp(&b.display_name));
+    // Collect group names, sorted by mode
+    let mut group_names: Vec<&str> = name_groups.keys().copied().collect();
+    match sort_mode {
+        SortMode::Name => group_names.sort(),
+        SortMode::RecentlyUpdated => {
+            group_names.sort_by(|a, b| {
+                let a_ids: Vec<Uuid> = name_groups[a].iter().map(|c| c.id).collect();
+                let b_ids: Vec<Uuid> = name_groups[b].iter().map(|c| c.id).collect();
+                max_update_order(&b_ids).cmp(&max_update_order(&a_ids))
+            });
+        }
+    }
+
+    // Sort unnamed by mode
+    match sort_mode {
+        SortMode::Name => unnamed.sort_by(|a, b| a.display_name.cmp(&b.display_name)),
+        SortMode::RecentlyUpdated => {
+            unnamed.sort_by(|a, b| {
+                let a_ord = update_order.get(&a.id).copied().unwrap_or(0);
+                let b_ord = update_order.get(&b.id).copied().unwrap_or(0);
+                b_ord.cmp(&a_ord)
+            });
+        }
+    }
 
     // Total top-level items: groups/singles from named + unnamed cells
     let top_level_count = group_names.len() + unnamed.len();
@@ -963,6 +1228,8 @@ fn build_tree(
         depth: usize,
         is_last_at_depth: &mut Vec<bool>,
         result: &mut Vec<TreeNode>,
+        sort_mode: SortMode,
+        update_order: &HashMap<Uuid, u64>,
     ) {
         let Some(snapshot) = by_id.get(&id) else {
             return;
@@ -1007,11 +1274,22 @@ fn build_tree(
         if !is_collapsed {
             if let Some(kids) = children.get(&id) {
                 let mut sorted_kids = kids.clone();
-                sorted_kids.sort_by(|a, b| {
-                    let a_name = by_id.get(a).map(|c| &c.display_name);
-                    let b_name = by_id.get(b).map(|c| &c.display_name);
-                    a_name.cmp(&b_name)
-                });
+                match sort_mode {
+                    SortMode::Name => {
+                        sorted_kids.sort_by(|a, b| {
+                            let a_name = by_id.get(a).map(|c| &c.display_name);
+                            let b_name = by_id.get(b).map(|c| &c.display_name);
+                            a_name.cmp(&b_name)
+                        });
+                    }
+                    SortMode::RecentlyUpdated => {
+                        sorted_kids.sort_by(|a, b| {
+                            let a_ord = update_order.get(a).copied().unwrap_or(0);
+                            let b_ord = update_order.get(b).copied().unwrap_or(0);
+                            b_ord.cmp(&a_ord)
+                        });
+                    }
+                }
 
                 for (i, &child_id) in sorted_kids.iter().enumerate() {
                     let is_last = i == sorted_kids.len() - 1;
@@ -1026,6 +1304,8 @@ fn build_tree(
                         depth + 1,
                         is_last_at_depth,
                         result,
+                        sort_mode,
+                        update_order,
                     );
                     is_last_at_depth.pop();
                 }
@@ -1052,6 +1332,8 @@ fn build_tree(
                 0,
                 &mut is_last_at_depth,
                 &mut result,
+                sort_mode,
+                &update_order,
             );
         } else {
             // Multiple roots with same name — emit group header
@@ -1072,7 +1354,16 @@ fn build_tree(
 
             if !is_collapsed {
                 let mut sorted_group: Vec<&CellSnapshot> = group.clone();
-                sorted_group.sort_by_key(|c| c.id);
+                match sort_mode {
+                    SortMode::Name => sorted_group.sort_by_key(|c| c.id),
+                    SortMode::RecentlyUpdated => {
+                        sorted_group.sort_by(|a, b| {
+                            let a_ord = update_order.get(&a.id).copied().unwrap_or(0);
+                            let b_ord = update_order.get(&b.id).copied().unwrap_or(0);
+                            b_ord.cmp(&a_ord)
+                        });
+                    }
+                }
 
                 for (i, cell) in sorted_group.iter().enumerate() {
                     let is_last = i == sorted_group.len() - 1;
@@ -1087,6 +1378,8 @@ fn build_tree(
                         1,
                         &mut is_last_at_depth,
                         &mut result,
+                        sort_mode,
+                        &update_order,
                     );
                 }
             }
@@ -1108,6 +1401,8 @@ fn build_tree(
             0,
             &mut is_last_at_depth,
             &mut result,
+            sort_mode,
+            &update_order,
         );
     }
 

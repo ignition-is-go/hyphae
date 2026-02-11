@@ -289,6 +289,23 @@ impl<T, M> Cell<T, M> {
         crate::registry::registry().mark_owned(guard.source().id(), self.inner.id);
         self.inner.owned.insert(Uuid::new_v4(), guard);
     }
+
+    /// Take ownership of a subscription guard with a stable key.
+    ///
+    /// If a guard with the same key already exists, it is replaced (and dropped).
+    /// This is used by `switch_map` to ensure the old inner subscription is cleaned up
+    /// when switching to a new inner cell.
+    pub fn own_keyed(&self, key: Uuid, guard: SubscriptionGuard) {
+        #[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
+        {
+            // Unmark old owned cell if being replaced
+            if let Some((_, old_guard)) = self.inner.owned.remove(&key) {
+                crate::registry::registry().unmark_owned(old_guard.source().id());
+            }
+            crate::registry::registry().mark_owned(guard.source().id(), self.inner.id);
+        }
+        self.inner.owned.insert(key, guard);
+    }
 }
 
 // ============================================================================
@@ -383,35 +400,30 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         let slow_threshold = **self.inner.slow_subscriber_threshold_ns.load();
         let slow_callback = (**self.inner.slow_subscriber_callback.load()).clone();
 
-        // Call each callback, catching panics so one bad callback doesn't kill the rest
-        for (subscriber_id, callback) in callbacks {
-            let sub_start = self
-                .inner
-                .metrics
-                .as_ref()
-                .map(|_| std::time::Instant::now());
+        let metrics = &self.inner.metrics;
 
+        for (subscriber_id, callback) in &callbacks {
+            let sub_start = metrics.as_ref().map(|_| std::time::Instant::now());
+
+            // Catch panics to prevent one subscriber from killing the chain
             let _ = catch_unwind(AssertUnwindSafe(|| {
                 callback(&signal);
             }));
 
-            // Record subscriber timing and check for slow subscribers
-            if let (Some(metrics), Some(start)) = (&self.inner.metrics, sub_start) {
+            if let (Some(m), Some(start)) = (metrics, sub_start) {
                 let elapsed = start.elapsed().as_nanos() as u64;
-                metrics.update_slowest_subscriber(elapsed);
+                m.update_slowest_subscriber(elapsed);
 
-                // Check slow subscriber threshold
-                if let (Some(threshold), Some(callback)) = (&slow_threshold, &slow_callback)
+                if let (Some(threshold), Some(cb)) = (&slow_threshold, &slow_callback)
                     && elapsed > *threshold
                 {
                     let alert = SlowSubscriberAlert {
-                        subscriber_id,
+                        subscriber_id: *subscriber_id,
                         duration_ns: elapsed,
                         threshold_ns: *threshold,
                     };
-                    // Catch panics in the alert callback too
                     let _ = catch_unwind(AssertUnwindSafe(|| {
-                        callback(alert);
+                        cb(alert);
                     }));
                 }
             }

@@ -10,7 +10,7 @@ pub use dep_node::DepNode;
 pub use mutable::Mutable;
 // Re-export all operators for convenience
 pub use operators::{
-    AuditExt, BackpressureExt, BufferCountExt, BufferTimeExt, CatchErrorExt, ConcatExt,
+    AuditExt, BackpressureExt, BufferCountExt, BufferTimeExt, CatchErrorExt, ColdExt, ConcatExt,
     DebounceExt, DedupedExt, DelayExt, DistinctExt, DistinctUntilChangedByExt, FilterExt,
     FinalizeExt, FirstExt, JoinExt, LastExt, MapErrExt, MapExt, MapOkExt, MergeExt, MergeMapExt,
     PairwiseExt, RetryExt, SampleExt, ScanExt, SkipExt, SkipWhileExt, StateMachineBuilder,

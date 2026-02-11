@@ -16,23 +16,27 @@ use crate::{
 };
 
 /// Type alias for transition handler callbacks.
-type TransitionFn<S> = Arc<dyn Fn(&S, &S) + Send + Sync>;
+/// Returns a value that is emitted downstream for this transition.
+type TransitionFn<S, R> = Arc<dyn Fn(&S, &S) -> R + Send + Sync>;
 /// Type alias for state enter/exit callbacks.
 type StateFn<S> = Arc<dyn Fn(&S) + Send + Sync>;
 /// Type alias for guard condition callbacks.
 type GuardFn<S> = Arc<dyn Fn(&S, &S) -> bool + Send + Sync>;
+/// Type alias for invalid transition handler callbacks.
+type InvalidFn<S> = Arc<dyn Fn(&S, &S) + Send + Sync>;
 
 /// Builder for defining state machine transitions.
-pub struct StateMachineBuilder<S> {
-    transitions: HashMap<(S, S), TransitionFn<S>>,
+pub struct StateMachineBuilder<S, R> {
+    transitions: HashMap<(S, S), TransitionFn<S, R>>,
     on_enter: HashMap<S, StateFn<S>>,
     on_exit: HashMap<S, StateFn<S>>,
     guards: HashMap<(S, S), GuardFn<S>>,
     on_any_enter: Vec<StateFn<S>>,
-    on_invalid: Option<TransitionFn<S>>,
+    on_invalid: Option<InvalidFn<S>>,
+    default: Option<R>,
 }
 
-impl<S: Eq + Hash + CellValue> StateMachineBuilder<S> {
+impl<S: Eq + Hash + CellValue, R: CellValue> StateMachineBuilder<S, R> {
     fn new() -> Self {
         Self {
             transitions: HashMap::new(),
@@ -41,13 +45,23 @@ impl<S: Eq + Hash + CellValue> StateMachineBuilder<S> {
             guards: HashMap::new(),
             on_any_enter: Vec::new(),
             on_invalid: None,
+            default: None,
         }
     }
 
+    /// Set the initial value of the output cell.
+    /// If not called, `R::default()` is used.
+    pub fn with_default(&mut self, value: R) -> &mut Self {
+        self.default = Some(value);
+        self
+    }
+
     /// Define a valid transition from `from` to `to` with a handler.
+    /// The handler receives (from_state, to_state) and returns a value
+    /// that is emitted downstream.
     pub fn on<F>(&mut self, from: S, to: S, handler: F) -> &mut Self
     where
-        F: Fn(&S, &S) + Send + Sync + 'static,
+        F: Fn(&S, &S) -> R + Send + Sync + 'static,
     {
         self.transitions.insert((from, to), Arc::new(handler));
         self
@@ -102,33 +116,35 @@ impl<S: Eq + Hash + CellValue> StateMachineBuilder<S> {
 pub trait StateTransitionExt<S>: Watchable<S> {
     /// State machine operator for defining valid transitions and transition handlers.
     ///
-    /// Only emits values when a valid transition occurs. Invalid transitions are
-    /// filtered out (or handled by on_invalid if specified).
+    /// Each transition handler returns a value of type `R` that is emitted downstream.
+    /// The state machine tracks the source state `S` internally but emits `R`.
+    /// Invalid transitions (not defined) are filtered out entirely
+    /// (or handled by on_invalid if specified).
     ///
     /// # Example
     ///
     /// ```
-    /// use hypha::{Cell, Mutable, Gettable, StateTransitionExt};
+    /// use hypha::{Cell, Mutable, Gettable, StateTransitionExt, FilterExt};
     ///
     /// #[derive(Clone, PartialEq, Eq, Hash, Debug)]
     /// enum State { Idle, Loading, Ready, Error }
     ///
     /// let source = Cell::new(State::Idle);
     /// let sm = source.state_transition(|sm| {
-    ///     sm.on(State::Idle, State::Loading, |_, _| println!("started"));
-    ///     sm.on(State::Loading, State::Ready, |_, _| println!("done"));
-    ///     sm.on(State::Loading, State::Error, |_, _| println!("failed"));
+    ///     sm.on(State::Idle, State::Loading, |_, _| true);    // emit true
+    ///     sm.on(State::Loading, State::Ready, |_, _| false);  // emit false
+    ///     sm.on(State::Loading, State::Error, |_, _| false);  // emit false
     /// });
     ///
-    /// source.set(State::Loading); // Valid - emits Loading
-    /// source.set(State::Ready);   // Valid - emits Ready
-    /// source.set(State::Idle);    // Invalid - filtered out
+    /// // Filter to only react to specific transitions
+    /// let triggers = sm.filter(|v| *v);
     /// ```
     #[track_caller]
-    fn state_transition<F>(&self, configure: F) -> Cell<S, CellImmutable>
+    fn state_transition<R, F>(&self, configure: F) -> Cell<R, CellImmutable>
     where
         S: CellValue + Eq + Hash,
-        F: FnOnce(&mut StateMachineBuilder<S>),
+        R: CellValue + Default,
+        F: FnOnce(&mut StateMachineBuilder<S, R>),
         Self: Clone + Send + Sync + 'static,
     {
         let mut builder = StateMachineBuilder::new();
@@ -141,7 +157,8 @@ pub trait StateTransitionExt<S>: Watchable<S> {
         let on_any_enter = Arc::new(builder.on_any_enter);
         let on_invalid = builder.on_invalid;
 
-        let derived = Cell::<S, CellMutable>::new(self.get());
+        let initial = builder.default.take().unwrap_or_default();
+        let derived = Cell::<R, CellMutable>::new(initial);
         let derived = if let Some(name) = self.name() {
             derived.with_name(format!("{}::state_transition", name))
         } else {
@@ -187,10 +204,10 @@ pub trait StateTransitionExt<S>: Watchable<S> {
                             exit_fn(&*current);
                         }
 
-                        // 2. transition handler
-                        if let Some(trans_fn) = transitions.get(&key) {
-                            trans_fn(&*current, &**next);
-                        }
+                        // 2. transition handler — returns value to emit
+                        let output = transitions
+                            .get(&key)
+                            .map(|trans_fn| trans_fn(&*current, &**next));
 
                         // 3. on_enter for next state
                         if let Some(enter_fn) = on_enter.get(&**next) {
@@ -202,9 +219,13 @@ pub trait StateTransitionExt<S>: Watchable<S> {
                             handler(&**next);
                         }
 
-                        // Update current state and emit
+                        // Always update current state
                         current_state.store(next.clone());
-                        d.notify(Signal::Value(next.clone()));
+
+                        // Emit handler's return value
+                        if let Some(value) = output {
+                            d.notify(Signal::Value(Arc::new(value)));
+                        }
                     }
                     Signal::Complete => d.notify(Signal::Complete),
                     Signal::Error(e) => d.notify(Signal::Error(e.clone())),
@@ -243,9 +264,10 @@ mod tests {
         let sm = source.state_transition(|sm| {
             sm.on(State::Idle, State::Loading, move |_, _| {
                 tc.fetch_add(1, Ordering::SeqCst);
+                true
             });
-            sm.on(State::Loading, State::Ready, |_, _| {});
-            sm.on(State::Loading, State::Error, |_, _| {});
+            sm.on(State::Loading, State::Ready, |_, _| true);
+            sm.on(State::Loading, State::Error, |_, _| true);
         });
 
         let emissions = Arc::new(AtomicU32::new(0));
@@ -270,8 +292,8 @@ mod tests {
     fn test_state_transition_invalid_filtered() {
         let source = Cell::new(State::Idle);
         let sm = source.state_transition(|sm| {
-            sm.on(State::Idle, State::Loading, |_, _| {});
-            sm.on(State::Loading, State::Ready, |_, _| {});
+            sm.on(State::Idle, State::Loading, |_, _| true);
+            sm.on(State::Loading, State::Ready, |_, _| true);
         });
 
         let emissions = Arc::new(AtomicU32::new(0));
@@ -303,8 +325,8 @@ mod tests {
 
         let ec = enter_count.clone();
         let xc = exit_count.clone();
-        let _sm = source.state_transition(|sm| {
-            sm.on(State::Idle, State::Loading, |_, _| {});
+        let _sm: Cell<bool, _> = source.state_transition(|sm| {
+            sm.on(State::Idle, State::Loading, |_, _| true);
             sm.on_exit(State::Idle, move |_| {
                 xc.fetch_add(1, Ordering::SeqCst);
             });
@@ -325,7 +347,7 @@ mod tests {
 
         let a = allow.clone();
         let sm = source.state_transition(|sm| {
-            sm.on(State::Idle, State::Loading, |_, _| {});
+            sm.on(State::Idle, State::Loading, |_, _| true);
             sm.guard(State::Idle, State::Loading, move |_, _| {
                 a.load(Ordering::SeqCst)
             });
@@ -349,7 +371,7 @@ mod tests {
         let source2 = Cell::new(State::Idle);
         let a2 = allow.clone();
         let sm2 = source2.state_transition(|sm| {
-            sm.on(State::Idle, State::Loading, |_, _| {});
+            sm.on(State::Idle, State::Loading, |_, _| true);
             sm.guard(State::Idle, State::Loading, move |_, _| {
                 a2.load(Ordering::SeqCst)
             });
@@ -371,8 +393,8 @@ mod tests {
         let invalid_count = Arc::new(AtomicU32::new(0));
 
         let ic = invalid_count.clone();
-        let _sm = source.state_transition(|sm| {
-            sm.on(State::Idle, State::Loading, |_, _| {});
+        let _sm: Cell<bool, _> = source.state_transition(|sm| {
+            sm.on(State::Idle, State::Loading, |_, _| true);
             sm.on_invalid(move |_, _| {
                 ic.fetch_add(1, Ordering::SeqCst);
             });
@@ -385,5 +407,39 @@ mod tests {
         // Another invalid
         source.set(State::Error);
         assert_eq!(invalid_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn test_state_transition_selective_emit() {
+        use crate::{FilterExt, Gettable};
+
+        let source = Cell::new(State::Idle);
+        let sm = source.state_transition(|sm| {
+            sm.on(State::Idle, State::Loading, |_, _| true);
+            sm.on(State::Loading, State::Ready, |_, _| false);
+            sm.on(State::Ready, State::Idle, |_, _| false);
+        });
+        let triggers = sm.filter(|v| *v);
+
+        let emission_count = Arc::new(AtomicU32::new(0));
+        let ec = emission_count.clone();
+        let _guard = triggers.subscribe(move |_| {
+            ec.fetch_add(1, Ordering::SeqCst);
+        });
+
+        assert_eq!(emission_count.load(Ordering::SeqCst), 1); // Initial (false)
+
+        source.set(State::Loading); // true - emits
+        assert_eq!(emission_count.load(Ordering::SeqCst), 2);
+
+        source.set(State::Ready); // false - filtered
+        assert_eq!(emission_count.load(Ordering::SeqCst), 2);
+
+        source.set(State::Idle); // false - filtered
+        assert_eq!(emission_count.load(Ordering::SeqCst), 2);
+
+        source.set(State::Loading); // true again - emits
+        assert_eq!(emission_count.load(Ordering::SeqCst), 3);
+        assert!(triggers.get());
     }
 }

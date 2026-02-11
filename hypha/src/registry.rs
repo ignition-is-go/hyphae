@@ -67,6 +67,11 @@ impl CellRegistry {
         self.ownership.insert(child_id, parent_id);
     }
 
+    /// Remove ownership tracking for a child cell.
+    pub fn unmark_owned(&self, child_id: Uuid) {
+        self.ownership.remove(&child_id);
+    }
+
     /// Take a snapshot of all live cells. Automatically garbage-collects stale entries.
     pub fn snapshot(&self) -> Vec<CellSnapshot> {
         let mut snapshots = Vec::new();

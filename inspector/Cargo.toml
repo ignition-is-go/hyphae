@@ -23,3 +23,4 @@ serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 uuid = { workspace = true, features = ["serde", "v5"] }
+dashmap.workspace = true

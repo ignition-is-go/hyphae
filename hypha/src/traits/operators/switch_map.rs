@@ -8,6 +8,7 @@ use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     signal::Signal,
 };
+use uuid::Uuid;
 
 // Lock-free completion state packed into a single u64:
 // - Bits 0-61: generation (max 2^62-1)
@@ -33,6 +34,9 @@ pub trait SwitchMapExt<T>: Watchable<T> {
         } else {
             cell
         };
+
+        // Stable key for the inner subscription guard so switch_map replaces (not accumulates)
+        let inner_guard_key = Uuid::new_v4();
 
         // Packed state: generation (bits 0-61), inner_complete (bit 62), outer_complete (bit 63)
         // All completion logic uses CAS loops on this single atomic for lock-free operation
@@ -75,7 +79,7 @@ pub trait SwitchMapExt<T>: Watchable<T> {
                 }
             }
         });
-        cell.own(first_guard);
+        cell.own_keyed(inner_guard_key, first_guard);
 
         // Single subscription to outer handles both value switching and completion tracking
         let weak = cell.downgrade();
@@ -147,7 +151,7 @@ pub trait SwitchMapExt<T>: Watchable<T> {
                             }
                         }
                     });
-                    c.own(value_guard);
+                    c.own_keyed(inner_guard_key, value_guard);
                 }
                 Signal::Complete => {
                     // Set outer complete bit with CAS loop

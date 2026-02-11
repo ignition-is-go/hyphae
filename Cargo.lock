@@ -549,6 +549,7 @@ dependencies = [
  "anyhow",
  "clap",
  "crossterm",
+ "dashmap",
  "flume",
  "hypha",
  "ratatui",
