@@ -85,34 +85,31 @@ mod tests {
 
     #[test]
     fn test_cold_does_not_replay_retained_value() {
-        use std::sync::Mutex;
+        use std::sync::atomic::{AtomicU64, Ordering};
 
         let source = Cell::new(42u64);
         let cold = source.cold();
-        let received = Arc::new(Mutex::new(Vec::<Option<Arc<u64>>>::new()));
+        let emission_count = Arc::new(AtomicU64::new(0));
 
-        let r = received.clone();
+        let count = emission_count.clone();
         let _guard = cold.subscribe(move |signal| {
-            if let Signal::Value(v) = signal {
-                r.lock().unwrap().push((**v).clone());
+            if let Signal::Value(_) = signal {
+                count.fetch_add(1, Ordering::SeqCst);
             }
         });
 
-        // Subscribe gets None (the cold cell's initial value)
-        assert_eq!(*received.lock().unwrap(), vec![None]);
+        // Subscribe fires once with initial None value
+        assert_eq!(emission_count.load(Ordering::SeqCst), 1);
+        assert_eq!(cold.get(), None); // Retained source value (42) was NOT replayed
 
         // Source change emits Some
         source.set(100);
-        assert_eq!(
-            *received.lock().unwrap(),
-            vec![None, Some(Arc::new(100))]
-        );
+        assert_eq!(emission_count.load(Ordering::SeqCst), 2);
+        assert_eq!(cold.get(), Some(Arc::new(100)));
 
         source.set(200);
-        assert_eq!(
-            *received.lock().unwrap(),
-            vec![None, Some(Arc::new(100)), Some(Arc::new(200))]
-        );
+        assert_eq!(emission_count.load(Ordering::SeqCst), 3);
+        assert_eq!(cold.get(), Some(Arc::new(200)));
     }
 
     #[test]

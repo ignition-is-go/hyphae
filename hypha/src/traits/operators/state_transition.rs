@@ -118,8 +118,9 @@ pub trait StateTransitionExt<S>: Watchable<S> {
     ///
     /// Each transition handler returns a value of type `R` that is emitted downstream.
     /// The state machine tracks the source state `S` internally but emits `R`.
-    /// Invalid transitions (not defined) are filtered out entirely
-    /// (or handled by on_invalid if specified).
+    /// The internal state always advances to match the upstream value, even for
+    /// undefined transitions — only defined transitions produce output.
+    /// Use `on_invalid` to observe undefined transitions without emitting.
     ///
     /// # Example
     ///
@@ -180,11 +181,14 @@ pub trait StateTransitionExt<S>: Watchable<S> {
                         let current = current_state.load();
                         let key = ((**current).clone(), (**next).clone());
 
-                        // Check if transition is defined
-                        let is_valid = transitions.contains_key(&key);
+                        // Always advance state to track upstream reality.
+                        // This ensures undefined transitions don't "stick"
+                        // the state machine — only defined transitions
+                        // produce output.
+                        current_state.store(next.clone());
 
-                        if !is_valid {
-                            // Invalid transition
+                        // Check if transition is defined
+                        if !transitions.contains_key(&key) {
                             if let Some(ref handler) = on_invalid {
                                 handler(&*current, &**next);
                             }
@@ -218,9 +222,6 @@ pub trait StateTransitionExt<S>: Watchable<S> {
                         for handler in on_any_enter.iter() {
                             handler(&**next);
                         }
-
-                        // Always update current state
-                        current_state.store(next.clone());
 
                         // Emit handler's return value
                         if let Some(value) = output {
@@ -289,7 +290,7 @@ mod tests {
     }
 
     #[test]
-    fn test_state_transition_invalid_filtered() {
+    fn test_state_transition_undefined_advances_state() {
         let source = Cell::new(State::Idle);
         let sm = source.state_transition(|sm| {
             sm.on(State::Idle, State::Loading, |_, _| true);
@@ -304,16 +305,21 @@ mod tests {
 
         assert_eq!(emissions.load(Ordering::SeqCst), 1); // Initial
 
-        // Invalid transition: Idle -> Ready (not defined)
+        // Undefined: Idle -> Ready — state advances to Ready, no emission
         source.set(State::Ready);
-        assert_eq!(emissions.load(Ordering::SeqCst), 1); // Not emitted
+        assert_eq!(emissions.load(Ordering::SeqCst), 1);
 
-        // Invalid transition: Idle -> Error (not defined)
+        // Undefined: Ready -> Error — state advances to Error, no emission
         source.set(State::Error);
-        assert_eq!(emissions.load(Ordering::SeqCst), 1); // Not emitted
+        assert_eq!(emissions.load(Ordering::SeqCst), 1);
 
-        // Valid transition
+        // Undefined: Error -> Loading — state advances to Loading, no emission
+        // (state machine tracks actual upstream state)
         source.set(State::Loading);
+        assert_eq!(emissions.load(Ordering::SeqCst), 1);
+
+        // Defined: Loading -> Ready — emits!
+        source.set(State::Ready);
         assert_eq!(emissions.load(Ordering::SeqCst), 2);
     }
 

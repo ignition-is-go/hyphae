@@ -14,5 +14,4 @@ path = "src/main.rs"
 
 [dependencies]
 hypha = { path = "../hypha", features = ["inspector"] }
-anyhow.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
