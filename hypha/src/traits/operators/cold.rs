@@ -123,7 +123,11 @@ mod tests {
         let a_clone = source_a.clone();
         let b_clone = source_b.clone();
         let result = selector.switch_map(move |sel| {
-            if *sel == 1 { a_clone.cold() } else { b_clone.cold() }
+            if *sel == 1 {
+                a_clone.cold()
+            } else {
+                b_clone.cold()
+            }
         });
 
         // Initial: cold starts as None

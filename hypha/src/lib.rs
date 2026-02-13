@@ -93,12 +93,11 @@ pub use signal::Signal;
 pub use subscription::SubscriptionGuard;
 pub use traits::{
     AuditExt, BackpressureExt, BufferCountExt, BufferTimeExt, CatchErrorExt, CellValue, ColdExt,
-    ConcatExt,
-    DebounceExt, DedupedExt, DelayExt, DepNode, DistinctExt, DistinctUntilChangedByExt, FilterExt,
-    FinalizeExt, FirstExt, Gettable, JoinExt, LastExt, MapErrExt, MapExt, MapOkExt, MergeExt,
-    MergeMapExt, Mutable, PairwiseExt, RetryExt, SampleExt, ScanExt, SkipExt, SkipWhileExt,
-    StateMachineBuilder, StateTransitionExt, SwitchMapExt, TakeExt, TakeUntilExt, TakeWhileExt,
-    TapExt, ThrottleExt, TimeoutExt, TryMapExt, UnwrapOrExt, Watchable, WindowExt,
+    ConcatExt, DebounceExt, DedupedExt, DelayExt, DepNode, DistinctExt, DistinctUntilChangedByExt,
+    FilterExt, FinalizeExt, FirstExt, Gettable, JoinExt, LastExt, MapErrExt, MapExt, MapOkExt,
+    MergeExt, MergeMapExt, Mutable, PairwiseExt, RetryExt, SampleExt, ScanExt, SkipExt,
+    SkipWhileExt, StateMachineBuilder, StateTransitionExt, SwitchMapExt, TakeExt, TakeUntilExt,
+    TakeWhileExt, TapExt, ThrottleExt, TimeoutExt, TryMapExt, UnwrapOrExt, Watchable, WindowExt,
     WithLatestFromExt, ZipExt, join_vec,
 };
 #[cfg(not(target_arch = "wasm32"))]
