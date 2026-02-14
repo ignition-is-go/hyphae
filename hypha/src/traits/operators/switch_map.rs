@@ -3,12 +3,13 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
+use uuid::Uuid;
+
 use super::{CellValue, Gettable, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     signal::Signal,
 };
-use uuid::Uuid;
 
 // Lock-free completion state packed into a single u64:
 // - Bits 0-61: generation (max 2^62-1)
