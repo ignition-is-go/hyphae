@@ -69,6 +69,7 @@ where
 /// let entries = map.entries();
 /// assert_eq!(entries.get().len(), 1);
 /// ```
+#[derive(Clone)]
 pub struct CellMap<K, V, M = CellMutable>
 where
     K: Hash + Eq + CellValue,
@@ -411,19 +412,6 @@ where
     }
 }
 
-impl<K, V, M> Clone for CellMap<K, V, M>
-where
-    K: Hash + Eq + CellValue,
-    V: CellValue,
-{
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            _marker: PhantomData,
-        }
-    }
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // SelectExt - Extension trait for filtering CellMap values
 // ─────────────────────────────────────────────────────────────────────────────
@@ -717,6 +705,20 @@ mod tests {
 
         assert_eq!(cell1.get(), Some(42));
         assert_eq!(cell2.get(), Some(42));
+    }
+
+    #[test]
+    fn test_cellmap_mutable_clone_shares_inner_map() {
+        let map = CellMap::<String, i32>::new();
+        let map_clone = map.clone();
+
+        map.insert("a".to_string(), 1);
+        assert_eq!(map_clone.get_value(&"a".to_string()), Some(1));
+
+        map_clone.insert("b".to_string(), 2);
+        assert_eq!(map.get_value(&"b".to_string()), Some(2));
+        assert_eq!(map.len().get(), 2);
+        assert_eq!(map_clone.len().get(), 2);
     }
 
     #[test]
