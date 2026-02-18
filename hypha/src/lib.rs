@@ -83,7 +83,7 @@ pub use async_support::{AsyncWatchableExt, CellStream};
 pub use bounded_input::{BoundedInput, BoundedInputMetrics, OverflowPolicy};
 pub use bounded_output::BoundedOutput;
 pub use cell::{Cell, CellImmutable, CellMutable, SlowSubscriberAlert};
-pub use cell_map::{CellMap, MapDiff, SelectExt};
+pub use cell_map::{CellMap, MapDiff, SelectExt, WeakCellMap};
 pub use cell_set::{CellSet, SetDiff};
 pub use constructors::from_iter_with_delay;
 #[cfg(not(target_arch = "wasm32"))]

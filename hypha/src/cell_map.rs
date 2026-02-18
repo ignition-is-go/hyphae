@@ -27,6 +27,8 @@ pub enum MapDiff<K, V> {
     Remove { key: K, old_value: V },
     /// An existing key's value was updated.
     Update { key: K, old_value: V, new_value: V },
+    /// Multiple diffs emitted as a single notification.
+    Batch { changes: Vec<MapDiff<K, V>> },
 }
 
 struct CellMapInner<K, V>
@@ -79,6 +81,18 @@ where
     _marker: PhantomData<M>,
 }
 
+/// Weak handle for a `CellMap`.
+///
+/// This allows callbacks to reference a map without retaining it strongly,
+/// which helps avoid reference cycles in subscription graphs.
+pub struct WeakCellMap<K, V>
+where
+    K: Hash + Eq + CellValue,
+    V: CellValue,
+{
+    inner: std::sync::Weak<CellMapInner<K, V>>,
+}
+
 impl<K, V> CellMap<K, V, CellMutable>
 where
     K: Hash + Eq + CellValue,
@@ -121,6 +135,13 @@ where
         self.inner.owned.insert(Uuid::new_v4(), guard);
     }
 
+    /// Own a subscription guard, keeping it alive as long as this CellMap exists.
+    ///
+    /// This enables building custom reactive CellMaps driven by external cells.
+    pub fn own_guard(&self, guard: SubscriptionGuard) {
+        self.own(guard);
+    }
+
     /// Insert a key-value pair, returning the old value if present.
     pub fn insert(&self, key: K, value: V) -> Option<V> {
         let old = self.inner.data.insert(key.clone(), value.clone());
@@ -152,6 +173,39 @@ where
         old
     }
 
+    /// Insert multiple key-value pairs and emit a single batch diff.
+    pub fn insert_many(&self, entries: Vec<(K, V)>) {
+        if entries.is_empty() {
+            return;
+        }
+
+        let mut changes = Vec::with_capacity(entries.len());
+        for (key, value) in entries {
+            let old = self.inner.data.insert(key.clone(), value.clone());
+            let diff = match old {
+                Some(old_value) => MapDiff::Update {
+                    key: key.clone(),
+                    old_value,
+                    new_value: value.clone(),
+                },
+                None => MapDiff::Insert {
+                    key: key.clone(),
+                    value: value.clone(),
+                },
+            };
+            changes.push(diff);
+
+            if let Some(weak) = self.inner.key_cells.get(&key)
+                && let Some(cell) = weak.upgrade()
+            {
+                cell.set(Some(value));
+            }
+        }
+
+        self.inner.diffs_cell.set(Some(MapDiff::Batch { changes }));
+        self.inner.len_cell.set(self.inner.data.len());
+    }
+
     /// Remove a key, returning the old value if present.
     pub fn remove(&self, key: &K) -> Option<V> {
         let removed = self.inner.data.remove(key);
@@ -177,6 +231,37 @@ where
         } else {
             None
         }
+    }
+
+    /// Remove multiple keys and emit a single batch diff.
+    pub fn remove_many(&self, keys: Vec<K>) {
+        if keys.is_empty() {
+            return;
+        }
+
+        let mut changes = Vec::new();
+        for key in keys {
+            let removed = self.inner.data.remove(&key);
+            if let Some((k, old_value)) = removed {
+                changes.push(MapDiff::Remove {
+                    key: k.clone(),
+                    old_value: old_value.clone(),
+                });
+
+                if let Some(weak) = self.inner.key_cells.get(&k)
+                    && let Some(cell) = weak.upgrade()
+                {
+                    cell.set(None);
+                }
+            }
+        }
+
+        if changes.is_empty() {
+            return;
+        }
+
+        self.inner.diffs_cell.set(Some(MapDiff::Batch { changes }));
+        self.inner.len_cell.set(self.inner.data.len());
     }
 
     /// Give this CellMap a name for debugging. Names its internal cells accordingly.
@@ -218,6 +303,13 @@ where
     K: Hash + Eq + CellValue,
     V: CellValue,
 {
+    /// Create a weak handle to this map.
+    pub fn downgrade(&self) -> WeakCellMap<K, V> {
+        WeakCellMap {
+            inner: Arc::downgrade(&self.inner),
+        }
+    }
+
     /// Get an observable Cell for a specific key.
     ///
     /// Returns a `Cell<Option<V>>` that updates whenever the key's value changes.
@@ -297,22 +389,35 @@ where
             {
                 // Apply diff incrementally to the entries
                 let mut entries = cell.get();
-                match diff {
-                    MapDiff::Initial { entries: init } => {
-                        entries = init.clone();
-                    }
-                    MapDiff::Insert { key, value } => {
-                        entries.push((key.clone(), value.clone()));
-                    }
-                    MapDiff::Remove { key, .. } => {
-                        entries.retain(|(k, _)| k != key);
-                    }
-                    MapDiff::Update { key, new_value, .. } => {
-                        if let Some((_, v)) = entries.iter_mut().find(|(k, _)| k == key) {
-                            *v = new_value.clone();
+                fn apply_diff<K, V>(entries: &mut Vec<(K, V)>, diff: &MapDiff<K, V>)
+                where
+                    K: Hash + Eq + CellValue,
+                    V: CellValue,
+                {
+                    match diff {
+                        MapDiff::Initial { entries: init } => {
+                            *entries = init.clone();
+                        }
+                        MapDiff::Insert { key, value } => {
+                            entries.push((key.clone(), value.clone()));
+                        }
+                        MapDiff::Remove { key, .. } => {
+                            entries.retain(|(k, _)| k != key);
+                        }
+                        MapDiff::Update { key, new_value, .. } => {
+                            if let Some((_, v)) = entries.iter_mut().find(|(k, _)| k == key) {
+                                *v = new_value.clone();
+                            }
+                        }
+                        MapDiff::Batch { changes } => {
+                            for change in changes {
+                                apply_diff(entries, change);
+                            }
                         }
                     }
                 }
+
+                apply_diff(&mut entries, diff);
                 cell.set(entries);
             }
         });
@@ -412,6 +517,20 @@ where
     }
 }
 
+impl<K, V> WeakCellMap<K, V>
+where
+    K: Hash + Eq + CellValue,
+    V: CellValue,
+{
+    /// Upgrade to a mutable `CellMap` if it is still alive.
+    pub fn upgrade(&self) -> Option<CellMap<K, V, CellMutable>> {
+        self.inner.upgrade().map(|inner| CellMap {
+            inner,
+            _marker: PhantomData,
+        })
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // SelectExt - Extension trait for filtering CellMap values
 // ─────────────────────────────────────────────────────────────────────────────
@@ -502,6 +621,35 @@ where
                         filtered.insert(key.clone(), new_value.clone());
                     } else {
                         filtered.remove(key);
+                    }
+                }
+                MapDiff::Batch { changes } => {
+                    for change in changes {
+                        match change {
+                            MapDiff::Initial { entries } => {
+                                for (key, value) in entries {
+                                    if predicate(value) {
+                                        filtered.insert(key.clone(), value.clone());
+                                    }
+                                }
+                            }
+                            MapDiff::Insert { key, value } => {
+                                if predicate(value) {
+                                    filtered.insert(key.clone(), value.clone());
+                                }
+                            }
+                            MapDiff::Remove { key, .. } => {
+                                filtered.remove(key);
+                            }
+                            MapDiff::Update { key, new_value, .. } => {
+                                if predicate(new_value) {
+                                    filtered.insert(key.clone(), new_value.clone());
+                                } else {
+                                    filtered.remove(key);
+                                }
+                            }
+                            MapDiff::Batch { .. } => {}
+                        }
                     }
                 }
             }
