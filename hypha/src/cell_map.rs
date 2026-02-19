@@ -3,7 +3,12 @@
 //! `CellMap` wraps a concurrent HashMap where each entry can be individually observed.
 //! Changes to keys trigger reactive updates to observers.
 
-use std::{hash::Hash, marker::PhantomData, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashSet},
+    hash::Hash,
+    marker::PhantomData,
+    sync::Arc,
+};
 
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
@@ -647,7 +652,7 @@ where
     #[track_caller]
     fn select_cell<W, F>(&self, predicate: F) -> CellMap<K, V, CellImmutable>
     where
-        W: Watchable<bool> + Clone + Send + Sync + 'static,
+        W: Watchable<bool> + Gettable<bool> + Clone + Send + Sync + 'static,
         F: Fn(&K, &V) -> W + Send + Sync + 'static;
 
     /// Map each row to a row-local cell and keep output rows in sync with those cells.
@@ -662,6 +667,50 @@ where
         U: CellValue,
         W: Watchable<U> + Gettable<U> + Clone + Send + Sync + 'static,
         F: Fn(&K, &V) -> W + Send + Sync + 'static;
+
+    /// Filter rows using a lookup map keyed by a derived key from each source row.
+    #[track_caller]
+    fn select_lookup<LK, R, LM, FK, FP>(
+        &self,
+        lookup: &CellMap<LK, R, LM>,
+        lookup_key: FK,
+        predicate: FP,
+    ) -> CellMap<K, V, CellImmutable>
+    where
+        LK: Hash + Eq + CellValue,
+        R: CellValue,
+        FK: Fn(&K, &V) -> LK + Send + Sync + 'static,
+        FP: Fn(&K, &V, Option<&R>) -> bool + Send + Sync + 'static;
+
+    /// Map rows using a lookup map keyed by a derived key from each source row.
+    #[track_caller]
+    fn switch_map_lookup<U, LK, R, LM, FK, FM>(
+        &self,
+        lookup: &CellMap<LK, R, LM>,
+        lookup_key: FK,
+        mapper: FM,
+    ) -> CellMap<K, U, CellImmutable>
+    where
+        U: CellValue,
+        LK: Hash + Eq + CellValue,
+        R: CellValue,
+        FK: Fn(&K, &V) -> LK + Send + Sync + 'static,
+        FM: Fn(&K, &V, Option<&R>) -> U + Send + Sync + 'static;
+
+    /// Count source rows grouped by a derived key.
+    #[track_caller]
+    fn count_by<GK, F>(&self, group_key: F) -> CellMap<GK, usize, CellImmutable>
+    where
+        GK: Hash + Eq + CellValue,
+        F: Fn(&K, &V) -> GK + Send + Sync + 'static;
+
+    /// Group source rows by a derived key, emitting grouped row values per group.
+    #[track_caller]
+    fn group_by<GK, F>(&self, group_key: F) -> CellMap<GK, Vec<V>, CellImmutable>
+    where
+        K: Ord,
+        GK: Hash + Eq + CellValue,
+        F: Fn(&K, &V) -> GK + Send + Sync + 'static;
 }
 
 impl<K, V, M> SelectExt<K, V> for CellMap<K, V, M>
@@ -760,7 +809,7 @@ where
     #[track_caller]
     fn select_cell<W, F>(&self, predicate: F) -> CellMap<K, V, CellImmutable>
     where
-        W: Watchable<bool> + Clone + Send + Sync + 'static,
+        W: Watchable<bool> + Gettable<bool> + Clone + Send + Sync + 'static,
         F: Fn(&K, &V) -> W + Send + Sync + 'static,
     {
         let filtered = CellMap::<K, V, CellMutable>::new();
@@ -783,15 +832,42 @@ where
                 _marker: PhantomData,
             };
 
-            let attach = |key: K, value: V| {
+            let attach = |key: K, value: V, mut batch_changes: Option<&mut Vec<MapDiff<K, V>>>| {
                 if let Some((_, old_guard)) = per_key_guards.remove(&key) {
                     drop(old_guard);
                 }
 
                 let include_cell = predicate(&key, &value);
+                let suppress_initial = batch_changes.is_some();
+                if let Some(changes) = batch_changes.as_deref_mut() {
+                    let include = include_cell.get();
+                    let current = filtered.get_value(&key);
+                    if include {
+                        if let Some(old_value) = current {
+                            changes.push(MapDiff::Update {
+                                key: key.clone(),
+                                old_value,
+                                new_value: value.clone(),
+                            });
+                        } else {
+                            changes.push(MapDiff::Insert {
+                                key: key.clone(),
+                                value: value.clone(),
+                            });
+                        }
+                    } else if let Some(old_value) = current {
+                        changes.push(MapDiff::Remove {
+                            key: key.clone(),
+                            old_value,
+                        });
+                    }
+                }
+
                 let key_for_sub = key.clone();
                 let value_for_sub = value.clone();
                 let filtered_weak_for_sub = Arc::downgrade(&filtered.inner);
+                let first = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+                let first_for_sub = first.clone();
 
                 let sub_guard = include_cell.subscribe(move |include_signal| {
                     let Some(inner) = filtered_weak_for_sub.upgrade() else {
@@ -803,6 +879,11 @@ where
                     };
 
                     if let Signal::Value(include) = include_signal {
+                        if suppress_initial
+                            && first_for_sub.swap(false, std::sync::atomic::Ordering::SeqCst)
+                        {
+                            return;
+                        }
                         if **include {
                             filtered.insert(key_for_sub.clone(), value_for_sub.clone());
                         } else {
@@ -814,48 +895,74 @@ where
                 per_key_guards.insert(key, sub_guard);
             };
 
-            let detach = |key: &K| {
+            let detach = |key: &K, batch_changes: Option<&mut Vec<MapDiff<K, V>>>| {
                 if let Some((_, old_guard)) = per_key_guards.remove(key) {
                     drop(old_guard);
                 }
-                filtered.remove(key);
+                if let Some(changes) = batch_changes {
+                    if let Some(old_value) = filtered.get_value(key) {
+                        changes.push(MapDiff::Remove {
+                            key: key.clone(),
+                            old_value,
+                        });
+                    }
+                } else {
+                    filtered.remove(key);
+                }
             };
 
             match diff {
                 MapDiff::Initial { entries } => {
                     for (key, value) in entries {
-                        attach(key.clone(), value.clone());
+                        attach(key.clone(), value.clone(), None);
                     }
                 }
                 MapDiff::Insert { key, value } => {
-                    attach(key.clone(), value.clone());
+                    attach(key.clone(), value.clone(), None);
                 }
                 MapDiff::Remove { key, .. } => {
-                    detach(key);
+                    detach(key, None);
                 }
                 MapDiff::Update { key, new_value, .. } => {
-                    attach(key.clone(), new_value.clone());
+                    attach(key.clone(), new_value.clone(), None);
                 }
                 MapDiff::Batch { changes } => {
+                    let mut downstream_changes: Vec<MapDiff<K, V>> = Vec::new();
                     for change in changes {
                         match change {
                             MapDiff::Initial { entries } => {
+                                let existing_keys: Vec<K> = per_key_guards
+                                    .iter()
+                                    .map(|entry| entry.key().clone())
+                                    .collect();
+                                for k in existing_keys {
+                                    detach(&k, Some(&mut downstream_changes));
+                                }
                                 for (key, value) in entries {
-                                    attach(key.clone(), value.clone());
+                                    attach(
+                                        key.clone(),
+                                        value.clone(),
+                                        Some(&mut downstream_changes),
+                                    );
                                 }
                             }
                             MapDiff::Insert { key, value } => {
-                                attach(key.clone(), value.clone());
+                                attach(key.clone(), value.clone(), Some(&mut downstream_changes));
                             }
                             MapDiff::Remove { key, .. } => {
-                                detach(key);
+                                detach(key, Some(&mut downstream_changes));
                             }
                             MapDiff::Update { key, new_value, .. } => {
-                                attach(key.clone(), new_value.clone());
+                                attach(
+                                    key.clone(),
+                                    new_value.clone(),
+                                    Some(&mut downstream_changes),
+                                );
                             }
                             MapDiff::Batch { .. } => {}
                         }
                     }
+                    filtered.apply_batch(downstream_changes);
                 }
             }
         });
@@ -1019,6 +1126,892 @@ where
 
         mapped.own(guard);
         mapped.lock()
+    }
+
+    #[track_caller]
+    fn select_lookup<LK, R, LM, FK, FP>(
+        &self,
+        lookup: &CellMap<LK, R, LM>,
+        lookup_key: FK,
+        predicate: FP,
+    ) -> CellMap<K, V, CellImmutable>
+    where
+        LK: Hash + Eq + CellValue,
+        R: CellValue,
+        FK: Fn(&K, &V) -> LK + Send + Sync + 'static,
+        FP: Fn(&K, &V, Option<&R>) -> bool + Send + Sync + 'static,
+    {
+        let output = CellMap::<K, V, CellMutable>::new();
+        if let Some(parent_name) = (**self.inner.name.load()).as_ref() {
+            output
+                .clone()
+                .with_name(format!("{}::select_lookup", parent_name));
+        }
+
+        let lookup_key = Arc::new(lookup_key);
+        let predicate = Arc::new(predicate);
+        let left_shadow = Arc::new(DashMap::<K, V>::new());
+        let left_lookup_keys = Arc::new(DashMap::<K, LK>::new());
+        let lookup_shadow = Arc::new(DashMap::<LK, R>::new());
+
+        let output_weak = Arc::downgrade(&output.inner);
+
+        let left_guard = self.subscribe_diffs({
+            let lookup_key = lookup_key.clone();
+            let predicate = predicate.clone();
+            let left_shadow = left_shadow.clone();
+            let left_lookup_keys = left_lookup_keys.clone();
+            let lookup_shadow = lookup_shadow.clone();
+            move |diff| {
+                let Some(inner) = output_weak.upgrade() else {
+                    return;
+                };
+                let output = CellMap::<K, V, CellMutable> {
+                    inner,
+                    _marker: PhantomData,
+                };
+
+                fn apply_left<K, V, LK>(
+                    diff: &MapDiff<K, V>,
+                    left_shadow: &DashMap<K, V>,
+                    left_lookup_keys: &DashMap<K, LK>,
+                    lookup_key: &Arc<dyn Fn(&K, &V) -> LK + Send + Sync>,
+                    impacted: &mut HashSet<K>,
+                ) where
+                    K: Hash + Eq + CellValue,
+                    V: CellValue,
+                    LK: Hash + Eq + CellValue,
+                {
+                    match diff {
+                        MapDiff::Initial { entries } => {
+                            let previous: Vec<K> = left_shadow
+                                .iter()
+                                .map(|entry| entry.key().clone())
+                                .collect();
+                            left_shadow.clear();
+                            left_lookup_keys.clear();
+                            for key in previous {
+                                impacted.insert(key);
+                            }
+                            for (k, v) in entries {
+                                left_shadow.insert(k.clone(), v.clone());
+                                left_lookup_keys.insert(k.clone(), lookup_key(k, v));
+                                impacted.insert(k.clone());
+                            }
+                        }
+                        MapDiff::Insert { key, value }
+                        | MapDiff::Update {
+                            key,
+                            new_value: value,
+                            ..
+                        } => {
+                            left_shadow.insert(key.clone(), value.clone());
+                            left_lookup_keys.insert(key.clone(), lookup_key(key, value));
+                            impacted.insert(key.clone());
+                        }
+                        MapDiff::Remove { key, .. } => {
+                            left_shadow.remove(key);
+                            left_lookup_keys.remove(key);
+                            impacted.insert(key.clone());
+                        }
+                        MapDiff::Batch { changes } => {
+                            for change in changes {
+                                apply_left(
+                                    change,
+                                    left_shadow,
+                                    left_lookup_keys,
+                                    lookup_key,
+                                    impacted,
+                                );
+                            }
+                        }
+                    }
+                }
+
+                let lookup_key_dyn: Arc<dyn Fn(&K, &V) -> LK + Send + Sync> = lookup_key.clone();
+                let mut impacted: HashSet<K> = HashSet::new();
+                apply_left(
+                    diff,
+                    &left_shadow,
+                    &left_lookup_keys,
+                    &lookup_key_dyn,
+                    &mut impacted,
+                );
+                log::trace!(
+                    target: "hypha::cell_map::select_lookup",
+                    "left diff processed: impacted_keys={}",
+                    impacted.len()
+                );
+
+                let mut changes: Vec<MapDiff<K, V>> = Vec::new();
+                for key in impacted {
+                    let desired = left_shadow.get(&key).and_then(|left_value| {
+                        let lk = left_lookup_keys
+                            .get(&key)
+                            .map(|entry| entry.value().clone())
+                            .unwrap_or_else(|| lookup_key(&key, left_value.value()));
+                        let right = lookup_shadow.get(&lk);
+                        let include =
+                            predicate(&key, left_value.value(), right.as_ref().map(|r| r.value()));
+                        if include {
+                            Some(left_value.value().clone())
+                        } else {
+                            None
+                        }
+                    });
+
+                    match (output.get_value(&key), desired) {
+                        (Some(old_value), Some(new_value)) => changes.push(MapDiff::Update {
+                            key: key.clone(),
+                            old_value,
+                            new_value,
+                        }),
+                        (None, Some(new_value)) => changes.push(MapDiff::Insert {
+                            key: key.clone(),
+                            value: new_value,
+                        }),
+                        (Some(old_value), None) => changes.push(MapDiff::Remove {
+                            key: key.clone(),
+                            old_value,
+                        }),
+                        (None, None) => {}
+                    }
+                }
+                log::trace!(
+                    target: "hypha::cell_map::select_lookup",
+                    "left recompute emitted_changes={}",
+                    changes.len()
+                );
+                output.apply_batch(changes);
+            }
+        });
+
+        let output_weak = Arc::downgrade(&output.inner);
+        let lookup_guard = lookup.subscribe_diffs({
+            let lookup_key = lookup_key.clone();
+            let predicate = predicate.clone();
+            let left_shadow = left_shadow.clone();
+            let left_lookup_keys = left_lookup_keys.clone();
+            let lookup_shadow = lookup_shadow.clone();
+            move |diff| {
+                let Some(inner) = output_weak.upgrade() else {
+                    return;
+                };
+                let output = CellMap::<K, V, CellMutable> {
+                    inner,
+                    _marker: PhantomData,
+                };
+
+                fn apply_lookup<LK, R>(
+                    diff: &MapDiff<LK, R>,
+                    lookup_shadow: &DashMap<LK, R>,
+                    changed_lookup: &mut HashSet<LK>,
+                ) where
+                    LK: Hash + Eq + CellValue,
+                    R: CellValue,
+                {
+                    match diff {
+                        MapDiff::Initial { entries } => {
+                            let previous: Vec<LK> = lookup_shadow
+                                .iter()
+                                .map(|entry| entry.key().clone())
+                                .collect();
+                            for k in previous {
+                                changed_lookup.insert(k);
+                            }
+                            lookup_shadow.clear();
+                            for (k, v) in entries {
+                                lookup_shadow.insert(k.clone(), v.clone());
+                                changed_lookup.insert(k.clone());
+                            }
+                        }
+                        MapDiff::Insert { key, value }
+                        | MapDiff::Update {
+                            key,
+                            new_value: value,
+                            ..
+                        } => {
+                            lookup_shadow.insert(key.clone(), value.clone());
+                            changed_lookup.insert(key.clone());
+                        }
+                        MapDiff::Remove { key, .. } => {
+                            lookup_shadow.remove(key);
+                            changed_lookup.insert(key.clone());
+                        }
+                        MapDiff::Batch { changes } => {
+                            for change in changes {
+                                apply_lookup(change, lookup_shadow, changed_lookup);
+                            }
+                        }
+                    }
+                }
+
+                let mut changed_lookup: HashSet<LK> = HashSet::new();
+                apply_lookup(diff, &lookup_shadow, &mut changed_lookup);
+                if changed_lookup.is_empty() {
+                    log::trace!(
+                        target: "hypha::cell_map::select_lookup",
+                        "lookup diff processed: changed_lookup=0"
+                    );
+                    return;
+                }
+
+                let impacted: Vec<K> = left_lookup_keys
+                    .iter()
+                    .filter(|entry| changed_lookup.contains(entry.value()))
+                    .map(|entry| entry.key().clone())
+                    .collect();
+                log::trace!(
+                    target: "hypha::cell_map::select_lookup",
+                    "lookup diff processed: changed_lookup={} impacted_keys={}",
+                    changed_lookup.len(),
+                    impacted.len()
+                );
+
+                let mut changes: Vec<MapDiff<K, V>> = Vec::new();
+                for key in impacted {
+                    let desired = left_shadow.get(&key).and_then(|left_value| {
+                        let lk = left_lookup_keys
+                            .get(&key)
+                            .map(|entry| entry.value().clone())
+                            .unwrap_or_else(|| lookup_key(&key, left_value.value()));
+                        let right = lookup_shadow.get(&lk);
+                        let include =
+                            predicate(&key, left_value.value(), right.as_ref().map(|r| r.value()));
+                        if include {
+                            Some(left_value.value().clone())
+                        } else {
+                            None
+                        }
+                    });
+
+                    match (output.get_value(&key), desired) {
+                        (Some(old_value), Some(new_value)) => changes.push(MapDiff::Update {
+                            key: key.clone(),
+                            old_value,
+                            new_value,
+                        }),
+                        (None, Some(new_value)) => changes.push(MapDiff::Insert {
+                            key: key.clone(),
+                            value: new_value,
+                        }),
+                        (Some(old_value), None) => changes.push(MapDiff::Remove {
+                            key: key.clone(),
+                            old_value,
+                        }),
+                        (None, None) => {}
+                    }
+                }
+                log::trace!(
+                    target: "hypha::cell_map::select_lookup",
+                    "lookup recompute emitted_changes={}",
+                    changes.len()
+                );
+                output.apply_batch(changes);
+            }
+        });
+
+        output.own(left_guard);
+        output.own(lookup_guard);
+        output.lock()
+    }
+
+    #[track_caller]
+    fn switch_map_lookup<U, LK, R, LM, FK, FM>(
+        &self,
+        lookup: &CellMap<LK, R, LM>,
+        lookup_key: FK,
+        mapper: FM,
+    ) -> CellMap<K, U, CellImmutable>
+    where
+        U: CellValue,
+        LK: Hash + Eq + CellValue,
+        R: CellValue,
+        FK: Fn(&K, &V) -> LK + Send + Sync + 'static,
+        FM: Fn(&K, &V, Option<&R>) -> U + Send + Sync + 'static,
+    {
+        let output = CellMap::<K, U, CellMutable>::new();
+        if let Some(parent_name) = (**self.inner.name.load()).as_ref() {
+            output
+                .clone()
+                .with_name(format!("{}::switch_map_lookup", parent_name));
+        }
+
+        let lookup_key = Arc::new(lookup_key);
+        let mapper = Arc::new(mapper);
+        let left_shadow = Arc::new(DashMap::<K, V>::new());
+        let left_lookup_keys = Arc::new(DashMap::<K, LK>::new());
+        let lookup_shadow = Arc::new(DashMap::<LK, R>::new());
+
+        let output_weak = Arc::downgrade(&output.inner);
+        let left_guard = self.subscribe_diffs({
+            let lookup_key = lookup_key.clone();
+            let mapper = mapper.clone();
+            let left_shadow = left_shadow.clone();
+            let left_lookup_keys = left_lookup_keys.clone();
+            let lookup_shadow = lookup_shadow.clone();
+            move |diff| {
+                let Some(inner) = output_weak.upgrade() else {
+                    return;
+                };
+                let output = CellMap::<K, U, CellMutable> {
+                    inner,
+                    _marker: PhantomData,
+                };
+
+                fn apply_left<K, V, LK>(
+                    diff: &MapDiff<K, V>,
+                    left_shadow: &DashMap<K, V>,
+                    left_lookup_keys: &DashMap<K, LK>,
+                    lookup_key: &Arc<dyn Fn(&K, &V) -> LK + Send + Sync>,
+                    impacted: &mut HashSet<K>,
+                ) where
+                    K: Hash + Eq + CellValue,
+                    V: CellValue,
+                    LK: Hash + Eq + CellValue,
+                {
+                    match diff {
+                        MapDiff::Initial { entries } => {
+                            let previous: Vec<K> = left_shadow
+                                .iter()
+                                .map(|entry| entry.key().clone())
+                                .collect();
+                            left_shadow.clear();
+                            left_lookup_keys.clear();
+                            for key in previous {
+                                impacted.insert(key);
+                            }
+                            for (k, v) in entries {
+                                left_shadow.insert(k.clone(), v.clone());
+                                left_lookup_keys.insert(k.clone(), lookup_key(k, v));
+                                impacted.insert(k.clone());
+                            }
+                        }
+                        MapDiff::Insert { key, value }
+                        | MapDiff::Update {
+                            key,
+                            new_value: value,
+                            ..
+                        } => {
+                            left_shadow.insert(key.clone(), value.clone());
+                            left_lookup_keys.insert(key.clone(), lookup_key(key, value));
+                            impacted.insert(key.clone());
+                        }
+                        MapDiff::Remove { key, .. } => {
+                            left_shadow.remove(key);
+                            left_lookup_keys.remove(key);
+                            impacted.insert(key.clone());
+                        }
+                        MapDiff::Batch { changes } => {
+                            for change in changes {
+                                apply_left(
+                                    change,
+                                    left_shadow,
+                                    left_lookup_keys,
+                                    lookup_key,
+                                    impacted,
+                                );
+                            }
+                        }
+                    }
+                }
+
+                let lookup_key_dyn: Arc<dyn Fn(&K, &V) -> LK + Send + Sync> = lookup_key.clone();
+                let mut impacted: HashSet<K> = HashSet::new();
+                apply_left(
+                    diff,
+                    &left_shadow,
+                    &left_lookup_keys,
+                    &lookup_key_dyn,
+                    &mut impacted,
+                );
+                log::trace!(
+                    target: "hypha::cell_map::switch_map_lookup",
+                    "left diff processed: impacted_keys={}",
+                    impacted.len()
+                );
+
+                let mut changes: Vec<MapDiff<K, U>> = Vec::new();
+                for key in impacted {
+                    let desired = left_shadow.get(&key).map(|left_value| {
+                        let lk = left_lookup_keys
+                            .get(&key)
+                            .map(|entry| entry.value().clone())
+                            .unwrap_or_else(|| lookup_key(&key, left_value.value()));
+                        let right = lookup_shadow.get(&lk);
+                        mapper(&key, left_value.value(), right.as_ref().map(|r| r.value()))
+                    });
+
+                    match (output.get_value(&key), desired) {
+                        (Some(old_value), Some(new_value)) => changes.push(MapDiff::Update {
+                            key: key.clone(),
+                            old_value,
+                            new_value,
+                        }),
+                        (None, Some(new_value)) => changes.push(MapDiff::Insert {
+                            key: key.clone(),
+                            value: new_value,
+                        }),
+                        (Some(old_value), None) => changes.push(MapDiff::Remove {
+                            key: key.clone(),
+                            old_value,
+                        }),
+                        (None, None) => {}
+                    }
+                }
+                log::trace!(
+                    target: "hypha::cell_map::switch_map_lookup",
+                    "left recompute emitted_changes={}",
+                    changes.len()
+                );
+                output.apply_batch(changes);
+            }
+        });
+
+        let output_weak = Arc::downgrade(&output.inner);
+        let lookup_guard = lookup.subscribe_diffs({
+            let lookup_key = lookup_key.clone();
+            let mapper = mapper.clone();
+            let left_shadow = left_shadow.clone();
+            let left_lookup_keys = left_lookup_keys.clone();
+            let lookup_shadow = lookup_shadow.clone();
+            move |diff| {
+                let Some(inner) = output_weak.upgrade() else {
+                    return;
+                };
+                let output = CellMap::<K, U, CellMutable> {
+                    inner,
+                    _marker: PhantomData,
+                };
+
+                fn apply_lookup<LK, R>(
+                    diff: &MapDiff<LK, R>,
+                    lookup_shadow: &DashMap<LK, R>,
+                    changed_lookup: &mut HashSet<LK>,
+                ) where
+                    LK: Hash + Eq + CellValue,
+                    R: CellValue,
+                {
+                    match diff {
+                        MapDiff::Initial { entries } => {
+                            let previous: Vec<LK> = lookup_shadow
+                                .iter()
+                                .map(|entry| entry.key().clone())
+                                .collect();
+                            for k in previous {
+                                changed_lookup.insert(k);
+                            }
+                            lookup_shadow.clear();
+                            for (k, v) in entries {
+                                lookup_shadow.insert(k.clone(), v.clone());
+                                changed_lookup.insert(k.clone());
+                            }
+                        }
+                        MapDiff::Insert { key, value }
+                        | MapDiff::Update {
+                            key,
+                            new_value: value,
+                            ..
+                        } => {
+                            lookup_shadow.insert(key.clone(), value.clone());
+                            changed_lookup.insert(key.clone());
+                        }
+                        MapDiff::Remove { key, .. } => {
+                            lookup_shadow.remove(key);
+                            changed_lookup.insert(key.clone());
+                        }
+                        MapDiff::Batch { changes } => {
+                            for change in changes {
+                                apply_lookup(change, lookup_shadow, changed_lookup);
+                            }
+                        }
+                    }
+                }
+
+                let mut changed_lookup: HashSet<LK> = HashSet::new();
+                apply_lookup(diff, &lookup_shadow, &mut changed_lookup);
+                if changed_lookup.is_empty() {
+                    log::trace!(
+                        target: "hypha::cell_map::switch_map_lookup",
+                        "lookup diff processed: changed_lookup=0"
+                    );
+                    return;
+                }
+
+                let impacted: Vec<K> = left_lookup_keys
+                    .iter()
+                    .filter(|entry| changed_lookup.contains(entry.value()))
+                    .map(|entry| entry.key().clone())
+                    .collect();
+                log::trace!(
+                    target: "hypha::cell_map::switch_map_lookup",
+                    "lookup diff processed: changed_lookup={} impacted_keys={}",
+                    changed_lookup.len(),
+                    impacted.len()
+                );
+
+                let mut changes: Vec<MapDiff<K, U>> = Vec::new();
+                for key in impacted {
+                    let desired = left_shadow.get(&key).map(|left_value| {
+                        let lk = left_lookup_keys
+                            .get(&key)
+                            .map(|entry| entry.value().clone())
+                            .unwrap_or_else(|| lookup_key(&key, left_value.value()));
+                        let right = lookup_shadow.get(&lk);
+                        mapper(&key, left_value.value(), right.as_ref().map(|r| r.value()))
+                    });
+
+                    match (output.get_value(&key), desired) {
+                        (Some(old_value), Some(new_value)) => changes.push(MapDiff::Update {
+                            key: key.clone(),
+                            old_value,
+                            new_value,
+                        }),
+                        (None, Some(new_value)) => changes.push(MapDiff::Insert {
+                            key: key.clone(),
+                            value: new_value,
+                        }),
+                        (Some(old_value), None) => changes.push(MapDiff::Remove {
+                            key: key.clone(),
+                            old_value,
+                        }),
+                        (None, None) => {}
+                    }
+                }
+                log::trace!(
+                    target: "hypha::cell_map::switch_map_lookup",
+                    "lookup recompute emitted_changes={}",
+                    changes.len()
+                );
+                output.apply_batch(changes);
+            }
+        });
+
+        output.own(left_guard);
+        output.own(lookup_guard);
+        output.lock()
+    }
+
+    #[track_caller]
+    fn count_by<GK, F>(&self, group_key: F) -> CellMap<GK, usize, CellImmutable>
+    where
+        GK: Hash + Eq + CellValue,
+        F: Fn(&K, &V) -> GK + Send + Sync + 'static,
+    {
+        let counts = CellMap::<GK, usize, CellMutable>::new();
+        if let Some(parent_name) = (**self.inner.name.load()).as_ref() {
+            counts
+                .clone()
+                .with_name(format!("{}::count_by", parent_name));
+        }
+
+        let group_key = Arc::new(group_key);
+        let source_to_group = Arc::new(DashMap::<K, GK>::new());
+        let group_counts = Arc::new(DashMap::<GK, usize>::new());
+        let counts_weak = Arc::downgrade(&counts.inner);
+
+        let guard = self.subscribe_diffs(move |diff| {
+            let Some(inner) = counts_weak.upgrade() else {
+                return;
+            };
+            let counts_map = CellMap::<GK, usize, CellMutable> {
+                inner,
+                _marker: PhantomData,
+            };
+
+            fn bump<GK>(
+                group: GK,
+                delta: isize,
+                group_counts: &DashMap<GK, usize>,
+                touched: &mut HashSet<GK>,
+            ) where
+                GK: Hash + Eq + CellValue,
+            {
+                if delta == 0 {
+                    return;
+                }
+                let current = group_counts.get(&group).map(|v| *v.value()).unwrap_or(0);
+                let next = if delta > 0 {
+                    current.saturating_add(delta as usize)
+                } else {
+                    current.saturating_sub((-delta) as usize)
+                };
+                if next == 0 {
+                    group_counts.remove(&group);
+                } else {
+                    group_counts.insert(group.clone(), next);
+                }
+                touched.insert(group);
+            }
+
+            fn apply_source<K, V, GK>(
+                diff: &MapDiff<K, V>,
+                group_key: &Arc<dyn Fn(&K, &V) -> GK + Send + Sync>,
+                source_to_group: &DashMap<K, GK>,
+                group_counts: &DashMap<GK, usize>,
+                touched: &mut HashSet<GK>,
+            ) where
+                K: Hash + Eq + CellValue,
+                V: CellValue,
+                GK: Hash + Eq + CellValue,
+            {
+                match diff {
+                    MapDiff::Initial { entries } => {
+                        let previous_sources: Vec<K> = source_to_group
+                            .iter()
+                            .map(|entry| entry.key().clone())
+                            .collect();
+                        for source_key in previous_sources {
+                            if let Some((_, old_group)) = source_to_group.remove(&source_key) {
+                                bump(old_group, -1, group_counts, touched);
+                            }
+                        }
+                        for (source_key, value) in entries {
+                            let group = group_key(source_key, value);
+                            source_to_group.insert(source_key.clone(), group.clone());
+                            bump(group, 1, group_counts, touched);
+                        }
+                    }
+                    MapDiff::Insert { key, value } => {
+                        let group = group_key(key, value);
+                        source_to_group.insert(key.clone(), group.clone());
+                        bump(group, 1, group_counts, touched);
+                    }
+                    MapDiff::Update { key, new_value, .. } => {
+                        let new_group = group_key(key, new_value);
+                        let old_group = source_to_group
+                            .insert(key.clone(), new_group.clone())
+                            .unwrap_or_else(|| new_group.clone());
+                        if old_group != new_group {
+                            bump(old_group, -1, group_counts, touched);
+                            bump(new_group, 1, group_counts, touched);
+                        }
+                    }
+                    MapDiff::Remove { key, .. } => {
+                        if let Some((_, old_group)) = source_to_group.remove(key) {
+                            bump(old_group, -1, group_counts, touched);
+                        }
+                    }
+                    MapDiff::Batch { changes } => {
+                        for change in changes {
+                            apply_source(change, group_key, source_to_group, group_counts, touched);
+                        }
+                    }
+                }
+            }
+
+            let group_key_dyn: Arc<dyn Fn(&K, &V) -> GK + Send + Sync> = group_key.clone();
+            let mut touched: HashSet<GK> = HashSet::new();
+            apply_source(
+                diff,
+                &group_key_dyn,
+                &source_to_group,
+                &group_counts,
+                &mut touched,
+            );
+            log::trace!(
+                target: "hypha::cell_map::count_by",
+                "source diff processed: touched_groups={}",
+                touched.len()
+            );
+
+            let mut changes: Vec<MapDiff<GK, usize>> = Vec::new();
+            for group in touched {
+                let before = counts_map.get_value(&group);
+                let after = group_counts.get(&group).map(|v| *v.value());
+                match (before, after) {
+                    (Some(old_value), Some(new_value)) => changes.push(MapDiff::Update {
+                        key: group.clone(),
+                        old_value,
+                        new_value,
+                    }),
+                    (None, Some(new_value)) => changes.push(MapDiff::Insert {
+                        key: group.clone(),
+                        value: new_value,
+                    }),
+                    (Some(old_value), None) => changes.push(MapDiff::Remove {
+                        key: group.clone(),
+                        old_value,
+                    }),
+                    (None, None) => {}
+                }
+            }
+            log::trace!(
+                target: "hypha::cell_map::count_by",
+                "recompute emitted_changes={}",
+                changes.len()
+            );
+            counts_map.apply_batch(changes);
+        });
+
+        counts.own(guard);
+        counts.lock()
+    }
+
+    #[track_caller]
+    fn group_by<GK, F>(&self, group_key: F) -> CellMap<GK, Vec<V>, CellImmutable>
+    where
+        K: Ord,
+        GK: Hash + Eq + CellValue,
+        F: Fn(&K, &V) -> GK + Send + Sync + 'static,
+    {
+        let grouped = CellMap::<GK, Vec<V>, CellMutable>::new();
+        if let Some(parent_name) = (**self.inner.name.load()).as_ref() {
+            grouped
+                .clone()
+                .with_name(format!("{}::group_by", parent_name));
+        }
+
+        let group_key = Arc::new(group_key);
+        let source_to_group = Arc::new(DashMap::<K, GK>::new());
+        let group_rows = Arc::new(DashMap::<GK, BTreeMap<K, V>>::new());
+        let grouped_weak = Arc::downgrade(&grouped.inner);
+
+        let guard = self.subscribe_diffs(move |diff| {
+            let Some(inner) = grouped_weak.upgrade() else {
+                return;
+            };
+            let grouped_map = CellMap::<GK, Vec<V>, CellMutable> {
+                inner,
+                _marker: PhantomData,
+            };
+
+            fn apply_source<K, V, GK>(
+                diff: &MapDiff<K, V>,
+                group_key: &Arc<dyn Fn(&K, &V) -> GK + Send + Sync>,
+                source_to_group: &DashMap<K, GK>,
+                group_rows: &DashMap<GK, BTreeMap<K, V>>,
+                touched: &mut HashSet<GK>,
+            ) where
+                K: Hash + Eq + Ord + CellValue,
+                V: CellValue,
+                GK: Hash + Eq + CellValue,
+            {
+                match diff {
+                    MapDiff::Initial { entries } => {
+                        let previous_sources: Vec<(K, GK)> = source_to_group
+                            .iter()
+                            .map(|entry| (entry.key().clone(), entry.value().clone()))
+                            .collect();
+                        source_to_group.clear();
+                        group_rows.clear();
+                        for (_, old_group) in previous_sources {
+                            touched.insert(old_group);
+                        }
+                        for (source_key, value) in entries {
+                            let group = group_key(source_key, value);
+                            source_to_group.insert(source_key.clone(), group.clone());
+                            group_rows
+                                .entry(group.clone())
+                                .or_insert_with(BTreeMap::new)
+                                .insert(source_key.clone(), value.clone());
+                            touched.insert(group);
+                        }
+                    }
+                    MapDiff::Insert { key, value } => {
+                        let group = group_key(key, value);
+                        source_to_group.insert(key.clone(), group.clone());
+                        group_rows
+                            .entry(group.clone())
+                            .or_insert_with(BTreeMap::new)
+                            .insert(key.clone(), value.clone());
+                        touched.insert(group);
+                    }
+                    MapDiff::Update { key, new_value, .. } => {
+                        let new_group = group_key(key, new_value);
+                        let old_group = source_to_group
+                            .insert(key.clone(), new_group.clone())
+                            .unwrap_or_else(|| new_group.clone());
+                        if old_group != new_group {
+                            if let Some(mut old_rows) = group_rows.get_mut(&old_group) {
+                                old_rows.remove(key);
+                                if old_rows.is_empty() {
+                                    drop(old_rows);
+                                    group_rows.remove(&old_group);
+                                }
+                            }
+                            group_rows
+                                .entry(new_group.clone())
+                                .or_insert_with(BTreeMap::new)
+                                .insert(key.clone(), new_value.clone());
+                            touched.insert(old_group);
+                            touched.insert(new_group);
+                        } else {
+                            group_rows
+                                .entry(new_group.clone())
+                                .or_insert_with(BTreeMap::new)
+                                .insert(key.clone(), new_value.clone());
+                            touched.insert(new_group);
+                        }
+                    }
+                    MapDiff::Remove { key, .. } => {
+                        if let Some((_, old_group)) = source_to_group.remove(key) {
+                            if let Some(mut old_rows) = group_rows.get_mut(&old_group) {
+                                old_rows.remove(key);
+                                if old_rows.is_empty() {
+                                    drop(old_rows);
+                                    group_rows.remove(&old_group);
+                                }
+                            }
+                            touched.insert(old_group);
+                        }
+                    }
+                    MapDiff::Batch { changes } => {
+                        for change in changes {
+                            apply_source(change, group_key, source_to_group, group_rows, touched);
+                        }
+                    }
+                }
+            }
+
+            let group_key_dyn: Arc<dyn Fn(&K, &V) -> GK + Send + Sync> = group_key.clone();
+            let mut touched: HashSet<GK> = HashSet::new();
+            apply_source(
+                diff,
+                &group_key_dyn,
+                &source_to_group,
+                &group_rows,
+                &mut touched,
+            );
+            log::trace!(
+                target: "hypha::cell_map::group_by",
+                "source diff processed: touched_groups={}",
+                touched.len()
+            );
+
+            let mut changes: Vec<MapDiff<GK, Vec<V>>> = Vec::new();
+            for group in touched {
+                let before = grouped_map.get_value(&group);
+                let after = group_rows
+                    .get(&group)
+                    .map(|rows| rows.values().cloned().collect::<Vec<_>>());
+                match (before, after) {
+                    (Some(old_value), Some(new_value)) => changes.push(MapDiff::Update {
+                        key: group.clone(),
+                        old_value,
+                        new_value,
+                    }),
+                    (None, Some(new_value)) => changes.push(MapDiff::Insert {
+                        key: group.clone(),
+                        value: new_value,
+                    }),
+                    (Some(old_value), None) => changes.push(MapDiff::Remove {
+                        key: group.clone(),
+                        old_value,
+                    }),
+                    (None, None) => {}
+                }
+            }
+            log::trace!(
+                target: "hypha::cell_map::group_by",
+                "recompute emitted_changes={}",
+                changes.len()
+            );
+            grouped_map.apply_batch(changes);
+        });
+
+        grouped.own(guard);
+        grouped.lock()
     }
 }
 
@@ -1492,6 +2485,38 @@ mod tests {
     }
 
     #[test]
+    fn test_cellmap_select_cell_preserves_upstream_batch() {
+        let source = CellMap::<String, i32>::new();
+        let out = source.select_cell(|_, _| Cell::new(true).lock());
+
+        let seen = Arc::new(Mutex::new(Vec::<MapDiff<String, i32>>::new()));
+        let seen_clone = seen.clone();
+        let _guard = out.subscribe_diffs(move |diff| {
+            seen_clone.lock().unwrap().push(diff.clone());
+        });
+
+        source.insert_many(vec![("a".to_string(), 1), ("b".to_string(), 2)]);
+
+        let seen = seen.lock().unwrap();
+        assert!(seen.len() >= 2);
+        let last = seen.last().unwrap();
+        match last {
+            MapDiff::Batch { changes } => {
+                assert_eq!(changes.len(), 2);
+                assert!(matches!(
+                    &changes[0],
+                    MapDiff::Insert { key, value } if key == "a" && *value == 1
+                ));
+                assert!(matches!(
+                    &changes[1],
+                    MapDiff::Insert { key, value } if key == "b" && *value == 2
+                ));
+            }
+            _ => panic!("expected batch diff from select_cell"),
+        }
+    }
+
+    #[test]
     fn test_cellmap_switch_map_cell_preserves_upstream_batch() {
         let source = CellMap::<String, i32>::new();
         let out = source.switch_map_cell(|_, v| Cell::new(*v * 10).lock());
@@ -1520,6 +2545,77 @@ mod tests {
                 ));
             }
             _ => panic!("expected batch diff from switch_map_cell"),
+        }
+    }
+
+    #[test]
+    fn test_cellmap_select_lookup_preserves_lookup_batch() {
+        let left = CellMap::<String, i32>::new();
+        left.insert("a".to_string(), 1);
+        left.insert("b".to_string(), 2);
+
+        let lookup = CellMap::<String, bool>::new();
+        let out = left.select_lookup(
+            &lookup,
+            |_, v| v.to_string(),
+            |_, _, present| present.copied().unwrap_or(false),
+        );
+
+        let seen = Arc::new(Mutex::new(Vec::<MapDiff<String, i32>>::new()));
+        let seen_clone = seen.clone();
+        let _guard = out.subscribe_diffs(move |diff| {
+            seen_clone.lock().unwrap().push(diff.clone());
+        });
+
+        lookup.insert_many(vec![("1".to_string(), true), ("2".to_string(), true)]);
+
+        let seen = seen.lock().unwrap();
+        let last = seen.last().unwrap();
+        match last {
+            MapDiff::Batch { changes } => assert_eq!(changes.len(), 2),
+            _ => panic!("expected batch diff from select_lookup"),
+        }
+    }
+
+    #[test]
+    fn test_cellmap_count_by_preserves_upstream_batch() {
+        let source = CellMap::<String, i32>::new();
+        let counts = source.count_by(|_, v| v.to_string());
+
+        let seen = Arc::new(Mutex::new(Vec::<MapDiff<String, usize>>::new()));
+        let seen_clone = seen.clone();
+        let _guard = counts.subscribe_diffs(move |diff| {
+            seen_clone.lock().unwrap().push(diff.clone());
+        });
+
+        source.insert_many(vec![("a".to_string(), 1), ("b".to_string(), 2)]);
+
+        let seen = seen.lock().unwrap();
+        let last = seen.last().unwrap();
+        match last {
+            MapDiff::Batch { changes } => assert_eq!(changes.len(), 2),
+            _ => panic!("expected batch diff from count_by"),
+        }
+    }
+
+    #[test]
+    fn test_cellmap_group_by_preserves_upstream_batch() {
+        let source = CellMap::<String, i32>::new();
+        let grouped = source.group_by(|_, v| v.to_string());
+
+        let seen = Arc::new(Mutex::new(Vec::<MapDiff<String, Vec<i32>>>::new()));
+        let seen_clone = seen.clone();
+        let _guard = grouped.subscribe_diffs(move |diff| {
+            seen_clone.lock().unwrap().push(diff.clone());
+        });
+
+        source.insert_many(vec![("a".to_string(), 1), ("b".to_string(), 2)]);
+
+        let seen = seen.lock().unwrap();
+        let last = seen.last().unwrap();
+        match last {
+            MapDiff::Batch { changes } => assert_eq!(changes.len(), 2),
+            _ => panic!("expected batch diff from group_by"),
         }
     }
 }
