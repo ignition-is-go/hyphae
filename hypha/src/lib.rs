@@ -83,7 +83,7 @@ pub use async_support::{AsyncWatchableExt, CellStream};
 pub use bounded_input::{BoundedInput, BoundedInputMetrics, OverflowPolicy};
 pub use bounded_output::BoundedOutput;
 pub use cell::{Cell, CellImmutable, CellMutable, SlowSubscriberAlert};
-pub use cell_map::{CellMap, MapDiff, SelectExt, WeakCellMap};
+pub use cell_map::{CellMap, MapDiff, WeakCellMap};
 pub use cell_set::{CellSet, SetDiff};
 pub use constructors::from_iter_with_delay;
 #[cfg(not(target_arch = "wasm32"))]
@@ -93,9 +93,13 @@ pub use signal::Signal;
 pub use subscription::SubscriptionGuard;
 pub use traits::{
     AuditExt, BackpressureExt, BufferCountExt, BufferTimeExt, CatchErrorExt, CellValue, ColdExt,
-    ConcatExt, DebounceExt, DedupedExt, DelayExt, DepNode, DistinctExt, DistinctUntilChangedByExt,
-    FilterExt, FinalizeExt, FirstExt, Gettable, JoinExt, LastExt, MapErrExt, MapExt, MapOkExt,
-    MergeExt, MergeMapExt, Mutable, PairwiseExt, RetryExt, SampleExt, ScanExt, SkipExt,
+    ConcatExt, CountByExt, DebounceExt, DedupedExt, DelayExt, DepNode, DistinctExt, DistinctMapExt,
+    DistinctUntilChangedByExt, FilterExt, FinalizeExt, FirstExt, FlatMapMapExt, Gettable,
+    GroupByExt, HasForeignKey, IdFor, IdType, IndexByExt, InnerJoinOnByExt, InnerJoinOnExt,
+    JoinExt, JoinKeyFrom, LastExt, LeftJoinExt, LeftJoinMapExt, LeftJoinMapOnByExt,
+    LeftJoinMapOnExt, LeftJoinOnByExt, LeftJoinOnExt, LeftSemiJoinOnByExt, LeftSemiJoinOnExt,
+    MapErrExt, MapExt, MapOkExt, MapValuesCellExt, MergeExt, MergeMapExt, Mutable, PairwiseExt,
+    ProjectCellExt, ProjectMapExt, RetryExt, SampleExt, ScanExt, SelectCellExt, SelectExt, SkipExt,
     SkipWhileExt, StateMachineBuilder, StateTransitionExt, SwitchMapExt, TakeExt, TakeUntilExt,
     TakeWhileExt, TapExt, ThrottleExt, TimeoutExt, TryMapExt, UnwrapOrExt, Watchable, WindowExt,
     WithLatestFromExt, ZipExt, join_vec,
