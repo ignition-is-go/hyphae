@@ -3,7 +3,7 @@ use std::hash::Hash;
 use crate::{
     cell::CellImmutable,
     cell_map::CellMap,
-    traits::{CellValue, collections::internal::join_runtime::run_join_runtime},
+    traits::{CellValue, HasForeignKey, IdFor, collections::internal::join_runtime::run_join_runtime},
 };
 
 pub trait InnerJoinExt<K, V>
@@ -23,6 +23,20 @@ where
     where
         RV: CellValue,
         RM: Clone + Send + Sync + 'static;
+
+    /// Inner join using foreign key relationship.
+    ///
+    /// Joins on the left map key matching the right value's foreign key.
+    /// Produces one output row per matching (left, right) pair, keyed by `(K, RK)`.
+    /// Unmatched rows from either side are excluded.
+    fn inner_join_fk<RK, RV, RM>(
+        &self,
+        right: &CellMap<RK, RV, RM>,
+    ) -> CellMap<(K, RK), (V, RV), CellImmutable>
+    where
+        RK: Hash + Eq + CellValue,
+        RV: CellValue + HasForeignKey<V>,
+        <<RV as HasForeignKey<V>>::ForeignKey as IdFor<V>>::MapKey: Into<K>;
 
     /// Inner join using explicit key extractors.
     ///
@@ -71,6 +85,22 @@ where
         )
     }
 
+    fn inner_join_fk<RK, RV, RM>(
+        &self,
+        right: &CellMap<RK, RV, RM>,
+    ) -> CellMap<(K, RK), (V, RV), CellImmutable>
+    where
+        RK: Hash + Eq + CellValue,
+        RV: CellValue + HasForeignKey<V>,
+        <<RV as HasForeignKey<V>>::ForeignKey as IdFor<V>>::MapKey: Into<K>,
+    {
+        self.inner_join_by(
+            right,
+            |k: &K, _: &V| k.clone(),
+            |_: &RK, rv: &RV| rv.fk().map_key().into(),
+        )
+    }
+
     fn inner_join_by<RK, RV, RM, JK, FL, FR>(
         &self,
         right: &CellMap<RK, RV, RM>,
@@ -107,7 +137,7 @@ mod tests {
     use std::sync::mpsc;
 
     use super::*;
-    use crate::{MapDiff, traits::Gettable};
+    use crate::{MapDiff, traits::{Gettable, HasForeignKey, IdFor, IdType}};
 
     #[test]
     fn inner_join_pairs_on_equal_keys() {
@@ -231,5 +261,94 @@ mod tests {
             MapDiff::Batch { changes } => assert_eq!(changes.len(), 2),
             _ => panic!("expected batch diff from inner_join_by"),
         }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    struct UserId(String);
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct User {
+        name: String,
+    }
+
+    impl IdFor<User> for UserId {
+        type MapKey = String;
+        fn map_key(&self) -> String {
+            self.0.clone()
+        }
+    }
+
+    impl IdType for UserId {
+        type Parent = User;
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct Post {
+        user_id: UserId,
+        title: String,
+    }
+
+    impl HasForeignKey<User> for Post {
+        type ForeignKey = UserId;
+        fn fk(&self) -> UserId {
+            self.user_id.clone()
+        }
+    }
+
+    #[test]
+    fn inner_join_fk_pairs_on_foreign_key() {
+        let users = CellMap::<String, User>::new();
+        let posts = CellMap::<String, Post>::new();
+        let joined = users.inner_join_fk(&posts);
+
+        users.insert("u1".to_string(), User { name: "Alice".to_string() });
+        posts.insert("p1".to_string(), Post {
+            user_id: UserId("u1".to_string()),
+            title: "Hello".to_string(),
+        });
+
+        let key = ("u1".to_string(), "p1".to_string());
+        let val = joined.get_value(&key);
+        assert_eq!(
+            val,
+            Some((
+                User { name: "Alice".to_string() },
+                Post { user_id: UserId("u1".to_string()), title: "Hello".to_string() },
+            ))
+        );
+    }
+
+    #[test]
+    fn inner_join_fk_handles_one_to_many() {
+        let users = CellMap::<String, User>::new();
+        let posts = CellMap::<String, Post>::new();
+        let joined = users.inner_join_fk(&posts);
+
+        users.insert("u1".to_string(), User { name: "Alice".to_string() });
+        posts.insert("p1".to_string(), Post {
+            user_id: UserId("u1".to_string()),
+            title: "Hello".to_string(),
+        });
+        posts.insert("p2".to_string(), Post {
+            user_id: UserId("u1".to_string()),
+            title: "World".to_string(),
+        });
+
+        assert_eq!(joined.entries().get().len(), 2);
+    }
+
+    #[test]
+    fn inner_join_fk_excludes_unmatched() {
+        let users = CellMap::<String, User>::new();
+        let posts = CellMap::<String, Post>::new();
+        let joined = users.inner_join_fk(&posts);
+
+        users.insert("u1".to_string(), User { name: "Alice".to_string() });
+        posts.insert("p1".to_string(), Post {
+            user_id: UserId("u2".to_string()),
+            title: "Orphan".to_string(),
+        });
+
+        assert_eq!(joined.entries().get().len(), 0);
     }
 }

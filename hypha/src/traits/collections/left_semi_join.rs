@@ -3,7 +3,7 @@ use std::hash::Hash;
 use crate::{
     cell::CellImmutable,
     cell_map::CellMap,
-    traits::{CellValue, collections::internal::join_runtime::run_join_runtime},
+    traits::{CellValue, HasForeignKey, IdFor, collections::internal::join_runtime::run_join_runtime},
 };
 
 pub trait LeftSemiJoinExt<K, V>
@@ -22,6 +22,20 @@ where
     where
         RV: CellValue,
         RM: Clone + Send + Sync + 'static;
+
+    /// Left semi join using foreign key relationship.
+    ///
+    /// Joins on the left map key matching the right value's foreign key.
+    /// Keeps left rows that have at least one matching right row.
+    /// Unmatched left rows are excluded. Output contains only left data.
+    fn left_semi_join_fk<RK, RV, RM>(
+        &self,
+        right: &CellMap<RK, RV, RM>,
+    ) -> CellMap<K, V, CellImmutable>
+    where
+        RK: Hash + Eq + CellValue,
+        RV: CellValue + HasForeignKey<V>,
+        <<RV as HasForeignKey<V>>::ForeignKey as IdFor<V>>::MapKey: Into<K>;
 
     /// Left semi join using explicit key extractors.
     ///
@@ -71,6 +85,22 @@ where
         )
     }
 
+    fn left_semi_join_fk<RK, RV, RM>(
+        &self,
+        right: &CellMap<RK, RV, RM>,
+    ) -> CellMap<K, V, CellImmutable>
+    where
+        RK: Hash + Eq + CellValue,
+        RV: CellValue + HasForeignKey<V>,
+        <<RV as HasForeignKey<V>>::ForeignKey as IdFor<V>>::MapKey: Into<K>,
+    {
+        self.left_semi_join_by(
+            right,
+            |k: &K, _: &V| k.clone(),
+            |_: &RK, rv: &RV| rv.fk().map_key().into(),
+        )
+    }
+
     fn left_semi_join_by<RK, RV, RM, JK, FL, FR>(
         &self,
         right: &CellMap<RK, RV, RM>,
@@ -106,7 +136,7 @@ mod tests {
     use std::sync::mpsc;
 
     use super::*;
-    use crate::{MapDiff, traits::Gettable};
+    use crate::{MapDiff, traits::{Gettable, HasForeignKey, IdFor, IdType}};
 
     #[test]
     fn left_semi_join_keeps_matched_rows() {
@@ -193,5 +223,78 @@ mod tests {
             MapDiff::Batch { changes } => assert_eq!(changes.len(), 2),
             _ => panic!("expected batch diff from left_semi_join_by"),
         }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    struct UserId(String);
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct User {
+        name: String,
+    }
+
+    impl IdFor<User> for UserId {
+        type MapKey = String;
+        fn map_key(&self) -> String {
+            self.0.clone()
+        }
+    }
+
+    impl IdType for UserId {
+        type Parent = User;
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct Post {
+        user_id: UserId,
+        title: String,
+    }
+
+    impl HasForeignKey<User> for Post {
+        type ForeignKey = UserId;
+        fn fk(&self) -> UserId {
+            self.user_id.clone()
+        }
+    }
+
+    #[test]
+    fn left_semi_join_fk_keeps_matched_users() {
+        let users = CellMap::<String, User>::new();
+        let posts = CellMap::<String, Post>::new();
+        let joined = users.left_semi_join_fk(&posts);
+
+        users.insert("u1".to_string(), User { name: "Alice".to_string() });
+        users.insert("u2".to_string(), User { name: "Bob".to_string() });
+
+        assert_eq!(joined.entries().get().len(), 0);
+
+        posts.insert("p1".to_string(), Post {
+            user_id: UserId("u1".to_string()),
+            title: "Hello".to_string(),
+        });
+
+        assert_eq!(joined.entries().get().len(), 1);
+        assert_eq!(
+            joined.get_value(&"u1".to_string()),
+            Some(User { name: "Alice".to_string() })
+        );
+        assert_eq!(joined.get_value(&"u2".to_string()), None);
+    }
+
+    #[test]
+    fn left_semi_join_fk_reacts_to_post_removal() {
+        let users = CellMap::<String, User>::new();
+        let posts = CellMap::<String, Post>::new();
+        let joined = users.left_semi_join_fk(&posts);
+
+        users.insert("u1".to_string(), User { name: "Alice".to_string() });
+        posts.insert("p1".to_string(), Post {
+            user_id: UserId("u1".to_string()),
+            title: "Hello".to_string(),
+        });
+        assert_eq!(joined.entries().get().len(), 1);
+
+        posts.remove(&"p1".to_string());
+        assert_eq!(joined.entries().get().len(), 0);
     }
 }
