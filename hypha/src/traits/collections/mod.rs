@@ -1,6 +1,5 @@
 mod count_by;
 mod group_by;
-mod index_by;
 mod inner_join;
 mod internal;
 mod left_join;
@@ -13,7 +12,6 @@ mod select_cell;
 
 pub use count_by::CountByExt;
 pub use group_by::GroupByExt;
-pub use index_by::IndexByExt;
 pub use inner_join::InnerJoinExt;
 pub use left_join::LeftJoinExt;
 pub use left_semi_join::LeftSemiJoinExt;
