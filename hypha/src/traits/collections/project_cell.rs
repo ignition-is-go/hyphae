@@ -1,6 +1,6 @@
 use std::hash::Hash;
 
-use super::{MapValuesCellExt, ProjectMapExt};
+use super::{ProjectMapExt, internal::map_values_cell::map_values_cell};
 use crate::{
     cell::CellImmutable,
     cell_map::CellMap,
@@ -37,7 +37,7 @@ where
         W: Watchable<Option<(K2, V2)>> + Gettable<Option<(K2, V2)>> + Clone + Send + Sync + 'static,
         F: Fn(&K, &V) -> W + Send + Sync + 'static,
     {
-        self.map_values_cell(mapper)
+        map_values_cell(self, mapper)
             .project(|_, row| row.as_ref().map(|(k, v)| (k.clone(), v.clone())))
     }
 }

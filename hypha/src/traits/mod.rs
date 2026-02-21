@@ -10,7 +10,7 @@ pub mod operators;
 pub use cell_value::CellValue;
 pub use collections::{
     CountByExt, GroupByExt, InnerJoinExt, LeftJoinExt,
-    LeftSemiJoinExt, MapValuesCellExt, ProjectCellExt, ProjectMapExt, SelectCellExt, SelectExt,
+    LeftSemiJoinExt, ProjectCellExt, ProjectMapExt, SelectCellExt, SelectExt,
 };
 pub use dep_node::DepNode;
 pub use foreign_key::{HasForeignKey, IdFor, IdType, JoinKeyFrom};
