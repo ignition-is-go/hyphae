@@ -94,8 +94,8 @@ pub use subscription::SubscriptionGuard;
 pub use traits::{
     AuditExt, BackpressureExt, BufferCountExt, BufferTimeExt, CatchErrorExt, CellValue, ColdExt,
     ConcatExt, CountByExt, DebounceExt, DedupedExt, DelayExt, DepNode, DistinctExt, DistinctMapExt,
-    DistinctUntilChangedByExt, FilterExt, FinalizeExt, FirstExt, FlatMapMapExt, Gettable,
-    GroupByExt, HasForeignKey, IdFor, IdType, IndexByExt, InnerJoinExt, JoinExt, JoinKeyFrom,
+    DistinctUntilChangedByExt, FilterExt, FinalizeExt, FirstExt, Gettable, GroupByExt,
+    HasForeignKey, IdFor, IdType, IndexByExt, InnerJoinExt, JoinExt, JoinKeyFrom,
     LastExt, LeftJoinExt, LeftSemiJoinExt, MapErrExt, MapExt, MapOkExt, MapValuesCellExt, MergeExt,
     MergeMapExt, Mutable, PairwiseExt, ProjectCellExt, ProjectMapExt, RetryExt, SampleExt, ScanExt,
     SelectCellExt, SelectExt, SkipExt, SkipWhileExt, StateMachineBuilder, StateTransitionExt,
