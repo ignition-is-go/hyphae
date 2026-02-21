@@ -3,7 +3,7 @@ use std::hash::Hash;
 use crate::{
     cell::CellImmutable,
     cell_map::CellMap,
-    traits::{CellValue, HasForeignKey, IdFor, collections::internal::join_runtime::run_join_runtime},
+    traits::{CellValue, HasForeignKey, IdFor, collections::internal::join_runtime::run_join_runtime_cellmap},
 };
 
 pub trait LeftSemiJoinExt<K, V>
@@ -69,7 +69,7 @@ where
         RV: CellValue,
         RM: Clone + Send + Sync + 'static,
     {
-        run_join_runtime(
+        run_join_runtime_cellmap(
             self,
             right,
             "left_semi_join",
@@ -114,7 +114,7 @@ where
         FL: Fn(&K, &V) -> JK + Send + Sync + 'static,
         FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
     {
-        run_join_runtime(
+        run_join_runtime_cellmap(
             self,
             right,
             "left_semi_join_by",

@@ -64,6 +64,7 @@ pub mod bounded_output;
 pub mod cell;
 pub mod cell_map;
 pub mod cell_set;
+pub mod nested_map;
 pub mod constructors;
 pub mod metrics;
 pub mod signal;
@@ -85,6 +86,7 @@ pub use bounded_output::BoundedOutput;
 pub use cell::{Cell, CellImmutable, CellMutable, SlowSubscriberAlert};
 pub use cell_map::{CellMap, MapDiff, WeakCellMap};
 pub use cell_set::{CellSet, SetDiff};
+pub use nested_map::NestedMap;
 pub use constructors::from_iter_with_delay;
 #[cfg(not(target_arch = "wasm32"))]
 pub use constructors::{IntervalTick, interval, interval_precise, interval_precise_with_elapsed};
@@ -95,12 +97,13 @@ pub use traits::{
     AuditExt, BackpressureExt, BufferCountExt, BufferTimeExt, CatchErrorExt, CellValue, ColdExt,
     ConcatExt, CountByExt, DebounceExt, DedupedExt, DelayExt, DepNode, DistinctExt,
     DistinctUntilChangedByExt, FilterExt, FinalizeExt, FirstExt, Gettable, GroupByExt,
-    HasForeignKey, IdFor, IdType, InnerJoinExt, JoinExt, JoinKeyFrom,
+    HasForeignKey, IdFor, IdType, InnerJoinExt, JoinExt, JoinKeyFrom, KeyChange,
     LastExt, LeftJoinExt, LeftSemiJoinExt, MapErrExt, MapExt, MapOkExt, MergeExt,
     MergeMapExt, Mutable, PairwiseExt, ProjectCellExt, ProjectMapExt, RetryExt, SampleExt, ScanExt,
     SelectCellExt, SelectExt, SkipExt, SkipWhileExt, StateMachineBuilder, StateTransitionExt,
     SwitchMapExt, TakeExt, TakeUntilExt, TakeWhileExt, TapExt, ThrottleExt, TimeoutExt, TryMapExt,
-    UnwrapOrExt, Watchable, WindowExt, WithLatestFromExt, ZipExt, join_vec,
+    ReactiveKeys, ReactiveMap, UnwrapOrExt, Watchable, WindowExt, WithLatestFromExt, ZipExt,
+    join_vec,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use traits::{ParallelCell, ParallelExt};

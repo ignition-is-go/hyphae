@@ -37,11 +37,11 @@ where
     V: CellValue,
 {
     /// The actual data storage.
-    data: DashMap<K, V>,
+    pub(crate) data: DashMap<K, V>,
     /// Cached per-key observation cells.
     key_cells: DashMap<K, WeakCell<Option<V>, CellMutable>>,
     /// Cell for diff notifications.
-    diffs_cell: Cell<MapDiff<K, V>, CellMutable>,
+    pub(crate) diffs_cell: Cell<MapDiff<K, V>, CellMutable>,
     /// Cell for length.
     len_cell: Cell<usize, CellMutable>,
     /// Subscription guards owned by this map (dropped when map drops).
@@ -598,6 +598,95 @@ where
             inner,
             _marker: PhantomData,
         })
+    }
+}
+
+// ── ReactiveKeys / ReactiveMap impl ─────────────────────────────────────
+
+use crate::traits::reactive_keys::{KeyChange, ReactiveKeys};
+use crate::traits::reactive_map::ReactiveMap;
+
+/// Convert a `MapDiff` into its `KeyChange` equivalent.
+/// Returns `None` for `Update` (key unchanged — no membership change).
+pub(crate) fn map_diff_to_key_change<K: CellValue, V: CellValue>(diff: &MapDiff<K, V>) -> Option<KeyChange<K>> {
+    match diff {
+        MapDiff::Initial { entries } => {
+            Some(KeyChange::Initial(entries.iter().map(|(k, _)| k.clone()).collect()))
+        }
+        MapDiff::Insert { key, .. } => Some(KeyChange::Added(key.clone())),
+        MapDiff::Remove { key, .. } => Some(KeyChange::Removed(key.clone())),
+        MapDiff::Update { .. } => None,
+        MapDiff::Batch { changes } => {
+            let key_changes: Vec<KeyChange<K>> = changes
+                .iter()
+                .filter_map(map_diff_to_key_change)
+                .collect();
+            if key_changes.is_empty() {
+                None
+            } else {
+                Some(KeyChange::Batch(key_changes))
+            }
+        }
+    }
+}
+
+impl<K, V, M> ReactiveKeys for CellMap<K, V, M>
+where
+    K: Hash + Eq + CellValue,
+    V: CellValue,
+    M: Send + Sync + 'static,
+{
+    type Key = K;
+
+    fn key_set(&self) -> Vec<K> {
+        self.inner
+            .data
+            .iter()
+            .map(|r| r.key().clone())
+            .collect()
+    }
+
+    fn contains_key(&self, key: &K) -> bool {
+        self.inner.data.contains_key(key)
+    }
+
+    fn subscribe_keys(
+        &self,
+        cb: impl Fn(&KeyChange<K>) + Send + Sync + 'static,
+    ) -> SubscriptionGuard {
+        self.subscribe_diffs(move |diff| {
+            if let Some(kc) = map_diff_to_key_change(diff) {
+                cb(&kc);
+            }
+        })
+    }
+}
+
+impl<K, V, M> ReactiveMap for CellMap<K, V, M>
+where
+    K: Hash + Eq + CellValue,
+    V: CellValue,
+    M: Send + Sync + 'static,
+{
+    type Value = V;
+
+    fn get_value(&self, key: &K) -> Option<V> {
+        self.inner.data.get(key).map(|r| r.value().clone())
+    }
+
+    fn snapshot(&self) -> Vec<(K, V)> {
+        self.inner
+            .data
+            .iter()
+            .map(|r| (r.key().clone(), r.value().clone()))
+            .collect()
+    }
+
+    fn subscribe_diffs_reactive(
+        &self,
+        cb: impl Fn(&MapDiff<K, V>) + Send + Sync + 'static,
+    ) -> SubscriptionGuard {
+        self.subscribe_diffs(cb)
     }
 }
 
