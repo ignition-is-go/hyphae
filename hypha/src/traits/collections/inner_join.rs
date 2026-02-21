@@ -3,79 +3,70 @@ use std::hash::Hash;
 use crate::{
     cell::CellImmutable,
     cell_map::CellMap,
-    traits::{CellValue, HasForeignKey, IdFor, collections::internal::join_runtime::run_join_runtime_cellmap},
+    traits::{CellValue, HasForeignKey, IdFor, collections::internal::join_runtime::run_join_runtime},
+    traits::reactive_map::ReactiveMap,
 };
 
-pub trait InnerJoinExt<K, V>
-where
-    K: Hash + Eq + CellValue,
-    V: CellValue,
-{
+pub trait InnerJoinExt: ReactiveMap {
     /// Inner join on equal map keys.
     ///
     /// Pairs left and right rows that share the same map key.
     /// Produces one output row per match, keyed by the shared key.
     /// Unmatched rows from either side are excluded.
-    fn inner_join<RV, RM>(
+    fn inner_join<R>(
         &self,
-        right: &CellMap<K, RV, RM>,
-    ) -> CellMap<K, (V, RV), CellImmutable>
+        right: &R,
+    ) -> CellMap<Self::Key, (Self::Value, R::Value), CellImmutable>
     where
-        RV: CellValue,
-        RM: Clone + Send + Sync + 'static;
+        R: ReactiveMap<Key = Self::Key>;
 
     /// Inner join using foreign key relationship.
     ///
     /// Joins on the left map key matching the right value's foreign key.
     /// Produces one output row per matching (left, right) pair, keyed by `(K, RK)`.
     /// Unmatched rows from either side are excluded.
-    fn inner_join_fk<RK, RV, RM>(
+    fn inner_join_fk<R>(
         &self,
-        right: &CellMap<RK, RV, RM>,
-    ) -> CellMap<(K, RK), (V, RV), CellImmutable>
+        right: &R,
+    ) -> CellMap<(Self::Key, R::Key), (Self::Value, R::Value), CellImmutable>
     where
-        RK: Hash + Eq + CellValue,
-        RV: CellValue + HasForeignKey<V>,
-        <<RV as HasForeignKey<V>>::ForeignKey as IdFor<V>>::MapKey: Into<K>;
+        R: ReactiveMap,
+        R::Value: HasForeignKey<Self::Value>,
+        <<R::Value as HasForeignKey<Self::Value>>::ForeignKey as IdFor<Self::Value>>::MapKey:
+            Into<Self::Key>;
 
     /// Inner join using explicit key extractors.
     ///
     /// `left_key` and `right_key` extract the join key from each side.
     /// Produces one output row per matching (left, right) pair, keyed by `(K, RK)`.
     /// Unmatched rows from either side are excluded.
-    fn inner_join_by<RK, RV, RM, JK, FL, FR>(
+    fn inner_join_by<R, JK, FL, FR>(
         &self,
-        right: &CellMap<RK, RV, RM>,
+        right: &R,
         left_key: FL,
         right_key: FR,
-    ) -> CellMap<(K, RK), (V, RV), CellImmutable>
+    ) -> CellMap<(Self::Key, R::Key), (Self::Value, R::Value), CellImmutable>
     where
-        RK: Hash + Eq + CellValue,
-        RV: CellValue,
+        R: ReactiveMap,
         JK: Hash + Eq + CellValue,
-        FL: Fn(&K, &V) -> JK + Send + Sync + 'static,
-        FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static;
+        FL: Fn(&Self::Key, &Self::Value) -> JK + Send + Sync + 'static,
+        FR: Fn(&R::Key, &R::Value) -> JK + Send + Sync + 'static;
 }
 
-impl<K, V, M> InnerJoinExt<K, V> for CellMap<K, V, M>
-where
-    K: Hash + Eq + CellValue,
-    V: CellValue,
-{
-    fn inner_join<RV, RM>(
+impl<L: ReactiveMap> InnerJoinExt for L {
+    fn inner_join<R>(
         &self,
-        right: &CellMap<K, RV, RM>,
-    ) -> CellMap<K, (V, RV), CellImmutable>
+        right: &R,
+    ) -> CellMap<Self::Key, (Self::Value, R::Value), CellImmutable>
     where
-        RV: CellValue,
-        RM: Clone + Send + Sync + 'static,
+        R: ReactiveMap<Key = Self::Key>,
     {
-        run_join_runtime_cellmap(
+        run_join_runtime(
             self,
             right,
             "inner_join",
-            |k: &K, _: &V| k.clone(),
-            |k: &K, _: &RV| k.clone(),
+            |k: &Self::Key, _: &Self::Value| k.clone(),
+            |k: &Self::Key, _: &R::Value| k.clone(),
             |left_k, left_v, rights| {
                 rights
                     .iter()
@@ -85,36 +76,36 @@ where
         )
     }
 
-    fn inner_join_fk<RK, RV, RM>(
+    fn inner_join_fk<R>(
         &self,
-        right: &CellMap<RK, RV, RM>,
-    ) -> CellMap<(K, RK), (V, RV), CellImmutable>
+        right: &R,
+    ) -> CellMap<(Self::Key, R::Key), (Self::Value, R::Value), CellImmutable>
     where
-        RK: Hash + Eq + CellValue,
-        RV: CellValue + HasForeignKey<V>,
-        <<RV as HasForeignKey<V>>::ForeignKey as IdFor<V>>::MapKey: Into<K>,
+        R: ReactiveMap,
+        R::Value: HasForeignKey<Self::Value>,
+        <<R::Value as HasForeignKey<Self::Value>>::ForeignKey as IdFor<Self::Value>>::MapKey:
+            Into<Self::Key>,
     {
         self.inner_join_by(
             right,
-            |k: &K, _: &V| k.clone(),
-            |_: &RK, rv: &RV| rv.fk().map_key().into(),
+            |k: &Self::Key, _: &Self::Value| k.clone(),
+            |_: &R::Key, rv: &R::Value| rv.fk().map_key().into(),
         )
     }
 
-    fn inner_join_by<RK, RV, RM, JK, FL, FR>(
+    fn inner_join_by<R, JK, FL, FR>(
         &self,
-        right: &CellMap<RK, RV, RM>,
+        right: &R,
         left_key: FL,
         right_key: FR,
-    ) -> CellMap<(K, RK), (V, RV), CellImmutable>
+    ) -> CellMap<(Self::Key, R::Key), (Self::Value, R::Value), CellImmutable>
     where
-        RK: Hash + Eq + CellValue,
-        RV: CellValue,
+        R: ReactiveMap,
         JK: Hash + Eq + CellValue,
-        FL: Fn(&K, &V) -> JK + Send + Sync + 'static,
-        FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+        FL: Fn(&Self::Key, &Self::Value) -> JK + Send + Sync + 'static,
+        FR: Fn(&R::Key, &R::Value) -> JK + Send + Sync + 'static,
     {
-        run_join_runtime_cellmap(
+        run_join_runtime(
             self,
             right,
             "inner_join_by",

@@ -3,123 +3,114 @@ use std::hash::Hash;
 use crate::{
     cell::CellImmutable,
     cell_map::CellMap,
-    traits::{CellValue, HasForeignKey, IdFor, collections::internal::join_runtime::run_join_runtime_cellmap},
+    traits::{CellValue, HasForeignKey, IdFor, collections::internal::join_runtime::run_join_runtime},
+    traits::reactive_map::ReactiveMap,
 };
 
-pub trait LeftJoinExt<K, V>
-where
-    K: Hash + Eq + CellValue,
-    V: CellValue,
-{
+pub trait LeftJoinExt: ReactiveMap {
     /// Left join on equal map keys.
     ///
     /// Every left row produces exactly one output row. Right matches are collected into a `Vec`.
     /// An empty `Vec` means no matching right rows were found.
-    fn left_join<RV, RM>(
+    fn left_join<R>(
         &self,
-        right: &CellMap<K, RV, RM>,
-    ) -> CellMap<K, (V, Vec<RV>), CellImmutable>
+        right: &R,
+    ) -> CellMap<Self::Key, (Self::Value, Vec<R::Value>), CellImmutable>
     where
-        RV: CellValue,
-        RM: Clone + Send + Sync + 'static;
+        R: ReactiveMap<Key = Self::Key>;
 
     /// Left join using foreign key relationship.
     ///
     /// Joins on the left map key matching the right value's foreign key.
     /// Every left row produces exactly one output row. Right matches are collected into a `Vec`.
     /// An empty `Vec` means no matching right rows were found.
-    fn left_join_fk<RK, RV, RM>(
+    fn left_join_fk<R>(
         &self,
-        right: &CellMap<RK, RV, RM>,
-    ) -> CellMap<K, (V, Vec<RV>), CellImmutable>
+        right: &R,
+    ) -> CellMap<Self::Key, (Self::Value, Vec<R::Value>), CellImmutable>
     where
-        RK: Hash + Eq + CellValue,
-        RV: CellValue + HasForeignKey<V>,
-        <<RV as HasForeignKey<V>>::ForeignKey as IdFor<V>>::MapKey: Into<K>;
+        R: ReactiveMap,
+        R::Value: HasForeignKey<Self::Value>,
+        <<R::Value as HasForeignKey<Self::Value>>::ForeignKey as IdFor<Self::Value>>::MapKey:
+            Into<Self::Key>;
 
     /// Left join using explicit key extractors.
     ///
     /// `left_key` and `right_key` extract the join key from each side.
     /// Every left row produces exactly one output row. Right matches are collected into a `Vec`.
     /// An empty `Vec` means no matching right rows were found.
-    fn left_join_by<RK, RV, RM, JK, FL, FR>(
+    fn left_join_by<R, JK, FL, FR>(
         &self,
-        right: &CellMap<RK, RV, RM>,
+        right: &R,
         left_key: FL,
         right_key: FR,
-    ) -> CellMap<K, (V, Vec<RV>), CellImmutable>
+    ) -> CellMap<Self::Key, (Self::Value, Vec<R::Value>), CellImmutable>
     where
-        RK: Hash + Eq + CellValue,
-        RV: CellValue,
+        R: ReactiveMap,
         JK: Hash + Eq + CellValue,
-        FL: Fn(&K, &V) -> JK + Send + Sync + 'static,
-        FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static;
+        FL: Fn(&Self::Key, &Self::Value) -> JK + Send + Sync + 'static,
+        FR: Fn(&R::Key, &R::Value) -> JK + Send + Sync + 'static;
 }
 
-impl<K, V, M> LeftJoinExt<K, V> for CellMap<K, V, M>
-where
-    K: Hash + Eq + CellValue,
-    V: CellValue,
-{
-    fn left_join<RV, RM>(
+impl<L: ReactiveMap> LeftJoinExt for L {
+    fn left_join<R>(
         &self,
-        right: &CellMap<K, RV, RM>,
-    ) -> CellMap<K, (V, Vec<RV>), CellImmutable>
+        right: &R,
+    ) -> CellMap<Self::Key, (Self::Value, Vec<R::Value>), CellImmutable>
     where
-        RV: CellValue,
-        RM: Clone + Send + Sync + 'static,
+        R: ReactiveMap<Key = Self::Key>,
     {
-        run_join_runtime_cellmap(
+        run_join_runtime(
             self,
             right,
             "left_join",
-            |k: &K, _: &V| k.clone(),
-            |k: &K, _: &RV| k.clone(),
+            |k: &Self::Key, _: &Self::Value| k.clone(),
+            |k: &Self::Key, _: &R::Value| k.clone(),
             |left_k, left_v, rights| {
-                let right_values: Vec<RV> =
+                let right_values: Vec<R::Value> =
                     rights.iter().map(|(_, rv)| rv.clone()).collect();
                 vec![(left_k.clone(), (left_v.clone(), right_values))]
             },
         )
     }
 
-    fn left_join_fk<RK, RV, RM>(
+    fn left_join_fk<R>(
         &self,
-        right: &CellMap<RK, RV, RM>,
-    ) -> CellMap<K, (V, Vec<RV>), CellImmutable>
+        right: &R,
+    ) -> CellMap<Self::Key, (Self::Value, Vec<R::Value>), CellImmutable>
     where
-        RK: Hash + Eq + CellValue,
-        RV: CellValue + HasForeignKey<V>,
-        <<RV as HasForeignKey<V>>::ForeignKey as IdFor<V>>::MapKey: Into<K>,
+        R: ReactiveMap,
+        R::Value: HasForeignKey<Self::Value>,
+        <<R::Value as HasForeignKey<Self::Value>>::ForeignKey as IdFor<Self::Value>>::MapKey:
+            Into<Self::Key>,
     {
         self.left_join_by(
             right,
-            |k: &K, _: &V| k.clone(),
-            |_: &RK, rv: &RV| rv.fk().map_key().into(),
+            |k: &Self::Key, _: &Self::Value| k.clone(),
+            |_: &R::Key, rv: &R::Value| rv.fk().map_key().into(),
         )
     }
 
-    fn left_join_by<RK, RV, RM, JK, FL, FR>(
+    fn left_join_by<R, JK, FL, FR>(
         &self,
-        right: &CellMap<RK, RV, RM>,
+        right: &R,
         left_key: FL,
         right_key: FR,
-    ) -> CellMap<K, (V, Vec<RV>), CellImmutable>
+    ) -> CellMap<Self::Key, (Self::Value, Vec<R::Value>), CellImmutable>
     where
-        RK: Hash + Eq + CellValue,
-        RV: CellValue,
+        R: ReactiveMap,
         JK: Hash + Eq + CellValue,
-        FL: Fn(&K, &V) -> JK + Send + Sync + 'static,
-        FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+        FL: Fn(&Self::Key, &Self::Value) -> JK + Send + Sync + 'static,
+        FR: Fn(&R::Key, &R::Value) -> JK + Send + Sync + 'static,
     {
-        run_join_runtime_cellmap(
+        run_join_runtime(
             self,
             right,
             "left_join_by",
             left_key,
             right_key,
             |left_k, left_v, rights| {
-                let right_values: Vec<RV> =
+                let right_values: Vec<R::Value> =
                     rights.iter().map(|(_, rv)| rv.clone()).collect();
                 vec![(left_k.clone(), (left_v.clone(), right_values))]
             },

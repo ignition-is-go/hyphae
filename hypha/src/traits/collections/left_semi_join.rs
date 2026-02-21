@@ -3,78 +3,69 @@ use std::hash::Hash;
 use crate::{
     cell::CellImmutable,
     cell_map::CellMap,
-    traits::{CellValue, HasForeignKey, IdFor, collections::internal::join_runtime::run_join_runtime_cellmap},
+    traits::{CellValue, HasForeignKey, IdFor, collections::internal::join_runtime::run_join_runtime},
+    traits::reactive_map::ReactiveMap,
 };
 
-pub trait LeftSemiJoinExt<K, V>
-where
-    K: Hash + Eq + CellValue,
-    V: CellValue,
-{
+pub trait LeftSemiJoinExt: ReactiveMap {
     /// Left semi join on equal map keys.
     ///
     /// Keeps left rows where a right row with the same key exists.
     /// Unmatched left rows are excluded. Output contains only left data.
-    fn left_semi_join<RV, RM>(
+    fn left_semi_join<R>(
         &self,
-        right: &CellMap<K, RV, RM>,
-    ) -> CellMap<K, V, CellImmutable>
+        right: &R,
+    ) -> CellMap<Self::Key, Self::Value, CellImmutable>
     where
-        RV: CellValue,
-        RM: Clone + Send + Sync + 'static;
+        R: ReactiveMap<Key = Self::Key>;
 
     /// Left semi join using foreign key relationship.
     ///
     /// Joins on the left map key matching the right value's foreign key.
     /// Keeps left rows that have at least one matching right row.
     /// Unmatched left rows are excluded. Output contains only left data.
-    fn left_semi_join_fk<RK, RV, RM>(
+    fn left_semi_join_fk<R>(
         &self,
-        right: &CellMap<RK, RV, RM>,
-    ) -> CellMap<K, V, CellImmutable>
+        right: &R,
+    ) -> CellMap<Self::Key, Self::Value, CellImmutable>
     where
-        RK: Hash + Eq + CellValue,
-        RV: CellValue + HasForeignKey<V>,
-        <<RV as HasForeignKey<V>>::ForeignKey as IdFor<V>>::MapKey: Into<K>;
+        R: ReactiveMap,
+        R::Value: HasForeignKey<Self::Value>,
+        <<R::Value as HasForeignKey<Self::Value>>::ForeignKey as IdFor<Self::Value>>::MapKey:
+            Into<Self::Key>;
 
     /// Left semi join using explicit key extractors.
     ///
     /// `left_key` and `right_key` extract the join key from each side.
     /// Keeps left rows that have at least one matching right row.
     /// Unmatched left rows are excluded. Output contains only left data.
-    fn left_semi_join_by<RK, RV, RM, JK, FL, FR>(
+    fn left_semi_join_by<R, JK, FL, FR>(
         &self,
-        right: &CellMap<RK, RV, RM>,
+        right: &R,
         left_key: FL,
         right_key: FR,
-    ) -> CellMap<K, V, CellImmutable>
+    ) -> CellMap<Self::Key, Self::Value, CellImmutable>
     where
-        RK: Hash + Eq + CellValue,
-        RV: CellValue,
+        R: ReactiveMap,
         JK: Hash + Eq + CellValue,
-        FL: Fn(&K, &V) -> JK + Send + Sync + 'static,
-        FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static;
+        FL: Fn(&Self::Key, &Self::Value) -> JK + Send + Sync + 'static,
+        FR: Fn(&R::Key, &R::Value) -> JK + Send + Sync + 'static;
 }
 
-impl<K, V, M> LeftSemiJoinExt<K, V> for CellMap<K, V, M>
-where
-    K: Hash + Eq + CellValue,
-    V: CellValue,
-{
-    fn left_semi_join<RV, RM>(
+impl<L: ReactiveMap> LeftSemiJoinExt for L {
+    fn left_semi_join<R>(
         &self,
-        right: &CellMap<K, RV, RM>,
-    ) -> CellMap<K, V, CellImmutable>
+        right: &R,
+    ) -> CellMap<Self::Key, Self::Value, CellImmutable>
     where
-        RV: CellValue,
-        RM: Clone + Send + Sync + 'static,
+        R: ReactiveMap<Key = Self::Key>,
     {
-        run_join_runtime_cellmap(
+        run_join_runtime(
             self,
             right,
             "left_semi_join",
-            |k: &K, _: &V| k.clone(),
-            |k: &K, _: &RV| k.clone(),
+            |k: &Self::Key, _: &Self::Value| k.clone(),
+            |k: &Self::Key, _: &R::Value| k.clone(),
             |left_k, left_v, rights| {
                 if rights.is_empty() {
                     Vec::new()
@@ -85,36 +76,36 @@ where
         )
     }
 
-    fn left_semi_join_fk<RK, RV, RM>(
+    fn left_semi_join_fk<R>(
         &self,
-        right: &CellMap<RK, RV, RM>,
-    ) -> CellMap<K, V, CellImmutable>
+        right: &R,
+    ) -> CellMap<Self::Key, Self::Value, CellImmutable>
     where
-        RK: Hash + Eq + CellValue,
-        RV: CellValue + HasForeignKey<V>,
-        <<RV as HasForeignKey<V>>::ForeignKey as IdFor<V>>::MapKey: Into<K>,
+        R: ReactiveMap,
+        R::Value: HasForeignKey<Self::Value>,
+        <<R::Value as HasForeignKey<Self::Value>>::ForeignKey as IdFor<Self::Value>>::MapKey:
+            Into<Self::Key>,
     {
         self.left_semi_join_by(
             right,
-            |k: &K, _: &V| k.clone(),
-            |_: &RK, rv: &RV| rv.fk().map_key().into(),
+            |k: &Self::Key, _: &Self::Value| k.clone(),
+            |_: &R::Key, rv: &R::Value| rv.fk().map_key().into(),
         )
     }
 
-    fn left_semi_join_by<RK, RV, RM, JK, FL, FR>(
+    fn left_semi_join_by<R, JK, FL, FR>(
         &self,
-        right: &CellMap<RK, RV, RM>,
+        right: &R,
         left_key: FL,
         right_key: FR,
-    ) -> CellMap<K, V, CellImmutable>
+    ) -> CellMap<Self::Key, Self::Value, CellImmutable>
     where
-        RK: Hash + Eq + CellValue,
-        RV: CellValue,
+        R: ReactiveMap,
         JK: Hash + Eq + CellValue,
-        FL: Fn(&K, &V) -> JK + Send + Sync + 'static,
-        FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+        FL: Fn(&Self::Key, &Self::Value) -> JK + Send + Sync + 'static,
+        FR: Fn(&R::Key, &R::Value) -> JK + Send + Sync + 'static,
     {
-        run_join_runtime_cellmap(
+        run_join_runtime(
             self,
             right,
             "left_semi_join_by",
