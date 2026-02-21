@@ -1,5 +1,4 @@
 mod count_by;
-mod distinct_map;
 mod group_by;
 mod index_by;
 mod inner_join;
@@ -13,7 +12,6 @@ mod select;
 mod select_cell;
 
 pub use count_by::CountByExt;
-pub use distinct_map::DistinctMapExt;
 pub use group_by::GroupByExt;
 pub use index_by::IndexByExt;
 pub use inner_join::InnerJoinExt;

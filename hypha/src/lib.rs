@@ -93,7 +93,7 @@ pub use signal::Signal;
 pub use subscription::SubscriptionGuard;
 pub use traits::{
     AuditExt, BackpressureExt, BufferCountExt, BufferTimeExt, CatchErrorExt, CellValue, ColdExt,
-    ConcatExt, CountByExt, DebounceExt, DedupedExt, DelayExt, DepNode, DistinctExt, DistinctMapExt,
+    ConcatExt, CountByExt, DebounceExt, DedupedExt, DelayExt, DepNode, DistinctExt,
     DistinctUntilChangedByExt, FilterExt, FinalizeExt, FirstExt, Gettable, GroupByExt,
     HasForeignKey, IdFor, IdType, IndexByExt, InnerJoinExt, JoinExt, JoinKeyFrom,
     LastExt, LeftJoinExt, LeftSemiJoinExt, MapErrExt, MapExt, MapOkExt, MapValuesCellExt, MergeExt,

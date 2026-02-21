@@ -9,7 +9,7 @@ pub mod operators;
 
 pub use cell_value::CellValue;
 pub use collections::{
-    CountByExt, DistinctMapExt, GroupByExt, IndexByExt, InnerJoinExt, LeftJoinExt,
+    CountByExt, GroupByExt, IndexByExt, InnerJoinExt, LeftJoinExt,
     LeftSemiJoinExt, MapValuesCellExt, ProjectCellExt, ProjectMapExt, SelectCellExt, SelectExt,
 };
 pub use dep_node::DepNode;
