@@ -95,15 +95,12 @@ pub use traits::{
     AuditExt, BackpressureExt, BufferCountExt, BufferTimeExt, CatchErrorExt, CellValue, ColdExt,
     ConcatExt, CountByExt, DebounceExt, DedupedExt, DelayExt, DepNode, DistinctExt, DistinctMapExt,
     DistinctUntilChangedByExt, FilterExt, FinalizeExt, FirstExt, FlatMapMapExt, Gettable,
-    GroupByExt, HasForeignKey, IdFor, IdType, IndexByExt, InnerJoinOnByExt, InnerJoinOnExt,
-    JoinExt, JoinKeyFrom, LastExt, LeftJoinExt, LeftJoinMapExt, LeftJoinMapOnByExt,
-    LeftJoinMapOnExt, LeftJoinOnByExt, LeftJoinOnExt, LeftSemiJoinMapExt, LeftSemiJoinMapOnByExt,
-    LeftSemiJoinMapOnExt, LeftSemiJoinOnByExt, LeftSemiJoinOnExt, MapErrExt, MapExt, MapOkExt,
-    MapValuesCellExt, MergeExt, MergeMapExt, Mutable, PairwiseExt, ProjectCellExt, ProjectMapExt,
-    RetryExt, SampleExt, ScanExt, SelectCellExt, SelectExt, SkipExt, SkipWhileExt,
-    StateMachineBuilder, StateTransitionExt, SwitchMapExt, TakeExt, TakeUntilExt, TakeWhileExt,
-    TapExt, ThrottleExt, TimeoutExt, TryMapExt, UnwrapOrExt, Watchable, WindowExt,
-    WithLatestFromExt, ZipExt, join_vec,
+    GroupByExt, HasForeignKey, IdFor, IdType, IndexByExt, InnerJoinExt, JoinExt, JoinKeyFrom,
+    LastExt, LeftJoinExt, LeftSemiJoinExt, MapErrExt, MapExt, MapOkExt, MapValuesCellExt, MergeExt,
+    MergeMapExt, Mutable, PairwiseExt, ProjectCellExt, ProjectMapExt, RetryExt, SampleExt, ScanExt,
+    SelectCellExt, SelectExt, SkipExt, SkipWhileExt, StateMachineBuilder, StateTransitionExt,
+    SwitchMapExt, TakeExt, TakeUntilExt, TakeWhileExt, TapExt, ThrottleExt, TimeoutExt, TryMapExt,
+    UnwrapOrExt, Watchable, WindowExt, WithLatestFromExt, ZipExt, join_vec,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use traits::{ParallelCell, ParallelExt};

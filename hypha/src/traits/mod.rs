@@ -9,11 +9,8 @@ pub mod operators;
 
 pub use cell_value::CellValue;
 pub use collections::{
-    CountByExt, DistinctMapExt, FlatMapMapExt, GroupByExt, IndexByExt, InnerJoinOnByExt,
-    InnerJoinOnExt, LeftJoinExt, LeftJoinMapExt, LeftJoinMapOnByExt, LeftJoinMapOnExt,
-    LeftJoinOnByExt, LeftJoinOnExt, LeftSemiJoinMapExt, LeftSemiJoinMapOnByExt,
-    LeftSemiJoinMapOnExt, LeftSemiJoinOnByExt, LeftSemiJoinOnExt, MapValuesCellExt, ProjectCellExt,
-    ProjectMapExt, SelectCellExt, SelectExt,
+    CountByExt, DistinctMapExt, FlatMapMapExt, GroupByExt, IndexByExt, InnerJoinExt, LeftJoinExt,
+    LeftSemiJoinExt, MapValuesCellExt, ProjectCellExt, ProjectMapExt, SelectCellExt, SelectExt,
 };
 pub use dep_node::DepNode;
 pub use foreign_key::{HasForeignKey, IdFor, IdType, JoinKeyFrom};
