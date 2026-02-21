@@ -452,7 +452,7 @@ where
             state.rcu(|current| {
                 let mut next = current.as_ref().clone();
                 let mut impacted: HashSet<LK> = HashSet::new();
-                apply_left_diff(&mut next, &diff, left_join_key.as_ref(), &mut impacted);
+                apply_left_diff(&mut next, diff, left_join_key.as_ref(), &mut impacted);
                 let changes = recompute_impacted(&mut next, impacted, compute_rows.as_ref());
                 *changes_cell.borrow_mut() = changes;
                 next
@@ -480,7 +480,7 @@ where
             state.rcu(|current| {
                 let mut next = current.as_ref().clone();
                 let mut impacted: HashSet<LK> = HashSet::new();
-                apply_right_diff(&mut next, &diff, right_join_key.as_ref(), &mut impacted);
+                apply_right_diff(&mut next, diff, right_join_key.as_ref(), &mut impacted);
                 let changes = recompute_impacted(&mut next, impacted, compute_rows.as_ref());
                 *changes_cell.borrow_mut() = changes;
                 next

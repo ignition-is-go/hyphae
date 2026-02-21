@@ -207,7 +207,7 @@ where
         state.rcu(|current| {
             let mut next = current.as_ref().clone();
             let mut impacted: HashSet<SK> = HashSet::new();
-            apply_source_diff(&mut next.source_rows, &diff, &mut impacted);
+            apply_source_diff(&mut next.source_rows, diff, &mut impacted);
             let changes = recompute_impacted(&mut next, impacted, compute_rows.as_ref());
             *changes_cell.borrow_mut() = changes;
             next

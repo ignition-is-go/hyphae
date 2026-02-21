@@ -49,7 +49,7 @@ where
         };
 
         let mut atomic_diffs: Vec<MapDiff<SK, SV>> = Vec::new();
-        flatten_diff(&diff, &mut atomic_diffs);
+        flatten_diff(diff, &mut atomic_diffs);
         let emitted = std::cell::RefCell::new(Vec::<MapDiff<OK, OV>>::new());
         state.rcu(|current| {
             let mut next = current.as_ref().clone();
