@@ -148,6 +148,11 @@ where
     pub fn insert(&self, key: K, value: V) -> Option<V> {
         let old = self.inner.data.insert(key.clone(), value.clone());
 
+        // No-op update: same key/value should not emit a diff or notify observers.
+        if old.as_ref().is_some_and(|old_value| old_value == &value) {
+            return old;
+        }
+
         // Emit diff (O(1) - just notifies subscribers)
         let diff = match &old {
             Some(old_value) => MapDiff::Update {
@@ -184,6 +189,9 @@ where
         let mut changes = Vec::with_capacity(entries.len());
         for (key, value) in entries {
             let old = self.inner.data.insert(key.clone(), value.clone());
+            if old.as_ref().is_some_and(|old_value| old_value == &value) {
+                continue;
+            }
             let diff = match old {
                 Some(old_value) => MapDiff::Update {
                     key: key.clone(),
@@ -202,6 +210,10 @@ where
             {
                 cell.set(Some(value));
             }
+        }
+
+        if changes.is_empty() {
+            return;
         }
 
         self.inner.diffs_cell.set(MapDiff::Batch { changes });
@@ -272,7 +284,10 @@ where
             return;
         }
 
-        fn apply_one<K, V>(map: &CellMap<K, V, CellMutable>, diff: &MapDiff<K, V>)
+        fn apply_one<K, V>(
+            map: &CellMap<K, V, CellMutable>,
+            diff: &MapDiff<K, V>,
+        ) -> Option<MapDiff<K, V>>
         where
             K: Hash + Eq + CellValue,
             V: CellValue,
@@ -297,6 +312,7 @@ where
                             cell.set(Some(value.clone()));
                         }
                     }
+                    Some(diff.clone())
                 }
                 MapDiff::Insert { key, value } => {
                     map.inner.data.insert(key.clone(), value.clone());
@@ -305,6 +321,7 @@ where
                     {
                         cell.set(Some(value.clone()));
                     }
+                    Some(diff.clone())
                 }
                 MapDiff::Remove { key, .. } => {
                     map.inner.data.remove(key);
@@ -313,29 +330,58 @@ where
                     {
                         cell.set(None);
                     }
+                    Some(diff.clone())
                 }
                 MapDiff::Update { key, new_value, .. } => {
+                    if map
+                        .inner
+                        .data
+                        .get(key)
+                        .is_some_and(|existing| existing.value() == new_value)
+                    {
+                        return None;
+                    }
+
                     map.inner.data.insert(key.clone(), new_value.clone());
                     if let Some(weak) = map.inner.key_cells.get(key)
                         && let Some(cell) = weak.upgrade()
                     {
                         cell.set(Some(new_value.clone()));
                     }
+                    Some(diff.clone())
                 }
                 MapDiff::Batch { changes } => {
+                    let mut applied = Vec::with_capacity(changes.len());
                     for change in changes {
-                        apply_one(map, change);
+                        if let Some(applied_change) = apply_one(map, change) {
+                            applied.push(applied_change);
+                        }
+                    }
+
+                    if applied.is_empty() {
+                        None
+                    } else {
+                        Some(MapDiff::Batch { changes: applied })
                     }
                 }
             }
         }
 
+        let mut applied_changes = Vec::with_capacity(changes.len());
         for change in &changes {
-            apply_one(self, change);
+            if let Some(applied) = apply_one(self, change) {
+                applied_changes.push(applied);
+            }
+        }
+
+        if applied_changes.is_empty() {
+            return;
         }
 
         self.inner.len_cell.set(self.inner.data.len());
-        self.inner.diffs_cell.set(MapDiff::Batch { changes });
+        self.inner.diffs_cell.set(MapDiff::Batch {
+            changes: applied_changes,
+        });
     }
 
     /// Give this CellMap a name for debugging. Names its internal cells accordingly.
@@ -864,6 +910,80 @@ mod tests {
             MapDiff::Batch { changes } => assert_eq!(changes.len(), 2),
             _ => panic!("expected single Batch diff from apply_batch"),
         }
+    }
+
+    #[test]
+    fn test_insert_same_value_is_noop_update() {
+        let map = CellMap::<String, i32>::new();
+        let (tx, rx) = std::sync::mpsc::channel::<MapDiff<String, i32>>();
+
+        let _guard = map.subscribe_diffs(move |diff| {
+            let _ = tx.send(diff.clone());
+        });
+
+        map.insert("a".to_string(), 1);
+        map.insert("a".to_string(), 1);
+
+        let seen: Vec<_> = rx.try_iter().collect();
+        assert_eq!(seen.len(), 2);
+        match &seen[0] {
+            MapDiff::Initial { entries } => assert!(entries.is_empty()),
+            _ => panic!("expected Initial diff first"),
+        }
+        match &seen[1] {
+            MapDiff::Insert { key, value } => {
+                assert_eq!(key, "a");
+                assert_eq!(*value, 1);
+            }
+            _ => panic!("expected Insert diff"),
+        }
+    }
+
+    #[test]
+    fn test_apply_batch_filters_noop_updates() {
+        let map = CellMap::<String, i32>::new();
+        let (tx, rx) = std::sync::mpsc::channel::<MapDiff<String, i32>>();
+
+        map.insert("a".to_string(), 1);
+        let _guard = map.subscribe_diffs(move |diff| {
+            let _ = tx.send(diff.clone());
+        });
+
+        map.apply_batch(vec![
+            MapDiff::Update {
+                key: "a".to_string(),
+                old_value: 1,
+                new_value: 1,
+            },
+            MapDiff::Update {
+                key: "a".to_string(),
+                old_value: 1,
+                new_value: 2,
+            },
+        ]);
+
+        let seen: Vec<_> = rx.try_iter().collect();
+        assert_eq!(seen.len(), 2);
+        match &seen[0] {
+            MapDiff::Initial { entries } => assert_eq!(entries.len(), 1),
+            _ => panic!("expected Initial diff first"),
+        }
+        match &seen[1] {
+            MapDiff::Batch { changes } => {
+                assert_eq!(changes.len(), 1);
+                assert!(matches!(
+                    &changes[0],
+                    MapDiff::Update {
+                        key,
+                        old_value: 1,
+                        new_value: 2
+                    } if key == "a"
+                ));
+            }
+            _ => panic!("expected single Batch diff from apply_batch"),
+        }
+
+        assert_eq!(map.get_value(&"a".to_string()), Some(2));
     }
 
     #[test]
