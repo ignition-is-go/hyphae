@@ -11,14 +11,12 @@ pub mod operators;
 
 pub use cell_value::CellValue;
 pub use collections::{
-    CountByExt, GroupByExt, InnerJoinExt, LeftJoinExt,
-    LeftSemiJoinExt, ProjectCellExt, ProjectMapExt, SelectCellExt, SelectExt,
+    CountByExt, GroupByExt, InnerJoinExt, LeftJoinExt, LeftSemiJoinExt, ProjectCellExt,
+    ProjectMapExt, SelectCellExt, SelectExt,
 };
 pub use dep_node::DepNode;
 pub use foreign_key::{HasForeignKey, IdFor, IdType, JoinKeyFrom};
 pub use mutable::Mutable;
-pub use reactive_keys::{KeyChange, ReactiveKeys};
-pub use reactive_map::ReactiveMap;
 // Re-export all operators for convenience
 pub use operators::{
     AuditExt, BackpressureExt, BufferCountExt, BufferTimeExt, CatchErrorExt, ColdExt, ConcatExt,
@@ -30,4 +28,6 @@ pub use operators::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use operators::{ParallelCell, ParallelExt};
+pub use reactive_keys::{KeyChange, ReactiveKeys};
+pub use reactive_map::ReactiveMap;
 pub use watchable::{Gettable, Watchable};

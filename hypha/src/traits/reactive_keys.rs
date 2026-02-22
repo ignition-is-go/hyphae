@@ -11,10 +11,7 @@
 
 use std::hash::Hash;
 
-use crate::{
-    subscription::SubscriptionGuard,
-    traits::CellValue,
-};
+use crate::{subscription::SubscriptionGuard, traits::CellValue};
 
 /// Notification for key-set membership changes.
 #[derive(Debug, Clone, PartialEq, Eq)]

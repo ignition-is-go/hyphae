@@ -146,7 +146,10 @@ where
                     }
                     MapDiff::Insert { key, value } => {
                         let pk = fk(value);
-                        st.forward.entry(pk.clone()).or_default().insert(key.clone());
+                        st.forward
+                            .entry(pk.clone())
+                            .or_default()
+                            .insert(key.clone());
                         st.reverse.insert(key.clone(), pk.clone());
                         rc.insert(key.clone(), pk);
                     }
@@ -174,7 +177,10 @@ where
                                 }
                             }
                         }
-                        st.forward.entry(new_pk.clone()).or_default().insert(key.clone());
+                        st.forward
+                            .entry(new_pk.clone())
+                            .or_default()
+                            .insert(key.clone());
                         rc.insert(key.clone(), new_pk);
                     }
                     MapDiff::Batch { changes } => {
@@ -285,7 +291,9 @@ where
                             Some(MapDiff::Initial { entries: filtered })
                         }
                     }
-                    MapDiff::Insert { key, .. } | MapDiff::Remove { key, .. } | MapDiff::Update { key, .. } => {
+                    MapDiff::Insert { key, .. }
+                    | MapDiff::Remove { key, .. }
+                    | MapDiff::Update { key, .. } => {
                         if fk_match(key) {
                             Some(diff.clone())
                         } else {
@@ -307,11 +315,11 @@ where
             }
 
             let pk = parent_key.clone();
-            let fk_match = |k: &K| -> bool {
-                reverse_cache.get(k).is_some_and(|r| *r.value() == pk)
-            };
+            let fk_match =
+                |k: &K| -> bool { reverse_cache.get(k).is_some_and(|r| *r.value() == pk) };
 
-            if let Some(filtered) = filter_for_parent(diff, &parent_key, &reverse_cache, &fk_match) {
+            if let Some(filtered) = filter_for_parent(diff, &parent_key, &reverse_cache, &fk_match)
+            {
                 cb(&filtered);
             }
         })
@@ -350,7 +358,12 @@ where
                             }
                         }
                         for (pk, group_entries) in groups {
-                            cb(&pk, &MapDiff::Initial { entries: group_entries });
+                            cb(
+                                &pk,
+                                &MapDiff::Initial {
+                                    entries: group_entries,
+                                },
+                            );
                         }
                     }
                     MapDiff::Insert { key, .. }
@@ -500,10 +513,7 @@ where
     /// let nested = orders.nest(|order| order.customer_id.clone());
     /// // nested: NestedMap<CustomerId, OrderId, Order>
     /// ```
-    pub fn nest<PK>(
-        &self,
-        fk: impl Fn(&V) -> PK + Send + Sync + 'static,
-    ) -> NestedMap<PK, K, V>
+    pub fn nest<PK>(&self, fk: impl Fn(&V) -> PK + Send + Sync + 'static) -> NestedMap<PK, K, V>
     where
         PK: Hash + Eq + CellValue,
     {

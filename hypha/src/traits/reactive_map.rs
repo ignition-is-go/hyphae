@@ -9,13 +9,8 @@
 //! implement the same trait, and the existing join logic will work with it
 //! unchanged.
 
-use crate::{
-    cell_map::MapDiff,
-    subscription::SubscriptionGuard,
-    traits::CellValue,
-};
-
 use super::reactive_keys::ReactiveKeys;
+use crate::{cell_map::MapDiff, subscription::SubscriptionGuard, traits::CellValue};
 
 /// A reactive key-value map that notifies subscribers of changes via
 /// [`MapDiff`].

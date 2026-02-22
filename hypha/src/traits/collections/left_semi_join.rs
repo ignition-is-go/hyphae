@@ -3,8 +3,10 @@ use std::hash::Hash;
 use crate::{
     cell::CellImmutable,
     cell_map::CellMap,
-    traits::{CellValue, HasForeignKey, IdFor, collections::internal::join_runtime::run_join_runtime},
-    traits::reactive_map::ReactiveMap,
+    traits::{
+        CellValue, HasForeignKey, IdFor, collections::internal::join_runtime::run_join_runtime,
+        reactive_map::ReactiveMap,
+    },
 };
 
 pub trait LeftSemiJoinExt: ReactiveMap {
@@ -12,10 +14,7 @@ pub trait LeftSemiJoinExt: ReactiveMap {
     ///
     /// Keeps left rows where a right row with the same key exists.
     /// Unmatched left rows are excluded. Output contains only left data.
-    fn left_semi_join<R>(
-        &self,
-        right: &R,
-    ) -> CellMap<Self::Key, Self::Value, CellImmutable>
+    fn left_semi_join<R>(&self, right: &R) -> CellMap<Self::Key, Self::Value, CellImmutable>
     where
         R: ReactiveMap<Key = Self::Key>;
 
@@ -24,10 +23,7 @@ pub trait LeftSemiJoinExt: ReactiveMap {
     /// Joins on the left map key matching the right value's foreign key.
     /// Keeps left rows that have at least one matching right row.
     /// Unmatched left rows are excluded. Output contains only left data.
-    fn left_semi_join_fk<R>(
-        &self,
-        right: &R,
-    ) -> CellMap<Self::Key, Self::Value, CellImmutable>
+    fn left_semi_join_fk<R>(&self, right: &R) -> CellMap<Self::Key, Self::Value, CellImmutable>
     where
         R: ReactiveMap,
         R::Value: HasForeignKey<Self::Value>,
@@ -53,10 +49,7 @@ pub trait LeftSemiJoinExt: ReactiveMap {
 }
 
 impl<L: ReactiveMap> LeftSemiJoinExt for L {
-    fn left_semi_join<R>(
-        &self,
-        right: &R,
-    ) -> CellMap<Self::Key, Self::Value, CellImmutable>
+    fn left_semi_join<R>(&self, right: &R) -> CellMap<Self::Key, Self::Value, CellImmutable>
     where
         R: ReactiveMap<Key = Self::Key>,
     {
@@ -76,10 +69,7 @@ impl<L: ReactiveMap> LeftSemiJoinExt for L {
         )
     }
 
-    fn left_semi_join_fk<R>(
-        &self,
-        right: &R,
-    ) -> CellMap<Self::Key, Self::Value, CellImmutable>
+    fn left_semi_join_fk<R>(&self, right: &R) -> CellMap<Self::Key, Self::Value, CellImmutable>
     where
         R: ReactiveMap,
         R::Value: HasForeignKey<Self::Value>,
@@ -127,7 +117,10 @@ mod tests {
     use std::sync::mpsc;
 
     use super::*;
-    use crate::{MapDiff, traits::{Gettable, HasForeignKey, IdFor, IdType}};
+    use crate::{
+        MapDiff,
+        traits::{Gettable, HasForeignKey, IdFor, IdType},
+    };
 
     #[test]
     fn left_semi_join_keeps_matched_rows() {
@@ -175,11 +168,7 @@ mod tests {
     fn left_semi_join_by_uses_custom_keys() {
         let left = CellMap::<String, i32>::new();
         let right = CellMap::<String, i32>::new();
-        let joined = left.left_semi_join_by(
-            &right,
-            |_, lv| lv.to_string(),
-            |rk, _| rk.clone(),
-        );
+        let joined = left.left_semi_join_by(&right, |_, lv| lv.to_string(), |rk, _| rk.clone());
 
         left.insert("a".to_string(), 10);
         assert_eq!(joined.get_value(&"a".to_string()), None);
@@ -195,11 +184,7 @@ mod tests {
         left.insert("b".to_string(), 2);
 
         let right = CellMap::<String, bool>::new();
-        let joined = left.left_semi_join_by(
-            &right,
-            |_, lv| lv.to_string(),
-            |rk, _| rk.clone(),
-        );
+        let joined = left.left_semi_join_by(&right, |_, lv| lv.to_string(), |rk, _| rk.clone());
 
         let (tx, rx) = mpsc::channel::<MapDiff<String, i32>>();
         let _guard = joined.subscribe_diffs(move |diff| {
@@ -254,20 +239,35 @@ mod tests {
         let posts = CellMap::<String, Post>::new();
         let joined = users.left_semi_join_fk(&posts);
 
-        users.insert("u1".to_string(), User { name: "Alice".to_string() });
-        users.insert("u2".to_string(), User { name: "Bob".to_string() });
+        users.insert(
+            "u1".to_string(),
+            User {
+                name: "Alice".to_string(),
+            },
+        );
+        users.insert(
+            "u2".to_string(),
+            User {
+                name: "Bob".to_string(),
+            },
+        );
 
         assert_eq!(joined.entries().get().len(), 0);
 
-        posts.insert("p1".to_string(), Post {
-            user_id: UserId("u1".to_string()),
-            title: "Hello".to_string(),
-        });
+        posts.insert(
+            "p1".to_string(),
+            Post {
+                user_id: UserId("u1".to_string()),
+                title: "Hello".to_string(),
+            },
+        );
 
         assert_eq!(joined.entries().get().len(), 1);
         assert_eq!(
             joined.get_value(&"u1".to_string()),
-            Some(User { name: "Alice".to_string() })
+            Some(User {
+                name: "Alice".to_string()
+            })
         );
         assert_eq!(joined.get_value(&"u2".to_string()), None);
     }
@@ -278,11 +278,19 @@ mod tests {
         let posts = CellMap::<String, Post>::new();
         let joined = users.left_semi_join_fk(&posts);
 
-        users.insert("u1".to_string(), User { name: "Alice".to_string() });
-        posts.insert("p1".to_string(), Post {
-            user_id: UserId("u1".to_string()),
-            title: "Hello".to_string(),
-        });
+        users.insert(
+            "u1".to_string(),
+            User {
+                name: "Alice".to_string(),
+            },
+        );
+        posts.insert(
+            "p1".to_string(),
+            Post {
+                user_id: UserId("u1".to_string()),
+                title: "Hello".to_string(),
+            },
+        );
         assert_eq!(joined.entries().get().len(), 1);
 
         posts.remove(&"p1".to_string());

@@ -148,11 +148,7 @@ where
                                 detach(&k, Some(&mut downstream_changes));
                             }
                             for (key, value) in entries {
-                                attach(
-                                    key.clone(),
-                                    value.clone(),
-                                    Some(&mut downstream_changes),
-                                );
+                                attach(key.clone(), value.clone(), Some(&mut downstream_changes));
                             }
                         }
                         MapDiff::Insert { key, value } => {

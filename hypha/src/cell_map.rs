@@ -603,24 +603,26 @@ where
 
 // ── ReactiveKeys / ReactiveMap impl ─────────────────────────────────────
 
-use crate::traits::reactive_keys::{KeyChange, ReactiveKeys};
-use crate::traits::reactive_map::ReactiveMap;
+use crate::traits::{
+    reactive_keys::{KeyChange, ReactiveKeys},
+    reactive_map::ReactiveMap,
+};
 
 /// Convert a `MapDiff` into its `KeyChange` equivalent.
 /// Returns `None` for `Update` (key unchanged — no membership change).
-pub(crate) fn map_diff_to_key_change<K: CellValue, V: CellValue>(diff: &MapDiff<K, V>) -> Option<KeyChange<K>> {
+pub(crate) fn map_diff_to_key_change<K: CellValue, V: CellValue>(
+    diff: &MapDiff<K, V>,
+) -> Option<KeyChange<K>> {
     match diff {
-        MapDiff::Initial { entries } => {
-            Some(KeyChange::Initial(entries.iter().map(|(k, _)| k.clone()).collect()))
-        }
+        MapDiff::Initial { entries } => Some(KeyChange::Initial(
+            entries.iter().map(|(k, _)| k.clone()).collect(),
+        )),
         MapDiff::Insert { key, .. } => Some(KeyChange::Added(key.clone())),
         MapDiff::Remove { key, .. } => Some(KeyChange::Removed(key.clone())),
         MapDiff::Update { .. } => None,
         MapDiff::Batch { changes } => {
-            let key_changes: Vec<KeyChange<K>> = changes
-                .iter()
-                .filter_map(map_diff_to_key_change)
-                .collect();
+            let key_changes: Vec<KeyChange<K>> =
+                changes.iter().filter_map(map_diff_to_key_change).collect();
             if key_changes.is_empty() {
                 None
             } else {
@@ -639,11 +641,7 @@ where
     type Key = K;
 
     fn key_set(&self) -> Vec<K> {
-        self.inner
-            .data
-            .iter()
-            .map(|r| r.key().clone())
-            .collect()
+        self.inner.data.iter().map(|r| r.key().clone()).collect()
     }
 
     fn contains_key(&self, key: &K) -> bool {

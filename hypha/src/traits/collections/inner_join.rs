@@ -3,8 +3,10 @@ use std::hash::Hash;
 use crate::{
     cell::CellImmutable,
     cell_map::CellMap,
-    traits::{CellValue, HasForeignKey, IdFor, collections::internal::join_runtime::run_join_runtime},
-    traits::reactive_map::ReactiveMap,
+    traits::{
+        CellValue, HasForeignKey, IdFor, collections::internal::join_runtime::run_join_runtime,
+        reactive_map::ReactiveMap,
+    },
 };
 
 pub trait InnerJoinExt: ReactiveMap {
@@ -54,10 +56,7 @@ pub trait InnerJoinExt: ReactiveMap {
 }
 
 impl<L: ReactiveMap> InnerJoinExt for L {
-    fn inner_join<R>(
-        &self,
-        right: &R,
-    ) -> CellMap<Self::Key, (Self::Value, R::Value), CellImmutable>
+    fn inner_join<R>(&self, right: &R) -> CellMap<Self::Key, (Self::Value, R::Value), CellImmutable>
     where
         R: ReactiveMap<Key = Self::Key>,
     {
@@ -114,9 +113,7 @@ impl<L: ReactiveMap> InnerJoinExt for L {
             |left_k, left_v, rights| {
                 rights
                     .iter()
-                    .map(|(rk, rv)| {
-                        ((left_k.clone(), rk.clone()), (left_v.clone(), rv.clone()))
-                    })
+                    .map(|(rk, rv)| ((left_k.clone(), rk.clone()), (left_v.clone(), rv.clone())))
                     .collect()
             },
         )
@@ -128,7 +125,10 @@ mod tests {
     use std::sync::mpsc;
 
     use super::*;
-    use crate::{MapDiff, traits::{Gettable, HasForeignKey, IdFor, IdType}};
+    use crate::{
+        MapDiff,
+        traits::{Gettable, HasForeignKey, IdFor, IdType},
+    };
 
     #[test]
     fn inner_join_pairs_on_equal_keys() {
@@ -190,32 +190,21 @@ mod tests {
     fn inner_join_by_produces_composite_keys() {
         let left = CellMap::<String, (String, i32)>::new();
         let right = CellMap::<String, (String, i32)>::new();
-        let joined = left.inner_join_by(
-            &right,
-            |_, lv| lv.0.clone(),
-            |_, rv| rv.0.clone(),
-        );
+        let joined = left.inner_join_by(&right, |_, lv| lv.0.clone(), |_, rv| rv.0.clone());
 
         left.insert("l1".to_string(), ("g1".to_string(), 10));
         right.insert("r1".to_string(), ("g1".to_string(), 5));
 
         let key = ("l1".to_string(), "r1".to_string());
         let val = joined.get_value(&key);
-        assert_eq!(
-            val,
-            Some((("g1".to_string(), 10), ("g1".to_string(), 5)))
-        );
+        assert_eq!(val, Some((("g1".to_string(), 10), ("g1".to_string(), 5))));
     }
 
     #[test]
     fn inner_join_by_handles_one_to_many() {
         let left = CellMap::<String, (String, i32)>::new();
         let right = CellMap::<String, (String, i32)>::new();
-        let joined = left.inner_join_by(
-            &right,
-            |_, lv| lv.0.clone(),
-            |_, rv| rv.0.clone(),
-        );
+        let joined = left.inner_join_by(&right, |_, lv| lv.0.clone(), |_, rv| rv.0.clone());
 
         left.insert("l1".to_string(), ("g1".to_string(), 10));
         right.insert("r1".to_string(), ("g1".to_string(), 5));
@@ -230,11 +219,7 @@ mod tests {
         left.insert("l1".to_string(), ("g1".to_string(), 10));
 
         let right = CellMap::<String, (String, i32)>::new();
-        let joined = left.inner_join_by(
-            &right,
-            |_, lv| lv.0.clone(),
-            |_, rv| rv.0.clone(),
-        );
+        let joined = left.inner_join_by(&right, |_, lv| lv.0.clone(), |_, rv| rv.0.clone());
 
         let (tx, rx) = mpsc::channel::<MapDiff<(String, String), ((String, i32), (String, i32))>>();
         let _guard = joined.subscribe_diffs(move |diff| {
@@ -292,19 +277,32 @@ mod tests {
         let posts = CellMap::<String, Post>::new();
         let joined = users.inner_join_fk(&posts);
 
-        users.insert("u1".to_string(), User { name: "Alice".to_string() });
-        posts.insert("p1".to_string(), Post {
-            user_id: UserId("u1".to_string()),
-            title: "Hello".to_string(),
-        });
+        users.insert(
+            "u1".to_string(),
+            User {
+                name: "Alice".to_string(),
+            },
+        );
+        posts.insert(
+            "p1".to_string(),
+            Post {
+                user_id: UserId("u1".to_string()),
+                title: "Hello".to_string(),
+            },
+        );
 
         let key = ("u1".to_string(), "p1".to_string());
         let val = joined.get_value(&key);
         assert_eq!(
             val,
             Some((
-                User { name: "Alice".to_string() },
-                Post { user_id: UserId("u1".to_string()), title: "Hello".to_string() },
+                User {
+                    name: "Alice".to_string()
+                },
+                Post {
+                    user_id: UserId("u1".to_string()),
+                    title: "Hello".to_string()
+                },
             ))
         );
     }
@@ -315,15 +313,26 @@ mod tests {
         let posts = CellMap::<String, Post>::new();
         let joined = users.inner_join_fk(&posts);
 
-        users.insert("u1".to_string(), User { name: "Alice".to_string() });
-        posts.insert("p1".to_string(), Post {
-            user_id: UserId("u1".to_string()),
-            title: "Hello".to_string(),
-        });
-        posts.insert("p2".to_string(), Post {
-            user_id: UserId("u1".to_string()),
-            title: "World".to_string(),
-        });
+        users.insert(
+            "u1".to_string(),
+            User {
+                name: "Alice".to_string(),
+            },
+        );
+        posts.insert(
+            "p1".to_string(),
+            Post {
+                user_id: UserId("u1".to_string()),
+                title: "Hello".to_string(),
+            },
+        );
+        posts.insert(
+            "p2".to_string(),
+            Post {
+                user_id: UserId("u1".to_string()),
+                title: "World".to_string(),
+            },
+        );
 
         assert_eq!(joined.entries().get().len(), 2);
     }
@@ -334,11 +343,19 @@ mod tests {
         let posts = CellMap::<String, Post>::new();
         let joined = users.inner_join_fk(&posts);
 
-        users.insert("u1".to_string(), User { name: "Alice".to_string() });
-        posts.insert("p1".to_string(), Post {
-            user_id: UserId("u2".to_string()),
-            title: "Orphan".to_string(),
-        });
+        users.insert(
+            "u1".to_string(),
+            User {
+                name: "Alice".to_string(),
+            },
+        );
+        posts.insert(
+            "p1".to_string(),
+            Post {
+                user_id: UserId("u2".to_string()),
+                title: "Orphan".to_string(),
+            },
+        );
 
         assert_eq!(joined.entries().get().len(), 0);
     }

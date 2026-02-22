@@ -432,9 +432,15 @@ where
 {
     let output = CellMap::<OK, OV, CellMutable>::new();
 
-    let state = Arc::new(ArcSwap::from_pointee(
-        JoinState::<L::Key, L::Value, R::Key, R::Value, JK, OK, OV>::default(),
-    ));
+    let state = Arc::new(ArcSwap::from_pointee(JoinState::<
+        L::Key,
+        L::Value,
+        R::Key,
+        R::Value,
+        JK,
+        OK,
+        OV,
+    >::default()));
     let left_join_key = Arc::new(left_join_key);
     let right_join_key = Arc::new(right_join_key);
     let compute_rows = Arc::new(compute_rows);
@@ -501,4 +507,3 @@ where
     output.own(right_guard);
     output.lock()
 }
-
