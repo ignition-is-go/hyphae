@@ -6,6 +6,7 @@ mod left_join;
 mod left_semi_join;
 mod project;
 mod project_cell;
+mod project_many;
 mod select;
 mod select_cell;
 
@@ -16,5 +17,6 @@ pub use left_join::LeftJoinExt;
 pub use left_semi_join::LeftSemiJoinExt;
 pub use project::ProjectMapExt;
 pub use project_cell::ProjectCellExt;
+pub use project_many::ProjectManyExt;
 pub use select::SelectExt;
 pub use select_cell::SelectCellExt;
