@@ -95,7 +95,7 @@ pub fn interval_precise(duration: Duration) -> Cell<u64, CellImmutable> {
 }
 
 /// Tick data emitted by [`interval_precise_with_elapsed`].
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IntervalTick {
     /// Monotonically increasing tick count (starts at 1)
     pub tick: u64,

@@ -66,6 +66,7 @@ pub mod cell_map;
 pub mod cell_set;
 pub mod constructors;
 pub mod metrics;
+pub mod nested_map;
 pub mod signal;
 pub mod subscription;
 pub mod traits;
@@ -89,17 +90,16 @@ pub use constructors::from_iter_with_delay;
 #[cfg(not(target_arch = "wasm32"))]
 pub use constructors::{IntervalTick, interval, interval_precise, interval_precise_with_elapsed};
 pub use metrics::CellMetrics;
+pub use nested_map::NestedMap;
 pub use signal::Signal;
 pub use subscription::SubscriptionGuard;
 pub use traits::{
     AuditExt, BackpressureExt, BufferCountExt, BufferTimeExt, CatchErrorExt, CellValue, ColdExt,
-    ConcatExt, CountByExt, DebounceExt, DedupedExt, DelayExt, DepNode, DistinctExt, DistinctMapExt,
-    DistinctUntilChangedByExt, FilterExt, FinalizeExt, FirstExt, FlatMapMapExt, Gettable,
-    GroupByExt, HasForeignKey, IdFor, IdType, IndexByExt, InnerJoinOnByExt, InnerJoinOnExt,
-    JoinExt, JoinKeyFrom, LastExt, LeftJoinExt, LeftJoinMapExt, LeftJoinMapOnByExt,
-    LeftJoinMapOnExt, LeftJoinOnByExt, LeftJoinOnExt, LeftSemiJoinMapExt, LeftSemiJoinMapOnByExt,
-    LeftSemiJoinMapOnExt, LeftSemiJoinOnByExt, LeftSemiJoinOnExt, MapErrExt, MapExt, MapOkExt,
-    MapValuesCellExt, MergeExt, MergeMapExt, Mutable, PairwiseExt, ProjectCellExt, ProjectMapExt,
+    ConcatExt, CountByExt, DebounceExt, DedupedExt, DelayExt, DepNode, DistinctExt,
+    DistinctUntilChangedByExt, FilterExt, FinalizeExt, FirstExt, Gettable, GroupByExt,
+    HasForeignKey, IdFor, IdType, InnerJoinExt, JoinExt, JoinKeyFrom, KeyChange, LastExt,
+    LeftJoinExt, LeftSemiJoinExt, MapErrExt, MapExt, MapOkExt, MergeExt, MergeMapExt, Mutable,
+    PairwiseExt, ProjectCellExt, ProjectManyExt, ProjectMapExt, ReactiveKeys, ReactiveMap,
     RetryExt, SampleExt, ScanExt, SelectCellExt, SelectExt, SkipExt, SkipWhileExt,
     StateMachineBuilder, StateTransitionExt, SwitchMapExt, TakeExt, TakeUntilExt, TakeWhileExt,
     TapExt, ThrottleExt, TimeoutExt, TryMapExt, UnwrapOrExt, Watchable, WindowExt,

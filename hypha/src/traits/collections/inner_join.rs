@@ -9,44 +9,45 @@ use crate::{
     },
 };
 
-pub trait LeftJoinExt: ReactiveMap {
-    /// Left join on equal map keys.
+pub trait InnerJoinExt: ReactiveMap {
+    /// Inner join on equal map keys.
     ///
-    /// Every left row produces exactly one output row. Right matches are collected into a `Vec`.
-    /// An empty `Vec` means no matching right rows were found.
-    fn left_join<R>(
+    /// Pairs left and right rows that share the same map key.
+    /// Produces one output row per match, keyed by the shared key.
+    /// Unmatched rows from either side are excluded.
+    fn inner_join<R>(
         &self,
         right: &R,
-    ) -> CellMap<Self::Key, (Self::Value, Vec<R::Value>), CellImmutable>
+    ) -> CellMap<Self::Key, (Self::Value, R::Value), CellImmutable>
     where
         R: ReactiveMap<Key = Self::Key>;
 
-    /// Left join using foreign key relationship.
+    /// Inner join using foreign key relationship.
     ///
     /// Joins on the left map key matching the right value's foreign key.
-    /// Every left row produces exactly one output row. Right matches are collected into a `Vec`.
-    /// An empty `Vec` means no matching right rows were found.
-    fn left_join_fk<R>(
+    /// Produces one output row per matching (left, right) pair, keyed by `(K, RK)`.
+    /// Unmatched rows from either side are excluded.
+    fn inner_join_fk<R>(
         &self,
         right: &R,
-    ) -> CellMap<Self::Key, (Self::Value, Vec<R::Value>), CellImmutable>
+    ) -> CellMap<(Self::Key, R::Key), (Self::Value, R::Value), CellImmutable>
     where
         R: ReactiveMap,
         R::Value: HasForeignKey<Self::Value>,
         <<R::Value as HasForeignKey<Self::Value>>::ForeignKey as IdFor<Self::Value>>::MapKey:
             Into<Self::Key>;
 
-    /// Left join using explicit key extractors.
+    /// Inner join using explicit key extractors.
     ///
     /// `left_key` and `right_key` extract the join key from each side.
-    /// Every left row produces exactly one output row. Right matches are collected into a `Vec`.
-    /// An empty `Vec` means no matching right rows were found.
-    fn left_join_by<R, JK, FL, FR>(
+    /// Produces one output row per matching (left, right) pair, keyed by `(K, RK)`.
+    /// Unmatched rows from either side are excluded.
+    fn inner_join_by<R, JK, FL, FR>(
         &self,
         right: &R,
         left_key: FL,
         right_key: FR,
-    ) -> CellMap<Self::Key, (Self::Value, Vec<R::Value>), CellImmutable>
+    ) -> CellMap<(Self::Key, R::Key), (Self::Value, R::Value), CellImmutable>
     where
         R: ReactiveMap,
         JK: Hash + Eq + CellValue,
@@ -54,50 +55,49 @@ pub trait LeftJoinExt: ReactiveMap {
         FR: Fn(&R::Key, &R::Value) -> JK + Send + Sync + 'static;
 }
 
-impl<L: ReactiveMap> LeftJoinExt for L {
-    fn left_join<R>(
-        &self,
-        right: &R,
-    ) -> CellMap<Self::Key, (Self::Value, Vec<R::Value>), CellImmutable>
+impl<L: ReactiveMap> InnerJoinExt for L {
+    fn inner_join<R>(&self, right: &R) -> CellMap<Self::Key, (Self::Value, R::Value), CellImmutable>
     where
         R: ReactiveMap<Key = Self::Key>,
     {
         run_join_runtime(
             self,
             right,
-            "left_join",
+            "inner_join",
             |k: &Self::Key, _: &Self::Value| k.clone(),
             |k: &Self::Key, _: &R::Value| k.clone(),
             |left_k, left_v, rights| {
-                let right_values: Vec<R::Value> = rights.iter().map(|(_, rv)| rv.clone()).collect();
-                vec![(left_k.clone(), (left_v.clone(), right_values))]
+                rights
+                    .iter()
+                    .map(|(_, rv)| (left_k.clone(), (left_v.clone(), rv.clone())))
+                    .collect()
             },
         )
     }
 
-    fn left_join_fk<R>(
+    fn inner_join_fk<R>(
         &self,
         right: &R,
-    ) -> CellMap<Self::Key, (Self::Value, Vec<R::Value>), CellImmutable>
+    ) -> CellMap<(Self::Key, R::Key), (Self::Value, R::Value), CellImmutable>
     where
         R: ReactiveMap,
         R::Value: HasForeignKey<Self::Value>,
         <<R::Value as HasForeignKey<Self::Value>>::ForeignKey as IdFor<Self::Value>>::MapKey:
             Into<Self::Key>,
     {
-        self.left_join_by(
+        self.inner_join_by(
             right,
             |k: &Self::Key, _: &Self::Value| k.clone(),
             |_: &R::Key, rv: &R::Value| rv.fk().map_key().into(),
         )
     }
 
-    fn left_join_by<R, JK, FL, FR>(
+    fn inner_join_by<R, JK, FL, FR>(
         &self,
         right: &R,
         left_key: FL,
         right_key: FR,
-    ) -> CellMap<Self::Key, (Self::Value, Vec<R::Value>), CellImmutable>
+    ) -> CellMap<(Self::Key, R::Key), (Self::Value, R::Value), CellImmutable>
     where
         R: ReactiveMap,
         JK: Hash + Eq + CellValue,
@@ -107,12 +107,14 @@ impl<L: ReactiveMap> LeftJoinExt for L {
         run_join_runtime(
             self,
             right,
-            "left_join_by",
+            "inner_join_by",
             left_key,
             right_key,
             |left_k, left_v, rights| {
-                let right_values: Vec<R::Value> = rights.iter().map(|(_, rv)| rv.clone()).collect();
-                vec![(left_k.clone(), (left_v.clone(), right_values))]
+                rights
+                    .iter()
+                    .map(|(rk, rv)| ((left_k.clone(), rk.clone()), (left_v.clone(), rv.clone())))
+                    .collect()
             },
         )
     }
@@ -129,108 +131,97 @@ mod tests {
     };
 
     #[test]
-    fn left_join_keeps_unmatched_left_rows() {
+    fn inner_join_pairs_on_equal_keys() {
         let left = CellMap::<String, i32>::new();
         let right = CellMap::<String, i32>::new();
-        let joined = left.left_join(&right);
+        let joined = left.inner_join(&right);
 
         left.insert("a".to_string(), 1);
-        assert_eq!(joined.get_value(&"a".to_string()), Some((1, vec![])));
+        assert_eq!(joined.entries().get().len(), 0);
+
+        right.insert("a".to_string(), 10);
+        assert_eq!(joined.get_value(&"a".to_string()), Some((1, 10)));
     }
 
     #[test]
-    fn left_join_pairs_matched_rows() {
+    fn inner_join_excludes_unmatched() {
         let left = CellMap::<String, i32>::new();
         let right = CellMap::<String, i32>::new();
-        let joined = left.left_join(&right);
+        let joined = left.inner_join(&right);
+
+        left.insert("a".to_string(), 1);
+        left.insert("b".to_string(), 2);
+        right.insert("a".to_string(), 10);
+
+        assert_eq!(joined.entries().get().len(), 1);
+        assert_eq!(joined.get_value(&"a".to_string()), Some((1, 10)));
+        assert_eq!(joined.get_value(&"b".to_string()), None);
+    }
+
+    #[test]
+    fn inner_join_reacts_to_updates() {
+        let left = CellMap::<String, i32>::new();
+        let right = CellMap::<String, i32>::new();
+        let joined = left.inner_join(&right);
 
         left.insert("a".to_string(), 1);
         right.insert("a".to_string(), 10);
-        assert_eq!(joined.get_value(&"a".to_string()), Some((1, vec![10])));
+        assert_eq!(joined.get_value(&"a".to_string()), Some((1, 10)));
+
+        right.insert("a".to_string(), 20);
+        assert_eq!(joined.get_value(&"a".to_string()), Some((1, 20)));
     }
 
     #[test]
-    fn left_join_reacts_to_right_addition() {
+    fn inner_join_reacts_to_removals() {
         let left = CellMap::<String, i32>::new();
         let right = CellMap::<String, i32>::new();
-        let joined = left.left_join(&right);
-
-        left.insert("a".to_string(), 1);
-        assert_eq!(joined.get_value(&"a".to_string()), Some((1, vec![])));
-
-        right.insert("a".to_string(), 10);
-        assert_eq!(joined.get_value(&"a".to_string()), Some((1, vec![10])));
-    }
-
-    #[test]
-    fn left_join_reacts_to_right_removal() {
-        let left = CellMap::<String, i32>::new();
-        let right = CellMap::<String, i32>::new();
-        let joined = left.left_join(&right);
-
-        left.insert("a".to_string(), 1);
-        right.insert("a".to_string(), 10);
-        assert_eq!(joined.get_value(&"a".to_string()), Some((1, vec![10])));
-
-        right.remove(&"a".to_string());
-        assert_eq!(joined.get_value(&"a".to_string()), Some((1, vec![])));
-    }
-
-    #[test]
-    fn left_join_reacts_to_left_removal() {
-        let left = CellMap::<String, i32>::new();
-        let right = CellMap::<String, i32>::new();
-        let joined = left.left_join(&right);
+        let joined = left.inner_join(&right);
 
         left.insert("a".to_string(), 1);
         right.insert("a".to_string(), 10);
         assert_eq!(joined.entries().get().len(), 1);
 
-        left.remove(&"a".to_string());
+        right.remove(&"a".to_string());
         assert_eq!(joined.entries().get().len(), 0);
     }
 
     #[test]
-    fn left_join_by_collects_multiple_right_matches() {
+    fn inner_join_by_produces_composite_keys() {
         let left = CellMap::<String, (String, i32)>::new();
         let right = CellMap::<String, (String, i32)>::new();
-        let joined = left.left_join_by(&right, |_, lv| lv.0.clone(), |_, rv| rv.0.clone());
+        let joined = left.inner_join_by(&right, |_, lv| lv.0.clone(), |_, rv| rv.0.clone());
+
+        left.insert("l1".to_string(), ("g1".to_string(), 10));
+        right.insert("r1".to_string(), ("g1".to_string(), 5));
+
+        let key = ("l1".to_string(), "r1".to_string());
+        let val = joined.get_value(&key);
+        assert_eq!(val, Some((("g1".to_string(), 10), ("g1".to_string(), 5))));
+    }
+
+    #[test]
+    fn inner_join_by_handles_one_to_many() {
+        let left = CellMap::<String, (String, i32)>::new();
+        let right = CellMap::<String, (String, i32)>::new();
+        let joined = left.inner_join_by(&right, |_, lv| lv.0.clone(), |_, rv| rv.0.clone());
 
         left.insert("l1".to_string(), ("g1".to_string(), 10));
         right.insert("r1".to_string(), ("g1".to_string(), 5));
         right.insert("r2".to_string(), ("g1".to_string(), 7));
 
-        let val = joined.get_value(&"l1".to_string());
-        assert!(val.is_some());
-        let (left_val, right_vals) = val.unwrap();
-        assert_eq!(left_val, ("g1".to_string(), 10));
-        assert_eq!(right_vals.len(), 2);
+        assert_eq!(joined.entries().get().len(), 2);
     }
 
     #[test]
-    fn left_join_by_keeps_unmatched_with_empty_vec() {
-        let left = CellMap::<String, (String, i32)>::new();
-        let right = CellMap::<String, (String, i32)>::new();
-        let joined = left.left_join_by(&right, |_, lv| lv.0.clone(), |_, rv| rv.0.clone());
-
-        left.insert("l1".to_string(), ("g1".to_string(), 10));
-
-        let val = joined.get_value(&"l1".to_string());
-        assert!(val.is_some());
-        let (left_val, right_vals) = val.unwrap();
-        assert_eq!(left_val, ("g1".to_string(), 10));
-        assert_eq!(right_vals.len(), 0);
-    }
-
-    #[test]
-    fn left_join_by_preserves_right_batch() {
+    fn inner_join_by_preserves_right_batch() {
         let left = CellMap::<String, (String, i32)>::new();
         left.insert("l1".to_string(), ("g1".to_string(), 10));
 
         let right = CellMap::<String, (String, i32)>::new();
-        let joined = left.left_join_by(&right, |_, lv| lv.0.clone(), |_, rv| rv.0.clone());
+        let joined = left.inner_join_by(&right, |_, lv| lv.0.clone(), |_, rv| rv.0.clone());
 
-        let (tx, rx) = mpsc::channel::<MapDiff<String, ((String, i32), Vec<(String, i32)>)>>();
+        let (tx, rx) = mpsc::channel::<MapDiff<(String, String), ((String, i32), (String, i32))>>();
         let _guard = joined.subscribe_diffs(move |diff| {
             let _ = tx.send(diff.clone());
         });
@@ -243,8 +234,8 @@ mod tests {
         let seen: Vec<_> = rx.try_iter().collect();
         assert_eq!(seen.len(), 2);
         match seen.last().expect("last diff") {
-            MapDiff::Batch { changes } => assert!(!changes.is_empty()),
-            _ => panic!("expected batch diff from left_join_by"),
+            MapDiff::Batch { changes } => assert_eq!(changes.len(), 2),
+            _ => panic!("expected batch diff from inner_join_by"),
         }
     }
 
@@ -281,10 +272,10 @@ mod tests {
     }
 
     #[test]
-    fn left_join_fk_keeps_unmatched_with_empty_vec() {
+    fn inner_join_fk_pairs_on_foreign_key() {
         let users = CellMap::<String, User>::new();
         let posts = CellMap::<String, Post>::new();
-        let joined = users.left_join_fk(&posts);
+        let joined = users.inner_join_fk(&posts);
 
         users.insert(
             "u1".to_string(),
@@ -292,19 +283,35 @@ mod tests {
                 name: "Alice".to_string(),
             },
         );
+        posts.insert(
+            "p1".to_string(),
+            Post {
+                user_id: UserId("u1".to_string()),
+                title: "Hello".to_string(),
+            },
+        );
 
-        let val = joined.get_value(&"u1".to_string());
-        assert!(val.is_some());
-        let (user, posts) = val.unwrap();
-        assert_eq!(user.name, "Alice");
-        assert_eq!(posts.len(), 0);
+        let key = ("u1".to_string(), "p1".to_string());
+        let val = joined.get_value(&key);
+        assert_eq!(
+            val,
+            Some((
+                User {
+                    name: "Alice".to_string()
+                },
+                Post {
+                    user_id: UserId("u1".to_string()),
+                    title: "Hello".to_string()
+                },
+            ))
+        );
     }
 
     #[test]
-    fn left_join_fk_collects_matching_posts() {
+    fn inner_join_fk_handles_one_to_many() {
         let users = CellMap::<String, User>::new();
         let posts = CellMap::<String, Post>::new();
-        let joined = users.left_join_fk(&posts);
+        let joined = users.inner_join_fk(&posts);
 
         users.insert(
             "u1".to_string(),
@@ -327,9 +334,29 @@ mod tests {
             },
         );
 
-        let val = joined.get_value(&"u1".to_string());
-        assert!(val.is_some());
-        let (_, matched_posts) = val.unwrap();
-        assert_eq!(matched_posts.len(), 2);
+        assert_eq!(joined.entries().get().len(), 2);
+    }
+
+    #[test]
+    fn inner_join_fk_excludes_unmatched() {
+        let users = CellMap::<String, User>::new();
+        let posts = CellMap::<String, Post>::new();
+        let joined = users.inner_join_fk(&posts);
+
+        users.insert(
+            "u1".to_string(),
+            User {
+                name: "Alice".to_string(),
+            },
+        );
+        posts.insert(
+            "p1".to_string(),
+            Post {
+                user_id: UserId("u2".to_string()),
+                title: "Orphan".to_string(),
+            },
+        );
+
+        assert_eq!(joined.entries().get().len(), 0);
     }
 }

@@ -10,7 +10,7 @@ use arc_swap::ArcSwap;
 use crate::{
     cell::{CellImmutable, CellMutable},
     cell_map::{CellMap, MapDiff},
-    traits::CellValue,
+    traits::{CellValue, reactive_map::ReactiveMap},
 };
 
 #[derive(Clone)]
@@ -400,42 +400,54 @@ where
     changes
 }
 
-pub(crate) fn run_join_runtime<LK, LV, LM, RK, RV, RM, JK, OK, OV, FL, FR, FO>(
-    left: &CellMap<LK, LV, LM>,
-    right: &CellMap<RK, RV, RM>,
-    op_name: &str,
+// ── The public entry point ──────────────────────────────────────────────
+//
+// Changed from:
+//   run_join_runtime(left: &CellMap<LK, LV, LM>, right: &CellMap<RK, RV, RM>, ...)
+// To:
+//   run_join_runtime(left: &L, right: &R, ...) where L: ReactiveMap, R: ReactiveMap
+//
+// The entire JoinState / apply / recompute machinery is unchanged — it only
+// ever operated on MapDiff, not CellMap directly. The only thing that touched
+// CellMap was the subscribe_diffs call and the op_name formatting. Both are
+// now behind the ReactiveMap trait.
+
+pub(crate) fn run_join_runtime<L, R, JK, OK, OV, FL, FR, FO>(
+    left: &L,
+    right: &R,
+    _op_name: &str,
     left_join_key: FL,
     right_join_key: FR,
     compute_rows: FO,
 ) -> CellMap<OK, OV, CellImmutable>
 where
-    LK: Hash + Eq + CellValue,
-    LV: CellValue,
-    RK: Hash + Eq + CellValue,
-    RV: CellValue,
+    L: ReactiveMap,
+    R: ReactiveMap,
     JK: Hash + Eq + CellValue,
     OK: Hash + Eq + CellValue,
     OV: CellValue,
-    FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
-    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
-    FO: Fn(&LK, &LV, &[(RK, RV)]) -> Vec<(OK, OV)> + Send + Sync + 'static,
+    FL: Fn(&L::Key, &L::Value) -> JK + Send + Sync + 'static,
+    FR: Fn(&R::Key, &R::Value) -> JK + Send + Sync + 'static,
+    FO: Fn(&L::Key, &L::Value, &[(R::Key, R::Value)]) -> Vec<(OK, OV)> + Send + Sync + 'static,
 {
     let output = CellMap::<OK, OV, CellMutable>::new();
-    if let Some(parent_name) = (**left.inner.name.load()).as_ref() {
-        output
-            .clone()
-            .with_name(format!("{}::{}", parent_name, op_name));
-    }
 
-    let state = Arc::new(ArcSwap::from_pointee(
-        JoinState::<LK, LV, RK, RV, JK, OK, OV>::default(),
-    ));
+    let state = Arc::new(ArcSwap::from_pointee(JoinState::<
+        L::Key,
+        L::Value,
+        R::Key,
+        R::Value,
+        JK,
+        OK,
+        OV,
+    >::default()));
     let left_join_key = Arc::new(left_join_key);
     let right_join_key = Arc::new(right_join_key);
     let compute_rows = Arc::new(compute_rows);
 
+    // Subscribe to left side via ReactiveMap trait
     let output_weak = Arc::downgrade(&output.inner);
-    let left_guard = left.subscribe_diffs({
+    let left_guard = left.subscribe_diffs_reactive({
         let state = state.clone();
         let left_join_key = left_join_key.clone();
         let compute_rows = compute_rows.clone();
@@ -451,7 +463,7 @@ where
             let changes_cell = std::cell::RefCell::new(Vec::<MapDiff<OK, OV>>::new());
             state.rcu(|current| {
                 let mut next = current.as_ref().clone();
-                let mut impacted: HashSet<LK> = HashSet::new();
+                let mut impacted: HashSet<L::Key> = HashSet::new();
                 apply_left_diff(&mut next, diff, left_join_key.as_ref(), &mut impacted);
                 let changes = recompute_impacted(&mut next, impacted, compute_rows.as_ref());
                 *changes_cell.borrow_mut() = changes;
@@ -462,8 +474,9 @@ where
         }
     });
 
+    // Subscribe to right side via ReactiveMap trait
     let output_weak = Arc::downgrade(&output.inner);
-    let right_guard = right.subscribe_diffs({
+    let right_guard = right.subscribe_diffs_reactive({
         let state = state.clone();
         let right_join_key = right_join_key.clone();
         let compute_rows = compute_rows.clone();
@@ -479,7 +492,7 @@ where
             let changes_cell = std::cell::RefCell::new(Vec::<MapDiff<OK, OV>>::new());
             state.rcu(|current| {
                 let mut next = current.as_ref().clone();
-                let mut impacted: HashSet<LK> = HashSet::new();
+                let mut impacted: HashSet<L::Key> = HashSet::new();
                 apply_right_diff(&mut next, diff, right_join_key.as_ref(), &mut impacted);
                 let changes = recompute_impacted(&mut next, impacted, compute_rows.as_ref());
                 *changes_cell.borrow_mut() = changes;

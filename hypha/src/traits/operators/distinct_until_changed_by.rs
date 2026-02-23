@@ -82,7 +82,7 @@ mod tests {
     use super::*;
     use crate::Mutable;
 
-    #[derive(Clone, Debug)]
+    #[derive(Clone, Debug, PartialEq)]
     struct User {
         id: u32,
         #[allow(dead_code)]
