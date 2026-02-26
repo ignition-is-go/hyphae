@@ -21,7 +21,7 @@ pub trait DistinctUntilChangedByExt<T>: Watchable<T> {
     /// ```
     /// use hypha::{Cell, Mutable, Gettable, DistinctUntilChangedByExt};
     ///
-    /// #[derive(Clone, Debug)]
+    /// #[derive(Clone, Debug, PartialEq)]
     /// struct User { id: u32, name: String }
     ///
     /// let source = Cell::new(User { id: 1, name: "Alice".into() });
