@@ -5,19 +5,22 @@ use crate::{
     cell_map::CellMap,
     traits::{
         CellValue, HasForeignKey, IdFor, collections::internal::join_runtime::run_join_runtime,
-        reactive_map::ReactiveMap,
+        reactive_keys::ReactiveKeys, reactive_map::ReactiveMap,
     },
 };
+
+type LeftJoinResult<L, R> = CellMap<
+    <L as ReactiveKeys>::Key,
+    (<L as ReactiveMap>::Value, Vec<<R as ReactiveMap>::Value>),
+    CellImmutable,
+>;
 
 pub trait LeftJoinExt: ReactiveMap {
     /// Left join on equal map keys.
     ///
     /// Every left row produces exactly one output row. Right matches are collected into a `Vec`.
     /// An empty `Vec` means no matching right rows were found.
-    fn left_join<R>(
-        &self,
-        right: &R,
-    ) -> CellMap<Self::Key, (Self::Value, Vec<R::Value>), CellImmutable>
+    fn left_join<R>(&self, right: &R) -> LeftJoinResult<Self, R>
     where
         R: ReactiveMap<Key = Self::Key>;
 
@@ -26,10 +29,7 @@ pub trait LeftJoinExt: ReactiveMap {
     /// Joins on the left map key matching the right value's foreign key.
     /// Every left row produces exactly one output row. Right matches are collected into a `Vec`.
     /// An empty `Vec` means no matching right rows were found.
-    fn left_join_fk<R>(
-        &self,
-        right: &R,
-    ) -> CellMap<Self::Key, (Self::Value, Vec<R::Value>), CellImmutable>
+    fn left_join_fk<R>(&self, right: &R) -> LeftJoinResult<Self, R>
     where
         R: ReactiveMap,
         R::Value: HasForeignKey<Self::Value>,
@@ -46,7 +46,7 @@ pub trait LeftJoinExt: ReactiveMap {
         right: &R,
         left_key: FL,
         right_key: FR,
-    ) -> CellMap<Self::Key, (Self::Value, Vec<R::Value>), CellImmutable>
+    ) -> LeftJoinResult<Self, R>
     where
         R: ReactiveMap,
         JK: Hash + Eq + CellValue,
@@ -55,10 +55,7 @@ pub trait LeftJoinExt: ReactiveMap {
 }
 
 impl<L: ReactiveMap> LeftJoinExt for L {
-    fn left_join<R>(
-        &self,
-        right: &R,
-    ) -> CellMap<Self::Key, (Self::Value, Vec<R::Value>), CellImmutable>
+    fn left_join<R>(&self, right: &R) -> LeftJoinResult<Self, R>
     where
         R: ReactiveMap<Key = Self::Key>,
     {
@@ -75,10 +72,7 @@ impl<L: ReactiveMap> LeftJoinExt for L {
         )
     }
 
-    fn left_join_fk<R>(
-        &self,
-        right: &R,
-    ) -> CellMap<Self::Key, (Self::Value, Vec<R::Value>), CellImmutable>
+    fn left_join_fk<R>(&self, right: &R) -> LeftJoinResult<Self, R>
     where
         R: ReactiveMap,
         R::Value: HasForeignKey<Self::Value>,
@@ -97,7 +91,7 @@ impl<L: ReactiveMap> LeftJoinExt for L {
         right: &R,
         left_key: FL,
         right_key: FR,
-    ) -> CellMap<Self::Key, (Self::Value, Vec<R::Value>), CellImmutable>
+    ) -> LeftJoinResult<Self, R>
     where
         R: ReactiveMap,
         JK: Hash + Eq + CellValue,

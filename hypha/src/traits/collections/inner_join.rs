@@ -5,9 +5,21 @@ use crate::{
     cell_map::CellMap,
     traits::{
         CellValue, HasForeignKey, IdFor, collections::internal::join_runtime::run_join_runtime,
-        reactive_map::ReactiveMap,
+        reactive_keys::ReactiveKeys, reactive_map::ReactiveMap,
     },
 };
+
+type InnerJoinByKeyResult<L, R> = CellMap<
+    <L as ReactiveKeys>::Key,
+    (<L as ReactiveMap>::Value, <R as ReactiveMap>::Value),
+    CellImmutable,
+>;
+
+type InnerJoinByPairResult<L, R> = CellMap<
+    (<L as ReactiveKeys>::Key, <R as ReactiveKeys>::Key),
+    (<L as ReactiveMap>::Value, <R as ReactiveMap>::Value),
+    CellImmutable,
+>;
 
 pub trait InnerJoinExt: ReactiveMap {
     /// Inner join on equal map keys.
@@ -15,10 +27,7 @@ pub trait InnerJoinExt: ReactiveMap {
     /// Pairs left and right rows that share the same map key.
     /// Produces one output row per match, keyed by the shared key.
     /// Unmatched rows from either side are excluded.
-    fn inner_join<R>(
-        &self,
-        right: &R,
-    ) -> CellMap<Self::Key, (Self::Value, R::Value), CellImmutable>
+    fn inner_join<R>(&self, right: &R) -> InnerJoinByKeyResult<Self, R>
     where
         R: ReactiveMap<Key = Self::Key>;
 
@@ -27,10 +36,7 @@ pub trait InnerJoinExt: ReactiveMap {
     /// Joins on the left map key matching the right value's foreign key.
     /// Produces one output row per matching (left, right) pair, keyed by `(K, RK)`.
     /// Unmatched rows from either side are excluded.
-    fn inner_join_fk<R>(
-        &self,
-        right: &R,
-    ) -> CellMap<(Self::Key, R::Key), (Self::Value, R::Value), CellImmutable>
+    fn inner_join_fk<R>(&self, right: &R) -> InnerJoinByPairResult<Self, R>
     where
         R: ReactiveMap,
         R::Value: HasForeignKey<Self::Value>,
@@ -47,7 +53,7 @@ pub trait InnerJoinExt: ReactiveMap {
         right: &R,
         left_key: FL,
         right_key: FR,
-    ) -> CellMap<(Self::Key, R::Key), (Self::Value, R::Value), CellImmutable>
+    ) -> InnerJoinByPairResult<Self, R>
     where
         R: ReactiveMap,
         JK: Hash + Eq + CellValue,
@@ -56,7 +62,7 @@ pub trait InnerJoinExt: ReactiveMap {
 }
 
 impl<L: ReactiveMap> InnerJoinExt for L {
-    fn inner_join<R>(&self, right: &R) -> CellMap<Self::Key, (Self::Value, R::Value), CellImmutable>
+    fn inner_join<R>(&self, right: &R) -> InnerJoinByKeyResult<Self, R>
     where
         R: ReactiveMap<Key = Self::Key>,
     {
@@ -75,10 +81,7 @@ impl<L: ReactiveMap> InnerJoinExt for L {
         )
     }
 
-    fn inner_join_fk<R>(
-        &self,
-        right: &R,
-    ) -> CellMap<(Self::Key, R::Key), (Self::Value, R::Value), CellImmutable>
+    fn inner_join_fk<R>(&self, right: &R) -> InnerJoinByPairResult<Self, R>
     where
         R: ReactiveMap,
         R::Value: HasForeignKey<Self::Value>,
@@ -97,7 +100,7 @@ impl<L: ReactiveMap> InnerJoinExt for L {
         right: &R,
         left_key: FL,
         right_key: FR,
-    ) -> CellMap<(Self::Key, R::Key), (Self::Value, R::Value), CellImmutable>
+    ) -> InnerJoinByPairResult<Self, R>
     where
         R: ReactiveMap,
         JK: Hash + Eq + CellValue,
