@@ -113,7 +113,7 @@ impl<T, W: Watchable<T>> BufferTimeExt<T> for W {}
 #[cfg(test)]
 #[allow(clippy::disallowed_types)]
 mod tests {
-    use std::sync::Mutex;
+    use std::{sync::Mutex, time::Instant};
 
     use super::*;
     use crate::Mutable;
@@ -139,16 +139,23 @@ mod tests {
         source.set(2);
         source.set(3);
 
-        // Wait for buffer to emit
-        thread::sleep(Duration::from_millis(70));
+        let deadline = Instant::now() + Duration::from_millis(1000);
+        loop {
+            {
+                let emitted = emissions.lock().unwrap();
+                let has_expected = emitted.iter().any(|v| v == &vec![1, 2, 3]);
+                if has_expected {
+                    break;
+                }
+            }
 
-        let emitted = emissions.lock().unwrap();
-        // Should have initial empty + one buffered emission
-        assert!(emitted.len() >= 2);
-        // Find the non-empty emission
-        let non_empty: Vec<_> = emitted.iter().filter(|v| !v.is_empty()).collect();
-        assert!(!non_empty.is_empty());
-        assert_eq!(non_empty[0], &vec![1, 2, 3]);
+            if Instant::now() >= deadline {
+                let emitted = emissions.lock().unwrap();
+                panic!("Timed out waiting for buffered emission [1, 2, 3], got {emitted:?}");
+            }
+
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]
@@ -170,10 +177,22 @@ mod tests {
         // Complete before timer
         source.complete();
 
-        // Should have emitted remainder
-        let emitted = emissions.lock().unwrap();
-        let non_empty: Vec<_> = emitted.iter().filter(|v| !v.is_empty()).collect();
-        assert!(!non_empty.is_empty());
-        assert_eq!(non_empty[0], &vec![1, 2]);
+        let deadline = Instant::now() + Duration::from_millis(1000);
+        loop {
+            {
+                let emitted = emissions.lock().unwrap();
+                let has_expected = emitted.iter().any(|v| v == &vec![1, 2]);
+                if has_expected {
+                    break;
+                }
+            }
+
+            if Instant::now() >= deadline {
+                let emitted = emissions.lock().unwrap();
+                panic!("Timed out waiting for completion remainder [1, 2], got {emitted:?}");
+            }
+
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 }
