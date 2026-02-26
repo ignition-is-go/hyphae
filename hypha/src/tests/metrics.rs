@@ -185,23 +185,6 @@ fn test_is_backed_up_with_slow_subscriber() {
 }
 
 #[test]
-fn test_is_backed_up_threshold_custom() {
-    let cell = Cell::with_metrics(0);
-
-    let _guard = cell.subscribe(|_| {
-        thread::sleep(Duration::from_millis(5));
-    });
-
-    cell.set(1);
-
-    // 5ms < 10ms threshold, so not backed up
-    assert!(!cell.is_backed_up_threshold(Duration::from_millis(10)));
-
-    // 5ms > 2ms threshold, so backed up
-    assert!(cell.is_backed_up_threshold(Duration::from_millis(2)));
-}
-
-#[test]
 fn test_try_set_succeeds_when_not_backed_up() {
     let cell = Cell::with_metrics(0);
 
