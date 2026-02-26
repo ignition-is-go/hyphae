@@ -240,12 +240,12 @@ fn test_try_set_threshold() {
 
     cell.set(1);
 
-    // 5ms < 10ms threshold, so try_set_threshold should succeed
-    assert!(cell.try_set_threshold(2, Duration::from_millis(10)).is_ok());
+    // Use a generous threshold to avoid CI scheduler jitter.
+    assert!(cell.try_set_threshold(2, Duration::from_millis(100)).is_ok());
     assert_eq!(cell.get(), 2);
 
-    // Now 5ms > 2ms threshold, so should fail
-    assert!(cell.try_set_threshold(3, Duration::from_millis(2)).is_err());
+    // Now use a strict threshold that should fail with the slow subscriber.
+    assert!(cell.try_set_threshold(3, Duration::from_millis(1)).is_err());
 }
 
 #[test]

@@ -43,8 +43,11 @@ fn test_from_iter_with_delay_emits_all() {
     // Initial value
     assert_eq!(received.load(Ordering::SeqCst), 1);
 
-    // Wait for all to emit
-    thread::sleep(Duration::from_millis(100));
+    // Wait for all values to emit (timing can jitter on busy CI machines).
+    let deadline = std::time::Instant::now() + Duration::from_millis(500);
+    while received.load(Ordering::SeqCst) != 3 && std::time::Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
     assert_eq!(received.load(Ordering::SeqCst), 3);
 }
 
