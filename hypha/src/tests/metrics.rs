@@ -241,7 +241,10 @@ fn test_try_set_threshold() {
     cell.set(1);
 
     // Use a generous threshold to avoid CI scheduler jitter.
-    assert!(cell.try_set_threshold(2, Duration::from_millis(100)).is_ok());
+    assert!(
+        cell.try_set_threshold(2, Duration::from_millis(100))
+            .is_ok()
+    );
     assert_eq!(cell.get(), 2);
 
     // Now use a strict threshold that should fail with the slow subscriber.

@@ -60,6 +60,7 @@ pub(crate) struct CellInner<T> {
     /// Callback for slow subscriber alerts.
     pub(crate) slow_subscriber_callback: ArcSwap<Option<SlowSubscriberCallback>>,
     /// Source location where this cell was created (via #[track_caller]).
+    #[allow(dead_code)]
     pub(crate) caller: &'static Location<'static>,
 }
 

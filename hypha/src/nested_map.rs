@@ -154,12 +154,12 @@ where
                         rc.insert(key.clone(), pk);
                     }
                     MapDiff::Remove { key, .. } => {
-                        if let Some(old_pk) = st.reverse.remove(key) {
-                            if let Some(set) = st.forward.get_mut(&old_pk) {
-                                set.remove(key);
-                                if set.is_empty() {
-                                    st.forward.remove(&old_pk);
-                                }
+                        if let Some(old_pk) = st.reverse.remove(key)
+                            && let Some(set) = st.forward.get_mut(&old_pk)
+                        {
+                            set.remove(key);
+                            if set.is_empty() {
+                                st.forward.remove(&old_pk);
                             }
                         }
                         rc.remove(key);
@@ -167,14 +167,13 @@ where
                     MapDiff::Update { key, new_value, .. } => {
                         let new_pk = fk(new_value);
                         // Remove from old group
-                        if let Some(old_pk) = st.reverse.insert(key.clone(), new_pk.clone()) {
-                            if old_pk != new_pk {
-                                if let Some(set) = st.forward.get_mut(&old_pk) {
-                                    set.remove(key);
-                                    if set.is_empty() {
-                                        st.forward.remove(&old_pk);
-                                    }
-                                }
+                        if let Some(old_pk) = st.reverse.insert(key.clone(), new_pk.clone())
+                            && old_pk != new_pk
+                            && let Some(set) = st.forward.get_mut(&old_pk)
+                        {
+                            set.remove(key);
+                            if set.is_empty() {
+                                st.forward.remove(&old_pk);
                             }
                         }
                         st.forward
@@ -269,8 +268,8 @@ where
         self.subscribe_source_diffs(move |diff| {
             fn filter_for_parent<PK, K, V>(
                 diff: &MapDiff<K, V>,
-                parent_key: &PK,
-                rc: &DashMap<K, PK>,
+                _parent_key: &PK,
+                _rc: &DashMap<K, PK>,
                 fk_match: &dyn Fn(&K) -> bool,
             ) -> Option<MapDiff<K, V>>
             where
@@ -303,7 +302,7 @@ where
                     MapDiff::Batch { changes } => {
                         let filtered: Vec<_> = changes
                             .iter()
-                            .filter_map(|c| filter_for_parent(c, parent_key, rc, fk_match))
+                            .filter_map(|c| filter_for_parent(c, _parent_key, _rc, fk_match))
                             .collect();
                         if filtered.is_empty() {
                             None
