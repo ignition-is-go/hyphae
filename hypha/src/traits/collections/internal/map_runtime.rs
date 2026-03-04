@@ -103,11 +103,32 @@ where
             .remove(&source_key)
             .unwrap_or_default();
 
-        let mut desired_rows: HashMap<OK, OV> = HashMap::new();
-        if let Some(source_value) = state.source_rows.get(&source_key) {
-            for (out_key, out_value) in compute_rows(&source_key, source_value) {
-                desired_rows.insert(out_key, out_value);
+        let Some(source_value) = state.source_rows.get(&source_key) else {
+            // Fast-path for removes/absent rows that were never projected:
+            // no previous output keys means no downstream work at all.
+            if previous_output_keys.is_empty() {
+                continue;
             }
+            for stale_key in previous_output_keys {
+                if let Some(old_value) = state.output_cache.remove(&stale_key) {
+                    changes.push(MapDiff::Remove {
+                        key: stale_key,
+                        old_value,
+                    });
+                }
+            }
+            continue;
+        };
+
+        let mut desired_rows: HashMap<OK, OV> = HashMap::new();
+        for (out_key, out_value) in compute_rows(&source_key, source_value) {
+            desired_rows.insert(out_key, out_value);
+        }
+
+        // If nothing was previously projected and nothing is now projected,
+        // skip all downstream bookkeeping.
+        if previous_output_keys.is_empty() && desired_rows.is_empty() {
+            continue;
         }
 
         let desired_keys: HashSet<OK> = desired_rows.keys().cloned().collect();
@@ -127,14 +148,16 @@ where
         for (out_key, new_value) in desired_rows {
             match state.output_cache.get(&out_key).cloned() {
                 Some(old_value) => {
-                    state
-                        .output_cache
-                        .insert(out_key.clone(), new_value.clone());
-                    changes.push(MapDiff::Update {
-                        key: out_key,
-                        old_value,
-                        new_value,
-                    });
+                    if old_value != new_value {
+                        state
+                            .output_cache
+                            .insert(out_key.clone(), new_value.clone());
+                        changes.push(MapDiff::Update {
+                            key: out_key,
+                            old_value,
+                            new_value,
+                        });
+                    }
                 }
                 None => {
                     state

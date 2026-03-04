@@ -3,7 +3,10 @@ use std::hash::Hash;
 use crate::{
     cell::CellImmutable,
     cell_map::CellMap,
-    traits::{CellValue, collections::project::ProjectMapExt},
+    traits::{
+        CellValue,
+        collections::internal::map_runtime::run_map_runtime,
+    },
 };
 
 pub trait SelectExt<K, V>
@@ -29,11 +32,11 @@ where
     where
         F: Fn(&V) -> bool + Send + Sync + 'static,
     {
-        self.project(move |k, v| {
+        run_map_runtime(self, "select", move |k, v| {
             if predicate(v) {
-                Some((k.clone(), v.clone()))
+                vec![(k.clone(), v.clone())]
             } else {
-                None
+                Vec::new()
             }
         })
     }
