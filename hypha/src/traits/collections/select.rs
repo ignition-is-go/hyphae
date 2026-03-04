@@ -3,10 +3,7 @@ use std::hash::Hash;
 use crate::{
     cell::CellImmutable,
     cell_map::CellMap,
-    traits::{
-        CellValue,
-        collections::internal::map_runtime::run_map_runtime,
-    },
+    traits::{CellValue, collections::internal::map_runtime::run_map_runtime},
 };
 
 pub trait SelectExt<K, V>

@@ -736,9 +736,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        atomic::{AtomicUsize, Ordering},
-    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
     use crate::traits::{Gettable, Watchable};
