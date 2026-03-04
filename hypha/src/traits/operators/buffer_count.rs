@@ -97,9 +97,8 @@ pub trait BufferCountExt<T>: Watchable<T> {
 impl<T, W: Watchable<T>> BufferCountExt<T> for W {}
 
 #[cfg(test)]
-#[allow(clippy::disallowed_types)]
 mod tests {
-    use std::sync::{Mutex, atomic::AtomicUsize};
+    use std::sync::atomic::AtomicUsize;
 
     use super::*;
     use crate::Mutable;
@@ -108,46 +107,41 @@ mod tests {
     fn test_buffer_count() {
         let source = Cell::new(0);
         let buffered = source.buffer_count(3);
-        let emissions = Arc::new(Mutex::new(Vec::new()));
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<i32>>();
 
-        let e = emissions.clone();
         let _guard = buffered.subscribe(move |signal| {
             if let Signal::Value(v) = signal {
-                e.lock().unwrap().push((**v).clone());
+                let _ = tx.send((**v).clone());
             }
         });
 
         // Initial empty vec
-        assert_eq!(emissions.lock().unwrap().len(), 1);
-        assert!(emissions.lock().unwrap()[0].is_empty());
+        assert_eq!(rx.recv().ok(), Some(vec![]));
 
         source.set(1);
         source.set(2);
-        assert_eq!(emissions.lock().unwrap().len(), 1); // Not yet
+        assert!(rx.try_recv().is_err()); // Not yet
 
         source.set(3);
-        assert_eq!(emissions.lock().unwrap().len(), 2);
-        assert_eq!(emissions.lock().unwrap()[1], vec![1, 2, 3]);
+        assert_eq!(rx.recv().ok(), Some(vec![1, 2, 3]));
 
         source.set(4);
         source.set(5);
         source.set(6);
-        assert_eq!(emissions.lock().unwrap().len(), 3);
-        assert_eq!(emissions.lock().unwrap()[2], vec![4, 5, 6]);
+        assert_eq!(rx.recv().ok(), Some(vec![4, 5, 6]));
     }
 
     #[test]
     fn test_buffer_count_emits_remainder_on_complete() {
         let source = Cell::new(0);
         let buffered = source.buffer_count(3);
-        let emissions = Arc::new(Mutex::new(Vec::new()));
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<i32>>();
         let completed = Arc::new(AtomicUsize::new(0));
 
-        let e = emissions.clone();
         let c = completed.clone();
         let _guard = buffered.subscribe(move |signal| match signal {
             Signal::Value(v) => {
-                e.lock().unwrap().push((**v).clone());
+                let _ = tx.send((**v).clone());
             }
             Signal::Complete => {
                 c.fetch_add(1, Ordering::SeqCst);
@@ -158,12 +152,11 @@ mod tests {
         source.set(1);
         source.set(2);
         // Only 2 values, not a full buffer
-        assert_eq!(emissions.lock().unwrap().len(), 1); // Just initial
+        assert_eq!(rx.recv().ok(), Some(vec![])); // Just initial
 
         source.complete();
         // Should emit remainder [1, 2] then complete
-        assert_eq!(emissions.lock().unwrap().len(), 2);
-        assert_eq!(emissions.lock().unwrap()[1], vec![1, 2]);
+        assert_eq!(rx.recv().ok(), Some(vec![1, 2]));
         assert_eq!(completed.load(Ordering::SeqCst), 1);
     }
 }

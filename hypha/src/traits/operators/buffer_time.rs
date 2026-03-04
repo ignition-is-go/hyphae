@@ -111,9 +111,8 @@ pub trait BufferTimeExt<T>: Watchable<T> {
 impl<T, W: Watchable<T>> BufferTimeExt<T> for W {}
 
 #[cfg(test)]
-#[allow(clippy::disallowed_types)]
 mod tests {
-    use std::{sync::Mutex, time::Instant};
+    use std::time::Instant;
 
     use super::*;
     use crate::Mutable;
@@ -123,16 +122,18 @@ mod tests {
         let source = Cell::new(0);
         let buffered = source.buffer_time(Duration::from_millis(50));
 
-        let emissions = Arc::new(Mutex::new(Vec::<Vec<i32>>::new()));
-        let e = emissions.clone();
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<i32>>();
         let _guard = buffered.subscribe(move |signal| {
             if let Signal::Value(v) = signal {
-                e.lock().unwrap().push((**v).clone());
+                let _ = tx.send((**v).clone());
             }
         });
 
         // Initial empty
-        assert_eq!(emissions.lock().unwrap().len(), 1);
+        let initial = rx
+            .recv_timeout(Duration::from_millis(200))
+            .expect("expected initial emission");
+        assert!(initial.is_empty());
 
         // Add values
         source.set(1);
@@ -142,19 +143,16 @@ mod tests {
         let deadline = Instant::now() + Duration::from_millis(1000);
         loop {
             {
-                let emitted = emissions.lock().unwrap();
-                let has_expected = emitted.iter().any(|v| v == &vec![1, 2, 3]);
-                if has_expected {
+                if let Ok(emitted) = rx.recv_timeout(Duration::from_millis(20))
+                    && emitted == vec![1, 2, 3]
+                {
                     break;
-                }
+                };
             }
 
             if Instant::now() >= deadline {
-                let emitted = emissions.lock().unwrap();
-                panic!("Timed out waiting for buffered emission [1, 2, 3], got {emitted:?}");
+                panic!("Timed out waiting for buffered emission [1, 2, 3]");
             }
-
-            thread::sleep(Duration::from_millis(10));
         }
     }
 
@@ -163,13 +161,17 @@ mod tests {
         let source = Cell::new(0);
         let buffered = source.buffer_time(Duration::from_millis(100));
 
-        let emissions = Arc::new(Mutex::new(Vec::<Vec<i32>>::new()));
-        let e = emissions.clone();
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<i32>>();
         let _guard = buffered.subscribe(move |signal| {
             if let Signal::Value(v) = signal {
-                e.lock().unwrap().push((**v).clone());
+                let _ = tx.send((**v).clone());
             }
         });
+
+        let initial = rx
+            .recv_timeout(Duration::from_millis(200))
+            .expect("expected initial emission");
+        assert!(initial.is_empty());
 
         source.set(1);
         source.set(2);
@@ -180,19 +182,16 @@ mod tests {
         let deadline = Instant::now() + Duration::from_millis(1000);
         loop {
             {
-                let emitted = emissions.lock().unwrap();
-                let has_expected = emitted.iter().any(|v| v == &vec![1, 2]);
-                if has_expected {
+                if let Ok(emitted) = rx.recv_timeout(Duration::from_millis(20))
+                    && emitted == vec![1, 2]
+                {
                     break;
-                }
+                };
             }
 
             if Instant::now() >= deadline {
-                let emitted = emissions.lock().unwrap();
-                panic!("Timed out waiting for completion remainder [1, 2], got {emitted:?}");
+                panic!("Timed out waiting for completion remainder [1, 2]");
             }
-
-            thread::sleep(Duration::from_millis(10));
         }
     }
 }

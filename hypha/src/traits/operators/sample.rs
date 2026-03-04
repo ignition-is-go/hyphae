@@ -41,10 +41,7 @@ pub trait SampleExt<T>: Watchable<T> {
 impl<T, W: Watchable<T>> SampleExt<T> for W {}
 
 #[cfg(test)]
-#[allow(clippy::disallowed_types)]
 mod tests {
-    use std::sync::{Arc, Mutex};
-
     use super::*;
     use crate::{Mutable, Signal};
 
@@ -54,26 +51,25 @@ mod tests {
         let ticker = Cell::new(());
         let sampled = source.sample(&ticker);
 
-        let emissions = Arc::new(Mutex::new(Vec::new()));
-        let e = emissions.clone();
+        let (tx, rx) = std::sync::mpsc::channel::<i32>();
         let _guard = sampled.subscribe(move |signal| {
             if let Signal::Value(v) = signal {
-                e.lock().unwrap().push(**v);
+                let _ = tx.send(**v);
             }
         });
 
         // Initial value
-        assert_eq!(emissions.lock().unwrap().clone(), vec![0]);
+        assert_eq!(rx.recv().ok(), Some(0));
 
         // Source changes but no emission yet
         source.set(1);
         source.set(2);
         source.set(3);
-        assert_eq!(emissions.lock().unwrap().clone(), vec![0]);
+        assert!(rx.try_recv().is_err());
 
         // Ticker fires - emits latest (3)
         ticker.set(());
-        assert_eq!(emissions.lock().unwrap().clone(), vec![0, 3]);
+        assert_eq!(rx.recv().ok(), Some(3));
 
         // More source changes
         source.set(4);
@@ -81,6 +77,6 @@ mod tests {
 
         // Ticker fires - emits 5
         ticker.set(());
-        assert_eq!(emissions.lock().unwrap().clone(), vec![0, 3, 5]);
+        assert_eq!(rx.recv().ok(), Some(5));
     }
 }

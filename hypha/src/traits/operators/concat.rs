@@ -88,10 +88,7 @@ pub trait ConcatExt<T>: Watchable<T> {
 impl<T, W: Watchable<T>> ConcatExt<T> for W {}
 
 #[cfg(test)]
-#[allow(clippy::disallowed_types)]
 mod tests {
-    use std::sync::Mutex;
-
     use super::*;
     use crate::Mutable;
 
@@ -101,21 +98,21 @@ mod tests {
         let second = Cell::new(100);
         let combined = first.concat(&second);
 
-        let emissions = Arc::new(Mutex::new(Vec::new()));
-        let e = emissions.clone();
+        let (tx, rx) = std::sync::mpsc::channel::<i32>();
         let _guard = combined.subscribe(move |signal| {
             if let Signal::Value(v) = signal {
-                e.lock().unwrap().push(**v);
+                let _ = tx.send(**v);
             }
         });
 
         // Initial value from first
-        assert_eq!(emissions.lock().unwrap().clone(), vec![1]);
+        assert_eq!(rx.recv().ok(), Some(1));
 
         // Values from first
         first.set(2);
         first.set(3);
-        assert_eq!(emissions.lock().unwrap().clone(), vec![1, 2, 3]);
+        assert_eq!(rx.recv().ok(), Some(2));
+        assert_eq!(rx.recv().ok(), Some(3));
 
         // Complete first - switches to second
         first.complete();
@@ -125,9 +122,9 @@ mod tests {
 
         // Values from second
         second.set(200);
-        assert_eq!(emissions.lock().unwrap().clone(), vec![1, 2, 3, 200]);
+        assert_eq!(rx.recv().ok(), Some(200));
 
         second.set(300);
-        assert_eq!(emissions.lock().unwrap().clone(), vec![1, 2, 3, 200, 300]);
+        assert_eq!(rx.recv().ok(), Some(300));
     }
 }

@@ -40,10 +40,7 @@ pub trait WithLatestFromExt<T>: Watchable<T> {
 impl<T, W: Watchable<T>> WithLatestFromExt<T> for W {}
 
 #[cfg(test)]
-#[allow(clippy::disallowed_types)]
 mod tests {
-    use std::sync::Mutex;
-
     use super::*;
     use crate::{Mutable, Signal};
 
@@ -53,45 +50,31 @@ mod tests {
         let other = Cell::new("a".to_string());
         let combined = source.with_latest_from(&other);
 
-        let emissions = std::sync::Arc::new(Mutex::new(Vec::new()));
-        let e = emissions.clone();
+        let (tx, rx) = std::sync::mpsc::channel::<(i32, String)>();
         let _guard = combined.subscribe(move |signal| {
             if let Signal::Value(v) = signal {
-                e.lock().unwrap().push((**v).clone());
+                let _ = tx.send((**v).clone());
             }
         });
 
         // Initial combined value
-        assert_eq!(
-            emissions.lock().unwrap().clone(),
-            vec![(0, "a".to_string())]
-        );
+        assert_eq!(rx.recv().ok(), Some((0, "a".to_string())));
 
         // Other changes - no emission
         other.set("b".to_string());
         other.set("c".to_string());
-        assert_eq!(emissions.lock().unwrap().len(), 1);
+        assert!(rx.try_recv().is_err());
 
         // Source changes - emits with latest other
         source.set(1);
-        assert_eq!(
-            emissions.lock().unwrap().clone(),
-            vec![(0, "a".to_string()), (1, "c".to_string()),]
-        );
+        assert_eq!(rx.recv().ok(), Some((1, "c".to_string())));
 
         // Other changes again - no emission
         other.set("d".to_string());
-        assert_eq!(emissions.lock().unwrap().len(), 2);
+        assert!(rx.try_recv().is_err());
 
         // Source changes - emits with latest other
         source.set(2);
-        assert_eq!(
-            emissions.lock().unwrap().clone(),
-            vec![
-                (0, "a".to_string()),
-                (1, "c".to_string()),
-                (2, "d".to_string()),
-            ]
-        );
+        assert_eq!(rx.recv().ok(), Some((2, "d".to_string())));
     }
 }

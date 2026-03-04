@@ -735,10 +735,8 @@ where
 }
 
 #[cfg(test)]
-#[allow(clippy::disallowed_types)]
 mod tests {
     use std::sync::{
-        Mutex,
         atomic::{AtomicUsize, Ordering},
     };
 
@@ -855,15 +853,13 @@ mod tests {
         map.insert("a".to_string(), 1);
         map.insert("b".to_string(), 2);
 
-        let received = Arc::new(Mutex::new(Vec::new()));
-        let received_clone = received.clone();
-
+        let (tx, rx) = std::sync::mpsc::channel::<MapDiff<String, i32>>();
         let _guard = map.subscribe_diffs(move |diff| {
-            received_clone.lock().unwrap().push(diff.clone());
+            let _ = tx.send(diff.clone());
         });
 
         // Should have received Initial with both entries
-        let diffs = received.lock().unwrap();
+        let diffs: Vec<_> = rx.try_iter().collect();
         assert_eq!(diffs.len(), 1);
         match &diffs[0] {
             MapDiff::Initial { entries } => {
@@ -871,13 +867,12 @@ mod tests {
             }
             _ => panic!("Expected Initial diff"),
         }
-        drop(diffs);
 
         // Insert should trigger diff
         map.insert("c".to_string(), 3);
-        let diffs = received.lock().unwrap();
-        assert_eq!(diffs.len(), 2);
-        assert!(matches!(&diffs[1], MapDiff::Insert { key, value } if key == "c" && *value == 3));
+        let diffs: Vec<_> = rx.try_iter().collect();
+        assert_eq!(diffs.len(), 1);
+        assert!(matches!(&diffs[0], MapDiff::Insert { key, value } if key == "c" && *value == 3));
     }
 
     #[test]
