@@ -3,7 +3,7 @@
 //! `CellMap` wraps a concurrent HashMap where each entry can be individually observed.
 //! Changes to keys trigger reactive updates to observers.
 
-use std::{hash::Hash, marker::PhantomData, sync::Arc};
+use std::{collections::HashMap, hash::Hash, marker::PhantomData, sync::Arc};
 
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
@@ -13,8 +13,7 @@ use crate::{
     cell::{Cell, CellImmutable, CellMutable, WeakCell},
     signal::Signal,
     subscription::SubscriptionGuard,
-    traits::{CellValue, Gettable, Mutable, Watchable},
-    MapExt,
+    traits::{CellValue, Mutable, Watchable},
 };
 
 /// Diff notification for map changes.
@@ -92,6 +91,154 @@ where
     V: CellValue,
 {
     inner: std::sync::Weak<CellMapInner<K, V>>,
+}
+
+#[derive(Clone)]
+struct EntryProjection<K, V>
+where
+    K: Hash + Eq + CellValue,
+    V: CellValue,
+{
+    entries: Vec<(K, V)>,
+    index_by_key: HashMap<K, usize>,
+}
+
+impl<K, V> EntryProjection<K, V>
+where
+    K: Hash + Eq + CellValue,
+    V: CellValue,
+{
+    fn from_entries(entries: Vec<(K, V)>) -> Self {
+        let index_by_key = entries
+            .iter()
+            .enumerate()
+            .map(|(idx, (key, _))| (key.clone(), idx))
+            .collect();
+
+        Self {
+            entries,
+            index_by_key,
+        }
+    }
+
+    fn apply_diff(&mut self, diff: &MapDiff<K, V>) {
+        match diff {
+            MapDiff::Initial { entries } => {
+                *self = Self::from_entries(entries.clone());
+            }
+            MapDiff::Insert { key, value } => {
+                if let Some(idx) = self.index_by_key.get(key).copied() {
+                    self.entries[idx].1 = value.clone();
+                    return;
+                }
+                let idx = self.entries.len();
+                self.entries.push((key.clone(), value.clone()));
+                self.index_by_key.insert(key.clone(), idx);
+            }
+            MapDiff::Remove { key, .. } => {
+                self.remove_key(key);
+            }
+            MapDiff::Update { key, new_value, .. } => {
+                if let Some(idx) = self.index_by_key.get(key).copied() {
+                    self.entries[idx].1 = new_value.clone();
+                }
+            }
+            MapDiff::Batch { changes } => {
+                for change in changes {
+                    self.apply_diff(change);
+                }
+            }
+        }
+    }
+
+    fn remove_key(&mut self, key: &K) {
+        let Some(idx) = self.index_by_key.remove(key) else {
+            return;
+        };
+        self.entries.swap_remove(idx);
+        if idx < self.entries.len() {
+            let swapped_key = self.entries[idx].0.clone();
+            self.index_by_key.insert(swapped_key, idx);
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ValueProjection<K, V>
+where
+    K: Hash + Eq + CellValue,
+    V: CellValue,
+{
+    items: Vec<V>,
+    index_by_key: HashMap<K, usize>,
+    keys_by_index: Vec<K>,
+}
+
+impl<K, V> ValueProjection<K, V>
+where
+    K: Hash + Eq + CellValue,
+    V: CellValue,
+{
+    fn from_entries(entries: Vec<(K, V)>) -> Self {
+        let mut items = Vec::with_capacity(entries.len());
+        let mut keys_by_index = Vec::with_capacity(entries.len());
+        let mut index_by_key = HashMap::with_capacity(entries.len());
+
+        for (idx, (key, value)) in entries.into_iter().enumerate() {
+            index_by_key.insert(key.clone(), idx);
+            keys_by_index.push(key);
+            items.push(value);
+        }
+
+        Self {
+            items,
+            index_by_key,
+            keys_by_index,
+        }
+    }
+
+    fn apply_diff(&mut self, diff: &MapDiff<K, V>) {
+        match diff {
+            MapDiff::Initial { entries } => {
+                *self = Self::from_entries(entries.clone());
+            }
+            MapDiff::Insert { key, value } => {
+                if let Some(idx) = self.index_by_key.get(key).copied() {
+                    self.items[idx] = value.clone();
+                    return;
+                }
+                let idx = self.items.len();
+                self.index_by_key.insert(key.clone(), idx);
+                self.keys_by_index.push(key.clone());
+                self.items.push(value.clone());
+            }
+            MapDiff::Remove { key, .. } => {
+                self.remove_key(key);
+            }
+            MapDiff::Update { key, new_value, .. } => {
+                if let Some(idx) = self.index_by_key.get(key).copied() {
+                    self.items[idx] = new_value.clone();
+                }
+            }
+            MapDiff::Batch { changes } => {
+                for change in changes {
+                    self.apply_diff(change);
+                }
+            }
+        }
+    }
+
+    fn remove_key(&mut self, key: &K) {
+        let Some(idx) = self.index_by_key.remove(key) else {
+            return;
+        };
+        self.items.swap_remove(idx);
+        self.keys_by_index.swap_remove(idx);
+        if idx < self.keys_by_index.len() {
+            let swapped_key = self.keys_by_index[idx].clone();
+            self.index_by_key.insert(swapped_key, idx);
+        }
+    }
 }
 
 impl<K, V> CellMap<K, V, CellMutable>
@@ -254,6 +401,7 @@ where
             return;
         }
 
+        let original_len = self.inner.data.len();
         let mut changes = Vec::new();
         for key in keys {
             let removed = self.inner.data.remove(&key);
@@ -275,7 +423,13 @@ where
             return;
         }
 
-        self.inner.diffs_cell.set(MapDiff::Batch { changes });
+        if self.inner.data.is_empty() && changes.len() == original_len {
+            self.inner.diffs_cell.set(MapDiff::Initial {
+                entries: Vec::new(),
+            });
+        } else {
+            self.inner.diffs_cell.set(MapDiff::Batch { changes });
+        }
         self.inner.len_cell.set(self.inner.data.len());
     }
 
@@ -473,13 +627,15 @@ where
     /// are applied incrementally as O(1) operations per diff.
     #[track_caller]
     pub fn entries(&self) -> Cell<Vec<(K, V)>, CellImmutable> {
-        // Build initial entries from current data (O(N) once)
         let initial: Vec<(K, V)> = self
             .inner
             .data
             .iter()
             .map(|r| (r.key().clone(), r.value().clone()))
             .collect();
+        let state = Arc::new(ArcSwap::from_pointee(EntryProjection::from_entries(
+            initial.clone(),
+        )));
 
         let cell = Cell::new(initial);
         if let Some(map_name) = (**self.inner.name.load()).as_ref() {
@@ -494,11 +650,9 @@ where
         // as long as the entries Cell is alive.
         let map_keepalive = self.inner.clone();
 
-        // Subscribe to diffs and apply incrementally (O(1) per update)
         let first = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let guard = self.inner.diffs_cell.subscribe(move |signal| {
             let _ = &map_keepalive; // prevent drop until closure is dropped
-            // Skip the first signal (current value from Cell subscription)
             if first.swap(false, std::sync::atomic::Ordering::SeqCst) {
                 return;
             }
@@ -506,38 +660,13 @@ where
                 return; // Entries cell was dropped
             };
             if let Signal::Value(diff) = signal {
-                // Apply diff incrementally to the entries
-                let mut entries = cell.get();
-                fn apply_diff<K, V>(entries: &mut Vec<(K, V)>, diff: &MapDiff<K, V>)
-                where
-                    K: Hash + Eq + CellValue,
-                    V: CellValue,
-                {
-                    match diff {
-                        MapDiff::Initial { entries: init } => {
-                            *entries = init.clone();
-                        }
-                        MapDiff::Insert { key, value } => {
-                            entries.push((key.clone(), value.clone()));
-                        }
-                        MapDiff::Remove { key, .. } => {
-                            entries.retain(|(k, _)| k != key);
-                        }
-                        MapDiff::Update { key, new_value, .. } => {
-                            if let Some((_, v)) = entries.iter_mut().find(|(k, _)| k == key) {
-                                *v = new_value.clone();
-                            }
-                        }
-                        MapDiff::Batch { changes } => {
-                            for change in changes {
-                                apply_diff(entries, change);
-                            }
-                        }
-                    }
-                }
-
-                apply_diff(&mut entries, diff.as_ref());
-                cell.set(entries);
+                state.rcu(|current| {
+                    let mut next = current.as_ref().clone();
+                    next.apply_diff(diff.as_ref());
+                    next
+                });
+                let next_entries = state.load();
+                cell.set(next_entries.entries.clone());
             }
         });
 
@@ -549,12 +678,49 @@ where
 
     /// Get an observable Cell of all values.
     ///
-    /// This derives from [`CellMap::entries`] and projects only the values.
-    /// It avoids separate keyed bookkeeping in the hot path.
+    /// This maintains its own diff-driven projection to avoid forcing an
+    /// intermediate entries materialization on hot value-only paths.
     #[track_caller]
     pub fn items(&self) -> Cell<Vec<V>, CellImmutable> {
-        self.entries()
-            .map(|entries| entries.iter().map(|(_, value)| value.clone()).collect())
+        let initial: Vec<(K, V)> = self
+            .inner
+            .data
+            .iter()
+            .map(|r| (r.key().clone(), r.value().clone()))
+            .collect();
+        let state = Arc::new(ArcSwap::from_pointee(ValueProjection::from_entries(
+            initial.clone(),
+        )));
+
+        let cell = Cell::new(initial.into_iter().map(|(_, value)| value).collect());
+        if let Some(map_name) = (**self.inner.name.load()).as_ref() {
+            cell.clone().with_name(format!("{}::items", map_name));
+        }
+        let weak_cell = cell.downgrade();
+        let map_keepalive = self.inner.clone();
+
+        let first = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let guard = self.inner.diffs_cell.subscribe(move |signal| {
+            let _ = &map_keepalive;
+            if first.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+            let Some(cell) = weak_cell.upgrade() else {
+                return;
+            };
+            if let Signal::Value(diff) = signal {
+                state.rcu(|current| {
+                    let mut next = current.as_ref().clone();
+                    next.apply_diff(diff.as_ref());
+                    next
+                });
+                let next_items = state.load();
+                cell.set(next_items.items.clone());
+            }
+        });
+
+        cell.own(guard);
+        cell.lock()
     }
 
     /// Get an observable Cell of all keys.
@@ -1038,6 +1204,32 @@ mod tests {
         }
 
         assert_eq!(map.get_value(&"a".to_string()), Some(2));
+    }
+
+    #[test]
+    fn test_remove_many_full_clear_emits_empty_initial() {
+        let map = CellMap::<String, i32>::new();
+        let (tx, rx) = std::sync::mpsc::channel::<MapDiff<String, i32>>();
+
+        map.insert("a".to_string(), 1);
+        map.insert("b".to_string(), 2);
+
+        let _guard = map.subscribe_diffs(move |diff| {
+            let _ = tx.send(diff.clone());
+        });
+
+        map.remove_many(vec!["a".to_string(), "b".to_string()]);
+
+        let seen: Vec<_> = rx.try_iter().collect();
+        assert_eq!(seen.len(), 2);
+        match &seen[0] {
+            MapDiff::Initial { entries } => assert_eq!(entries.len(), 2),
+            _ => panic!("expected Initial diff first"),
+        }
+        match &seen[1] {
+            MapDiff::Initial { entries } => assert!(entries.is_empty()),
+            _ => panic!("expected empty Initial diff after full clear"),
+        }
     }
 
     #[test]

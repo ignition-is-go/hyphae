@@ -21,9 +21,9 @@ where
     OK: Hash + Eq + CellValue,
     OV: CellValue,
 {
-    source_rows: HashMap<SK, SV>,
-    source_output_keys: HashMap<SK, HashSet<OK>>,
-    output_cache: HashMap<OK, OV>,
+    source_rows: Arc<HashMap<SK, SV>>,
+    source_output_keys: Arc<HashMap<SK, HashSet<OK>>>,
+    output_cache: Arc<HashMap<OK, OV>>,
 }
 
 impl<SK, SV, OK, OV> Default for MapState<SK, SV, OK, OV>
@@ -35,21 +35,29 @@ where
 {
     fn default() -> Self {
         Self {
-            source_rows: HashMap::new(),
-            source_output_keys: HashMap::new(),
-            output_cache: HashMap::new(),
+            source_rows: Arc::new(HashMap::new()),
+            source_output_keys: Arc::new(HashMap::new()),
+            output_cache: Arc::new(HashMap::new()),
         }
     }
 }
 
 fn apply_source_diff<SK, SV>(
-    source_rows: &mut HashMap<SK, SV>,
+    source_rows: &mut Arc<HashMap<SK, SV>>,
     diff: &MapDiff<SK, SV>,
     impacted: &mut HashSet<SK>,
 ) where
     SK: Hash + Eq + CellValue,
     SV: CellValue,
 {
+    if let MapDiff::Batch { changes } = diff {
+        for change in changes {
+            apply_source_diff(source_rows, change, impacted);
+        }
+        return;
+    }
+
+    let source_rows = Arc::make_mut(source_rows);
     match diff {
         MapDiff::Initial { entries } => {
             let previous: Vec<SK> = source_rows.keys().cloned().collect();
@@ -75,11 +83,7 @@ fn apply_source_diff<SK, SV>(
             source_rows.remove(key);
             impacted.insert(key.clone());
         }
-        MapDiff::Batch { changes } => {
-            for change in changes {
-                apply_source_diff(source_rows, change, impacted);
-            }
-        }
+        MapDiff::Batch { .. } => unreachable!("batch handled above"),
     }
 }
 
@@ -96,12 +100,11 @@ where
     FO: Fn(&SK, &SV) -> Vec<(OK, OV)>,
 {
     let mut changes: Vec<MapDiff<OK, OV>> = Vec::new();
+    let source_output_keys = Arc::make_mut(&mut state.source_output_keys);
+    let output_cache = Arc::make_mut(&mut state.output_cache);
 
     for source_key in impacted {
-        let previous_output_keys = state
-            .source_output_keys
-            .remove(&source_key)
-            .unwrap_or_default();
+        let previous_output_keys = source_output_keys.remove(&source_key).unwrap_or_default();
 
         let Some(source_value) = state.source_rows.get(&source_key) else {
             // Fast-path for removes/absent rows that were never projected:
@@ -110,7 +113,7 @@ where
                 continue;
             }
             for stale_key in previous_output_keys {
-                if let Some(old_value) = state.output_cache.remove(&stale_key) {
+                if let Some(old_value) = output_cache.remove(&stale_key) {
                     changes.push(MapDiff::Remove {
                         key: stale_key,
                         old_value,
@@ -137,7 +140,7 @@ where
             .iter()
             .filter(|output_key| !desired_keys.contains(*output_key))
         {
-            if let Some(old_value) = state.output_cache.remove(stale_key) {
+            if let Some(old_value) = output_cache.remove(stale_key) {
                 changes.push(MapDiff::Remove {
                     key: stale_key.clone(),
                     old_value,
@@ -146,12 +149,10 @@ where
         }
 
         for (out_key, new_value) in desired_rows {
-            match state.output_cache.get(&out_key).cloned() {
+            match output_cache.get(&out_key).cloned() {
                 Some(old_value) => {
                     if old_value != new_value {
-                        state
-                            .output_cache
-                            .insert(out_key.clone(), new_value.clone());
+                        output_cache.insert(out_key.clone(), new_value.clone());
                         changes.push(MapDiff::Update {
                             key: out_key,
                             old_value,
@@ -160,9 +161,7 @@ where
                     }
                 }
                 None => {
-                    state
-                        .output_cache
-                        .insert(out_key.clone(), new_value.clone());
+                    output_cache.insert(out_key.clone(), new_value.clone());
                     changes.push(MapDiff::Insert {
                         key: out_key,
                         value: new_value,
@@ -172,7 +171,7 @@ where
         }
 
         if !desired_keys.is_empty() {
-            state.source_output_keys.insert(source_key, desired_keys);
+            source_output_keys.insert(source_key, desired_keys);
         }
     }
 

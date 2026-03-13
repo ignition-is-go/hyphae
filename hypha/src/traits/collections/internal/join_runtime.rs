@@ -24,14 +24,14 @@ where
     OK: Hash + Eq + CellValue,
     OV: CellValue,
 {
-    left_rows: HashMap<LK, LV>,
-    left_join_keys: HashMap<LK, JK>,
-    join_to_left: HashMap<JK, HashSet<LK>>,
-    right_rows: HashMap<RK, RV>,
-    right_join_keys: HashMap<RK, JK>,
-    join_to_right: HashMap<JK, HashSet<RK>>,
-    left_output_keys: HashMap<LK, HashSet<OK>>,
-    output_cache: HashMap<OK, OV>,
+    left_rows: Arc<HashMap<LK, LV>>,
+    left_join_keys: Arc<HashMap<LK, JK>>,
+    join_to_left: Arc<HashMap<JK, HashSet<LK>>>,
+    right_rows: Arc<HashMap<RK, RV>>,
+    right_join_keys: Arc<HashMap<RK, JK>>,
+    join_to_right: Arc<HashMap<JK, HashSet<RK>>>,
+    left_output_keys: Arc<HashMap<LK, HashSet<OK>>>,
+    output_cache: Arc<HashMap<OK, OV>>,
 }
 
 impl<LK, LV, RK, RV, JK, OK, OV> Default for JoinState<LK, LV, RK, RV, JK, OK, OV>
@@ -46,14 +46,14 @@ where
 {
     fn default() -> Self {
         Self {
-            left_rows: HashMap::new(),
-            left_join_keys: HashMap::new(),
-            join_to_left: HashMap::new(),
-            right_rows: HashMap::new(),
-            right_join_keys: HashMap::new(),
-            join_to_right: HashMap::new(),
-            left_output_keys: HashMap::new(),
-            output_cache: HashMap::new(),
+            left_rows: Arc::new(HashMap::new()),
+            left_join_keys: Arc::new(HashMap::new()),
+            join_to_left: Arc::new(HashMap::new()),
+            right_rows: Arc::new(HashMap::new()),
+            right_join_keys: Arc::new(HashMap::new()),
+            join_to_right: Arc::new(HashMap::new()),
+            left_output_keys: Arc::new(HashMap::new()),
+            output_cache: Arc::new(HashMap::new()),
         }
     }
 }
@@ -95,16 +95,23 @@ fn upsert_left<LK, LV, RK, RV, JK, OK, OV, FL>(
     OV: CellValue,
     FL: Fn(&LK, &LV) -> JK,
 {
-    if let Some(previous_join_key) = state.left_join_keys.remove(&left_key) {
-        remove_index_member(&mut state.join_to_left, &previous_join_key, &left_key);
+    if let Some(previous_join_key) = Arc::make_mut(&mut state.left_join_keys).remove(&left_key) {
+        remove_index_member(
+            Arc::make_mut(&mut state.join_to_left),
+            &previous_join_key,
+            &left_key,
+        );
     }
 
     let join_key = left_join_key(&left_key, &left_value);
-    state.left_rows.insert(left_key.clone(), left_value);
-    state
-        .left_join_keys
+    Arc::make_mut(&mut state.left_rows).insert(left_key.clone(), left_value);
+    Arc::make_mut(&mut state.left_join_keys)
         .insert(left_key.clone(), join_key.clone());
-    add_index_member(&mut state.join_to_left, join_key, left_key.clone());
+    add_index_member(
+        Arc::make_mut(&mut state.join_to_left),
+        join_key,
+        left_key.clone(),
+    );
     impacted.insert(left_key);
 }
 
@@ -121,10 +128,16 @@ fn remove_left<LK, LV, RK, RV, JK, OK, OV>(
     OK: Hash + Eq + CellValue,
     OV: CellValue,
 {
-    if let Some(previous_join_key) = state.left_join_keys.remove(left_key) {
-        remove_index_member(&mut state.join_to_left, &previous_join_key, left_key);
+    if let Some(previous_join_key) = Arc::make_mut(&mut state.left_join_keys).remove(left_key) {
+        remove_index_member(
+            Arc::make_mut(&mut state.join_to_left),
+            &previous_join_key,
+            left_key,
+        );
     }
-    if state.left_rows.remove(left_key).is_some() || state.left_output_keys.contains_key(left_key) {
+    if Arc::make_mut(&mut state.left_rows).remove(left_key).is_some()
+        || state.left_output_keys.contains_key(left_key)
+    {
         impacted.insert(left_key.clone());
     }
 }
@@ -147,9 +160,9 @@ fn apply_left_diff<LK, LV, RK, RV, JK, OK, OV, FL>(
     match diff {
         MapDiff::Initial { entries } => {
             let previous_left_keys: Vec<LK> = state.left_rows.keys().cloned().collect();
-            state.left_rows.clear();
-            state.left_join_keys.clear();
-            state.join_to_left.clear();
+            Arc::make_mut(&mut state.left_rows).clear();
+            Arc::make_mut(&mut state.left_join_keys).clear();
+            Arc::make_mut(&mut state.join_to_left).clear();
             for key in previous_left_keys {
                 impacted.insert(key);
             }
@@ -192,17 +205,25 @@ fn upsert_right<LK, LV, RK, RV, JK, OK, OV, FR>(
     OV: CellValue,
     FR: Fn(&RK, &RV) -> JK,
 {
-    if let Some(previous_join_key) = state.right_join_keys.remove(&right_key) {
-        remove_index_member(&mut state.join_to_right, &previous_join_key, &right_key);
+    if let Some(previous_join_key) = Arc::make_mut(&mut state.right_join_keys).remove(&right_key)
+    {
+        remove_index_member(
+            Arc::make_mut(&mut state.join_to_right),
+            &previous_join_key,
+            &right_key,
+        );
         changed_join_keys.insert(previous_join_key);
     }
 
     let join_key = right_join_key(&right_key, &right_value);
-    state.right_rows.insert(right_key.clone(), right_value);
-    state
-        .right_join_keys
+    Arc::make_mut(&mut state.right_rows).insert(right_key.clone(), right_value);
+    Arc::make_mut(&mut state.right_join_keys)
         .insert(right_key.clone(), join_key.clone());
-    add_index_member(&mut state.join_to_right, join_key.clone(), right_key);
+    add_index_member(
+        Arc::make_mut(&mut state.join_to_right),
+        join_key.clone(),
+        right_key,
+    );
     changed_join_keys.insert(join_key);
 }
 
@@ -219,11 +240,15 @@ fn remove_right<LK, LV, RK, RV, JK, OK, OV>(
     OK: Hash + Eq + CellValue,
     OV: CellValue,
 {
-    if let Some(previous_join_key) = state.right_join_keys.remove(right_key) {
-        remove_index_member(&mut state.join_to_right, &previous_join_key, right_key);
+    if let Some(previous_join_key) = Arc::make_mut(&mut state.right_join_keys).remove(right_key) {
+        remove_index_member(
+            Arc::make_mut(&mut state.join_to_right),
+            &previous_join_key,
+            right_key,
+        );
         changed_join_keys.insert(previous_join_key);
     }
-    state.right_rows.remove(right_key);
+    Arc::make_mut(&mut state.right_rows).remove(right_key);
 }
 
 fn apply_right_diff<LK, LV, RK, RV, JK, OK, OV, FR>(
@@ -263,9 +288,9 @@ fn apply_right_diff<LK, LV, RK, RV, JK, OK, OV, FR>(
                 for join_key in state.right_join_keys.values() {
                     changed_join_keys.insert(join_key.clone());
                 }
-                state.right_rows.clear();
-                state.right_join_keys.clear();
-                state.join_to_right.clear();
+                Arc::make_mut(&mut state.right_rows).clear();
+                Arc::make_mut(&mut state.right_join_keys).clear();
+                Arc::make_mut(&mut state.join_to_right).clear();
                 for (key, value) in entries {
                     upsert_right(
                         state,
@@ -326,9 +351,11 @@ where
     FO: Fn(&LK, &LV, &[(RK, RV)]) -> Vec<(OK, OV)>,
 {
     let mut changes: Vec<MapDiff<OK, OV>> = Vec::new();
+    let left_output_keys = Arc::make_mut(&mut state.left_output_keys);
+    let output_cache = Arc::make_mut(&mut state.output_cache);
 
     for left_key in impacted {
-        let previous_output_keys = state.left_output_keys.remove(&left_key).unwrap_or_default();
+        let previous_output_keys = left_output_keys.remove(&left_key).unwrap_or_default();
 
         let mut desired_rows: HashMap<OK, OV> = HashMap::new();
         if let Some(left_value) = state.left_rows.get(&left_key) {
@@ -360,7 +387,7 @@ where
             .iter()
             .filter(|output_key| !desired_keys.contains(*output_key))
         {
-            if let Some(old_value) = state.output_cache.remove(stale_key) {
+            if let Some(old_value) = output_cache.remove(stale_key) {
                 changes.push(MapDiff::Remove {
                     key: stale_key.clone(),
                     old_value,
@@ -369,21 +396,19 @@ where
         }
 
         for (output_key, new_value) in desired_rows {
-            match state.output_cache.get(&output_key).cloned() {
+            match output_cache.get(&output_key).cloned() {
                 Some(old_value) => {
-                    state
-                        .output_cache
-                        .insert(output_key.clone(), new_value.clone());
-                    changes.push(MapDiff::Update {
-                        key: output_key,
-                        old_value,
-                        new_value,
-                    });
+                    if old_value != new_value {
+                        output_cache.insert(output_key.clone(), new_value.clone());
+                        changes.push(MapDiff::Update {
+                            key: output_key,
+                            old_value,
+                            new_value,
+                        });
+                    }
                 }
                 None => {
-                    state
-                        .output_cache
-                        .insert(output_key.clone(), new_value.clone());
+                    output_cache.insert(output_key.clone(), new_value.clone());
                     changes.push(MapDiff::Insert {
                         key: output_key,
                         value: new_value,
@@ -393,7 +418,7 @@ where
         }
 
         if !desired_keys.is_empty() {
-            state.left_output_keys.insert(left_key, desired_keys);
+            left_output_keys.insert(left_key, desired_keys);
         }
     }
 
