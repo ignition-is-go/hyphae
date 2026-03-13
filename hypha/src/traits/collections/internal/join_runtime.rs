@@ -105,8 +105,7 @@ fn upsert_left<LK, LV, RK, RV, JK, OK, OV, FL>(
 
     let join_key = left_join_key(&left_key, &left_value);
     Arc::make_mut(&mut state.left_rows).insert(left_key.clone(), left_value);
-    Arc::make_mut(&mut state.left_join_keys)
-        .insert(left_key.clone(), join_key.clone());
+    Arc::make_mut(&mut state.left_join_keys).insert(left_key.clone(), join_key.clone());
     add_index_member(
         Arc::make_mut(&mut state.join_to_left),
         join_key,
@@ -135,7 +134,9 @@ fn remove_left<LK, LV, RK, RV, JK, OK, OV>(
             left_key,
         );
     }
-    if Arc::make_mut(&mut state.left_rows).remove(left_key).is_some()
+    if Arc::make_mut(&mut state.left_rows)
+        .remove(left_key)
+        .is_some()
         || state.left_output_keys.contains_key(left_key)
     {
         impacted.insert(left_key.clone());
@@ -205,8 +206,7 @@ fn upsert_right<LK, LV, RK, RV, JK, OK, OV, FR>(
     OV: CellValue,
     FR: Fn(&RK, &RV) -> JK,
 {
-    if let Some(previous_join_key) = Arc::make_mut(&mut state.right_join_keys).remove(&right_key)
-    {
+    if let Some(previous_join_key) = Arc::make_mut(&mut state.right_join_keys).remove(&right_key) {
         remove_index_member(
             Arc::make_mut(&mut state.join_to_right),
             &previous_join_key,
@@ -217,8 +217,7 @@ fn upsert_right<LK, LV, RK, RV, JK, OK, OV, FR>(
 
     let join_key = right_join_key(&right_key, &right_value);
     Arc::make_mut(&mut state.right_rows).insert(right_key.clone(), right_value);
-    Arc::make_mut(&mut state.right_join_keys)
-        .insert(right_key.clone(), join_key.clone());
+    Arc::make_mut(&mut state.right_join_keys).insert(right_key.clone(), join_key.clone());
     add_index_member(
         Arc::make_mut(&mut state.join_to_right),
         join_key.clone(),
