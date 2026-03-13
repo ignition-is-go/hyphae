@@ -14,6 +14,7 @@ use crate::{
     signal::Signal,
     subscription::SubscriptionGuard,
     traits::{CellValue, Gettable, Mutable, Watchable},
+    MapExt,
 };
 
 /// Diff notification for map changes.
@@ -546,6 +547,16 @@ where
         cell.lock()
     }
 
+    /// Get an observable Cell of all values.
+    ///
+    /// This derives from [`CellMap::entries`] and projects only the values.
+    /// It avoids separate keyed bookkeeping in the hot path.
+    #[track_caller]
+    pub fn items(&self) -> Cell<Vec<V>, CellImmutable> {
+        self.entries()
+            .map(|entries| entries.iter().map(|(_, value)| value.clone()).collect())
+    }
+
     /// Get an observable Cell of all keys.
     #[track_caller]
     pub fn keys(&self) -> Cell<Vec<K>, CellImmutable> {
@@ -554,9 +565,19 @@ where
             .map(|entries| entries.iter().map(|(k, _)| k.clone()).collect())
     }
 
-    /// Get an observable Cell of the map length.
-    pub fn len(&self) -> Cell<usize, CellImmutable> {
+    /// Get an observable Cell of the map size.
+    ///
+    /// This is the preferred reactive count operator because it reuses the
+    /// internally maintained length cell instead of materializing entries.
+    pub fn size(&self) -> Cell<usize, CellImmutable> {
         self.inner.len_cell.clone().lock()
+    }
+
+    /// Get an observable Cell of the map length.
+    ///
+    /// Alias for [`CellMap::size`].
+    pub fn len(&self) -> Cell<usize, CellImmutable> {
+        self.size()
     }
 
     /// Check if map is empty (non-reactive).
@@ -807,6 +828,46 @@ mod tests {
 
         map.remove(&"a".to_string());
         assert_eq!(entries.get().len(), 1);
+    }
+
+    #[test]
+    fn test_cellmap_size_observation() {
+        let map = CellMap::<String, i32>::new();
+        let size = map.size();
+
+        assert_eq!(size.get(), 0);
+
+        map.insert("a".to_string(), 1);
+        assert_eq!(size.get(), 1);
+
+        map.insert("b".to_string(), 2);
+        assert_eq!(size.get(), 2);
+
+        map.insert("b".to_string(), 2);
+        assert_eq!(size.get(), 2);
+
+        map.remove(&"a".to_string());
+        assert_eq!(size.get(), 1);
+    }
+
+    #[test]
+    fn test_cellmap_items_observation() {
+        let map = CellMap::<String, i32>::new();
+        let items = map.items();
+
+        assert_eq!(items.get(), vec![]);
+
+        map.insert("a".to_string(), 1);
+        assert_eq!(items.get(), vec![1]);
+
+        map.insert("b".to_string(), 2);
+        assert_eq!(items.get(), vec![1, 2]);
+
+        map.insert("a".to_string(), 3);
+        assert_eq!(items.get(), vec![3, 2]);
+
+        map.remove(&"b".to_string());
+        assert_eq!(items.get(), vec![3]);
     }
 
     #[test]
