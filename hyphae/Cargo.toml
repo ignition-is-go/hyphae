@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+description = "Reactive cells and runtime primitives for rship"
+repository = "https://github.com/ignition-is-go/rship"
 
 [lints]
 workspace = true
