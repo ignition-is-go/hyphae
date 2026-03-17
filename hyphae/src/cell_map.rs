@@ -275,7 +275,7 @@ where
     }
 
     /// Own a subscription guard, keeping it alive as long as this CellMap exists.
-    pub(crate) fn own(&self, guard: SubscriptionGuard) {
+    pub fn own(&self, guard: SubscriptionGuard) {
         #[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
         {
             use crate::traits::DepNode;
