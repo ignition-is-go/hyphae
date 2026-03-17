@@ -433,6 +433,50 @@ where
         self.inner.len_cell.set(self.inner.data.len());
     }
 
+    /// Replace all entries atomically, emitting a single `Initial` diff.
+    ///
+    /// Removes keys not in `entries`, inserts/updates keys that are.
+    /// Skips no-op updates (existing key with equal value).
+    /// Emits `MapDiff::Initial` with the final state so downstream
+    /// subscribers see one atomic replacement instead of N removes + M inserts.
+    pub fn replace_all(&self, entries: Vec<(K, V)>) {
+        let new_keys: std::collections::HashSet<&K> = entries.iter().map(|(k, _)| k).collect();
+
+        // Remove keys not in new set
+        let keys_to_remove: Vec<K> = self
+            .inner
+            .data
+            .iter()
+            .filter(|r| !new_keys.contains(r.key()))
+            .map(|r| r.key().clone())
+            .collect();
+
+        for key in &keys_to_remove {
+            self.inner.data.remove(key);
+            if let Some(weak) = self.inner.key_cells.get(key)
+                && let Some(cell) = weak.upgrade()
+            {
+                cell.set(None);
+            }
+        }
+
+        // Insert/update entries
+        for (key, value) in &entries {
+            let old = self.inner.data.insert(key.clone(), value.clone());
+            if old.as_ref().is_some_and(|old_value| old_value == value) {
+                continue;
+            }
+            if let Some(weak) = self.inner.key_cells.get(key)
+                && let Some(cell) = weak.upgrade()
+            {
+                cell.set(Some(value.clone()));
+            }
+        }
+
+        self.inner.diffs_cell.set(MapDiff::Initial { entries });
+        self.inner.len_cell.set(self.inner.data.len());
+    }
+
     /// Apply a batch of diffs and emit them as one `MapDiff::Batch`.
     pub fn apply_batch(&self, changes: Vec<MapDiff<K, V>>) {
         if changes.is_empty() {
@@ -1290,5 +1334,60 @@ mod tests {
         assert_eq!(map.get_value(&"b".to_string()), Some(2));
         assert_eq!(map.len().get(), 2);
         assert_eq!(map_clone.len().get(), 2);
+    }
+
+    #[test]
+    fn test_replace_all() {
+        let map = CellMap::<String, i32>::new();
+        map.insert("a".to_string(), 1);
+        map.insert("b".to_string(), 2);
+        map.insert("c".to_string(), 3);
+
+        let (tx, rx) = std::sync::mpsc::channel::<MapDiff<String, i32>>();
+        let _guard = map.subscribe_diffs(move |diff| {
+            let _ = tx.send(diff.clone());
+        });
+
+        // Replace: keep "a" (updated), add "d", remove "b" and "c"
+        map.replace_all(vec![("a".to_string(), 10), ("d".to_string(), 4)]);
+
+        assert_eq!(map.len().get(), 2);
+        assert_eq!(map.get_value(&"a".to_string()), Some(10));
+        assert_eq!(map.get_value(&"d".to_string()), Some(4));
+        assert_eq!(map.get_value(&"b".to_string()), None);
+        assert_eq!(map.get_value(&"c".to_string()), None);
+
+        // Initial snapshot + replace_all Initial
+        let seen: Vec<_> = rx.try_iter().collect();
+        assert_eq!(seen.len(), 2);
+        match &seen[1] {
+            MapDiff::Initial { entries } => assert_eq!(entries.len(), 2),
+            other => panic!("expected Initial from replace_all, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_replace_all_noop() {
+        let map = CellMap::<String, i32>::new();
+        map.insert("a".to_string(), 1);
+
+        // Replace with same data
+        map.replace_all(vec![("a".to_string(), 1)]);
+
+        assert_eq!(map.len().get(), 1);
+        assert_eq!(map.get_value(&"a".to_string()), Some(1));
+    }
+
+    #[test]
+    fn test_replace_all_empty() {
+        let map = CellMap::<String, i32>::new();
+        map.insert("a".to_string(), 1);
+        map.insert("b".to_string(), 2);
+
+        map.replace_all(vec![]);
+
+        assert_eq!(map.len().get(), 0);
+        assert_eq!(map.get_value(&"a".to_string()), None);
+        assert_eq!(map.get_value(&"b".to_string()), None);
     }
 }
