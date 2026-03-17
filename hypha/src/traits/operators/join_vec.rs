@@ -36,20 +36,42 @@ where
     T: CellValue,
     W: Watchable<T> + Clone + Send + Sync + 'static,
 {
+    let caller = std::panic::Location::caller();
     if cells.is_empty() {
         let derived = Cell::<Vec<T>, CellMutable>::new(vec![]);
         derived.complete();
-        return derived.lock();
+        return derived
+            .with_name(format!(
+                "join_vec@{}:{}:{}[0]",
+                caller.file(),
+                caller.line(),
+                caller.column()
+            ))
+            .lock();
     }
 
     // Get initial values
     let initial: Vec<T> = cells.iter().map(|c| c.get()).collect();
     let derived = Cell::<Vec<T>, CellMutable>::new(initial);
-    let derived = if let Some(name) = cells.first().and_then(|c| c.name()) {
-        derived.with_name(format!("{}::join_vec", name))
+    let join_name = if let Some(name) = cells.first().and_then(|c| c.name()) {
+        format!(
+            "{}::join_vec@{}:{}:{}[{}]",
+            name,
+            caller.file(),
+            caller.line(),
+            caller.column(),
+            num_cells_from(&cells)
+        )
     } else {
-        derived
+        format!(
+            "join_vec@{}:{}:{}[{}]",
+            caller.file(),
+            caller.line(),
+            caller.column(),
+            num_cells_from(&cells)
+        )
     };
+    let derived = derived.with_name(join_name);
 
     let num_cells = cells.len();
     let complete_count = Arc::new(AtomicUsize::new(0));
@@ -93,6 +115,14 @@ where
     }
 
     derived.lock()
+}
+
+fn num_cells_from<T, W>(cells: &[W]) -> usize
+where
+    T: CellValue,
+    W: Watchable<T> + Clone + Send + Sync + 'static,
+{
+    cells.len()
 }
 
 #[cfg(test)]
