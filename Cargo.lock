@@ -398,7 +398,7 @@ dependencies = [
 name = "demo"
 version = "0.1.0"
 dependencies = [
- "hypha",
+ "hyphae",
  "tokio",
 ]
 
@@ -522,7 +522,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
 
 [[package]]
-name = "hypha"
+name = "hyphae"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -543,7 +543,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "hypha-inspector"
+name = "hyphae-inspector"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -551,7 +551,7 @@ dependencies = [
  "crossterm",
  "dashmap",
  "flume",
- "hypha",
+ "hyphae",
  "ratatui",
  "serde",
  "serde_json",

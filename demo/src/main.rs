@@ -1,21 +1,21 @@
-//! Long-running hypha demo with many cells changing value over time.
+//! Long-running hyphae demo with many cells changing value over time.
 //!
 //! Starts an inspector server and creates a graph of interconnected cells
-//! driven by interval timers at various rates. Connect the hypha-inspector
+//! driven by interval timers at various rates. Connect the hyphae-inspector
 //! TUI to the printed port to visualize the live cell graph.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use hypha::{
+use hyphae::{
     Cell, CellImmutable, CellMap, FilterExt, JoinExt, MapExt, PairwiseExt, ScanExt, Signal,
     SwitchMapExt, Watchable, WindowExt, interval, join_vec,
 };
 
 #[tokio::main]
 async fn main() {
-    let server = hypha::server::start_server("demo");
-    println!("cargo run -p hypha-inspector -- :{}", server.port());
+    let server = hyphae::server::start_server("demo");
+    println!("cargo run -p hyphae-inspector -- :{}", server.port());
 
     // ── Source clocks at different rates ─────────────────────────────────
 

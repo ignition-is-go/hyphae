@@ -1,0 +1,49 @@
+[package]
+name = "hyphae"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "hyphae"
+path = "src/lib.rs"
+
+[features]
+default = []
+async = ["flume", "futures-core"]
+inspector = ["serde", "serde_json", "tokio", "uuid/serde"]
+trace = []
+
+[dependencies]
+anyhow = "1"
+arc-swap.workspace = true
+crossbeam = "0.8"
+dashmap.workspace = true
+log.workspace = true
+flume = { workspace = true, optional = true }
+futures-core = { workspace = true, optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+tokio = { version = "1", features = ["net", "io-util", "rt", "time", "sync", "macros"], optional = true }
+uuid.workspace = true
+
+# Native-only deps (thread pool, precise sleep)
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rayon = "1.10"
+spin_sleep = "1"
+
+# WASM: uuid needs js feature for RNG
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { version = "1", features = ["js"] }
+getrandom = { version = "0.3", features = ["wasm_js"] }
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "latency"
+harness = false

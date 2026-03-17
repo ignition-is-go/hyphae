@@ -1,5 +1,5 @@
 [package]
-name = "hypha-inspector"
+name = "hyphae-inspector"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -9,11 +9,11 @@ license.workspace = true
 workspace = true
 
 [[bin]]
-name = "hypha-inspector"
+name = "hyphae-inspector"
 path = "src/main.rs"
 
 [dependencies]
-hypha = { path = "../hypha", features = ["inspector"] }
+hyphae = { path = "../hyphae", features = ["inspector"] }
 anyhow.workspace = true
 clap = { version = "4", features = ["derive"] }
 crossterm.workspace = true

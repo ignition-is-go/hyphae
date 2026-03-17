@@ -1,8 +1,8 @@
-//! Hypha Cell Inspector TUI
+//! Hyphae Cell Inspector TUI
 //!
-//! A real-time TUI that visualizes the hypha cell dependency graph.
+//! A real-time TUI that visualizes the hyphae cell dependency graph.
 //! Connects to inspector servers over TCP and streams cell snapshots.
-//! Its own state is built with hypha cells, making it self-inspectable.
+//! Its own state is built with hyphae cells, making it self-inspectable.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -21,9 +21,9 @@ use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use hypha::registry::CellSnapshot;
-use hypha::server::start_server;
-use hypha::{Cell, CellMap, CellMutable, Gettable, MapExt, Mutable, Signal, Watchable};
+use hyphae::registry::CellSnapshot;
+use hyphae::server::start_server;
+use hyphae::{Cell, CellMap, CellMutable, Gettable, MapExt, Mutable, Signal, Watchable};
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
@@ -125,7 +125,7 @@ fn group_id(name: &str) -> Uuid {
 
 /// CLI arguments.
 #[derive(Parser)]
-#[command(name = "hypha-inspector", about = "Real-time TUI for inspecting hypha cell graphs")]
+#[command(name = "hyphae-inspector", about = "Real-time TUI for inspecting hyphae cell graphs")]
 struct Cli {
     /// Connect to inspector servers (host:port or :port)
     #[arg(value_name = "ADDR")]
@@ -246,7 +246,7 @@ fn main() -> anyhow::Result<()> {
     let _guard = rt.enter();
 
     // Start our own inspector server so we're self-inspectable
-    let server = start_server("hypha-inspector");
+    let server = start_server("hyphae-inspector");
 
     // --- Seed environments: self + CLI args ---
     let mut initial_envs = vec![Environment {
@@ -266,7 +266,7 @@ fn main() -> anyhow::Result<()> {
     // Auto-select: first CLI-provided env if any, otherwise self
     let initial_selected = if initial_envs.len() > 1 { Some(1) } else { Some(0) };
 
-    // --- Hypha cells for TUI state ---
+    // --- Hyphae cells for TUI state ---
     let environments: Cell<Vec<Environment>, CellMutable> =
         Cell::new(initial_envs).with_name("environments");
     let selected_env: Cell<Option<usize>, CellMutable> =
@@ -409,7 +409,7 @@ fn main() -> anyhow::Result<()> {
     let (ui_tx, ui_rx) = flume::unbounded::<UiEvent>();
 
     // Subscribe to all state cells — any change triggers a re-render
-    let _guards: Vec<hypha::SubscriptionGuard> = {
+    let _guards: Vec<hyphae::SubscriptionGuard> = {
         let tx = ui_tx.clone();
         vec![
             snapshot_entries.subscribe({
@@ -830,7 +830,7 @@ fn render_header(
 
     let envs_paragraph = Paragraph::new(Line::from(env_spans)).block(
         Block::default()
-            .title(" Hypha Inspector ")
+            .title(" Hyphae Inspector ")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Cyan)),
     );
