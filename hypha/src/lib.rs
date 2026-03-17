@@ -69,6 +69,8 @@ pub mod metrics;
 pub mod nested_map;
 pub mod signal;
 pub mod subscription;
+#[cfg(feature = "trace")]
+pub mod tracing;
 pub mod traits;
 
 #[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
@@ -93,6 +95,8 @@ pub use metrics::CellMetrics;
 pub use nested_map::NestedMap;
 pub use signal::Signal;
 pub use subscription::SubscriptionGuard;
+#[cfg(feature = "trace")]
+pub use tracing::{CellTraceSnapshot, hot_cells as hot_traced_cells, log_hot_cells};
 pub use traits::{
     AuditExt, BackpressureExt, BufferCountExt, BufferTimeExt, CatchErrorExt, CellValue, ColdExt,
     ConcatExt, CountByExt, DebounceExt, DedupedExt, DelayExt, DepNode, DistinctExt,

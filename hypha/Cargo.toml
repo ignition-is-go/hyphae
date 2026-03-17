@@ -16,6 +16,7 @@ path = "src/lib.rs"
 default = []
 async = ["flume", "futures-core"]
 inspector = ["serde", "serde_json", "tokio", "uuid/serde"]
+trace = []
 
 [dependencies]
 anyhow = "1"

@@ -123,13 +123,15 @@ impl<T: CellValue> Cell<T, CellMutable> {
             completed: AtomicBool::new(false),
             errored: AtomicBool::new(false),
             error: ArcSwap::from_pointee(None),
-            metrics: None,
+            metrics: default_metrics(),
             slow_subscriber_threshold_ns: ArcSwap::from_pointee(None),
             slow_subscriber_callback: ArcSwap::from_pointee(None),
             caller: Location::caller(),
         });
         #[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
         crate::registry::registry().register(inner.id, Arc::downgrade(&inner) as Weak<dyn DepNode>);
+        #[cfg(feature = "trace")]
+        crate::tracing::register_cell(inner.id, Some(Location::caller().to_string()));
         Self {
             inner,
             _marker: PhantomData,
@@ -155,6 +157,8 @@ impl<T: CellValue> Cell<T, CellMutable> {
         });
         #[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
         crate::registry::registry().register(inner.id, Arc::downgrade(&inner) as Weak<dyn DepNode>);
+        #[cfg(feature = "trace")]
+        crate::tracing::register_cell(inner.id, Some(Location::caller().to_string()));
         Self {
             inner,
             _marker: PhantomData,
@@ -203,7 +207,10 @@ impl<T: CellValue> Cell<T, CellMutable> {
     }
 
     pub fn with_name(self, name: impl Into<Arc<str>>) -> Self {
-        self.inner.name.store(Arc::new(Some(name.into())));
+        let name = name.into();
+        self.inner.name.store(Arc::new(Some(name.clone())));
+        #[cfg(feature = "trace")]
+        crate::tracing::update_name(self.inner.id, name.to_string());
         self
     }
 
@@ -289,6 +296,8 @@ impl<T, M> Cell<T, M> {
         #[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
         crate::registry::registry().mark_owned(guard.source().id(), self.inner.id);
         self.inner.owned.insert(Uuid::new_v4(), guard);
+        #[cfg(feature = "trace")]
+        crate::tracing::update_owned_count(self.inner.id, self.inner.owned.len());
     }
 
     /// Take ownership of a subscription guard with a stable key.
@@ -306,6 +315,8 @@ impl<T, M> Cell<T, M> {
             crate::registry::registry().mark_owned(guard.source().id(), self.inner.id);
         }
         self.inner.owned.insert(key, guard);
+        #[cfg(feature = "trace")]
+        crate::tracing::update_owned_count(self.inner.id, self.inner.owned.len());
     }
 }
 
@@ -351,7 +362,10 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
 
 impl<T: CellValue> Cell<T, CellImmutable> {
     pub fn with_name(self, name: impl Into<Arc<str>>) -> Self {
-        self.inner.name.store(Arc::new(Some(name.into())));
+        let name = name.into();
+        self.inner.name.store(Arc::new(Some(name.clone())));
+        #[cfg(feature = "trace")]
+        crate::tracing::update_name(self.inner.id, name.to_string());
         self
     }
 }
@@ -432,7 +446,16 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
 
         // Record overall notify timing
         if let (Some(metrics), Some(start)) = (&self.inner.metrics, notify_start) {
-            metrics.record_notify(start.elapsed().as_nanos() as u64);
+            let duration_ns = start.elapsed().as_nanos() as u64;
+            metrics.record_notify(duration_ns);
+            #[cfg(feature = "trace")]
+            crate::tracing::record_notify(
+                self.inner.id,
+                duration_ns,
+                self.inner.subscribers.len(),
+                self.inner.owned.len(),
+                metrics.slowest_subscriber_ns(),
+            );
         }
     }
 }
@@ -469,6 +492,8 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
         if let Some(metrics) = &self.inner.metrics {
             metrics.record_subscriber_added();
         }
+        #[cfg(feature = "trace")]
+        crate::tracing::update_subscriber_count(self.inner.id, self.inner.subscribers.len());
 
         let source: Arc<dyn DepNode> = Arc::new(self.clone());
         let cell = self.clone();
@@ -479,6 +504,8 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
             if let Some(m) = &metrics {
                 m.record_subscriber_removed();
             }
+            #[cfg(feature = "trace")]
+            crate::tracing::update_subscriber_count(cell.inner.id, cell.inner.subscribers.len());
         })
     }
 
@@ -488,6 +515,8 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
             if let Some(metrics) = &self.inner.metrics {
                 metrics.record_subscriber_removed();
             }
+            #[cfg(feature = "trace")]
+            crate::tracing::update_subscriber_count(self.inner.id, self.inner.subscribers.len());
         }
     }
 
@@ -565,9 +594,21 @@ impl<T: CellValue> DepNode for CellInner<T> {
     }
 }
 
-#[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
 impl<T> Drop for CellInner<T> {
     fn drop(&mut self) {
+        #[cfg(feature = "trace")]
+        crate::tracing::deregister_cell(&self.id);
+        #[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
         crate::registry::registry().deregister(&self.id);
     }
+}
+
+#[cfg(feature = "trace")]
+fn default_metrics() -> Option<Arc<CellMetrics>> {
+    Some(Arc::new(CellMetrics::new()))
+}
+
+#[cfg(not(feature = "trace"))]
+fn default_metrics() -> Option<Arc<CellMetrics>> {
+    None
 }
