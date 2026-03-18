@@ -433,14 +433,15 @@ where
         self.inner.len_cell.set(self.inner.data.len());
     }
 
-    /// Replace all entries atomically, emitting a single `Initial` diff.
+    /// Replace all entries atomically, emitting a single `Batch` diff.
     ///
     /// Removes keys not in `entries`, inserts/updates keys that are.
     /// Skips no-op updates (existing key with equal value).
-    /// Emits `MapDiff::Initial` with the final state so downstream
-    /// subscribers see one atomic replacement instead of N removes + M inserts.
+    /// Emits `MapDiff::Batch` with the actual changes so downstream
+    /// subscribers see one atomic replacement instead of N individual diffs.
     pub fn replace_all(&self, entries: Vec<(K, V)>) {
         let new_keys: std::collections::HashSet<&K> = entries.iter().map(|(k, _)| k).collect();
+        let mut changes = Vec::new();
 
         // Remove keys not in new set
         let keys_to_remove: Vec<K> = self
@@ -452,28 +453,46 @@ where
             .collect();
 
         for key in &keys_to_remove {
-            self.inner.data.remove(key);
-            if let Some(weak) = self.inner.key_cells.get(key)
-                && let Some(cell) = weak.upgrade()
-            {
-                cell.set(None);
+            if let Some((k, old_value)) = self.inner.data.remove(key) {
+                changes.push(MapDiff::Remove {
+                    key: k.clone(),
+                    old_value,
+                });
+                if let Some(weak) = self.inner.key_cells.get(&k)
+                    && let Some(cell) = weak.upgrade()
+                {
+                    cell.set(None);
+                }
             }
         }
 
         // Insert/update entries
-        for (key, value) in &entries {
+        for (key, value) in entries {
             let old = self.inner.data.insert(key.clone(), value.clone());
-            if old.as_ref().is_some_and(|old_value| old_value == value) {
+            if old.as_ref().is_some_and(|old_value| old_value == &value) {
                 continue;
             }
-            if let Some(weak) = self.inner.key_cells.get(key)
+            changes.push(match old {
+                Some(old_value) => MapDiff::Update {
+                    key: key.clone(),
+                    old_value,
+                    new_value: value.clone(),
+                },
+                None => MapDiff::Insert {
+                    key: key.clone(),
+                    value: value.clone(),
+                },
+            });
+            if let Some(weak) = self.inner.key_cells.get(&key)
                 && let Some(cell) = weak.upgrade()
             {
-                cell.set(Some(value.clone()));
+                cell.set(Some(value));
             }
         }
 
-        self.inner.diffs_cell.set(MapDiff::Initial { entries });
+        if !changes.is_empty() {
+            self.inner.diffs_cell.set(MapDiff::Batch { changes });
+        }
         self.inner.len_cell.set(self.inner.data.len());
     }
 
@@ -1357,12 +1376,15 @@ mod tests {
         assert_eq!(map.get_value(&"b".to_string()), None);
         assert_eq!(map.get_value(&"c".to_string()), None);
 
-        // Initial snapshot + replace_all Initial
+        // Initial snapshot + replace_all Batch
         let seen: Vec<_> = rx.try_iter().collect();
         assert_eq!(seen.len(), 2);
         match &seen[1] {
-            MapDiff::Initial { entries } => assert_eq!(entries.len(), 2),
-            other => panic!("expected Initial from replace_all, got {:?}", other),
+            MapDiff::Batch { changes } => {
+                // Should have: 2 removes (b, c) + 1 update (a: 1→10) + 1 insert (d)
+                assert_eq!(changes.len(), 4);
+            }
+            other => panic!("expected Batch from replace_all, got {:?}", other),
         }
     }
 
