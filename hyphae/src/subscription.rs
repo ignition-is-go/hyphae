@@ -12,6 +12,21 @@ pub struct SubscriptionGuard {
     source: Arc<dyn DepNode>,
 }
 
+/// Minimal DepNode for callback-only guards (no real cell dependency).
+struct CallbackDepNode(Uuid);
+
+impl DepNode for CallbackDepNode {
+    fn id(&self) -> Uuid {
+        self.0
+    }
+    fn name(&self) -> Option<String> {
+        Some("callback_guard".to_string())
+    }
+    fn deps(&self) -> Vec<Arc<dyn DepNode>> {
+        vec![]
+    }
+}
+
 impl SubscriptionGuard {
     pub(crate) fn new(
         id: Uuid,
@@ -22,6 +37,21 @@ impl SubscriptionGuard {
             unsubscribe_fn: Some(Box::new(unsubscribe_fn)),
             id,
             source,
+        }
+    }
+
+    /// Create a guard that runs a callback when dropped.
+    ///
+    /// Unlike `new`, this does not require a real cell source — useful for
+    /// cleanup actions (e.g., sending unsubscribe messages) that should be
+    /// tied to a cell's lifetime via `cell.own()`.
+    pub fn from_callback(callback: impl FnMut() + Send + Sync + 'static) -> Self {
+        let id = Uuid::new_v4();
+        log::trace!("SubscriptionGuard::from_callback created id={}", id);
+        Self {
+            unsubscribe_fn: Some(Box::new(callback)),
+            id,
+            source: Arc::new(CallbackDepNode(id)),
         }
     }
 
@@ -51,6 +81,7 @@ impl SubscriptionGuard {
 impl Drop for SubscriptionGuard {
     fn drop(&mut self) {
         if let Some(mut f) = self.unsubscribe_fn.take() {
+            log::trace!("SubscriptionGuard dropped id={} — running cleanup", self.id);
             f();
         }
     }
