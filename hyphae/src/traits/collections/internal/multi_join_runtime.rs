@@ -172,7 +172,13 @@ fn apply_left_diff<LK, LV, RK, RV, JK, OK, OV, FL>(
                 impacted.insert(key);
             }
             for (key, value) in entries {
-                upsert_left(state, key.clone(), value.clone(), left_join_keys_fn, impacted);
+                upsert_left(
+                    state,
+                    key.clone(),
+                    value.clone(),
+                    left_join_keys_fn,
+                    impacted,
+                );
             }
         }
         MapDiff::Insert { key, value }
@@ -181,7 +187,13 @@ fn apply_left_diff<LK, LV, RK, RV, JK, OK, OV, FL>(
             new_value: value,
             ..
         } => {
-            upsert_left(state, key.clone(), value.clone(), left_join_keys_fn, impacted);
+            upsert_left(
+                state,
+                key.clone(),
+                value.clone(),
+                left_join_keys_fn,
+                impacted,
+            );
         }
         MapDiff::Remove { key, .. } => {
             remove_left(state, key, impacted);
