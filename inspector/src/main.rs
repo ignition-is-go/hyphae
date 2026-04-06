@@ -19,8 +19,9 @@ use clap::Parser;
 
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+use dashmap::DashMap;
 use hyphae::registry::CellSnapshot;
 use hyphae::server::start_server;
 use hyphae::{Cell, CellMap, CellMutable, Gettable, MapExt, Mutable, Signal, Watchable};
@@ -32,7 +33,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
 };
-use dashmap::DashMap;
 use uuid::Uuid;
 
 /// Sort mode for the cell tree.
@@ -125,7 +125,10 @@ fn group_id(name: &str) -> Uuid {
 
 /// CLI arguments.
 #[derive(Parser)]
-#[command(name = "hyphae-inspector", about = "Real-time TUI for inspecting hyphae cell graphs")]
+#[command(
+    name = "hyphae-inspector",
+    about = "Real-time TUI for inspecting hyphae cell graphs"
+)]
 struct Cli {
     /// Connect to inspector servers (host:port or :port)
     #[arg(value_name = "ADDR")]
@@ -155,8 +158,9 @@ fn parse_addr(arg: &str) -> Option<Environment> {
 
 /// Connect to a server, read one full snapshot frame, and print cells to stdout.
 fn dump_snapshot(addr: &str) -> anyhow::Result<()> {
-    let env = parse_addr(addr)
-        .ok_or_else(|| anyhow::anyhow!("invalid address: {} (expected host:port or :port)", addr))?;
+    let env = parse_addr(addr).ok_or_else(|| {
+        anyhow::anyhow!("invalid address: {} (expected host:port or :port)", addr)
+    })?;
 
     let stream = TcpStream::connect_timeout(
         &format!("{}:{}", env.host, env.port).parse()?,
@@ -174,7 +178,10 @@ fn dump_snapshot(addr: &str) -> anyhow::Result<()> {
     cells.sort_by(|a, b| a.display_name.cmp(&b.display_name));
 
     // Build ownership/dep maps for tree structure
-    let all_dep_ids: HashSet<Uuid> = cells.iter().flat_map(|c| c.dep_ids.iter().copied()).collect();
+    let all_dep_ids: HashSet<Uuid> = cells
+        .iter()
+        .flat_map(|c| c.dep_ids.iter().copied())
+        .collect();
 
     let roots: Vec<&CellSnapshot> = cells
         .iter()
@@ -217,11 +224,7 @@ fn dump_snapshot(addr: &str) -> anyhow::Result<()> {
 
         println!(
             "{:<name_width$}  {:<caller_width$}  subs: {}  owned: {}  = {}",
-            cell.display_name,
-            caller,
-            cell.subscriber_count,
-            cell.owned_count,
-            value,
+            cell.display_name, caller, cell.subscriber_count, cell.owned_count, value,
         );
     }
 
@@ -264,7 +267,11 @@ fn main() -> anyhow::Result<()> {
     }
 
     // Auto-select: first CLI-provided env if any, otherwise self
-    let initial_selected = if initial_envs.len() > 1 { Some(1) } else { Some(0) };
+    let initial_selected = if initial_envs.len() > 1 {
+        Some(1)
+    } else {
+        Some(0)
+    };
 
     // --- Hyphae cells for TUI state ---
     let environments: Cell<Vec<Environment>, CellMutable> =
@@ -277,11 +284,11 @@ fn main() -> anyhow::Result<()> {
         Cell::new(HashSet::new()).with_name("expanded");
     let expanded_values: Cell<HashSet<Uuid>, CellMutable> =
         Cell::new(HashSet::new()).with_name("expanded_values");
-    let search_query: Cell<String, CellMutable> = Cell::new(String::new()).with_name("search_query");
+    let search_query: Cell<String, CellMutable> =
+        Cell::new(String::new()).with_name("search_query");
     let search_input_active: Cell<bool, CellMutable> =
         Cell::new(false).with_name("search_input_active");
-    let sort_mode: Cell<SortMode, CellMutable> =
-        Cell::new(SortMode::Name).with_name("sort_mode");
+    let sort_mode: Cell<SortMode, CellMutable> = Cell::new(SortMode::Name).with_name("sort_mode");
 
     // Shared update-order tracker: cell_id → monotonic counter value
     let update_counter = Arc::new(AtomicU64::new(0));
@@ -414,43 +421,63 @@ fn main() -> anyhow::Result<()> {
         vec![
             snapshot_entries.subscribe({
                 let tx = tx.clone();
-                move |_: &Signal<_>| { let _ = tx.try_send(UiEvent::CellChanged); }
+                move |_: &Signal<_>| {
+                    let _ = tx.try_send(UiEvent::CellChanged);
+                }
             }),
             environments.subscribe({
                 let tx = tx.clone();
-                move |_: &Signal<_>| { let _ = tx.try_send(UiEvent::CellChanged); }
+                move |_: &Signal<_>| {
+                    let _ = tx.try_send(UiEvent::CellChanged);
+                }
             }),
             selected_env.subscribe({
                 let tx = tx.clone();
-                move |_: &Signal<_>| { let _ = tx.try_send(UiEvent::CellChanged); }
+                move |_: &Signal<_>| {
+                    let _ = tx.try_send(UiEvent::CellChanged);
+                }
             }),
             selected_index.subscribe({
                 let tx = tx.clone();
-                move |_: &Signal<_>| { let _ = tx.try_send(UiEvent::CellChanged); }
+                move |_: &Signal<_>| {
+                    let _ = tx.try_send(UiEvent::CellChanged);
+                }
             }),
             expanded.subscribe({
                 let tx = tx.clone();
-                move |_: &Signal<_>| { let _ = tx.try_send(UiEvent::CellChanged); }
+                move |_: &Signal<_>| {
+                    let _ = tx.try_send(UiEvent::CellChanged);
+                }
             }),
             expanded_values.subscribe({
                 let tx = tx.clone();
-                move |_: &Signal<_>| { let _ = tx.try_send(UiEvent::CellChanged); }
+                move |_: &Signal<_>| {
+                    let _ = tx.try_send(UiEvent::CellChanged);
+                }
             }),
             search_query.subscribe({
                 let tx = tx.clone();
-                move |_: &Signal<_>| { let _ = tx.try_send(UiEvent::CellChanged); }
+                move |_: &Signal<_>| {
+                    let _ = tx.try_send(UiEvent::CellChanged);
+                }
             }),
             search_input_active.subscribe({
                 let tx = tx.clone();
-                move |_: &Signal<_>| { let _ = tx.try_send(UiEvent::CellChanged); }
+                move |_: &Signal<_>| {
+                    let _ = tx.try_send(UiEvent::CellChanged);
+                }
             }),
             sort_mode.subscribe({
                 let tx = tx.clone();
-                move |_: &Signal<_>| { let _ = tx.try_send(UiEvent::CellChanged); }
+                move |_: &Signal<_>| {
+                    let _ = tx.try_send(UiEvent::CellChanged);
+                }
             }),
             summary.subscribe({
                 let tx = tx.clone();
-                move |_: &Signal<_>| { let _ = tx.try_send(UiEvent::CellChanged); }
+                move |_: &Signal<_>| {
+                    let _ = tx.try_send(UiEvent::CellChanged);
+                }
             }),
         ]
     };
@@ -495,7 +522,13 @@ fn main() -> anyhow::Result<()> {
             let query = search_query.get();
             let input_active = search_input_active.get();
             let current_sort = sort_mode.get();
-            let tree_nodes = build_tree(&cells, &expanded_set, &expanded_vals, current_sort, &update_order);
+            let tree_nodes = build_tree(
+                &cells,
+                &expanded_set,
+                &expanded_vals,
+                current_sort,
+                &update_order,
+            );
 
             // Filter tree when search is active
             let q_lower = query.to_lowercase();
@@ -528,8 +561,22 @@ fn main() -> anyhow::Result<()> {
                 };
                 let chunks = Layout::vertical(constraints).split(area);
 
-                render_header(frame, chunks[0], &envs, sel, &summary_text, &query, current_sort);
-                render_tree(frame, chunks[1], &display_nodes, selected, !query.is_empty());
+                render_header(
+                    frame,
+                    chunks[0],
+                    &envs,
+                    sel,
+                    &summary_text,
+                    &query,
+                    current_sort,
+                );
+                render_tree(
+                    frame,
+                    chunks[1],
+                    &display_nodes,
+                    selected,
+                    !query.is_empty(),
+                );
                 if show_search_bar {
                     render_search_bar(frame, chunks[2], &query, input_active, match_count);
                 }
@@ -599,7 +646,13 @@ fn main() -> anyhow::Result<()> {
             let expanded_set = expanded.get();
             let expanded_vals = expanded_values.get();
             let current_sort = sort_mode.get();
-            let tree_nodes = build_tree(&cells, &expanded_set, &expanded_vals, current_sort, &update_order);
+            let tree_nodes = build_tree(
+                &cells,
+                &expanded_set,
+                &expanded_vals,
+                current_sort,
+                &update_order,
+            );
             let query = search_query.get();
             let q_lower = query.to_lowercase();
             let display_nodes: Vec<&TreeNode> = if query.is_empty() {
@@ -750,10 +803,7 @@ fn main() -> anyhow::Result<()> {
                     if min_depth < usize::MAX {
                         let mut set = expanded.get();
                         for node in &display_nodes {
-                            if node.collapsed
-                                && !node.is_value_line()
-                                && node.depth == min_depth
-                            {
+                            if node.collapsed && !node.is_value_line() && node.depth == min_depth {
                                 set.insert(node.id());
                             }
                         }
@@ -815,11 +865,7 @@ fn render_header(
                 } else {
                     Style::default().fg(Color::White)
                 };
-                let sep = if i > 0 {
-                    vec![Span::raw("  ")]
-                } else {
-                    vec![]
-                };
+                let sep = if i > 0 { vec![Span::raw("  ")] } else { vec![] };
                 let mut spans = sep;
                 spans.push(Span::styled(format!("[{}] {}", i + 1, env), style));
                 spans
@@ -1077,19 +1123,10 @@ fn render_search_bar(
     )];
 
     if input_active {
-        spans.push(Span::styled(
-            query,
-            Style::default().fg(Color::White),
-        ));
-        spans.push(Span::styled(
-            "█",
-            Style::default().fg(Color::Yellow),
-        ));
+        spans.push(Span::styled(query, Style::default().fg(Color::White)));
+        spans.push(Span::styled("█", Style::default().fg(Color::Yellow)));
     } else {
-        spans.push(Span::styled(
-            query,
-            Style::default().fg(Color::Yellow),
-        ));
+        spans.push(Span::styled(query, Style::default().fg(Color::Yellow)));
     }
 
     spans.push(Span::raw("  "));
@@ -1151,7 +1188,10 @@ fn build_tree(
     }
 
     // A cell is a root if no other cell lists it as a dependency.
-    let all_dep_ids: HashSet<Uuid> = cells.iter().flat_map(|c| c.dep_ids.iter().copied()).collect();
+    let all_dep_ids: HashSet<Uuid> = cells
+        .iter()
+        .flat_map(|c| c.dep_ids.iter().copied())
+        .collect();
     let roots: Vec<&CellSnapshot> = cells
         .iter()
         .filter(|c| !all_dep_ids.contains(&c.id))
@@ -1253,9 +1293,7 @@ fn build_tree(
         });
 
         // Emit value lines if this cell's value is expanded
-        if is_expanded
-            && let Some(ref value) = snapshot.value
-        {
+        if is_expanded && let Some(ref value) = snapshot.value {
             let lines = format_value(value);
             for line in lines {
                 result.push(TreeNode {
@@ -1271,9 +1309,7 @@ fn build_tree(
             }
         }
 
-        if !is_collapsed
-            && let Some(kids) = children.get(&id)
-        {
+        if !is_collapsed && let Some(kids) = children.get(&id) {
             let mut sorted_kids = kids.clone();
             match sort_mode {
                 SortMode::Name => {
