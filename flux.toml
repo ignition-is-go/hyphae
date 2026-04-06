@@ -14,4 +14,4 @@ cargo = ["cargo", "clippy", "--all-targets", "--", "-D", "warnings"]
 
 [tasks.release]
 depends_on = ["test", "lint"]
-cargo = "VERSION=$(cargo flux version) && cargo flux stamp \"$VERSION\" && cargo update --workspace && cargo fmt --all && git add -A && git commit -m \"chore(release): $VERSION\" && git tag \"v$VERSION\" -m \"Release $VERSION\" && git push origin HEAD \"v$VERSION\" && cargo publish"
+cargo = "ROOT=$(git rev-parse --show-toplevel) && VERSION=$(cargo flux version --root \"$ROOT\") && cargo flux stamp --root \"$ROOT\" \"$VERSION\" && cargo update --workspace --manifest-path \"$ROOT/Cargo.toml\" && cargo fmt --all --manifest-path \"$ROOT/Cargo.toml\" && git -C \"$ROOT\" add -A && git -C \"$ROOT\" commit -m \"chore(release): $VERSION\" && git -C \"$ROOT\" tag \"v$VERSION\" -m \"Release $VERSION\" && git -C \"$ROOT\" push origin HEAD \"v$VERSION\" && cargo publish"
