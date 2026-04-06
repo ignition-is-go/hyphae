@@ -1,3 +1,6 @@
+[channels]
+main = "production"
+
 [tasks.build]
 cargo = ["cargo", "build"]
 workspace_batchable = true
@@ -9,6 +12,6 @@ workspace_batchable = true
 [tasks.lint]
 cargo = ["cargo", "clippy", "--all-targets", "--", "-D", "warnings"]
 
-[tasks.publish]
+[tasks.release]
 depends_on = ["test", "lint"]
-cargo = ["cargo", "publish"]
+cargo = "VERSION=$(cargo flux version) && cargo flux stamp \"$VERSION\" && cargo update --workspace && cargo fmt --all && git add -A && git commit -m \"chore(release): $VERSION\" && git tag \"v$VERSION\" -m \"Release $VERSION\" && git push origin HEAD \"v$VERSION\" && cargo publish"

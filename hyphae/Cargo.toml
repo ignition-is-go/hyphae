@@ -44,7 +44,7 @@ uuid = { version = "1", features = ["js"] }
 getrandom = { version = "0.3", features = ["wasm_js"] }
 
 [package.metadata.flux]
-tasks = ["build", "test", "lint", "publish"]
+tasks = ["build", "test", "lint", "release"]
 
 [dev-dependencies]
 criterion = "0.5"
