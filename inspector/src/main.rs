@@ -52,7 +52,7 @@ impl std::fmt::Display for SortMode {
 }
 
 /// An inspector environment to connect to.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct Environment {
     name: String,
     host: String,
@@ -460,12 +460,11 @@ fn main() -> anyhow::Result<()> {
     let input_tx = ui_tx.clone();
     std::thread::spawn(move || {
         while !shutdown_input.load(Ordering::SeqCst) {
-            if event::poll(Duration::from_millis(50)).unwrap_or(false) {
-                if let Ok(Event::Key(key)) = event::read() {
-                    if input_tx.send(UiEvent::Key(key)).is_err() {
-                        break;
-                    }
-                }
+            if event::poll(Duration::from_millis(50)).unwrap_or(false)
+                && let Ok(Event::Key(key)) = event::read()
+                && input_tx.send(UiEvent::Key(key)).is_err()
+            {
+                break;
             }
         }
     });
@@ -1218,6 +1217,7 @@ fn build_tree(
     let mut top_idx = 0;
     let mut visited = HashSet::new();
 
+    #[allow(clippy::too_many_arguments)]
     fn walk(
         id: Uuid,
         by_id: &HashMap<Uuid, &CellSnapshot>,
@@ -1253,62 +1253,62 @@ fn build_tree(
         });
 
         // Emit value lines if this cell's value is expanded
-        if is_expanded {
-            if let Some(ref value) = snapshot.value {
-                let lines = format_value(value);
-                for line in lines {
-                    result.push(TreeNode {
-                        kind: TreeNodeKind::ValueLine {
-                            parent_id: id,
-                            text: line,
-                        },
-                        depth: depth + 1,
-                        is_last_at_depth: is_last_at_depth.clone(),
-                        has_children: false,
-                        collapsed: false,
-                    });
-                }
+        if is_expanded
+            && let Some(ref value) = snapshot.value
+        {
+            let lines = format_value(value);
+            for line in lines {
+                result.push(TreeNode {
+                    kind: TreeNodeKind::ValueLine {
+                        parent_id: id,
+                        text: line,
+                    },
+                    depth: depth + 1,
+                    is_last_at_depth: is_last_at_depth.clone(),
+                    has_children: false,
+                    collapsed: false,
+                });
             }
         }
 
-        if !is_collapsed {
-            if let Some(kids) = children.get(&id) {
-                let mut sorted_kids = kids.clone();
-                match sort_mode {
-                    SortMode::Name => {
-                        sorted_kids.sort_by(|a, b| {
-                            let a_name = by_id.get(a).map(|c| &c.display_name);
-                            let b_name = by_id.get(b).map(|c| &c.display_name);
-                            a_name.cmp(&b_name)
-                        });
-                    }
-                    SortMode::RecentlyUpdated => {
-                        sorted_kids.sort_by(|a, b| {
-                            let a_ord = update_order.get(a).copied().unwrap_or(0);
-                            let b_ord = update_order.get(b).copied().unwrap_or(0);
-                            b_ord.cmp(&a_ord)
-                        });
-                    }
+        if !is_collapsed
+            && let Some(kids) = children.get(&id)
+        {
+            let mut sorted_kids = kids.clone();
+            match sort_mode {
+                SortMode::Name => {
+                    sorted_kids.sort_by(|a, b| {
+                        let a_name = by_id.get(a).map(|c| &c.display_name);
+                        let b_name = by_id.get(b).map(|c| &c.display_name);
+                        a_name.cmp(&b_name)
+                    });
                 }
+                SortMode::RecentlyUpdated => {
+                    sorted_kids.sort_by(|a, b| {
+                        let a_ord = update_order.get(a).copied().unwrap_or(0);
+                        let b_ord = update_order.get(b).copied().unwrap_or(0);
+                        b_ord.cmp(&a_ord)
+                    });
+                }
+            }
 
-                for (i, &child_id) in sorted_kids.iter().enumerate() {
-                    let is_last = i == sorted_kids.len() - 1;
-                    is_last_at_depth.push(is_last);
-                    walk(
-                        child_id,
-                        by_id,
-                        children,
-                        expanded_set,
-                        expanded_values,
-                        visited,
-                        depth + 1,
-                        is_last_at_depth,
-                        result,
-                        sort_mode,
-                        update_order,
-                    );
-                    is_last_at_depth.pop();
-                }
+            for (i, &child_id) in sorted_kids.iter().enumerate() {
+                let is_last = i == sorted_kids.len() - 1;
+                is_last_at_depth.push(is_last);
+                walk(
+                    child_id,
+                    by_id,
+                    children,
+                    expanded_set,
+                    expanded_values,
+                    visited,
+                    depth + 1,
+                    is_last_at_depth,
+                    result,
+                    sort_mode,
+                    update_order,
+                );
+                is_last_at_depth.pop();
             }
         }
     }
@@ -1413,10 +1413,10 @@ fn build_tree(
 /// Tries to parse as JSON for pretty-printing, falls back to indented debug formatting.
 fn format_value(raw: &str) -> Vec<String> {
     // Try JSON parse first (some values may serialize as JSON-compatible)
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(raw) {
-        if let Ok(pretty) = serde_json::to_string_pretty(&json) {
-            return pretty.lines().map(String::from).collect();
-        }
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(raw)
+        && let Ok(pretty) = serde_json::to_string_pretty(&json)
+    {
+        return pretty.lines().map(String::from).collect();
     }
 
     // Fall back to splitting the debug string into readable lines with indentation

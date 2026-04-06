@@ -1,0 +1,14 @@
+[tasks.build]
+cargo = ["cargo", "build"]
+workspace_batchable = true
+
+[tasks.test]
+cargo = ["cargo", "test"]
+workspace_batchable = true
+
+[tasks.lint]
+cargo = ["cargo", "clippy", "--all-targets", "--", "-D", "warnings"]
+
+[tasks.publish]
+depends_on = ["test", "lint"]
+cargo = ["cargo", "publish"]

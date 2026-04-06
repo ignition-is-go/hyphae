@@ -12,6 +12,9 @@ workspace = true
 name = "hyphae-inspector"
 path = "src/main.rs"
 
+[package.metadata.flux]
+tasks = ["build", "test", "lint"]
+
 [dependencies]
 hyphae = { path = "../hyphae", features = ["inspector"] }
 anyhow.workspace = true

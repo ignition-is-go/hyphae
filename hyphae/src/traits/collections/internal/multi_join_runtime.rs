@@ -387,10 +387,10 @@ where
                 for jk in join_keys {
                     if let Some(right_key_set) = state.join_to_right.get(jk) {
                         for rk in right_key_set {
-                            if seen_right_keys.insert(rk.clone()) {
-                                if let Some(rv) = state.right_rows.get(rk) {
-                                    right_rows.push((rk.clone(), rv.clone()));
-                                }
+                            if seen_right_keys.insert(rk.clone())
+                                && let Some(rv) = state.right_rows.get(rk)
+                            {
+                                right_rows.push((rk.clone(), rv.clone()));
                             }
                         }
                     }

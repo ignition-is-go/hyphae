@@ -13,7 +13,7 @@ use crate::traits::DepNode;
 const MAX_VALUE_LEN: usize = 4096;
 
 /// Snapshot of a single cell's state, suitable for serialization and transmission.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CellSnapshot {
     pub id: Uuid,
     pub name: Option<String>,
