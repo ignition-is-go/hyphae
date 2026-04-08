@@ -2,10 +2,8 @@ use std::{
     collections::{HashMap, HashSet},
     hash::Hash,
     marker::PhantomData,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
-
-use arc_swap::ArcSwap;
 
 use super::map_runtime::flatten_diff;
 use crate::{
@@ -25,7 +23,7 @@ where
     SV: CellValue,
     OK: Hash + Eq + CellValue,
     OV: CellValue,
-    ST: Clone + Send + Sync + 'static,
+    ST: Send + Sync + 'static,
     FS: Fn(&mut ST, &MapDiff<SK, SV>, &mut Vec<MapDiff<OK, OV>>) + Send + Sync + 'static,
 {
     let output = CellMap::<OK, OV, CellMutable>::new();
@@ -35,7 +33,7 @@ where
             .with_name(format!("{}::{}", parent_name, op_name));
     }
 
-    let state = Arc::new(ArcSwap::from_pointee(initial_state));
+    let state = Arc::new(Mutex::new(initial_state));
     let apply_atomic = Arc::new(apply_atomic);
     let output_weak = Arc::downgrade(&output.inner);
 
@@ -50,18 +48,14 @@ where
 
         let mut atomic_diffs: Vec<MapDiff<SK, SV>> = Vec::new();
         flatten_diff(diff, &mut atomic_diffs);
-        let emitted = std::cell::RefCell::new(Vec::<MapDiff<OK, OV>>::new());
-        state.rcu(|current| {
-            let mut next = current.as_ref().clone();
-            {
-                let out = &mut *emitted.borrow_mut();
-                for atomic in &atomic_diffs {
-                    apply_atomic(&mut next, atomic, out);
-                }
+        let mut emitted = Vec::<MapDiff<OK, OV>>::new();
+        {
+            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+            for atomic in &atomic_diffs {
+                apply_atomic(&mut state, atomic, &mut emitted);
             }
-            next
-        });
-        output.apply_batch(emitted.into_inner());
+        }
+        output.apply_batch(emitted);
     });
 
     output.own(guard);

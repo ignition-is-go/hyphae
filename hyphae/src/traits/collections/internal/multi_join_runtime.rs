@@ -2,10 +2,8 @@ use std::{
     collections::{HashMap, HashSet},
     hash::Hash,
     marker::PhantomData,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
-
-use arc_swap::ArcSwap;
 
 use crate::{
     cell::{CellImmutable, CellMutable},
@@ -13,7 +11,6 @@ use crate::{
     traits::{CellValue, reactive_map::ReactiveMap},
 };
 
-#[derive(Clone)]
 struct MultiJoinState<LK, LV, RK, RV, JK, OK, OV>
 where
     LK: Hash + Eq + CellValue,
@@ -24,16 +21,16 @@ where
     OK: Hash + Eq + CellValue,
     OV: CellValue,
 {
-    left_rows: Arc<HashMap<LK, LV>>,
+    left_rows: HashMap<LK, LV>,
     /// Each left item maps to multiple join keys.
-    left_join_keys: Arc<HashMap<LK, Vec<JK>>>,
+    left_join_keys: HashMap<LK, Vec<JK>>,
     /// Reverse index: join key -> set of left keys that reference it.
-    join_to_left: Arc<HashMap<JK, HashSet<LK>>>,
-    right_rows: Arc<HashMap<RK, RV>>,
-    right_join_keys: Arc<HashMap<RK, JK>>,
-    join_to_right: Arc<HashMap<JK, HashSet<RK>>>,
-    left_output_keys: Arc<HashMap<LK, HashSet<OK>>>,
-    output_cache: Arc<HashMap<OK, OV>>,
+    join_to_left: HashMap<JK, HashSet<LK>>,
+    right_rows: HashMap<RK, RV>,
+    right_join_keys: HashMap<RK, JK>,
+    join_to_right: HashMap<JK, HashSet<RK>>,
+    left_output_keys: HashMap<LK, HashSet<OK>>,
+    output_cache: HashMap<OK, OV>,
 }
 
 impl<LK, LV, RK, RV, JK, OK, OV> Default for MultiJoinState<LK, LV, RK, RV, JK, OK, OV>
@@ -48,14 +45,14 @@ where
 {
     fn default() -> Self {
         Self {
-            left_rows: Arc::new(HashMap::new()),
-            left_join_keys: Arc::new(HashMap::new()),
-            join_to_left: Arc::new(HashMap::new()),
-            right_rows: Arc::new(HashMap::new()),
-            right_join_keys: Arc::new(HashMap::new()),
-            join_to_right: Arc::new(HashMap::new()),
-            left_output_keys: Arc::new(HashMap::new()),
-            output_cache: Arc::new(HashMap::new()),
+            left_rows: HashMap::new(),
+            left_join_keys: HashMap::new(),
+            join_to_left: HashMap::new(),
+            right_rows: HashMap::new(),
+            right_join_keys: HashMap::new(),
+            join_to_right: HashMap::new(),
+            left_output_keys: HashMap::new(),
+            output_cache: HashMap::new(),
         }
     }
 }
@@ -98,25 +95,21 @@ fn upsert_left<LK, LV, RK, RV, JK, OK, OV, FL>(
     FL: Fn(&LK, &LV) -> Vec<JK>,
 {
     // Remove previous join key mappings
-    if let Some(previous_join_keys) = Arc::make_mut(&mut state.left_join_keys).remove(&left_key) {
+    if let Some(previous_join_keys) = state.left_join_keys.remove(&left_key) {
         for jk in &previous_join_keys {
-            remove_index_member(Arc::make_mut(&mut state.join_to_left), jk, &left_key);
+            remove_index_member(&mut state.join_to_left, jk, &left_key);
         }
     }
 
     // Compute new join keys
     let join_keys = left_join_keys_fn(&left_key, &left_value);
-    Arc::make_mut(&mut state.left_rows).insert(left_key.clone(), left_value);
+    state.left_rows.insert(left_key.clone(), left_value);
 
     // Add to reverse index for each join key
     for jk in &join_keys {
-        add_index_member(
-            Arc::make_mut(&mut state.join_to_left),
-            jk.clone(),
-            left_key.clone(),
-        );
+        add_index_member(&mut state.join_to_left, jk.clone(), left_key.clone());
     }
-    Arc::make_mut(&mut state.left_join_keys).insert(left_key.clone(), join_keys);
+    state.left_join_keys.insert(left_key.clone(), join_keys);
     impacted.insert(left_key);
 }
 
@@ -133,14 +126,12 @@ fn remove_left<LK, LV, RK, RV, JK, OK, OV>(
     OK: Hash + Eq + CellValue,
     OV: CellValue,
 {
-    if let Some(previous_join_keys) = Arc::make_mut(&mut state.left_join_keys).remove(left_key) {
+    if let Some(previous_join_keys) = state.left_join_keys.remove(left_key) {
         for jk in &previous_join_keys {
-            remove_index_member(Arc::make_mut(&mut state.join_to_left), jk, left_key);
+            remove_index_member(&mut state.join_to_left, jk, left_key);
         }
     }
-    if Arc::make_mut(&mut state.left_rows)
-        .remove(left_key)
-        .is_some()
+    if state.left_rows.remove(left_key).is_some()
         || state.left_output_keys.contains_key(left_key)
     {
         impacted.insert(left_key.clone());
@@ -165,9 +156,9 @@ fn apply_left_diff<LK, LV, RK, RV, JK, OK, OV, FL>(
     match diff {
         MapDiff::Initial { entries } => {
             let previous_left_keys: Vec<LK> = state.left_rows.keys().cloned().collect();
-            Arc::make_mut(&mut state.left_rows).clear();
-            Arc::make_mut(&mut state.left_join_keys).clear();
-            Arc::make_mut(&mut state.join_to_left).clear();
+            state.left_rows.clear();
+            state.left_join_keys.clear();
+            state.join_to_left.clear();
             for key in previous_left_keys {
                 impacted.insert(key);
             }
@@ -223,9 +214,9 @@ fn upsert_right<LK, LV, RK, RV, JK, OK, OV, FR>(
     OV: CellValue,
     FR: Fn(&RK, &RV) -> JK,
 {
-    if let Some(previous_join_key) = Arc::make_mut(&mut state.right_join_keys).remove(&right_key) {
+    if let Some(previous_join_key) = state.right_join_keys.remove(&right_key) {
         remove_index_member(
-            Arc::make_mut(&mut state.join_to_right),
+            &mut state.join_to_right,
             &previous_join_key,
             &right_key,
         );
@@ -233,13 +224,11 @@ fn upsert_right<LK, LV, RK, RV, JK, OK, OV, FR>(
     }
 
     let join_key = right_join_key(&right_key, &right_value);
-    Arc::make_mut(&mut state.right_rows).insert(right_key.clone(), right_value);
-    Arc::make_mut(&mut state.right_join_keys).insert(right_key.clone(), join_key.clone());
-    add_index_member(
-        Arc::make_mut(&mut state.join_to_right),
-        join_key.clone(),
-        right_key,
-    );
+    state.right_rows.insert(right_key.clone(), right_value);
+    state
+        .right_join_keys
+        .insert(right_key.clone(), join_key.clone());
+    add_index_member(&mut state.join_to_right, join_key.clone(), right_key);
     changed_join_keys.insert(join_key);
 }
 
@@ -256,15 +245,15 @@ fn remove_right<LK, LV, RK, RV, JK, OK, OV>(
     OK: Hash + Eq + CellValue,
     OV: CellValue,
 {
-    if let Some(previous_join_key) = Arc::make_mut(&mut state.right_join_keys).remove(right_key) {
+    if let Some(previous_join_key) = state.right_join_keys.remove(right_key) {
         remove_index_member(
-            Arc::make_mut(&mut state.join_to_right),
+            &mut state.join_to_right,
             &previous_join_key,
             right_key,
         );
         changed_join_keys.insert(previous_join_key);
     }
-    Arc::make_mut(&mut state.right_rows).remove(right_key);
+    state.right_rows.remove(right_key);
 }
 
 fn apply_right_diff<LK, LV, RK, RV, JK, OK, OV, FR>(
@@ -304,9 +293,9 @@ fn apply_right_diff<LK, LV, RK, RV, JK, OK, OV, FR>(
                 for join_key in state.right_join_keys.values() {
                     changed_join_keys.insert(join_key.clone());
                 }
-                Arc::make_mut(&mut state.right_rows).clear();
-                Arc::make_mut(&mut state.right_join_keys).clear();
-                Arc::make_mut(&mut state.join_to_right).clear();
+                state.right_rows.clear();
+                state.right_join_keys.clear();
+                state.join_to_right.clear();
                 for (key, value) in entries {
                     upsert_right(
                         state,
@@ -371,11 +360,12 @@ where
     FO: Fn(&LK, &LV, &[(RK, RV)]) -> Vec<(OK, OV)>,
 {
     let mut changes: Vec<MapDiff<OK, OV>> = Vec::new();
-    let left_output_keys = Arc::make_mut(&mut state.left_output_keys);
-    let output_cache = Arc::make_mut(&mut state.output_cache);
 
     for left_key in impacted {
-        let previous_output_keys = left_output_keys.remove(&left_key).unwrap_or_default();
+        let previous_output_keys = state
+            .left_output_keys
+            .remove(&left_key)
+            .unwrap_or_default();
 
         let mut desired_rows: HashMap<OK, OV> = HashMap::new();
         if let Some(left_value) = state.left_rows.get(&left_key) {
@@ -408,7 +398,7 @@ where
             .iter()
             .filter(|output_key| !desired_keys.contains(*output_key))
         {
-            if let Some(old_value) = output_cache.remove(stale_key) {
+            if let Some(old_value) = state.output_cache.remove(stale_key) {
                 changes.push(MapDiff::Remove {
                     key: stale_key.clone(),
                     old_value,
@@ -417,10 +407,12 @@ where
         }
 
         for (output_key, new_value) in desired_rows {
-            match output_cache.get(&output_key).cloned() {
+            match state.output_cache.get(&output_key).cloned() {
                 Some(old_value) => {
                     if old_value != new_value {
-                        output_cache.insert(output_key.clone(), new_value.clone());
+                        state
+                            .output_cache
+                            .insert(output_key.clone(), new_value.clone());
                         changes.push(MapDiff::Update {
                             key: output_key,
                             old_value,
@@ -429,7 +421,9 @@ where
                     }
                 }
                 None => {
-                    output_cache.insert(output_key.clone(), new_value.clone());
+                    state
+                        .output_cache
+                        .insert(output_key.clone(), new_value.clone());
                     changes.push(MapDiff::Insert {
                         key: output_key,
                         value: new_value,
@@ -439,7 +433,9 @@ where
         }
 
         if !desired_keys.is_empty() {
-            left_output_keys.insert(left_key, desired_keys);
+            state
+                .left_output_keys
+                .insert(left_key, desired_keys);
         }
     }
 
@@ -466,7 +462,7 @@ where
 {
     let output = CellMap::<OK, OV, CellMutable>::new();
 
-    let state = Arc::new(ArcSwap::from_pointee(MultiJoinState::<
+    let state = Arc::new(Mutex::new(MultiJoinState::<
         L::Key,
         L::Value,
         R::Key,
@@ -494,16 +490,11 @@ where
                 _marker: PhantomData,
             };
 
-            let changes_cell = std::cell::RefCell::new(Vec::<MapDiff<OK, OV>>::new());
-            state.rcu(|current| {
-                let mut next = current.as_ref().clone();
-                let mut impacted: HashSet<L::Key> = HashSet::new();
-                apply_left_diff(&mut next, diff, left_join_keys_fn.as_ref(), &mut impacted);
-                let changes = recompute_impacted(&mut next, impacted, compute_rows.as_ref());
-                *changes_cell.borrow_mut() = changes;
-                next
-            });
-            let changes = changes_cell.into_inner();
+            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut impacted: HashSet<L::Key> = HashSet::new();
+            apply_left_diff(&mut state, diff, left_join_keys_fn.as_ref(), &mut impacted);
+            let changes = recompute_impacted(&mut state, impacted, compute_rows.as_ref());
+            drop(state);
             output.apply_batch(changes);
         }
     });
@@ -523,16 +514,11 @@ where
                 _marker: PhantomData,
             };
 
-            let changes_cell = std::cell::RefCell::new(Vec::<MapDiff<OK, OV>>::new());
-            state.rcu(|current| {
-                let mut next = current.as_ref().clone();
-                let mut impacted: HashSet<L::Key> = HashSet::new();
-                apply_right_diff(&mut next, diff, right_join_key.as_ref(), &mut impacted);
-                let changes = recompute_impacted(&mut next, impacted, compute_rows.as_ref());
-                *changes_cell.borrow_mut() = changes;
-                next
-            });
-            let changes = changes_cell.into_inner();
+            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut impacted: HashSet<L::Key> = HashSet::new();
+            apply_right_diff(&mut state, diff, right_join_key.as_ref(), &mut impacted);
+            let changes = recompute_impacted(&mut state, impacted, compute_rows.as_ref());
+            drop(state);
             output.apply_batch(changes);
         }
     });
