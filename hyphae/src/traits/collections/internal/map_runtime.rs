@@ -149,7 +149,9 @@ where
             match state.output_cache.get(&out_key).cloned() {
                 Some(old_value) => {
                     if old_value != new_value {
-                        state.output_cache.insert(out_key.clone(), new_value.clone());
+                        state
+                            .output_cache
+                            .insert(out_key.clone(), new_value.clone());
                         changes.push(MapDiff::Update {
                             key: out_key,
                             old_value,
@@ -158,7 +160,9 @@ where
                     }
                 }
                 None => {
-                    state.output_cache.insert(out_key.clone(), new_value.clone());
+                    state
+                        .output_cache
+                        .insert(out_key.clone(), new_value.clone());
                     changes.push(MapDiff::Insert {
                         key: out_key,
                         value: new_value,

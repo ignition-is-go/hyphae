@@ -121,9 +121,7 @@ fn remove_left<LK, LV, RK, RV, JK, OK, OV>(
     if let Some(previous_join_key) = state.left_join_keys.remove(left_key) {
         remove_index_member(&mut state.join_to_left, &previous_join_key, left_key);
     }
-    if state.left_rows.remove(left_key).is_some()
-        || state.left_output_keys.contains_key(left_key)
-    {
+    if state.left_rows.remove(left_key).is_some() || state.left_output_keys.contains_key(left_key) {
         impacted.insert(left_key.clone());
     }
 }
@@ -192,18 +190,12 @@ fn upsert_right<LK, LV, RK, RV, JK, OK, OV, FR>(
     FR: Fn(&RK, &RV) -> JK,
 {
     if let Some(previous_join_key) = state.right_join_keys.remove(&right_key) {
-        remove_index_member(
-            &mut state.join_to_right,
-            &previous_join_key,
-            &right_key,
-        );
+        remove_index_member(&mut state.join_to_right, &previous_join_key, &right_key);
         changed_join_keys.insert(previous_join_key);
     }
 
     let join_key = right_join_key(&right_key, &right_value);
-    state
-        .right_rows
-        .insert(right_key.clone(), right_value);
+    state.right_rows.insert(right_key.clone(), right_value);
     state
         .right_join_keys
         .insert(right_key.clone(), join_key.clone());
@@ -225,11 +217,7 @@ fn remove_right<LK, LV, RK, RV, JK, OK, OV>(
     OV: CellValue,
 {
     if let Some(previous_join_key) = state.right_join_keys.remove(right_key) {
-        remove_index_member(
-            &mut state.join_to_right,
-            &previous_join_key,
-            right_key,
-        );
+        remove_index_member(&mut state.join_to_right, &previous_join_key, right_key);
         changed_join_keys.insert(previous_join_key);
     }
     state.right_rows.remove(right_key);
@@ -337,10 +325,7 @@ where
     let mut changes: Vec<MapDiff<OK, OV>> = Vec::new();
 
     for left_key in impacted {
-        let previous_output_keys = state
-            .left_output_keys
-            .remove(&left_key)
-            .unwrap_or_default();
+        let previous_output_keys = state.left_output_keys.remove(&left_key).unwrap_or_default();
 
         let mut desired_rows: HashMap<OK, OV> = HashMap::new();
         if let Some(left_value) = state.left_rows.get(&left_key) {
@@ -407,9 +392,7 @@ where
         }
 
         if !desired_keys.is_empty() {
-            state
-                .left_output_keys
-                .insert(left_key, desired_keys);
+            state.left_output_keys.insert(left_key, desired_keys);
         }
     }
 
