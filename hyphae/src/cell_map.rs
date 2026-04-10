@@ -696,7 +696,7 @@ where
             .iter()
             .map(|r| (r.key().clone(), r.value().clone()))
             .collect();
-        let state = Arc::new(ArcSwap::from_pointee(EntryProjection::from_entries(
+        let state = Arc::new(std::sync::Mutex::new(EntryProjection::from_entries(
             initial.clone(),
         )));
 
@@ -723,13 +723,11 @@ where
                 return; // Entries cell was dropped
             };
             if let Signal::Value(diff) = signal {
-                state.rcu(|current| {
-                    let mut next = current.as_ref().clone();
-                    next.apply_diff(diff.as_ref());
-                    next
-                });
-                let next_entries = state.load();
-                cell.set(next_entries.entries.clone());
+                let Ok(mut projection) = state.lock() else {
+                    return;
+                };
+                projection.apply_diff(diff.as_ref());
+                cell.set(projection.entries.clone());
             }
         });
 
@@ -751,7 +749,7 @@ where
             .iter()
             .map(|r| (r.key().clone(), r.value().clone()))
             .collect();
-        let state = Arc::new(ArcSwap::from_pointee(ValueProjection::from_entries(
+        let state = Arc::new(std::sync::Mutex::new(ValueProjection::from_entries(
             initial.clone(),
         )));
 
@@ -772,13 +770,11 @@ where
                 return;
             };
             if let Signal::Value(diff) = signal {
-                state.rcu(|current| {
-                    let mut next = current.as_ref().clone();
-                    next.apply_diff(diff.as_ref());
-                    next
-                });
-                let next_items = state.load();
-                cell.set(next_items.items.clone());
+                let Ok(mut projection) = state.lock() else {
+                    return;
+                };
+                projection.apply_diff(diff.as_ref());
+                cell.set(projection.items.clone());
             }
         });
 
