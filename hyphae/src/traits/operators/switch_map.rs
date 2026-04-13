@@ -193,7 +193,7 @@ impl<T, W: Watchable<T>> SwitchMapExt<T> for W {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::MapExt;
+    use crate::{MapExt, Mutable};
 
     #[test]
     fn test_switch_map_switches() {
@@ -205,5 +205,88 @@ mod tests {
 
         // Initial: 1 * 10 + 1 = 11
         assert_eq!(switched.get(), 11);
+    }
+
+    #[test]
+    fn test_switch_map_inner_chain_with_map_drops() {
+        // Matches the CuePaused report pattern: switch_map creates a new
+        // inner cell chain (simulating query_map().items().map()) on each
+        // outer emission. Old inner closures must stop being called.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let map_call_count = Arc::new(AtomicUsize::new(0));
+        let source = Cell::new(0u64);
+
+        let count = map_call_count.clone();
+        let switched = source.switch_map(move |v| {
+            let v = *v;
+            let count_inner = count.clone();
+            // Simulate: query_map().items() — an intermediate cell
+            let intermediate = Cell::new(v * 10);
+            // Simulate: .map() on items
+            intermediate.map(move |x| {
+                count_inner.fetch_add(1, Ordering::SeqCst);
+                *x + v
+            })
+        });
+
+        assert_eq!(switched.get(), 0); // 0 * 10 + 0
+        let calls_after_init = map_call_count.load(Ordering::SeqCst);
+        assert_eq!(calls_after_init, 1);
+
+        // Switch — old inner map closure should stop being called
+        source.set(1);
+        assert_eq!(switched.get(), 11); // 1 * 10 + 1
+        let calls_after_switch = map_call_count.load(Ordering::SeqCst);
+        assert_eq!(calls_after_switch, 2); // Only the new inner map called
+
+        // Mutate source several times and verify calls grow linearly, not quadratically
+        for i in 2..=20u64 {
+            source.set(i);
+        }
+        let calls_after_20 = map_call_count.load(Ordering::SeqCst);
+        // 1 initial + 20 switches = 21 map calls (one per switch)
+        // If old inner maps leak, we'd see ~1+2+3+...+20 = 210 calls
+        assert_eq!(
+            calls_after_20, 21,
+            "map called {} times after 20 switches, expected 21 (old inner maps leaking if higher)",
+            calls_after_20
+        );
+    }
+
+    #[test]
+    fn test_switch_map_old_intermediate_cells_dropped() {
+        // Verify that intermediate cells created inside switch_map are actually
+        // deallocated when the outer switches. Uses weak refs to detect liveness.
+        let source = Cell::new(0u64);
+        // We need shared mutable access to collect weak refs from inside the closure
+        let weak_collector: Arc<std::sync::Mutex<Vec<crate::cell::WeakCell<u64, CellMutable>>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let collector = weak_collector.clone();
+        let switched = source.switch_map(move |v| {
+            let intermediate = Cell::new(*v * 10);
+            collector.lock().unwrap().push(intermediate.downgrade());
+            intermediate.lock()
+        });
+
+        assert_eq!(switched.get(), 0);
+
+        // Switch 20 times
+        for i in 1..=20u64 {
+            source.set(i);
+        }
+        assert_eq!(switched.get(), 200);
+
+        let weaks = weak_collector.lock().unwrap();
+        assert_eq!(weaks.len(), 21); // 1 initial + 20 switches
+
+        // Only the last inner cell should be alive (the current one)
+        let alive_count = weaks.iter().filter(|w| w.upgrade().is_some()).count();
+        assert!(
+            alive_count <= 1,
+            "expected at most 1 live inner cell, found {} — old cells not being dropped",
+            alive_count
+        );
     }
 }

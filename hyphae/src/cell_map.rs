@@ -1080,7 +1080,7 @@ mod tests {
         let map = CellMap::<String, i32>::new();
         let items = map.items();
 
-        assert_eq!(items.get(), vec![]);
+        assert_eq!(items.get(), Vec::<i32>::new());
 
         map.insert("a".to_string(), 1);
         assert_eq!(items.get(), vec![1]);
