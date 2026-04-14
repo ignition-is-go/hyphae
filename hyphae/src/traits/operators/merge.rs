@@ -58,15 +58,14 @@ pub trait MergeExt<T>: Watchable<T> {
         derived.own(guard1);
 
         // Subscribe to other
+        // NOTE(ts): No first-skip for the right side. The merged cell initialized with
+        // the left side's value — the right side's current value is genuinely new
+        // information that downstream stateful operators need for baselining.
         let weak2 = derived.downgrade();
-        let first2 = Arc::new(AtomicBool::new(true));
         let guard2 = other.subscribe(move |signal| {
             if let Some(d) = weak2.upgrade() {
                 match signal {
                     Signal::Value(_) => {
-                        if first2.swap(false, Ordering::SeqCst) {
-                            return;
-                        }
                         d.notify(signal.clone());
                     }
                     Signal::Complete => {
@@ -98,7 +97,8 @@ mod tests {
         let b = Cell::new(10);
         let merged = a.merge(&b);
 
-        assert_eq!(merged.get(), 1); // Initial from a
+        // Right side's initial value flows through during setup
+        assert_eq!(merged.get(), 10);
 
         a.set(2);
         assert_eq!(merged.get(), 2);
