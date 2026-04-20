@@ -420,10 +420,22 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         for (subscriber_id, callback) in &callbacks {
             let sub_start = metrics.as_ref().map(|_| std::time::Instant::now());
 
-            // Catch panics to prevent one subscriber from killing the chain
+            // Isolate a panicking subscriber from the rest of the chain.
+            //
+            // Under `panic = "unwind"` this uses `catch_unwind` so one bad
+            // subscriber doesn't poison the notify loop. Under
+            // `panic = "abort"`, `catch_unwind` is a documented no-op and
+            // a panic would abort the process anyway, so the wrapper is
+            // skipped entirely. Dropping the wrapper on abort-builds
+            // removes one non-inlinable std function call per chain
+            // layer — meaningful when a single update propagates through
+            // 8+ cells.
+            #[cfg(panic = "unwind")]
             let _ = catch_unwind(AssertUnwindSafe(|| {
                 callback(&signal);
             }));
+            #[cfg(panic = "abort")]
+            callback(&signal);
 
             if let (Some(m), Some(start)) = (metrics, sub_start) {
                 let elapsed = start.elapsed().as_nanos() as u64;
@@ -437,9 +449,12 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
                         duration_ns: elapsed,
                         threshold_ns: *threshold,
                     };
+                    #[cfg(panic = "unwind")]
                     let _ = catch_unwind(AssertUnwindSafe(|| {
                         cb(alert);
                     }));
+                    #[cfg(panic = "abort")]
+                    cb(alert);
                 }
             }
         }
