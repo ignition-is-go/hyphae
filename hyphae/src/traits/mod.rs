@@ -30,4 +30,4 @@ pub use operators::{
 pub use operators::{ParallelCell, ParallelExt};
 pub use reactive_keys::{KeyChange, ReactiveKeys};
 pub use reactive_map::ReactiveMap;
-pub use watchable::{Gettable, Watchable};
+pub use watchable::{Gettable, Watchable, WatchableResult};

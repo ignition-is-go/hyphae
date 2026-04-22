@@ -106,8 +106,8 @@ pub use traits::{
     MultiLeftJoinExt, Mutable, PairwiseExt, ProjectCellExt, ProjectManyExt, ProjectMapExt,
     ReactiveKeys, ReactiveMap, RetryExt, SampleExt, ScanExt, SelectCellExt, SelectExt, SkipExt,
     SkipWhileExt, StateMachineBuilder, StateTransitionExt, SwitchMapExt, TakeExt, TakeUntilExt,
-    TakeWhileExt, TapExt, ThrottleExt, TimeoutExt, TryMapExt, UnwrapOrExt, Watchable, WindowExt,
-    WithLatestFromExt, ZipExt, join_vec,
+    TakeWhileExt, TapExt, ThrottleExt, TimeoutExt, TryMapExt, UnwrapOrExt, Watchable,
+    WatchableResult, WindowExt, WithLatestFromExt, ZipExt, join_vec,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use traits::{ParallelCell, ParallelExt};

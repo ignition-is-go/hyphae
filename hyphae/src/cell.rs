@@ -1,7 +1,7 @@
 use std::{
     fmt::Debug,
     marker::PhantomData,
-    panic::{AssertUnwindSafe, Location, catch_unwind},
+    panic::Location,
     sync::{
         Arc, Weak,
         atomic::{AtomicBool, Ordering},
@@ -17,7 +17,7 @@ use crate::{
     metrics::CellMetrics,
     signal::Signal,
     subscription::SubscriptionGuard,
-    traits::{CellValue, DepNode, Gettable, Mutable, Watchable},
+    traits::{CellValue, DepNode, Gettable, Mutable, Watchable, WatchableResult},
 };
 
 /// Information about a slow subscriber callback.
@@ -43,6 +43,9 @@ pub struct CellImmutable;
 pub(crate) struct CellInner<T> {
     pub(crate) id: Uuid,
     pub(crate) subscribers: DashMap<Uuid, Box<Subscriber<T>>>,
+    /// Fallible subscribers. Invoked after `subscribers` on each notify;
+    /// `Err` values are logged via `log::error!` and do not propagate.
+    pub(crate) result_subscribers: DashMap<Uuid, Box<ResultSubscriber<T>>>,
     pub(crate) value: ArcSwap<T>,
     pub(crate) name: ArcSwap<Option<Arc<str>>>,
     /// Subscription guards owned by this cell (dropped when cell drops, provides dependency tracking).
@@ -111,12 +114,31 @@ impl<T> Subscriber<T> {
     }
 }
 
+/// Type alias for fallible subscriber callbacks. See [`WatchableResult::subscribe_result`].
+pub(crate) type ResultSubscriberCallback<T> =
+    Arc<dyn Fn(&Signal<T>) -> Result<(), String> + Send + Sync>;
+
+pub(crate) struct ResultSubscriber<T> {
+    pub(crate) callback: ResultSubscriberCallback<T>,
+}
+
+impl<T> ResultSubscriber<T> {
+    pub(crate) fn new(
+        callback: impl Fn(&Signal<T>) -> Result<(), String> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            callback: Arc::new(callback),
+        }
+    }
+}
+
 impl<T: CellValue> Cell<T, CellMutable> {
     #[track_caller]
     pub fn new(initial_value: T) -> Self {
         let inner = Arc::new(CellInner {
             id: Uuid::new_v4(),
             subscribers: DashMap::new(),
+            result_subscribers: DashMap::new(),
             value: ArcSwap::from_pointee(initial_value),
             name: ArcSwap::from_pointee(None),
             owned: DashMap::new(),
@@ -144,6 +166,7 @@ impl<T: CellValue> Cell<T, CellMutable> {
         let inner = Arc::new(CellInner {
             id: Uuid::new_v4(),
             subscribers: DashMap::new(),
+            result_subscribers: DashMap::new(),
             value: ArcSwap::from_pointee(initial_value),
             name: ArcSwap::from_pointee(None),
             owned: DashMap::new(),
@@ -352,7 +375,7 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
     }
 
     fn subscriber_count(&self) -> usize {
-        self.inner.subscribers.len()
+        self.inner.subscribers.len() + self.inner.result_subscribers.len()
     }
 
     fn owned_count(&self) -> usize {
@@ -417,24 +440,13 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
 
         let metrics = &self.inner.metrics;
 
+        // Subscriber callbacks must not panic — see `Watchable::subscribe` docs.
+        // A panic here propagates out of the caller's `set`/`send` and halts the
+        // rest of this fanout, which is a bug in the subscriber that should surface
+        // loudly rather than be silently swallowed.
         for (subscriber_id, callback) in &callbacks {
             let sub_start = metrics.as_ref().map(|_| std::time::Instant::now());
 
-            // Isolate a panicking subscriber from the rest of the chain.
-            //
-            // Under `panic = "unwind"` this uses `catch_unwind` so one bad
-            // subscriber doesn't poison the notify loop. Under
-            // `panic = "abort"`, `catch_unwind` is a documented no-op and
-            // a panic would abort the process anyway, so the wrapper is
-            // skipped entirely. Dropping the wrapper on abort-builds
-            // removes one non-inlinable std function call per chain
-            // layer — meaningful when a single update propagates through
-            // 8+ cells.
-            #[cfg(panic = "unwind")]
-            let _ = catch_unwind(AssertUnwindSafe(|| {
-                callback(&signal);
-            }));
-            #[cfg(panic = "abort")]
             callback(&signal);
 
             if let (Some(m), Some(start)) = (metrics, sub_start) {
@@ -449,11 +461,47 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
                         duration_ns: elapsed,
                         threshold_ns: *threshold,
                     };
-                    #[cfg(panic = "unwind")]
-                    let _ = catch_unwind(AssertUnwindSafe(|| {
-                        cb(alert);
-                    }));
-                    #[cfg(panic = "abort")]
+                    cb(alert);
+                }
+            }
+        }
+
+        // Fallible subscribers run after the infallible chain. Errors are logged
+        // and dropped — they do not interrupt the fanout, and the panic contract
+        // above still applies (a panic in a result-subscriber halts the rest of
+        // this loop). Use `subscribe_result` when you want a structured error
+        // channel instead of `panic!`.
+        let result_callbacks: Vec<_> = self
+            .inner
+            .result_subscribers
+            .iter()
+            .map(|entry| (*entry.key(), Arc::clone(&entry.value().callback)))
+            .collect();
+
+        for (subscriber_id, callback) in &result_callbacks {
+            let sub_start = metrics.as_ref().map(|_| std::time::Instant::now());
+
+            if let Err(err) = callback(&signal) {
+                log::error!(
+                    "hyphae: fallible subscriber {} on cell {} returned error: {}",
+                    subscriber_id,
+                    self.inner.id,
+                    err
+                );
+            }
+
+            if let (Some(m), Some(start)) = (metrics, sub_start) {
+                let elapsed = start.elapsed().as_nanos() as u64;
+                m.update_slowest_subscriber(elapsed);
+
+                if let (Some(threshold), Some(cb)) = (&slow_threshold, &slow_callback)
+                    && elapsed > *threshold
+                {
+                    let alert = SlowSubscriberAlert {
+                        subscriber_id: *subscriber_id,
+                        duration_ns: elapsed,
+                        threshold_ns: *threshold,
+                    };
                     cb(alert);
                 }
             }
@@ -467,7 +515,7 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
             crate::tracing::record_notify(
                 self.inner.id,
                 duration_ns,
-                self.inner.subscribers.len(),
+                self.inner.subscribers.len() + self.inner.result_subscribers.len(),
                 self.inner.owned.len(),
                 metrics.slowest_subscriber_ns(),
             );
@@ -508,7 +556,10 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
             metrics.record_subscriber_added();
         }
         #[cfg(feature = "trace")]
-        crate::tracing::update_subscriber_count(self.inner.id, self.inner.subscribers.len());
+        crate::tracing::update_subscriber_count(
+            self.inner.id,
+            self.inner.subscribers.len() + self.inner.result_subscribers.len(),
+        );
 
         let source: Arc<dyn DepNode> = Arc::new(self.clone());
         let cell = self.clone();
@@ -520,18 +571,26 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
                 m.record_subscriber_removed();
             }
             #[cfg(feature = "trace")]
-            crate::tracing::update_subscriber_count(cell.inner.id, cell.inner.subscribers.len());
+            crate::tracing::update_subscriber_count(
+                cell.inner.id,
+                cell.inner.subscribers.len() + cell.inner.result_subscribers.len(),
+            );
         })
     }
 
     fn unsubscribe(&self, id: Uuid) {
-        if self.inner.subscribers.remove(&id).is_some() {
+        let removed = self.inner.subscribers.remove(&id).is_some()
+            || self.inner.result_subscribers.remove(&id).is_some();
+        if removed {
             // Record subscriber removed if metrics enabled
             if let Some(metrics) = &self.inner.metrics {
                 metrics.record_subscriber_removed();
             }
             #[cfg(feature = "trace")]
-            crate::tracing::update_subscriber_count(self.inner.id, self.inner.subscribers.len());
+            crate::tracing::update_subscriber_count(
+                self.inner.id,
+                self.inner.subscribers.len() + self.inner.result_subscribers.len(),
+            );
         }
     }
 
@@ -545,6 +604,70 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
 
     fn error(&self) -> Option<Arc<anyhow::Error>> {
         (**self.inner.error.load()).clone()
+    }
+}
+
+impl<T: CellValue, U: Send + Sync + 'static> WatchableResult<T> for Cell<T, U> {
+    fn subscribe_result(
+        &self,
+        callback: impl Fn(&Signal<T>) -> Result<(), String> + Send + Sync + 'static,
+    ) -> SubscriptionGuard {
+        let cell_id = self.inner.id;
+        let log_err = |id: &Uuid, err: &str| {
+            log::error!(
+                "hyphae: fallible subscriber {} on cell {} returned error: {}",
+                id,
+                cell_id,
+                err
+            );
+        };
+
+        let id = Uuid::new_v4();
+
+        // Send current value immediately (Arc clone, no deep copy).
+        if let Err(err) = callback(&Signal::Value(self.inner.value.load_full())) {
+            log_err(&id, &err);
+        }
+
+        // Replay any prior terminal signal.
+        if self.inner.completed.load(Ordering::SeqCst) {
+            if let Err(err) = callback(&Signal::Complete) {
+                log_err(&id, &err);
+            }
+        } else if self.inner.errored.load(Ordering::SeqCst)
+            && let Some(e) = (**self.inner.error.load()).clone()
+            && let Err(err) = callback(&Signal::Error(e))
+        {
+            log_err(&id, &err);
+        }
+
+        self.inner
+            .result_subscribers
+            .insert(id, Box::new(ResultSubscriber::new(callback)));
+
+        if let Some(metrics) = &self.inner.metrics {
+            metrics.record_subscriber_added();
+        }
+        #[cfg(feature = "trace")]
+        crate::tracing::update_subscriber_count(
+            self.inner.id,
+            self.inner.subscribers.len() + self.inner.result_subscribers.len(),
+        );
+
+        let source: Arc<dyn DepNode> = Arc::new(self.clone());
+        let cell = self.clone();
+        let metrics = self.inner.metrics.clone();
+        SubscriptionGuard::new(id, source, move || {
+            cell.inner.result_subscribers.remove(&id);
+            if let Some(m) = &metrics {
+                m.record_subscriber_removed();
+            }
+            #[cfg(feature = "trace")]
+            crate::tracing::update_subscriber_count(
+                cell.inner.id,
+                cell.inner.subscribers.len() + cell.inner.result_subscribers.len(),
+            );
+        })
     }
 }
 
@@ -593,7 +716,7 @@ impl<T: CellValue> DepNode for CellInner<T> {
     }
 
     fn subscriber_count(&self) -> usize {
-        self.subscribers.len()
+        self.subscribers.len() + self.result_subscribers.len()
     }
 
     fn owned_count(&self) -> usize {
