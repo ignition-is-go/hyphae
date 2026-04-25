@@ -245,6 +245,46 @@ where
     vec![guard]
 }
 
+/// Like [`install_map_runtime`] but takes a [`MapQuery`] source instead of a
+/// raw [`ReactiveMap`].
+///
+/// The upstream's diff stream is obtained by recursively calling
+/// [`MapQuery::install`](crate::map_query::MapQuery::install) on it, so chains
+/// of plans compose without intermediate [`CellMap`](crate::CellMap)
+/// allocations.
+pub(crate) fn install_map_runtime_via_query<SK, SV, OK, OV, S, FO>(
+    source: S,
+    compute_rows: FO,
+    sink: crate::map_query::MapDiffSink<OK, OV>,
+) -> Vec<SubscriptionGuard>
+where
+    SK: Hash + Eq + CellValue,
+    SV: CellValue,
+    OK: Hash + Eq + CellValue,
+    OV: CellValue,
+    S: crate::map_query::MapQuery<SK, SV>,
+    FO: Fn(&SK, &SV) -> Vec<(OK, OV)> + Send + Sync + 'static,
+{
+    let state = Arc::new(Mutex::new(MapState::<SK, SV, OK, OV>::default()));
+    let compute_rows = Arc::new(compute_rows);
+
+    let upstream_sink: crate::map_query::MapDiffSink<SK, SV> = {
+        let state = state.clone();
+        let compute_rows = compute_rows.clone();
+        let sink = sink.clone();
+        Arc::new(move |diff| {
+            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut impacted: HashSet<SK> = HashSet::new();
+            apply_source_diff(&mut state.source_rows, diff, &mut impacted);
+            let changes = recompute_impacted(&mut state, impacted, compute_rows.as_ref());
+            drop(state);
+            emit_changes(changes, &sink);
+        })
+    };
+
+    source.install(upstream_sink)
+}
+
 pub(crate) fn run_map_runtime<SK, SV, SM, OK, OV, FO>(
     source: &CellMap<SK, SV, SM>,
     op_name: &str,

@@ -146,6 +146,43 @@ fn left_semi_join_plan_keeps_left_with_match() {
     assert_eq!(mat.get_value(&"b".to_string()), None);
 }
 
+use crate::traits::ProjectMapExt;
+
+#[test]
+fn project_plan_filters_and_transforms() {
+    let src = CellMap::<String, i32>::new();
+    src.insert("a".into(), 5);
+
+    let mat = src
+        .clone()
+        .project(|k, v| Some((format!("p:{k}"), v * 10)))
+        .materialize();
+    assert_eq!(mat.get_value(&"p:a".to_string()), Some(50));
+
+    src.insert("b".into(), 7);
+    assert_eq!(mat.get_value(&"p:b".to_string()), Some(70));
+}
+
+use crate::traits::ProjectManyExt;
+
+#[test]
+fn project_many_plan_emits_multiple_rows_per_source() {
+    let src = CellMap::<String, i32>::new();
+    src.insert("x".into(), 2);
+
+    let mat = src
+        .clone()
+        .project_many(|k, v| {
+            vec![
+                (format!("a:{k}"), v * 10),
+                (format!("b:{k}"), v * 100),
+            ]
+        })
+        .materialize();
+    assert_eq!(mat.get_value(&"a:x".to_string()), Some(20));
+    assert_eq!(mat.get_value(&"b:x".to_string()), Some(200));
+}
+
 use crate::traits::MultiLeftJoinExt;
 
 #[test]

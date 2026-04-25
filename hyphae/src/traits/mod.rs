@@ -14,7 +14,7 @@ pub use collections::{
     CountByExt, GroupByExt, InnerJoinByKeyPlan, InnerJoinByPairPlan, InnerJoinExt, LeftJoinExt,
     LeftJoinPlan, LeftSemiJoinExt, LeftSemiJoinPlan, MultiLeftJoinExt, MultiLeftJoinPlan,
     ProjectCellExt,
-    ProjectManyExt, ProjectMapExt, SelectCellExt, SelectExt,
+    ProjectManyExt, ProjectManyPlan, ProjectMapExt, ProjectPlan, SelectCellExt, SelectExt,
 };
 pub use dep_node::DepNode;
 pub use foreign_key::{HasForeignKey, IdFor, IdType, JoinKeyFrom};

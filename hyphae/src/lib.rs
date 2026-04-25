@@ -131,7 +131,7 @@ pub use traits::{
     LastExt, LeftJoinExt, LeftJoinPlan, LeftSemiJoinExt, LeftSemiJoinPlan, MapErrExt, MapExt,
     MapOkExt, MapPipeline, MergeExt, MergeMapExt,
     MultiLeftJoinExt, MultiLeftJoinPlan, Mutable, PairwiseExt, ProjectCellExt, ProjectManyExt,
-    ProjectMapExt,
+    ProjectManyPlan, ProjectMapExt, ProjectPlan,
     ReactiveKeys, ReactiveMap, RetryExt, SampleExt, ScanExt, SelectCellExt, SelectExt, SkipExt,
     SkipWhileExt, StateMachineBuilder, StateTransitionExt, SwitchMapExt, TakeExt, TakeUntilExt,
     TakeWhileExt, TapExt, TapPipeline, ThrottleExt, TimeoutExt, TryMapExt, TryMapPipeline,

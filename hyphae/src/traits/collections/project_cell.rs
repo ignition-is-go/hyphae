@@ -4,6 +4,7 @@ use super::{ProjectMapExt, internal::map_values_cell::map_values_cell};
 use crate::{
     cell::CellImmutable,
     cell_map::CellMap,
+    map_query::MapQuery,
     traits::{CellValue, Gettable, Watchable},
 };
 
@@ -39,5 +40,6 @@ where
     {
         map_values_cell(self, mapper)
             .project(|_, row| row.as_ref().map(|(k, v)| (k.clone(), v.clone())))
+            .materialize()
     }
 }
