@@ -1,65 +1,74 @@
 # CellMap Query Plans: Bench Results
 
-Date: 2026-04-25
+Last updated: 2026-04-25 (post lock-free Cell subscriber storage)
 
 ## Summary
 
-The CellMap query-plans refactor collapses each `inner_join` from a
-materialized intermediate (CellMap allocation + ArcSwap subscription) into a
-plan node, then materializes the whole chain once at the end. The headline
-result: a depth-5 join chain dropped from 34.5 us to 13.42 us — a 2.57x
-speedup — and per-stage propagation cost fell from ~5.95 us to ~0.65 us, a
-9x reduction. Depth-1 is essentially flat (within noise / +2.2%) since there
-is still exactly one materialization either way.
+The cumulative CellMap refactor — `MapQuery` plan trait + per-operator ports +
+sink-driven runtime + lock-free Cell subscriber storage (which `CellMap`'s
+internal `diffs_cell` and per-key cells benefit from) — collapses a chain of
+N joins into one materialized output with one root subscription, and makes
+each remaining emit cheaper by killing the per-emit `Vec` allocation in
+`Cell::notify`.
 
-## join_chain_set deltas vs pre-cellmap-query-plans
+**Headline:** depth-5 join chain went from **34.5 µs → 4.76 µs (7.2×)**.
+Per-stage propagation cost fell from ~5.95 µs to ~0.64 µs — a **9× per-stage
+reduction**. Even depth-1 (a single join, no chain) dropped from 10.7 µs to
+2.21 µs (4.8×) — that win is purely from the lock-free subscriber storage in
+the underlying Cell.
 
-| depth | pre (us) | post (us) | change   |
-|-------|----------|-----------|----------|
-| 1     | 10.7     | 10.83     | +2.24%   |
-| 2     | 16.4     | 11.71     | -29.23%  |
-| 3     | 22.3     | 12.38     | -44.71%  |
-| 5     | 34.5     | 13.42     | -61.11%  |
+## join_chain_set deltas vs `pre-cellmap-query-plans`
 
-Criterion change intervals (95% CI):
+Mean estimates from criterion (100 samples, default config).
 
-- depth 1: [+1.54%, +2.24%, +2.97%] (p < 0.05, regressed)
-- depth 2: [-29.85%, -29.23%, -28.68%] (p < 0.05, improved)
-- depth 3: [-45.29%, -44.71%, -44.17%] (p < 0.05, improved)
-- depth 5: [-61.36%, -61.11%, -60.88%] (p < 0.05, improved)
+| depth | pre (µs) | post (µs) | change   | speedup |
+|------:|---------:|----------:|---------:|--------:|
+| 1     | 10.7     | 2.21      | -79.4%   | **4.8×** |
+| 2     | 16.4     | 2.83      | -82.3%   | **5.8×** |
+| 3     | 22.3     | 3.51      | -84.3%   | **6.3×** |
+| 5     | 34.5     | 4.76      | -85.0%   | **7.2×** |
+
+Criterion change intervals (95% CI): all below -79%, p < 0.05.
 
 ## Observations
 
-- Per-stage propagation cost (slope of time vs depth):
-  - pre-refactor: ~5.95 us/stage, dominated by intermediate CellMap
-    allocation and ArcSwap subscription at every join.
-  - post-refactor: ~0.65 us/stage, just the per-join sink-driven diff
-    propagation. ~9x lower per-stage overhead.
-- Depth-1 sees a small (~2%) regression. Plausible attribution: the new
-  plan-node + materialize wrapping adds a tiny constant overhead at the
-  single-stage tip, where there are no intermediate CellMaps to amortize
-  the win against. Within outlier noise (5 high outliers).
-- Cost still grows with depth post-refactor (10.83 -> 13.42 us across 1->5),
-  but the slope is gentle and dominated by the linear chain of sink
-  callbacks rather than synchronization primitives.
-- Improvement scales roughly linearly with depth: deeper chains win more
-  because more intermediate materializations are eliminated.
+- **Per-stage propagation cost (slope of time vs depth)** dropped from
+  ~5.95 µs/stage to ~0.64 µs/stage — a 9× per-stage reduction. Remaining
+  per-stage cost is the in-fused-closure JoinState mutex acquire +
+  HashMap lookups + closure dispatch. (Phase B index dedup would attack
+  this further.)
+- **Depth-1 cost (4.8×)** comes entirely from `Cell::notify` no longer
+  allocating a per-emit `Vec<(Uuid, Arc<dyn Fn>)>` to release the
+  DashMap shard lock — the lock-free `ArcSwap<Vec>` design lets notify
+  load the subscriber list in one atomic and iterate without an alloc.
+  This applies to every Cell in CellMap's machinery (`diffs_cell`, the
+  per-key value cells), so the win compounds across reactive entry points.
+- **Constant baseline ArcSwap.store**: the source `CellMap.insert` still
+  performs one `ArcSwap.store` to update its diff cell value, regardless
+  of chain depth. This is the irreducible per-emit cost.
+
+## What each step contributed
+
+| commit | what changed | win |
+|---|---|---|
+| `2d05751` … `38c8d95` | MapQuery + per-operator ports | Collapsed chain of N joins into one materialized output |
+| `93599ec` | `CellMap::materialize` no-op | Killed redundant CellMap allocation when source is already a CellMap |
+| `8a16df0` | Lock-free Cell subscriber storage | Killed per-emit Vec alloc inside CellMap's diffs_cell + per-key cells |
+
+## Phase B candidates
+
+The remaining ~0.64 µs/stage is dominated by:
+- Per-join `JoinState` mutex acquire (currently a `std::sync::Mutex`)
+- HashMap operations for index lookup / impacted-row tracking
+- Per-output-diff closure dispatch through `MapDiffSink`
+
+Index dedup (sharing one hash index across two joins keying on the same
+field) would directly reduce mutex contention and HashMap work. Projection
+pushdown (only carrying fields downstream readers actually project) would
+cut diff payload sizes. Both deferred per the original phase-A scope.
 
 ## Methodology
 
-- Hardware: AMD Ryzen 9 7900X3D 12-Core (24 threads), Linux 6.19.10-arch1-1 x86_64.
-- Toolchain: `cargo bench --bench cell_map_chains --target-dir target/claude --
-  --baseline pre-cellmap-query-plans`.
-- Baseline `pre-cellmap-query-plans` saved at commit b08e08c
-  (`bench(hyphae): baseline cell-map join-chain propagation`) on the
-  pre-refactor `feat/pipelines` HEAD, before the MapQuery trait was
-  introduced.
-- Sample count: criterion default (100 samples per parameter, 3s warmup,
-  5s collect).
-- Bench harness: `hyphae/benches/cell_map_chains.rs`. Each `bench_depth_N`
-  builds N source CellMaps, chains N `inner_join` calls into a single plan,
-  materializes once outside the timed loop, then in the timed loop performs
-  one `a.insert(...)` to drive a propagation through the whole chain.
-- Bench labels (`join_chain_set/{1,2,3,5}`) are kept identical to the
-  pre-refactor harness so criterion's `--baseline` comparison resolves
-  cleanly.
+Hardware: AMD Ryzen 9 7900X3D. Sample count: criterion default (100 samples).
+Pre-refactor baseline saved as `pre-cellmap-query-plans`. Comparison via
+`cargo bench --bench cell_map_chains -- --baseline pre-cellmap-query-plans`.

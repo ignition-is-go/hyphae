@@ -1,128 +1,92 @@
 # Pipeline Refactor: Bench Results
 
-Date: 2026-04-24
+Last updated: 2026-04-25 (post lock-free Cell subscriber storage)
 
 ## Summary
 
-The Pipeline refactor collapses chains of pure operators (`map` / `filter` /
-`tap`) into a single fused closure installed on the root `Cell`. Pre-refactor
-each operator allocated its own `Cell` (with `ArcSwap` store + subscriber
-table), so propagation cost grew linearly with chain depth. Post-refactor the
-per-set propagation cost is essentially independent of pure-chain depth — at
-depth 500 the chain runs in ~18 µs vs ~1.26 ms before, a 71x improvement, and
-the constant baseline (one cell, one subscriber, ~2.1 µs) is unchanged. Filter
-chains gain similarly: a blocked emission now exits at the root (one ArcSwap
-write + one closure call) regardless of nominal chain length.
+The cumulative single-cell refactor — Pipeline trait + consume-self + lock-free
+Cell subscriber storage + materialize no-op on Cell sources — collapses pure
+operator chains to a single fused closure on the root cell, eliminates per-emit
+`Vec` allocation in `Cell::notify`, and removes redundant ArcSwap stages at the
+materialize boundary for plain Cell sources.
+
+**Headline:** the single-cell baseline (one source, one subscriber, no chain)
+dropped from **2.11 µs → 51.8 ns (40× speedup)**. Long pure-operator chains
+went from O(N) propagation to roughly constant — depth-500 went from
+**1.27 ms → 12.5 µs (102×)**. Construction cost (which was O(N²) at one point)
+dropped 30-100× across all depths.
 
 ## pipeline_chains.rs deltas vs `pre-pipeline-refactor`
 
-Times are mean estimates from criterion (100 samples, default config).
+Mean estimates from criterion (100 samples, default config).
 
-### baseline (single source, single subscriber)
+### Baseline (single source, single subscriber)
 
-| label                     | pre        | post       | change     | speedup |
-|---------------------------|-----------:|-----------:|-----------:|--------:|
-| baseline_one_subscriber   |   2.11 µs  |   2.13 µs  |   +0.9 %   |  1.0x   |
+| label | pre | post | change | speedup |
+|---|---:|---:|---:|---:|
+| baseline_one_subscriber | 2.11 µs | 51.8 ns | -97.5% | **40×** |
 
-Within noise — confirms the runtime overhead unrelated to chains is unchanged.
+The lock-free subscriber refactor (commit `8a16df0`) eliminated the per-emit
+`Vec<(Uuid, Arc<dyn Fn>)>` allocation that `Cell::notify` previously did to
+release the DashMap shard lock before invoking callbacks. That allocation
+alone was the dominant cost at this scale.
 
-### pure_chain_set (N `.map`s, then subscribe)
+### pure_chain_set (N chained `.map`s, terminal subscriber)
 
-| label                | pre        | post       | change      | speedup |
-|----------------------|-----------:|-----------:|------------:|--------:|
-| pure_chain_set/1     |   4.37 µs  |   4.38 µs  |   +0.2 %    |   1.0x  |
-| pure_chain_set/5     |  13.45 µs  |   4.50 µs  |  -66.6 %    |   3.0x  |
-| pure_chain_set/25    |  59.50 µs  |   4.87 µs  |  -91.8 %    |  12.2x  |
-| pure_chain_set/100   | 232.41 µs  |   7.01 µs  |  -97.0 %    |  33.2x  |
-| pure_chain_set/250   | 599.96 µs  |  11.62 µs  |  -98.1 %    |  51.6x  |
-| pure_chain_set/500   |   1.26 ms  |  17.75 µs  |  -98.6 %    |  71.0x  |
+| depth | pre | post | change | speedup |
+|---:|---:|---:|---:|---:|
+| 1 | 4.36 µs | 111 ns | -97.5% | **39×** |
+| 5 | 13.2 µs | 149 ns | -98.9% | **89×** |
+| 25 | 59.5 µs | 421 ns | -99.3% | **141×** |
+| 100 | 234 µs | 2.37 µs | -99.0% | **99×** |
+| 250 | 606 µs | 6.24 µs | -99.0% | **97×** |
+| 500 | 1270 µs | 12.5 µs | -99.0% | **102×** |
 
-Pre-refactor cost per stage was ~2.5 µs (one `ArcSwap::store` + one subscriber
-notify per intermediate cell). Post-refactor adding a stage adds only the
-closure call itself (a few ns each); per-set cost stays close to the
-single-cell baseline plus a small slope from inlined arithmetic.
+The chain depth scaling is nearly flat post-refactor: per-stage cost is the
+fused closure body (~5-15 ns of arithmetic per stage). Pre-refactor each
+stage paid an ArcSwap.store + DashMap iter + Vec alloc.
 
-### mixed_chain_set (cycles of `map.filter.map.tap`)
+### mixed_chain_set (cycles of `.map.filter.map.tap`)
 
-| label                | pre        | post       | change      | speedup |
-|----------------------|-----------:|-----------:|------------:|--------:|
-| mixed_chain_set/1    |  13.28 µs  |   4.53 µs  |  -65.9 %    |   2.9x  |
-| mixed_chain_set/5    |  49.69 µs  |   4.65 µs  |  -90.6 %    |  10.7x  |
-| mixed_chain_set/25   | 240.45 µs  |   5.85 µs  |  -97.6 %    |  41.1x  |
-| mixed_chain_set/100  | 976.04 µs  |  10.26 µs  |  -98.9 %    |  95.1x  |
+| cycles | pre | post | change | speedup |
+|---:|---:|---:|---:|---:|
+| 1 | 13.3 µs | 129 ns | -99.0% | **103×** |
+| 5 | 49.7 µs | 211 ns | -99.6% | **236×** |
+| 25 | 240 µs | 1.16 µs | -99.5% | **207×** |
+| 100 | 988 µs | 5.30 µs | -99.5% | **186×** |
 
-Same story as `pure_chain_set` but with mixed pure operators in each cycle.
-At 100 cycles (401 ops total) the fused chain is 95x faster than the
-intermediate-cell version.
+### chain_construction (build chain only, no propagation)
 
-### chain_construction (build N `.map`s, no subscribe)
+| depth | pre | post | change | speedup |
+|---:|---:|---:|---:|---:|
+| 10 | 43 µs | 1.43 µs | -96.7% | **30×** |
+| 50 | 220 µs | 2.29 µs | -99.0% | **96×** |
+| 250 | 1.14 ms | 36.2 µs | -96.9% | **31×** |
+| 500 | 2.90 ms | 88.7 µs | -97.0% | **33×** |
 
-| label                   | pre        | post       | change     | speedup |
-|-------------------------|-----------:|-----------:|-----------:|--------:|
-| chain_construction/10   |  43.34 µs  |   3.45 µs  |  -92.1 %   |  12.6x  |
-| chain_construction/50   | 222.06 µs  |   4.40 µs  |  -98.0 %   |  50.4x  |
-| chain_construction/250  |   1.15 ms  |  39.40 µs  |  -96.6 %   |  29.2x  |
-| chain_construction/500  |   2.90 ms  |  91.69 µs  |  -96.8 %   |  31.6x  |
+Pre-refactor: each `.map` allocated a `Cell` + installed a subscription.
+Mid-refactor (consuming `&self`): O(N²) recursive Arc clones during chain
+construction. Final state (consuming `self`): O(N) closure boxing only.
 
-Construction was originally only 8 % faster at depth 500 because the
-`&self`-receiver clone-on-map pattern made chain construction O(N²) in Arc
-bumps: each `MapPipeline::clone()` recursively cloned its `source`, so depth
-N built `1 + 2 + ... + N` source clones during chain construction. Switching
-to consuming `self` gives O(N) construction — only the closure allocation per
-stage. Pure-pipeline construction now allocates only `Arc<closure>` per stage
-(no recursive source clone), so cost scales linearly with depth and is
-~30x faster at 500 stages than the &self version was.
+### filter_blocking_chain_set
 
-### filter_blocking_chain_set (alternating `map.filter`, predicate blocks half)
+Pre-refactor: ~8.8 µs (blocked propagation halts at the first failing filter,
+which still pays one `Cell::notify` cycle).
+Post-refactor: **65.6 ns** (one `ArcSwap.store` on the root + closure that
+short-circuits at the first failing predicate). Roughly **134×** speedup.
 
-| label                            | pre        | post       | change    | speedup |
-|----------------------------------|-----------:|-----------:|----------:|--------:|
-| filter_blocking_chain_set/5      |   8.88 µs  |   2.25 µs  |  -74.7 %  |   4.0x  |
-| filter_blocking_chain_set/25     |   8.81 µs  |   2.20 µs  |  -75.0 %  |   4.0x  |
-| filter_blocking_chain_set/100    |   8.87 µs  |   2.23 µs  |  -74.9 %  |   4.0x  |
+## What each step contributed
 
-The pre-refactor numbers are already flat in depth — each filter emits no
-further notifications when blocked, so post-stage cost is bounded. But the
-absolute floor was 8.8 µs because the *first* filter still ran on its own
-intermediate cell. Post-refactor the predicate runs inside the fused closure
-on the root cell, so a blocked emission costs only the root `ArcSwap::store`
-plus closure dispatch — about 2.2 µs (close to the single-cell baseline).
-
-## Observations
-
-- **Per-stage propagation cost (was ~2.5 µs from ArcSwap+notify-per-cell):
-  now near-zero**. Each pipeline stage adds only the closure call cost. Slope
-  in `pure_chain_set` is ~30 ns per stage (closure dispatch + arithmetic),
-  vs ~2.5 µs before.
-- **Construction cost dropped substantially at all depths** (12x at depth 10,
-  50x at depth 50, 30x at depth 500). The earlier 8 % gain at depth 500 was
-  an O(N²) artefact of `&self`-receiver `MapExt::map` cloning the source
-  pipeline at each call site. Consuming `self` makes per-stage allocation
-  truly O(1), so depth-500 chain construction now drops from ~2.66 ms to
-  ~92 µs.
-- **Filter blocking is now near-baseline**: a blocked emission costs ~2.2 µs
-  regardless of nominal chain depth (vs the ~8.8 µs floor pre-refactor).
+| commit | what changed | win |
+|---|---|---|
+| `0eee30d` … `dbd267b` | Pipeline trait + per-operator ports | Eliminated O(N) intermediate Cell allocations on chains |
+| `46f27f6` | `Pipeline: !Clone` | Compile-time guard against silent work duplication |
+| `6cbe978` | Consume `self` on operator methods | Eliminated O(N²) recursive Arc clone during construction |
+| `93599ec` | `Cell::materialize` no-op | Killed redundant ArcSwap stage when source is already a Cell |
+| `8a16df0` | Lock-free subscriber storage | Killed per-emit Vec alloc + DashMap shard locks in `Cell::notify` |
 
 ## Methodology
 
-- **Hardware**: AMD Ryzen 9 7900X3D 12-core (24 threads), Linux 6.19.10
-  (Arch).
-- **Toolchain**: rustc stable, `cargo bench` (criterion 0.5).
-- **Sample count**: criterion default (100 samples per bench, 3 s warm-up,
-  ~5 s collection).
-- **Construction**: chains were built at compile time via `seq_macro::seq!`
-  to preserve the distinct closure type at each `.map` (post-refactor each
-  `.map` returns `MapPipeline<S, T, U, F>` so the runtime loop pattern
-  `last = last.map(...)` no longer typechecks). Bench labels were preserved
-  unchanged so criterion compares against the saved
-  `pre-pipeline-refactor` baseline directly.
-- **`#![recursion_limit = "2048"]`** added to both bench crates so the
-  trait solver can verify the deep `MapPipeline<MapPipeline<...>>` types
-  used at depth 500.
-
-## Source
-
-- Bench file: `hyphae/benches/pipeline_chains.rs`
-- Latency bench (also adapted, no baseline): `hyphae/benches/latency.rs`
-- Raw output: `/tmp/pipeline-comparison.log`, `/tmp/latency.log`
-- Saved baseline: `target/criterion/<label>/pre-pipeline-refactor/`
+Hardware: AMD Ryzen 9 7900X3D. Sample count: criterion default (100 samples).
+Pre-refactor baseline saved as `pre-pipeline-refactor`. Comparison via
+`cargo bench --bench pipeline_chains -- --baseline pre-pipeline-refactor`.
