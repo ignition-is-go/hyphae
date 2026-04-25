@@ -496,6 +496,14 @@ where
         self.inner.len_cell.set(self.inner.data.len());
     }
 
+    /// Apply a single diff to this map.
+    ///
+    /// Thin wrapper over [`apply_batch`](Self::apply_batch) used by the
+    /// `MapQuery` materialize sink. Clones `diff` once.
+    pub(crate) fn apply_diff_ref(&self, diff: &MapDiff<K, V>) {
+        self.apply_batch(vec![diff.clone()]);
+    }
+
     /// Apply a batch of diffs and emit them as one `MapDiff::Batch`.
     pub fn apply_batch(&self, changes: Vec<MapDiff<K, V>>) {
         if changes.is_empty() {

@@ -4,6 +4,7 @@ mod concurrency;
 mod constructors;
 mod disposal;
 mod error_handling;
+mod map_query_integration;
 mod metrics;
 mod pipeline_integration;
 mod subscription;

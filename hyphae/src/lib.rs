@@ -86,6 +86,7 @@ pub mod cell;
 pub mod cell_map;
 pub mod cell_set;
 pub mod constructors;
+pub mod map_query;
 pub mod metrics;
 pub mod nested_map;
 pub mod pipeline;
@@ -114,6 +115,7 @@ pub use constructors::from_iter_with_delay;
 #[cfg(not(target_arch = "wasm32"))]
 pub use constructors::{IntervalTick, interval, interval_precise, interval_precise_with_elapsed};
 pub use metrics::CellMetrics;
+pub use map_query::MapQuery;
 pub use nested_map::NestedMap;
 pub use pipeline::Pipeline;
 pub use signal::Signal;
