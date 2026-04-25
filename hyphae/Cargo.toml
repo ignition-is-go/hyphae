@@ -48,7 +48,12 @@ tasks = ["build", "test", "lint", "publish"]
 
 [dev-dependencies]
 criterion = "0.5"
+seq-macro = "0.3"
 
 [[bench]]
 name = "latency"
+harness = false
+
+[[bench]]
+name = "pipeline_chains"
 harness = false

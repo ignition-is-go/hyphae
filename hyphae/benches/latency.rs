@@ -1,10 +1,16 @@
+// Pipeline types nest one level per operator; `bench_chain_depth` builds
+// up to 100 layers. Default trait-solver recursion limit (128) is borderline.
+#![recursion_limit = "2048"]
+#![type_length_limit = "16777216"]
+
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use hyphae::{Cell, FilterExt, MapExt, Mutable, ParallelExt, ScanExt, Signal, Watchable};
+use hyphae::{Cell, FilterExt, MapExt, Mutable, ParallelExt, Pipeline, ScanExt, Signal, Watchable};
+use seq_macro::seq;
 
 fn bench_single_cell_propagation(c: &mut Criterion) {
     c.bench_function("single cell set + watch", |b| {
@@ -21,32 +27,51 @@ fn bench_single_cell_propagation(c: &mut Criterion) {
     });
 }
 
+/// Build a `bench_chain_depth` "map chain" sub-bench labeled by depth.
+///
+/// Post-Pipeline-refactor each `.map` returns a distinct `MapPipeline` type,
+/// so the chain is constructed at compile time (one map per token) and
+/// materialized into a single `Cell` with one root subscription.
+///
+/// $tail = $depth - 1.
+macro_rules! map_chain_bench {
+    ($group:expr, $depth:literal, $tail:literal) => {
+        $group.bench_with_input(
+            BenchmarkId::new("map chain", $depth as u32),
+            &($depth as u32),
+            |b, _| {
+                let source = Cell::new(0u64);
+                let chain = seq!(_N in 0..$tail {
+                    source.map(|x| x + 1) #(.map(|x| x + 1))*
+                })
+                .materialize();
+
+                let counter = Arc::new(AtomicU64::new(0));
+                let cnt = counter.clone();
+                let _guard = chain.subscribe(move |_| {
+                    cnt.fetch_add(1, Ordering::Relaxed);
+                });
+
+                let mut i = 0u64;
+                b.iter(|| {
+                    i += 1;
+                    source.set(black_box(i));
+                });
+            },
+        );
+    };
+}
+
 fn bench_chain_depth(c: &mut Criterion) {
     let mut group = c.benchmark_group("chain depth propagation");
 
-    for depth in [1, 5, 10, 20, 50, 100].iter() {
-        group.bench_with_input(BenchmarkId::new("map chain", depth), depth, |b, &depth| {
-            let source = Cell::new(0u64);
+    map_chain_bench!(group, 1, 0);
+    map_chain_bench!(group, 5, 4);
+    map_chain_bench!(group, 10, 9);
+    map_chain_bench!(group, 20, 19);
+    map_chain_bench!(group, 50, 49);
+    map_chain_bench!(group, 100, 99);
 
-            // Build chain of maps
-            let mut last = source.map(|x| x + 1);
-            for _ in 1..depth {
-                last = last.map(|x| x + 1);
-            }
-
-            let counter = Arc::new(AtomicU64::new(0));
-            let cnt = counter.clone();
-            let _guard = last.subscribe(move |_| {
-                cnt.fetch_add(1, Ordering::Relaxed);
-            });
-
-            let mut i = 0u64;
-            b.iter(|| {
-                i += 1;
-                source.set(black_box(i));
-            });
-        });
-    }
     group.finish();
 }
 
@@ -126,7 +151,7 @@ fn bench_fan_in(c: &mut Criterion) {
                     .iter()
                     .map(|source| {
                         let cnt = counter.clone();
-                        let mapped = source.map(|x| x * 2);
+                        let mapped = source.map(|x| x * 2).materialize();
                         mapped.subscribe(move |_| {
                             cnt.fetch_add(1, Ordering::Relaxed);
                         })
@@ -159,10 +184,14 @@ fn bench_complex_graph(c: &mut Criterion) {
             let guards: Vec<_> = sources
                 .iter()
                 .flat_map(|source| {
-                    let pipeline = source
+                    // scan requires Watchable so the pure pipeline must be
+                    // materialized before scan. The post-Pipeline-refactor
+                    // shape: one fused (map.filter) cell, then scan on top.
+                    let filtered = source
                         .map(|x| x * 2)
                         .filter(|x| x % 2 == 0)
-                        .scan(0u64, |acc, x| acc + x);
+                        .materialize();
+                    let pipeline = filtered.scan(0u64, |acc, x| acc + x);
 
                     let counter = counter.clone();
                     (0..10)
@@ -195,10 +224,13 @@ fn bench_pairwise_chain(c: &mut Criterion) {
     c.bench_function("pairwise chain depth 10", |b| {
         let source = Cell::new(0u64);
 
+        // pairwise returns a Cell; map returns a Pipeline. To pairwise the
+        // mapped output we must materialize between each map and the next
+        // pairwise (pairwise requires Watchable, which only Cell implements).
         let p1 = source.pairwise();
-        let p2 = p1.map(|(a, b)| a + b);
+        let p2 = p1.map(|(a, b)| a + b).materialize();
         let p3 = p2.pairwise();
-        let p4 = p3.map(|(a, b)| a + b);
+        let p4 = p3.map(|(a, b)| a + b).materialize();
         let p5 = p4.pairwise();
 
         let counter = Arc::new(AtomicU64::new(0));
