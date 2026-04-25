@@ -1,6 +1,6 @@
 //! Integration tests for MapQuery type.
 
-use crate::{CellMap, MapQuery, traits::CellValue};
+use crate::{CellMap, MapQuery, traits::CellValue, traits::InnerJoinExt};
 
 #[test]
 fn cell_map_is_map_query() {
@@ -60,4 +60,58 @@ fn materialize_keeps_source_alive_via_subscription() {
 
     m.insert("new".into(), 7);
     assert_eq!(mat.get_value(&"new".to_string()), Some(7));
+}
+
+#[test]
+fn inner_join_plan_materializes_to_joined_cell_map() {
+    let l = CellMap::<String, i32>::new();
+    let r = CellMap::<String, i32>::new();
+    l.insert("a".into(), 1);
+    l.insert("b".into(), 2);
+    r.insert("a".into(), 10);
+
+    let mat = l.clone().inner_join(r.clone()).materialize();
+    assert_eq!(mat.get_value(&"a".to_string()), Some((1, 10)));
+    assert_eq!(mat.get_value(&"b".to_string()), None);
+
+    r.insert("b".into(), 20);
+    assert_eq!(mat.get_value(&"b".to_string()), Some((2, 20)));
+}
+
+#[test]
+fn inner_join_chain_installs_one_subscription_per_root() {
+    use crate::traits::DepNode;
+
+    let a = CellMap::<String, i32>::new();
+    let b = CellMap::<String, i32>::new();
+    let c = CellMap::<String, i32>::new();
+    a.insert("k".into(), 1);
+    b.insert("k".into(), 2);
+    c.insert("k".into(), 3);
+
+    let initial_a = DepNode::subscriber_count(&a.inner.diffs_cell);
+    let initial_b = DepNode::subscriber_count(&b.inner.diffs_cell);
+    let initial_c = DepNode::subscriber_count(&c.inner.diffs_cell);
+
+    let mat = a
+        .clone()
+        .inner_join(b.clone())
+        .inner_join(c.clone())
+        .materialize();
+
+    assert_eq!(
+        DepNode::subscriber_count(&a.inner.diffs_cell),
+        initial_a + 1
+    );
+    assert_eq!(
+        DepNode::subscriber_count(&b.inner.diffs_cell),
+        initial_b + 1
+    );
+    assert_eq!(
+        DepNode::subscriber_count(&c.inner.diffs_cell),
+        initial_c + 1
+    );
+
+    a.insert("k".into(), 99);
+    assert_eq!(mat.get_value(&"k".to_string()), Some(((99, 2), 3)));
 }

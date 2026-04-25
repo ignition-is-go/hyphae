@@ -495,6 +495,76 @@ where
     vec![left_guard, right_guard]
 }
 
+/// Like [`install_join_runtime`] but takes [`MapQuery`] inputs instead of
+/// raw [`ReactiveMap`] sources.
+///
+/// Each upstream's diff stream is obtained by recursively calling
+/// [`MapQuery::install`](crate::map_query::MapQuery::install) on it, so chains
+/// of plans compose without intermediate [`CellMap`] allocations.
+pub(crate) fn install_join_runtime_via_query<LK, LV, RK, RV, JK, OK, OV, L, R, FL, FR, FO>(
+    left: L,
+    right: R,
+    left_join_key: FL,
+    right_join_key: FR,
+    compute_rows: FO,
+    sink: crate::map_query::MapDiffSink<OK, OV>,
+) -> Vec<SubscriptionGuard>
+where
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    OK: Hash + Eq + CellValue,
+    OV: CellValue,
+    L: crate::map_query::MapQuery<LK, LV>,
+    R: crate::map_query::MapQuery<RK, RV>,
+    FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
+    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    FO: Fn(&LK, &LV, &[(RK, RV)]) -> Vec<(OK, OV)> + Send + Sync + 'static,
+{
+    let state = Arc::new(Mutex::new(
+        JoinState::<LK, LV, RK, RV, JK, OK, OV>::default(),
+    ));
+    let left_join_key = Arc::new(left_join_key);
+    let right_join_key = Arc::new(right_join_key);
+    let compute_rows = Arc::new(compute_rows);
+
+    let left_sink: crate::map_query::MapDiffSink<LK, LV> = {
+        let state = state.clone();
+        let left_join_key = left_join_key.clone();
+        let compute_rows = compute_rows.clone();
+        let sink = sink.clone();
+        Arc::new(move |diff| {
+            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut impacted: HashSet<LK> = HashSet::new();
+            apply_left_diff(&mut state, diff, left_join_key.as_ref(), &mut impacted);
+            let changes = recompute_impacted(&mut state, impacted, compute_rows.as_ref());
+            drop(state);
+            emit_changes(&sink, changes);
+        })
+    };
+
+    let right_sink: crate::map_query::MapDiffSink<RK, RV> = {
+        let state = state.clone();
+        let right_join_key = right_join_key.clone();
+        let compute_rows = compute_rows.clone();
+        let sink = sink.clone();
+        Arc::new(move |diff| {
+            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut impacted: HashSet<LK> = HashSet::new();
+            apply_right_diff(&mut state, diff, right_join_key.as_ref(), &mut impacted);
+            let changes = recompute_impacted(&mut state, impacted, compute_rows.as_ref());
+            drop(state);
+            emit_changes(&sink, changes);
+        })
+    };
+
+    let mut guards = left.install(left_sink);
+    guards.extend(right.install(right_sink));
+    guards
+}
+
 pub(crate) fn run_join_runtime<L, R, JK, OK, OV, FL, FR, FO>(
     left: &L,
     right: &R,
