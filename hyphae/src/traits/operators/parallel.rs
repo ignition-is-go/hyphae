@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use rayon::prelude::*;
 
 use super::{CellValue, Gettable, Watchable};
@@ -41,17 +39,10 @@ impl<T: CellValue> ParallelCell<T> {
         let signal = Signal::value(value);
         self.inner.inner.value.store(signal.arc().unwrap().clone());
 
-        // Collect subscribers and notify in parallel
-        let callbacks: Vec<_> = self
-            .inner
-            .inner
-            .subscribers
-            .iter()
-            .map(|entry| Arc::clone(&entry.value().callback))
-            .collect();
-
-        callbacks.par_iter().for_each(|callback| {
-            callback(&signal);
+        // Lock-free Arc bump on the subscriber list, then fan out in parallel.
+        let subs = self.inner.inner.subscribers.load();
+        subs.par_iter().for_each(|(_, sub)| {
+            (sub.callback)(&signal);
         });
     }
 }
@@ -73,15 +64,10 @@ pub trait ParallelExt<T>: Watchable<T> {
                     Signal::Value(value) => {
                         inner.inner.value.store(value.clone()); // Arc clone
 
-                        let callbacks: Vec<_> = inner
-                            .inner
-                            .subscribers
-                            .iter()
-                            .map(|entry| Arc::clone(&entry.value().callback))
-                            .collect();
-
-                        callbacks.par_iter().for_each(|callback| {
-                            callback(signal);
+                        // Lock-free Arc bump on the subscriber list.
+                        let subs = inner.inner.subscribers.load();
+                        subs.par_iter().for_each(|(_, sub)| {
+                            (sub.callback)(signal);
                         });
                     }
                     Signal::Complete => inner.notify(Signal::Complete),

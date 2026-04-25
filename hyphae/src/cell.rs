@@ -3,7 +3,7 @@ use std::{
     marker::PhantomData,
     panic::Location,
     sync::{
-        Arc, Weak,
+        Arc, Mutex, Weak,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -42,10 +42,17 @@ pub struct CellImmutable;
 /// The inner data of a Cell, wrapped in Arc for shared ownership.
 pub(crate) struct CellInner<T> {
     pub(crate) id: Uuid,
-    pub(crate) subscribers: DashMap<Uuid, Box<Subscriber<T>>>,
+    /// Lock-free subscriber registry. Read on every notify (`.load()`),
+    /// rebuilt on subscribe / unsubscribe under `subscribers_writer`.
+    pub(crate) subscribers: ArcSwap<Vec<(Uuid, Arc<Subscriber<T>>)>>,
+    /// Serializes mutation of `subscribers` so subscribe / unsubscribe build
+    /// the next snapshot from the current one without lost updates. Notify
+    /// readers do not acquire this — they go through `subscribers` directly.
+    pub(crate) subscribers_writer: Mutex<()>,
     /// Fallible subscribers. Invoked after `subscribers` on each notify;
     /// `Err` values are logged via `log::error!` and do not propagate.
-    pub(crate) result_subscribers: DashMap<Uuid, Box<ResultSubscriber<T>>>,
+    pub(crate) result_subscribers: ArcSwap<Vec<(Uuid, Arc<ResultSubscriber<T>>)>>,
+    pub(crate) result_subscribers_writer: Mutex<()>,
     pub(crate) value: ArcSwap<T>,
     pub(crate) name: ArcSwap<Option<Arc<str>>>,
     /// Subscription guards owned by this cell (dropped when cell drops, provides dependency tracking).
@@ -137,8 +144,10 @@ impl<T: CellValue> Cell<T, CellMutable> {
     pub fn new(initial_value: T) -> Self {
         let inner = Arc::new(CellInner {
             id: Uuid::new_v4(),
-            subscribers: DashMap::new(),
-            result_subscribers: DashMap::new(),
+            subscribers: ArcSwap::from_pointee(Vec::new()),
+            subscribers_writer: Mutex::new(()),
+            result_subscribers: ArcSwap::from_pointee(Vec::new()),
+            result_subscribers_writer: Mutex::new(()),
             value: ArcSwap::from_pointee(initial_value),
             name: ArcSwap::from_pointee(None),
             owned: DashMap::new(),
@@ -165,8 +174,10 @@ impl<T: CellValue> Cell<T, CellMutable> {
     pub fn with_metrics(initial_value: T) -> Self {
         let inner = Arc::new(CellInner {
             id: Uuid::new_v4(),
-            subscribers: DashMap::new(),
-            result_subscribers: DashMap::new(),
+            subscribers: ArcSwap::from_pointee(Vec::new()),
+            subscribers_writer: Mutex::new(()),
+            result_subscribers: ArcSwap::from_pointee(Vec::new()),
+            result_subscribers_writer: Mutex::new(()),
             value: ArcSwap::from_pointee(initial_value),
             name: ArcSwap::from_pointee(None),
             owned: DashMap::new(),
@@ -375,7 +386,7 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
     }
 
     fn subscriber_count(&self) -> usize {
-        self.inner.subscribers.len() + self.inner.result_subscribers.len()
+        self.inner.subscribers.load().len() + self.inner.result_subscribers.load().len()
     }
 
     fn owned_count(&self) -> usize {
@@ -426,13 +437,9 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
             }
         }
 
-        // Collect callbacks with IDs first to release DashMap lock before calling them
-        let callbacks: Vec<_> = self
-            .inner
-            .subscribers
-            .iter()
-            .map(|entry| (*entry.key(), Arc::clone(&entry.value().callback)))
-            .collect();
+        // Hot path: lock-free Arc bump on the subscriber list, then iterate
+        // and invoke each callback. No mutex, no Vec allocation per notify.
+        let subs = self.inner.subscribers.load();
 
         // Load slow subscriber config once
         let slow_threshold = **self.inner.slow_subscriber_threshold_ns.load();
@@ -444,10 +451,10 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         // A panic here propagates out of the caller's `set`/`send` and halts the
         // rest of this fanout, which is a bug in the subscriber that should surface
         // loudly rather than be silently swallowed.
-        for (subscriber_id, callback) in &callbacks {
+        for (subscriber_id, sub) in subs.iter() {
             let sub_start = metrics.as_ref().map(|_| std::time::Instant::now());
 
-            callback(&signal);
+            (sub.callback)(&signal);
 
             if let (Some(m), Some(start)) = (metrics, sub_start) {
                 let elapsed = start.elapsed().as_nanos() as u64;
@@ -471,17 +478,12 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         // above still applies (a panic in a result-subscriber halts the rest of
         // this loop). Use `subscribe_result` when you want a structured error
         // channel instead of `panic!`.
-        let result_callbacks: Vec<_> = self
-            .inner
-            .result_subscribers
-            .iter()
-            .map(|entry| (*entry.key(), Arc::clone(&entry.value().callback)))
-            .collect();
+        let result_subs = self.inner.result_subscribers.load();
 
-        for (subscriber_id, callback) in &result_callbacks {
+        for (subscriber_id, sub) in result_subs.iter() {
             let sub_start = metrics.as_ref().map(|_| std::time::Instant::now());
 
-            if let Err(err) = callback(&signal) {
+            if let Err(err) = (sub.callback)(&signal) {
                 log::error!(
                     "hyphae: fallible subscriber {} on cell {} returned error: {}",
                     subscriber_id,
@@ -515,7 +517,7 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
             crate::tracing::record_notify(
                 self.inner.id,
                 duration_ns,
-                self.inner.subscribers.len() + self.inner.result_subscribers.len(),
+                subs.len() + result_subs.len(),
                 self.inner.owned.len(),
                 metrics.slowest_subscriber_ns(),
             );
@@ -547,9 +549,18 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
         }
 
         let id = Uuid::new_v4();
-        self.inner
-            .subscribers
-            .insert(id, Box::new(Subscriber::new(callback)));
+        let sub = Arc::new(Subscriber::new(callback));
+        {
+            let _w = self
+                .inner
+                .subscribers_writer
+                .lock()
+                .expect("cell subscribers_writer poisoned");
+            let current = self.inner.subscribers.load();
+            let mut next = (**current).clone();
+            next.push((id, sub));
+            self.inner.subscribers.store(Arc::new(next));
+        }
 
         // Record subscriber added if metrics enabled
         if let Some(metrics) = &self.inner.metrics {
@@ -558,30 +569,81 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
         #[cfg(feature = "trace")]
         crate::tracing::update_subscriber_count(
             self.inner.id,
-            self.inner.subscribers.len() + self.inner.result_subscribers.len(),
+            self.inner.subscribers.load().len() + self.inner.result_subscribers.load().len(),
         );
 
         let source: Arc<dyn DepNode> = Arc::new(self.clone());
         let cell = self.clone();
         let metrics = self.inner.metrics.clone();
         SubscriptionGuard::new(id, source, move || {
-            cell.inner.subscribers.remove(&id);
-            // Record subscriber removed if metrics enabled
-            if let Some(m) = &metrics {
-                m.record_subscriber_removed();
+            let removed = {
+                let _w = cell
+                    .inner
+                    .subscribers_writer
+                    .lock()
+                    .expect("cell subscribers_writer poisoned");
+                let current = cell.inner.subscribers.load();
+                let prev_len = current.len();
+                let next: Vec<(Uuid, Arc<Subscriber<T>>)> =
+                    (**current).iter().filter(|(i, _)| *i != id).cloned().collect();
+                let removed = next.len() != prev_len;
+                if removed {
+                    cell.inner.subscribers.store(Arc::new(next));
+                }
+                removed
+            };
+            if removed {
+                // Record subscriber removed if metrics enabled
+                if let Some(m) = &metrics {
+                    m.record_subscriber_removed();
+                }
             }
             #[cfg(feature = "trace")]
             crate::tracing::update_subscriber_count(
                 cell.inner.id,
-                cell.inner.subscribers.len() + cell.inner.result_subscribers.len(),
+                cell.inner.subscribers.load().len()
+                    + cell.inner.result_subscribers.load().len(),
             );
         })
     }
 
     fn unsubscribe(&self, id: Uuid) {
-        let removed = self.inner.subscribers.remove(&id).is_some()
-            || self.inner.result_subscribers.remove(&id).is_some();
-        if removed {
+        // Try removing from subscribers first.
+        let removed_from_subs = {
+            let _w = self
+                .inner
+                .subscribers_writer
+                .lock()
+                .expect("cell subscribers_writer poisoned");
+            let current = self.inner.subscribers.load();
+            let prev_len = current.len();
+            let next: Vec<(Uuid, Arc<Subscriber<T>>)> =
+                (**current).iter().filter(|(i, _)| *i != id).cloned().collect();
+            let removed = next.len() != prev_len;
+            if removed {
+                self.inner.subscribers.store(Arc::new(next));
+            }
+            removed
+        };
+        let removed_from_result = if removed_from_subs {
+            false
+        } else {
+            let _w = self
+                .inner
+                .result_subscribers_writer
+                .lock()
+                .expect("cell result_subscribers_writer poisoned");
+            let current = self.inner.result_subscribers.load();
+            let prev_len = current.len();
+            let next: Vec<(Uuid, Arc<ResultSubscriber<T>>)> =
+                (**current).iter().filter(|(i, _)| *i != id).cloned().collect();
+            let removed = next.len() != prev_len;
+            if removed {
+                self.inner.result_subscribers.store(Arc::new(next));
+            }
+            removed
+        };
+        if removed_from_subs || removed_from_result {
             // Record subscriber removed if metrics enabled
             if let Some(metrics) = &self.inner.metrics {
                 metrics.record_subscriber_removed();
@@ -589,7 +651,8 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
             #[cfg(feature = "trace")]
             crate::tracing::update_subscriber_count(
                 self.inner.id,
-                self.inner.subscribers.len() + self.inner.result_subscribers.len(),
+                self.inner.subscribers.load().len()
+                    + self.inner.result_subscribers.load().len(),
             );
         }
     }
@@ -641,9 +704,18 @@ impl<T: CellValue, U: Send + Sync + 'static> WatchableResult<T> for Cell<T, U> {
             log_err(&id, &err);
         }
 
-        self.inner
-            .result_subscribers
-            .insert(id, Box::new(ResultSubscriber::new(callback)));
+        let sub = Arc::new(ResultSubscriber::new(callback));
+        {
+            let _w = self
+                .inner
+                .result_subscribers_writer
+                .lock()
+                .expect("cell result_subscribers_writer poisoned");
+            let current = self.inner.result_subscribers.load();
+            let mut next = (**current).clone();
+            next.push((id, sub));
+            self.inner.result_subscribers.store(Arc::new(next));
+        }
 
         if let Some(metrics) = &self.inner.metrics {
             metrics.record_subscriber_added();
@@ -651,21 +723,39 @@ impl<T: CellValue, U: Send + Sync + 'static> WatchableResult<T> for Cell<T, U> {
         #[cfg(feature = "trace")]
         crate::tracing::update_subscriber_count(
             self.inner.id,
-            self.inner.subscribers.len() + self.inner.result_subscribers.len(),
+            self.inner.subscribers.load().len() + self.inner.result_subscribers.load().len(),
         );
 
         let source: Arc<dyn DepNode> = Arc::new(self.clone());
         let cell = self.clone();
         let metrics = self.inner.metrics.clone();
         SubscriptionGuard::new(id, source, move || {
-            cell.inner.result_subscribers.remove(&id);
-            if let Some(m) = &metrics {
+            let removed = {
+                let _w = cell
+                    .inner
+                    .result_subscribers_writer
+                    .lock()
+                    .expect("cell result_subscribers_writer poisoned");
+                let current = cell.inner.result_subscribers.load();
+                let prev_len = current.len();
+                let next: Vec<(Uuid, Arc<ResultSubscriber<T>>)> =
+                    (**current).iter().filter(|(i, _)| *i != id).cloned().collect();
+                let removed = next.len() != prev_len;
+                if removed {
+                    cell.inner.result_subscribers.store(Arc::new(next));
+                }
+                removed
+            };
+            if removed
+                && let Some(m) = &metrics
+            {
                 m.record_subscriber_removed();
             }
             #[cfg(feature = "trace")]
             crate::tracing::update_subscriber_count(
                 cell.inner.id,
-                cell.inner.subscribers.len() + cell.inner.result_subscribers.len(),
+                cell.inner.subscribers.load().len()
+                    + cell.inner.result_subscribers.load().len(),
             );
         })
     }
@@ -716,7 +806,7 @@ impl<T: CellValue> DepNode for CellInner<T> {
     }
 
     fn subscriber_count(&self) -> usize {
-        self.subscribers.len() + self.result_subscribers.len()
+        self.subscribers.load().len() + self.result_subscribers.load().len()
     }
 
     fn owned_count(&self) -> usize {
