@@ -75,7 +75,7 @@ use crate::{FilterExt, TryMapExt};
 #[test]
 fn filter_pipeline_passes_matching_and_blocks_non_matching() {
     let src = Cell::new(10u64);
-    let evens = src.filter(|x| x % 2 == 0).materialize();
+    let evens = src.clone().filter(|x| x % 2 == 0).materialize();
 
     assert_eq!(evens.get(), 10);
     src.set(3);
@@ -92,6 +92,7 @@ fn filter_pipeline_fuses_with_map() {
     let initial_count = DepNode::subscriber_count(&src);
 
     let out = src
+        .clone()
         .map(|x| x + 10)
         .filter(|x| x % 2 == 0)
         .map(|x| x * 100)
@@ -106,6 +107,7 @@ fn filter_pipeline_fuses_with_map() {
 fn try_map_pipeline_produces_result_cell() {
     let src = Cell::new(10i32);
     let parsed = src
+        .clone()
         .try_map(|v| if *v > 0 { Ok(v.to_string()) } else { Err("must be positive") })
         .materialize();
 
@@ -127,6 +129,7 @@ fn tap_pipeline_observes_without_modifying() {
 
     let seen_clone = Arc::clone(&seen);
     let mat = src
+        .clone()
         .tap(move |v| {
             seen_clone.store(*v, Ordering::SeqCst);
         })
@@ -142,7 +145,7 @@ use crate::{CatchErrorExt, MapErrExt, MapOkExt, UnwrapOrExt};
 #[test]
 fn map_ok_transforms_only_ok() {
     let src: Cell<Result<i32, String>, _> = Cell::new(Ok(5));
-    let doubled = src.map_ok(|v| v * 2).materialize();
+    let doubled = src.clone().map_ok(|v| v * 2).materialize();
 
     assert_eq!(doubled.get(), Ok(10));
     src.set(Err("boom".to_string()));
@@ -152,7 +155,7 @@ fn map_ok_transforms_only_ok() {
 #[test]
 fn map_err_transforms_only_err() {
     let src: Cell<Result<i32, String>, _> = Cell::new(Err("oops".to_string()));
-    let wrapped = src.map_err(|e| format!("wrapped: {}", e)).materialize();
+    let wrapped = src.clone().map_err(|e| format!("wrapped: {}", e)).materialize();
 
     assert_eq!(wrapped.get(), Err("wrapped: oops".to_string()));
     src.set(Ok(99));
@@ -162,7 +165,7 @@ fn map_err_transforms_only_err() {
 #[test]
 fn catch_error_recovers() {
     let src: Cell<Result<i32, String>, _> = Cell::new(Err("bad".to_string()));
-    let recovered = src.catch_error(|_| 0i32).materialize();
+    let recovered = src.clone().catch_error(|_| 0i32).materialize();
 
     assert_eq!(recovered.get(), 0);
     src.set(Ok(42));
@@ -172,7 +175,7 @@ fn catch_error_recovers() {
 #[test]
 fn unwrap_or_provides_default() {
     let src: Cell<Result<i32, String>, _> = Cell::new(Err("bad".to_string()));
-    let unwrapped = src.unwrap_or(-1i32).materialize();
+    let unwrapped = src.clone().unwrap_or(-1i32).materialize();
 
     assert_eq!(unwrapped.get(), -1);
     src.set(Ok(77));

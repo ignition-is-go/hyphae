@@ -59,20 +59,19 @@ intermediate-cell version.
 
 | label                   | pre        | post       | change     | speedup |
 |-------------------------|-----------:|-----------:|-----------:|--------:|
-| chain_construction/10   |  43.34 µs  |   3.71 µs  |  -91.4 %   |  11.7x  |
-| chain_construction/50   | 222.06 µs  |  12.43 µs  |  -94.4 %   |  17.9x  |
-| chain_construction/250  |   1.15 ms  | 477.80 µs  |  -58.4 %   |   2.4x  |
-| chain_construction/500  |   2.90 ms  |   2.66 ms  |   -8.1 %   |   1.1x  |
+| chain_construction/10   |  43.34 µs  |   3.45 µs  |  -92.1 %   |  12.6x  |
+| chain_construction/50   | 222.06 µs  |   4.40 µs  |  -98.0 %   |  50.4x  |
+| chain_construction/250  |   1.15 ms  |  39.40 µs  |  -96.6 %   |  29.2x  |
+| chain_construction/500  |   2.90 ms  |  91.69 µs  |  -96.8 %   |  31.6x  |
 
-Pure-pipeline construction allocates only `Arc<closure>` per stage (no `Cell`,
-no subscriber map), so small/medium chains are dramatically cheaper. At very
-large depths the construction time is dominated by codegen of the deeply
-nested generic types `MapPipeline<MapPipeline<...>>` — the trait-solver
-recursion limit had to be raised to 2048 for these benches to compile, and at
-depth 500 each `.map(...)` materializes a unique closure type that the
-compiler must instantiate. The ~2.6 ms at depth 500 is essentially the cost
-of constructing 500 distinct closure types and 500 `Arc::new`s; this is a
-one-time setup cost, not propagation cost.
+Construction was originally only 8 % faster at depth 500 because the
+`&self`-receiver clone-on-map pattern made chain construction O(N²) in Arc
+bumps: each `MapPipeline::clone()` recursively cloned its `source`, so depth
+N built `1 + 2 + ... + N` source clones during chain construction. Switching
+to consuming `self` gives O(N) construction — only the closure allocation per
+stage. Pure-pipeline construction now allocates only `Arc<closure>` per stage
+(no recursive source clone), so cost scales linearly with depth and is
+~30x faster at 500 stages than the &self version was.
 
 ### filter_blocking_chain_set (alternating `map.filter`, predicate blocks half)
 
@@ -95,11 +94,12 @@ plus closure dispatch — about 2.2 µs (close to the single-cell baseline).
   now near-zero**. Each pipeline stage adds only the closure call cost. Slope
   in `pure_chain_set` is ~30 ns per stage (closure dispatch + arithmetic),
   vs ~2.5 µs before.
-- **Construction cost dropped substantially at small/medium depths** (12x at
-  depth 10, 18x at depth 50). At very large depths the dominant cost shifts
-  to codegen-driven generic instantiation; this is a static type-system
-  artefact, not a runtime concern, and only matters if you're building 500-
-  deep chains hot.
+- **Construction cost dropped substantially at all depths** (12x at depth 10,
+  50x at depth 50, 30x at depth 500). The earlier 8 % gain at depth 500 was
+  an O(N²) artefact of `&self`-receiver `MapExt::map` cloning the source
+  pipeline at each call site. Consuming `self` makes per-stage allocation
+  truly O(1), so depth-500 chain construction now drops from ~2.66 ms to
+  ~92 µs.
 - **Filter blocking is now near-baseline**: a blocked emission costs ~2.2 µs
   regardless of nominal chain depth (vs the ~8.8 µs floor pre-refactor).
 

@@ -36,7 +36,7 @@ pub trait WithLatestFromExt<T>: Watchable<T> {
     {
         // When self emits, pair with latest from other
         let other = other.clone();
-        self.map(move |t| (t.clone(), other.get())).materialize()
+        self.clone().map(move |t| (t.clone(), other.get())).materialize()
     }
 }
 

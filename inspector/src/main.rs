@@ -297,6 +297,7 @@ fn main() -> anyhow::Result<()> {
     // Derived cells
     let snapshot_entries = snapshots.entries();
     let summary = snapshot_entries
+        .clone()
         .map(|entries| {
             let total = entries.len();
             let all_dep_ids: HashSet<Uuid> = entries

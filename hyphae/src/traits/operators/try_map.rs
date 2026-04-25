@@ -95,14 +95,14 @@ pub trait TryMapExt<T: CellValue>: Pipeline<T> {
     /// assert_eq!(parsed.get(), Ok("10".to_string()));
     /// ```
     #[track_caller]
-    fn try_map<U, E, F>(&self, f: F) -> TryMapPipeline<Self, T, U, E, F>
+    fn try_map<U, E, F>(self, f: F) -> TryMapPipeline<Self, T, U, E, F>
     where
         U: CellValue,
         E: CellValue,
         F: Fn(&T) -> Result<U, E> + Send + Sync + 'static,
     {
         TryMapPipeline {
-            source: self.clone(),
+            source: self,
             f: Arc::new(f),
             _types: PhantomData,
         }

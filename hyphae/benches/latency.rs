@@ -42,7 +42,7 @@ macro_rules! map_chain_bench {
             |b, _| {
                 let source = Cell::new(0u64);
                 let chain = seq!(_N in 0..$tail {
-                    source.map(|x| x + 1) #(.map(|x| x + 1))*
+                    source.clone().map(|x| x + 1) #(.map(|x| x + 1))*
                 })
                 .materialize();
 
@@ -151,7 +151,7 @@ fn bench_fan_in(c: &mut Criterion) {
                     .iter()
                     .map(|source| {
                         let cnt = counter.clone();
-                        let mapped = source.map(|x| x * 2).materialize();
+                        let mapped = source.clone().map(|x| x * 2).materialize();
                         mapped.subscribe(move |_| {
                             cnt.fetch_add(1, Ordering::Relaxed);
                         })
@@ -188,6 +188,7 @@ fn bench_complex_graph(c: &mut Criterion) {
                     // materialized before scan. The post-Pipeline-refactor
                     // shape: one fused (map.filter) cell, then scan on top.
                     let filtered = source
+                        .clone()
                         .map(|x| x * 2)
                         .filter(|x| x % 2 == 0)
                         .materialize();

@@ -75,12 +75,12 @@ pub trait TapExt<T: CellValue>: Pipeline<T> {
     ///
     /// Returns a [`TapPipeline`] node. Materialize to observe.
     #[track_caller]
-    fn tap<F>(&self, f: F) -> TapPipeline<Self, T, F>
+    fn tap<F>(self, f: F) -> TapPipeline<Self, T, F>
     where
         F: Fn(&T) + Send + Sync + 'static,
     {
         TapPipeline {
-            source: self.clone(),
+            source: self,
             f: Arc::new(f),
             _t: PhantomData,
         }
@@ -105,7 +105,7 @@ mod tests {
         let side_effect = Arc::new(AtomicU64::new(0));
 
         let se = side_effect.clone();
-        let tapped = source.tap(move |v| {
+        let tapped = source.clone().tap(move |v| {
             se.store(*v, Ordering::SeqCst);
         }).materialize();
 

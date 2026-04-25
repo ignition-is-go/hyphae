@@ -80,12 +80,12 @@ where
 
 pub trait FilterExt<T: CellValue>: Pipeline<T> {
     #[track_caller]
-    fn filter<P>(&self, predicate: P) -> FilterPipeline<Self, T, P>
+    fn filter<P>(self, predicate: P) -> FilterPipeline<Self, T, P>
     where
         P: Fn(&T) -> bool + Send + Sync + 'static,
     {
         FilterPipeline {
-            source: self.clone(),
+            source: self,
             predicate: Arc::new(predicate),
             _t: PhantomData,
         }
@@ -107,7 +107,7 @@ mod tests {
     #[test]
     fn test_filter_passes_matching() {
         let source = Cell::new(10u64);
-        let evens = source.filter(|x| x % 2 == 0).materialize();
+        let evens = source.clone().filter(|x| x % 2 == 0).materialize();
         let received = Arc::new(AtomicU64::new(0));
 
         let r = received.clone();
@@ -126,7 +126,7 @@ mod tests {
     #[test]
     fn test_filter_blocks_non_matching() {
         let source = Cell::new(10u64);
-        let evens = source.filter(|x| x % 2 == 0).materialize();
+        let evens = source.clone().filter(|x| x % 2 == 0).materialize();
         let received = Arc::new(AtomicU64::new(0));
 
         let r = received.clone();

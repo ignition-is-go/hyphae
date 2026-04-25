@@ -76,7 +76,7 @@ macro_rules! bench_pure_chain {
             |b, _| {
                 let source = Cell::new(0u64);
                 let chain = seq!(_N in 0..$tail {
-                    source.map(|x| x + 1) #(.map(|x| x + 1))*
+                    source.clone().map(|x| x + 1) #(.map(|x| x + 1))*
                 })
                 .materialize();
                 let counter = Arc::new(AtomicU64::new(0));
@@ -116,7 +116,7 @@ macro_rules! bench_mixed_chain {
             |b, _| {
                 let source = Cell::new(0u64);
                 let chain = seq!(_N in 0..$cycles {
-                    source.map(|x| x + 1)
+                    source.clone().map(|x| x + 1)
                     #(
                         .map(|x| x + 1)
                         .filter(|_| true)
@@ -162,7 +162,7 @@ macro_rules! bench_construction {
                 b.iter(|| {
                     let source = Cell::new(0u64);
                     let chain = seq!(_N in 0..$tail {
-                        source.map(|x| x + 1) #(.map(|x| x + 1))*
+                        source.clone().map(|x| x + 1) #(.map(|x| x + 1))*
                     });
                     black_box(chain);
                     black_box(source);
@@ -196,7 +196,7 @@ macro_rules! bench_filter_blocking {
             |b, _| {
                 let source = Cell::new(0u64);
                 let chain = seq!(_N in 0..$tail {
-                    source.map(|x| x + 1)
+                    source.clone().map(|x| x + 1)
                     #(
                         .map(|x| x + 1)
                         .filter(|x| x % 2 == 0)

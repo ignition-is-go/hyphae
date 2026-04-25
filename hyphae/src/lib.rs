@@ -22,7 +22,7 @@
 //!
 //! // Pure operators (map/filter/...) return pipelines — no allocation
 //! // until you materialize.
-//! let doubled = x.map(|val| val * 2).materialize().with_name("doubled");
+//! let doubled = x.clone().map(|val| val * 2).materialize().with_name("doubled");
 //!
 //! // Combine multiple cells with join + flat!. join is stateful — it
 //! // returns a Cell directly. Chaining .map fuses into the join's

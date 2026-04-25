@@ -37,7 +37,7 @@ pub trait SampleExt<T>: Watchable<T> {
     {
         // When notifier fires, get the current value from source
         let source = self.clone();
-        notifier.map(move |_| source.get()).materialize()
+        notifier.clone().map(move |_| source.get()).materialize()
     }
 }
 

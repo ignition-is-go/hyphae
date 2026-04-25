@@ -9,7 +9,7 @@ use crate::pipeline::Pipeline;
 pub trait MapOkExt<T: CellValue, E: CellValue>: Pipeline<Result<T, E>> {
     #[track_caller]
     fn map_ok<U, F>(
-        &self,
+        self,
         f: F,
     ) -> MapPipeline<
         Self,
@@ -18,6 +18,7 @@ pub trait MapOkExt<T: CellValue, E: CellValue>: Pipeline<Result<T, E>> {
         impl Fn(&Result<T, E>) -> Result<U, E> + Send + Sync + 'static,
     >
     where
+        Self: Sized,
         U: CellValue,
         F: Fn(&T) -> U + Send + Sync + 'static,
     {
@@ -33,7 +34,7 @@ impl<T: CellValue, E: CellValue, P: Pipeline<Result<T, E>>> MapOkExt<T, E> for P
 pub trait MapErrExt<T: CellValue, E: CellValue>: Pipeline<Result<T, E>> {
     #[track_caller]
     fn map_err<E2, F>(
-        &self,
+        self,
         f: F,
     ) -> MapPipeline<
         Self,
@@ -42,6 +43,7 @@ pub trait MapErrExt<T: CellValue, E: CellValue>: Pipeline<Result<T, E>> {
         impl Fn(&Result<T, E>) -> Result<T, E2> + Send + Sync + 'static,
     >
     where
+        Self: Sized,
         E2: CellValue,
         F: Fn(&E) -> E2 + Send + Sync + 'static,
     {
@@ -57,7 +59,7 @@ impl<T: CellValue, E: CellValue, P: Pipeline<Result<T, E>>> MapErrExt<T, E> for 
 pub trait CatchErrorExt<T: CellValue, E: CellValue>: Pipeline<Result<T, E>> {
     #[track_caller]
     fn catch_error<F>(
-        &self,
+        self,
         f: F,
     ) -> MapPipeline<
         Self,
@@ -66,6 +68,7 @@ pub trait CatchErrorExt<T: CellValue, E: CellValue>: Pipeline<Result<T, E>> {
         impl Fn(&Result<T, E>) -> T + Send + Sync + 'static,
     >
     where
+        Self: Sized,
         F: Fn(&E) -> T + Send + Sync + 'static,
     {
         self.map(move |r: &Result<T, E>| match r {
@@ -80,14 +83,17 @@ impl<T: CellValue, E: CellValue, P: Pipeline<Result<T, E>>> CatchErrorExt<T, E> 
 pub trait UnwrapOrExt<T: CellValue, E: CellValue>: Pipeline<Result<T, E>> {
     #[track_caller]
     fn unwrap_or(
-        &self,
+        self,
         default: T,
     ) -> MapPipeline<
         Self,
         Result<T, E>,
         T,
         impl Fn(&Result<T, E>) -> T + Send + Sync + 'static,
-    > {
+    >
+    where
+        Self: Sized,
+    {
         self.map(move |r: &Result<T, E>| match r {
             Ok(v) => v.clone(),
             Err(_) => default.clone(),
@@ -96,7 +102,7 @@ pub trait UnwrapOrExt<T: CellValue, E: CellValue>: Pipeline<Result<T, E>> {
 
     #[track_caller]
     fn unwrap_or_else<F>(
-        &self,
+        self,
         f: F,
     ) -> MapPipeline<
         Self,
@@ -105,6 +111,7 @@ pub trait UnwrapOrExt<T: CellValue, E: CellValue>: Pipeline<Result<T, E>> {
         impl Fn(&Result<T, E>) -> T + Send + Sync + 'static,
     >
     where
+        Self: Sized,
         F: Fn(&E) -> T + Send + Sync + 'static,
     {
         self.catch_error(f)

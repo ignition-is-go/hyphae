@@ -26,6 +26,7 @@ async fn main() {
     // ── Derived: sine + cosine from fast clock ──────────────────────────
 
     let sine = fast
+        .clone()
         .map(|tick| {
             let t = *tick as f64 * 0.1;
             (t.sin() * 100.0).round() / 100.0
@@ -34,6 +35,7 @@ async fn main() {
         .with_name("sine");
 
     let cosine = fast
+        .clone()
         .map(|tick| {
             let t = *tick as f64 * 0.1;
             (t.cos() * 100.0).round() / 100.0
@@ -94,9 +96,9 @@ async fn main() {
     let fast_for_switch = fast.clone();
     let _phase_signal = phase
         .switch_map(move |phase_name| match *phase_name {
-            "rising" => fast_for_switch.map(|t| (*t as f64 * 0.05).min(1.0)).materialize(),
+            "rising" => fast_for_switch.clone().map(|t| (*t as f64 * 0.05).min(1.0)).materialize(),
             "peak" => Cell::new(1.0).lock(),
-            "falling" => fast_for_switch.map(|t| (1.0 - *t as f64 * 0.05).max(0.0)).materialize(),
+            "falling" => fast_for_switch.clone().map(|t| (1.0 - *t as f64 * 0.05).max(0.0)).materialize(),
             _ => Cell::new(0.0).lock(),
         })
         .with_name("phase_signal");
@@ -104,6 +106,7 @@ async fn main() {
     // ── Filter: only positive sine values ───────────────────────────────
 
     let _positive_sine = sine
+        .clone()
         .filter(|v| *v > 0.0)
         .materialize()
         .with_name("positive_sine");

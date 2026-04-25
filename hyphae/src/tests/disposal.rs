@@ -59,7 +59,7 @@ fn test_derived_cell_drop_stops_notifications() {
 
     {
         let count = call_count.clone();
-        let _derived = source.map(move |v| {
+        let _derived = source.clone().map(move |v| {
             count.fetch_add(1, Ordering::SeqCst);
             *v * 2
         }).materialize();
@@ -95,7 +95,7 @@ fn test_source_still_works_after_derived_dropped() {
     });
 
     {
-        let _derived = source.map(|v| *v * 2).materialize();
+        let _derived = source.clone().map(|v| *v * 2).materialize();
         source.set(1);
     } // derived dropped
 
@@ -116,6 +116,7 @@ fn test_chained_operators_drop_correctly() {
 
     {
         let _final = source
+            .clone()
             .map(move |v| {
                 c1.fetch_add(1, Ordering::SeqCst);
                 *v * 2
@@ -153,7 +154,7 @@ fn test_parent_cell_outlives_derived() {
     let r = received.clone();
 
     let source = Cell::new(0u64);
-    let derived = source.map(|v| *v * 2).materialize();
+    let derived = source.clone().map(|v| *v * 2).materialize();
 
     let _guard = derived.subscribe(move |signal| {
         if let Signal::Value(v) = signal {
@@ -184,7 +185,7 @@ fn test_subscription_cleaned_up_on_derived_drop() {
     let initial_count = source.inner.subscribers.len();
 
     {
-        let _derived = source.map(|v| *v * 2).materialize();
+        let _derived = source.clone().map(|v| *v * 2).materialize();
         // map() creates one subscription on source
         assert_eq!(source.inner.subscribers.len(), initial_count + 1);
     } // derived dropped here - should unsubscribe
@@ -199,11 +200,11 @@ fn test_chained_subscriptions_cleaned_up() {
     let initial_count = source.inner.subscribers.len();
 
     {
-        let derived1 = source.map(|v| *v * 2).materialize();
+        let derived1 = source.clone().map(|v| *v * 2).materialize();
         let d1_initial = derived1.inner.subscribers.len();
 
         {
-            let _derived2 = derived1.map(|v| *v + 1).materialize();
+            let _derived2 = derived1.clone().map(|v| *v + 1).materialize();
             // derived2 subscribes to derived1
             assert_eq!(derived1.inner.subscribers.len(), d1_initial + 1);
         } // derived2 dropped
@@ -221,10 +222,10 @@ fn test_multiple_derived_cells_independent_cleanup() {
     let source = Cell::new(0u64);
     let initial_count = source.inner.subscribers.len();
 
-    let derived1 = source.map(|v| *v * 2).materialize();
+    let derived1 = source.clone().map(|v| *v * 2).materialize();
     assert_eq!(source.inner.subscribers.len(), initial_count + 1);
 
-    let derived2 = source.map(|v| *v + 1).materialize();
+    let derived2 = source.clone().map(|v| *v + 1).materialize();
     assert_eq!(source.inner.subscribers.len(), initial_count + 2);
 
     drop(derived1);
