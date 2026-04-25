@@ -76,6 +76,37 @@ users.insert("admin".to_string(), User::new());
 assert!(admin.get().is_some()); // updates automatically
 ```
 
+## Map Queries vs CellMaps
+
+Pure `CellMap` operators (`inner_join`, `left_join`, `project`, `select`,
+`count_by`, `group_by`, ...) return uncompiled `MapQuery` plan nodes — not
+`CellMap`s. Plans compose: any plan or `CellMap` can feed any other
+operator's input. Call `.materialize()` to allocate ONE output `CellMap`
+with ONE subscription per root source, replacing what would otherwise be N
+intermediate maps for an N-stage chain.
+
+`MapQuery` plan nodes are not `Clone` (mirroring `Pipeline`). To share work
+across consumers, materialize once and clone the resulting `CellMap`.
+
+```rust
+use hyphae::{CellMap, MapQuery, traits::{InnerJoinExt, ProjectMapExt}};
+
+let users = CellMap::<String, &'static str>::new();
+let scores = CellMap::<String, i32>::new();
+users.insert("u1".into(), "alice");
+scores.insert("u1".into(), 42);
+
+// Chained operators return plan nodes — no intermediate CellMap
+// until materialize().
+let view = users
+    .clone()
+    .inner_join(scores.clone())
+    .project(|user_id, (name, score)| Some((user_id.clone(), format!("{name}:{score}"))))
+    .materialize();
+
+assert!(view.contains_key(&"u1".to_string()));
+```
+
 ## Async Support
 
 ```rust

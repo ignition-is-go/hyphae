@@ -75,6 +75,48 @@
 //! let sum = a.join(&b).join(&c).join(&d).map(flat!(|a, b, c, d| a + b + c + d));
 //! assert_eq!(sum.get(), 10);
 //! ```
+//!
+//! ## Map Queries vs CellMaps
+//!
+//! Pure [`CellMap`] operators (`inner_join`, `left_join`, `left_semi_join`,
+//! `multi_left_join`, `project`, `project_many`, `project_cell`, `select`,
+//! `select_cell`, `count_by`, `group_by`) return uncompiled [`MapQuery`]
+//! plan nodes — not [`CellMap`]s. A plan tree composes freely: any plan or
+//! [`CellMap`] can feed any other operator's input.
+//!
+//! Calling [`MapQuery::materialize`] allocates ONE output [`CellMap`] with
+//! ONE subscription per root source running the fully fused diff-propagation
+//! closure. This replaces what used to be N intermediate [`CellMap`]s, N
+//! subscriber tables, and N `ArcSwap` chains for an N-stage query.
+//!
+//! [`MapQuery`] plan nodes are deliberately not `Clone` (mirroring
+//! [`Pipeline`]). Cloning would silently duplicate join / projection work —
+//! every clone's `materialize()` would install independent root subscriptions
+//! and re-run the entire op chain. To share work across consumers,
+//! materialize once into a [`CellMap`] (which IS `Clone` — the clone is an
+//! `Arc` bump referencing the same multicast cache) and then clone the cell
+//! map.
+//!
+//! ## CellMap Quick Start
+//!
+//! ```rust
+//! use hyphae::{CellMap, MapQuery, traits::{InnerJoinExt, ProjectMapExt}};
+//!
+//! let users = CellMap::<String, &'static str>::new();
+//! let scores = CellMap::<String, i32>::new();
+//! users.insert("u1".into(), "alice");
+//! scores.insert("u1".into(), 42);
+//!
+//! // Chained operators return plan nodes — no intermediate CellMap
+//! // until materialize().
+//! let view = users
+//!     .clone()
+//!     .inner_join(scores.clone())
+//!     .project(|user_id, (name, score)| Some((user_id.clone(), format!("{name}:{score}"))))
+//!     .materialize();
+//!
+//! assert!(view.contains_key(&"u1".to_string()));
+//! ```
 
 #[macro_use]
 pub mod flat;
