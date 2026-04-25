@@ -130,3 +130,18 @@ fn left_join_plan_keeps_unmatched_left() {
     assert_eq!(mat.get_value(&"a".to_string()), Some((1, vec![10])));
     assert_eq!(mat.get_value(&"b".to_string()), Some((2, vec![])));
 }
+
+use crate::traits::LeftSemiJoinExt;
+
+#[test]
+fn left_semi_join_plan_keeps_left_with_match() {
+    let l = CellMap::<String, i32>::new();
+    let r = CellMap::<String, i32>::new();
+    l.insert("a".into(), 1);
+    l.insert("b".into(), 2);
+    r.insert("a".into(), 10);
+
+    let mat = l.clone().left_semi_join(r.clone()).materialize();
+    assert_eq!(mat.get_value(&"a".to_string()), Some(1));
+    assert_eq!(mat.get_value(&"b".to_string()), None);
+}

@@ -1,115 +1,210 @@
-use std::hash::Hash;
+//! Left semi-join plan nodes implementing [`MapQuery`].
+//!
+//! `left_semi_join`, `left_semi_join_fk`, and `left_semi_join_by` build
+//! uncompiled plan nodes that compose with other [`MapQuery`] operators. Call
+//! [`MapQuery::materialize`] to compile a plan into a subscribable
+//! [`CellMap`](crate::CellMap).
+
+use std::{hash::Hash, marker::PhantomData};
 
 use crate::{
-    cell::CellImmutable,
-    cell_map::CellMap,
+    map_query::{MapDiffSink, MapQuery, MapQueryInstall},
+    subscription::SubscriptionGuard,
     traits::{
-        CellValue, HasForeignKey, IdFor, collections::internal::join_runtime::run_join_runtime,
-        reactive_map::ReactiveMap,
+        CellValue, HasForeignKey, IdFor,
+        collections::internal::join_runtime::install_join_runtime_via_query,
     },
 };
 
-pub trait LeftSemiJoinExt: ReactiveMap {
+/// Plan node for [`LeftSemiJoinExt::left_semi_join`],
+/// [`LeftSemiJoinExt::left_semi_join_fk`], and
+/// [`LeftSemiJoinExt::left_semi_join_by`].
+///
+/// Keeps left rows that have at least one matching right row. Unmatched left
+/// rows are excluded. Output value is the left value (no right tuple), keyed
+/// by the left key.
+///
+/// Not [`Clone`]: cloning a plan would silently duplicate join work; share by
+/// materializing once.
+pub struct LeftSemiJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
+where
+    L: MapQuery<LK, LV>,
+    R: MapQuery<RK, RV>,
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
+    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+{
+    pub(crate) left: L,
+    pub(crate) right: R,
+    pub(crate) left_key: FL,
+    pub(crate) right_key: FR,
+    #[allow(clippy::type_complexity)]
+    pub(crate) _types: PhantomData<fn() -> (LK, LV, RK, RV, JK)>,
+}
+
+impl<L, R, LK, LV, RK, RV, JK, FL, FR> MapQueryInstall<LK, LV>
+    for LeftSemiJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
+where
+    L: MapQuery<LK, LV>,
+    R: MapQuery<RK, RV>,
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
+    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+{
+    fn install(self, sink: MapDiffSink<LK, LV>) -> Vec<SubscriptionGuard> {
+        install_join_runtime_via_query::<LK, LV, RK, RV, JK, LK, LV, _, _, _, _, _>(
+            self.left,
+            self.right,
+            self.left_key,
+            self.right_key,
+            |left_k: &LK, left_v: &LV, rights: &[(RK, RV)]| {
+                if rights.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![(left_k.clone(), left_v.clone())]
+                }
+            },
+            sink,
+        )
+    }
+}
+
+#[allow(private_bounds)]
+impl<L, R, LK, LV, RK, RV, JK, FL, FR> MapQuery<LK, LV>
+    for LeftSemiJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
+where
+    L: MapQuery<LK, LV>,
+    R: MapQuery<RK, RV>,
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
+    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+{
+}
+
+/// Left semi-join operators returning [`MapQuery`] plan nodes.
+///
+/// All three methods consume `self` and return uncompiled plan nodes; call
+/// [`MapQuery::materialize`] on the result to obtain a subscribable
+/// [`CellMap`](crate::CellMap).
+pub trait LeftSemiJoinExt<K, V>: MapQuery<K, V>
+where
+    K: Hash + Eq + CellValue,
+    V: CellValue,
+{
     /// Left semi join on equal map keys.
     ///
-    /// Keeps left rows where a right row with the same key exists.
-    /// Unmatched left rows are excluded. Output contains only left data.
-    fn left_semi_join<R>(&self, right: &R) -> CellMap<Self::Key, Self::Value, CellImmutable>
+    /// Keeps left rows where a right row with the same key exists. Unmatched
+    /// left rows are excluded. Output contains only left data.
+    #[allow(clippy::type_complexity)]
+    fn left_semi_join<R, RV>(
+        self,
+        right: R,
+    ) -> LeftSemiJoinPlan<
+        Self,
+        R,
+        K,
+        V,
+        K,
+        RV,
+        K,
+        impl Fn(&K, &V) -> K + Send + Sync + 'static,
+        impl Fn(&K, &RV) -> K + Send + Sync + 'static,
+    >
     where
-        R: ReactiveMap<Key = Self::Key>;
+        R: MapQuery<K, RV>,
+        RV: CellValue,
+    {
+        LeftSemiJoinPlan {
+            left: self,
+            right,
+            left_key: |k: &K, _: &V| k.clone(),
+            right_key: |k: &K, _: &RV| k.clone(),
+            _types: PhantomData,
+        }
+    }
 
     /// Left semi join using foreign key relationship.
     ///
     /// Joins on the left map key matching the right value's foreign key.
-    /// Keeps left rows that have at least one matching right row.
-    /// Unmatched left rows are excluded. Output contains only left data.
-    fn left_semi_join_fk<R>(&self, right: &R) -> CellMap<Self::Key, Self::Value, CellImmutable>
+    /// Keeps left rows that have at least one matching right row. Unmatched
+    /// left rows are excluded. Output contains only left data.
+    #[allow(clippy::type_complexity)]
+    fn left_semi_join_fk<R, RK, RV>(
+        self,
+        right: R,
+    ) -> LeftSemiJoinPlan<
+        Self,
+        R,
+        K,
+        V,
+        RK,
+        RV,
+        K,
+        impl Fn(&K, &V) -> K + Send + Sync + 'static,
+        impl Fn(&RK, &RV) -> K + Send + Sync + 'static,
+    >
     where
-        R: ReactiveMap,
-        R::Value: HasForeignKey<Self::Value>,
-        <<R::Value as HasForeignKey<Self::Value>>::ForeignKey as IdFor<Self::Value>>::MapKey:
-            Into<Self::Key>;
+        R: MapQuery<RK, RV>,
+        RK: Hash + Eq + CellValue,
+        RV: CellValue + HasForeignKey<V>,
+        <<RV as HasForeignKey<V>>::ForeignKey as IdFor<V>>::MapKey: Into<K>,
+    {
+        LeftSemiJoinPlan {
+            left: self,
+            right,
+            left_key: |k: &K, _: &V| k.clone(),
+            right_key: |_: &RK, rv: &RV| rv.fk().map_key().into(),
+            _types: PhantomData,
+        }
+    }
 
     /// Left semi join using explicit key extractors.
     ///
     /// `left_key` and `right_key` extract the join key from each side.
-    /// Keeps left rows that have at least one matching right row.
-    /// Unmatched left rows are excluded. Output contains only left data.
-    fn left_semi_join_by<R, JK, FL, FR>(
-        &self,
-        right: &R,
+    /// Keeps left rows that have at least one matching right row. Unmatched
+    /// left rows are excluded. Output contains only left data.
+    fn left_semi_join_by<R, RK, RV, JK, FL, FR>(
+        self,
+        right: R,
         left_key: FL,
         right_key: FR,
-    ) -> CellMap<Self::Key, Self::Value, CellImmutable>
+    ) -> LeftSemiJoinPlan<Self, R, K, V, RK, RV, JK, FL, FR>
     where
-        R: ReactiveMap,
+        R: MapQuery<RK, RV>,
+        RK: Hash + Eq + CellValue,
+        RV: CellValue,
         JK: Hash + Eq + CellValue,
-        FL: Fn(&Self::Key, &Self::Value) -> JK + Send + Sync + 'static,
-        FR: Fn(&R::Key, &R::Value) -> JK + Send + Sync + 'static;
-}
-
-impl<L: ReactiveMap> LeftSemiJoinExt for L {
-    fn left_semi_join<R>(&self, right: &R) -> CellMap<Self::Key, Self::Value, CellImmutable>
-    where
-        R: ReactiveMap<Key = Self::Key>,
+        FL: Fn(&K, &V) -> JK + Send + Sync + 'static,
+        FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
     {
-        run_join_runtime(
-            self,
+        LeftSemiJoinPlan {
+            left: self,
             right,
-            "left_semi_join",
-            |k: &Self::Key, _: &Self::Value| k.clone(),
-            |k: &Self::Key, _: &R::Value| k.clone(),
-            |left_k, left_v, rights| {
-                if rights.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![(left_k.clone(), left_v.clone())]
-                }
-            },
-        )
-    }
-
-    fn left_semi_join_fk<R>(&self, right: &R) -> CellMap<Self::Key, Self::Value, CellImmutable>
-    where
-        R: ReactiveMap,
-        R::Value: HasForeignKey<Self::Value>,
-        <<R::Value as HasForeignKey<Self::Value>>::ForeignKey as IdFor<Self::Value>>::MapKey:
-            Into<Self::Key>,
-    {
-        self.left_semi_join_by(
-            right,
-            |k: &Self::Key, _: &Self::Value| k.clone(),
-            |_: &R::Key, rv: &R::Value| rv.fk().map_key().into(),
-        )
-    }
-
-    fn left_semi_join_by<R, JK, FL, FR>(
-        &self,
-        right: &R,
-        left_key: FL,
-        right_key: FR,
-    ) -> CellMap<Self::Key, Self::Value, CellImmutable>
-    where
-        R: ReactiveMap,
-        JK: Hash + Eq + CellValue,
-        FL: Fn(&Self::Key, &Self::Value) -> JK + Send + Sync + 'static,
-        FR: Fn(&R::Key, &R::Value) -> JK + Send + Sync + 'static,
-    {
-        run_join_runtime(
-            self,
-            right,
-            "left_semi_join_by",
             left_key,
             right_key,
-            |left_k, left_v, rights| {
-                if rights.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![(left_k.clone(), left_v.clone())]
-                }
-            },
-        )
+            _types: PhantomData,
+        }
     }
+}
+
+impl<K, V, M> LeftSemiJoinExt<K, V> for M
+where
+    K: Hash + Eq + CellValue,
+    V: CellValue,
+    M: MapQuery<K, V>,
+{
 }
 
 #[cfg(test)]
@@ -118,7 +213,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        MapDiff,
+        CellMap, MapDiff,
         traits::{Gettable, HasForeignKey, IdFor, IdType},
     };
 
@@ -126,7 +221,7 @@ mod tests {
     fn left_semi_join_keeps_matched_rows() {
         let left = CellMap::<String, i32>::new();
         let right = CellMap::<String, bool>::new();
-        let joined = left.left_semi_join(&right);
+        let joined = left.clone().left_semi_join(right.clone()).materialize();
 
         left.insert("a".to_string(), 1);
         assert_eq!(joined.entries().get().len(), 0);
@@ -139,7 +234,7 @@ mod tests {
     fn left_semi_join_drops_unmatched_rows() {
         let left = CellMap::<String, i32>::new();
         let right = CellMap::<String, bool>::new();
-        let joined = left.left_semi_join(&right);
+        let joined = left.clone().left_semi_join(right.clone()).materialize();
 
         left.insert("a".to_string(), 1);
         left.insert("b".to_string(), 2);
@@ -154,7 +249,7 @@ mod tests {
     fn left_semi_join_reacts_to_right_removal() {
         let left = CellMap::<String, i32>::new();
         let right = CellMap::<String, bool>::new();
-        let joined = left.left_semi_join(&right);
+        let joined = left.clone().left_semi_join(right.clone()).materialize();
 
         left.insert("a".to_string(), 1);
         right.insert("a".to_string(), true);
@@ -168,7 +263,10 @@ mod tests {
     fn left_semi_join_by_uses_custom_keys() {
         let left = CellMap::<String, i32>::new();
         let right = CellMap::<String, i32>::new();
-        let joined = left.left_semi_join_by(&right, |_, lv| lv.to_string(), |rk, _| rk.clone());
+        let joined = left
+            .clone()
+            .left_semi_join_by(right.clone(), |_, lv| lv.to_string(), |rk, _| rk.clone())
+            .materialize();
 
         left.insert("a".to_string(), 10);
         assert_eq!(joined.get_value(&"a".to_string()), None);
@@ -184,7 +282,10 @@ mod tests {
         left.insert("b".to_string(), 2);
 
         let right = CellMap::<String, bool>::new();
-        let joined = left.left_semi_join_by(&right, |_, lv| lv.to_string(), |rk, _| rk.clone());
+        let joined = left
+            .clone()
+            .left_semi_join_by(right.clone(), |_, lv| lv.to_string(), |rk, _| rk.clone())
+            .materialize();
 
         let (tx, rx) = mpsc::channel::<MapDiff<String, i32>>();
         let _guard = joined.subscribe_diffs(move |diff| {
@@ -237,7 +338,7 @@ mod tests {
     fn left_semi_join_fk_keeps_matched_users() {
         let users = CellMap::<String, User>::new();
         let posts = CellMap::<String, Post>::new();
-        let joined = users.left_semi_join_fk(&posts);
+        let joined = users.clone().left_semi_join_fk(posts.clone()).materialize();
 
         users.insert(
             "u1".to_string(),
@@ -276,7 +377,7 @@ mod tests {
     fn left_semi_join_fk_reacts_to_post_removal() {
         let users = CellMap::<String, User>::new();
         let posts = CellMap::<String, Post>::new();
-        let joined = users.left_semi_join_fk(&posts);
+        let joined = users.clone().left_semi_join_fk(posts.clone()).materialize();
 
         users.insert(
             "u1".to_string(),
