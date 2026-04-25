@@ -1,15 +1,13 @@
 use std::{
     collections::{HashMap, HashSet},
     hash::Hash,
-    marker::PhantomData,
     sync::{Arc, Mutex},
 };
 
 use crate::{
-    cell::{CellImmutable, CellMutable},
-    cell_map::{CellMap, MapDiff},
+    cell_map::MapDiff,
     subscription::SubscriptionGuard,
-    traits::{CellValue, reactive_map::ReactiveMap},
+    traits::CellValue,
 };
 
 struct MapState<SK, SV, OK, OV>
@@ -209,49 +207,13 @@ where
 
 /// Install map-runtime machinery that drives `sink` instead of allocating an output map.
 ///
-/// Subscribes to the source, maintains projection state, and emits resulting
-/// diffs (batched per upstream diff) into the sink. Returns the subscription
-/// guard, which the caller owns.
+/// Subscribes upstream via [`MapQuery::install`](crate::map_query::MapQuery::install),
+/// maintains projection state, and emits resulting diffs (batched per upstream
+/// diff) into the sink. Returns the subscription guards, which the caller owns.
 ///
 /// Used by `MapQuery` plan nodes (`ProjectPlan`, `ProjectManyPlan`,
-/// `SelectPlan`) whose materialization shares one output cell map.
-pub(crate) fn install_map_runtime<S, OK, OV, FO>(
-    source: &S,
-    compute_rows: FO,
-    sink: crate::map_query::MapDiffSink<OK, OV>,
-) -> Vec<SubscriptionGuard>
-where
-    S: ReactiveMap,
-    S::Key: Hash + Eq + CellValue,
-    S::Value: CellValue,
-    OK: Hash + Eq + CellValue,
-    OV: CellValue,
-    FO: Fn(&S::Key, &S::Value) -> Vec<(OK, OV)> + Send + Sync + 'static,
-{
-    let state = Arc::new(Mutex::new(
-        MapState::<S::Key, S::Value, OK, OV>::default(),
-    ));
-    let compute_rows = Arc::new(compute_rows);
-
-    let guard = source.subscribe_diffs_reactive(move |diff| {
-        let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-        let mut impacted: HashSet<S::Key> = HashSet::new();
-        apply_source_diff(&mut state.source_rows, diff, &mut impacted);
-        let changes = recompute_impacted(&mut state, impacted, compute_rows.as_ref());
-        drop(state);
-        emit_changes(changes, &sink);
-    });
-
-    vec![guard]
-}
-
-/// Like [`install_map_runtime`] but takes a [`MapQuery`] source instead of a
-/// raw [`ReactiveMap`].
-///
-/// The upstream's diff stream is obtained by recursively calling
-/// [`MapQuery::install`](crate::map_query::MapQuery::install) on it, so chains
-/// of plans compose without intermediate [`CellMap`](crate::CellMap)
-/// allocations.
+/// `SelectPlan`) whose materialization shares one output cell map. Chains of
+/// plans compose without intermediate [`CellMap`](crate::CellMap) allocations.
 pub(crate) fn install_map_runtime_via_query<SK, SV, OK, OV, S, FO>(
     source: S,
     compute_rows: FO,
@@ -283,41 +245,4 @@ where
     };
 
     source.install(upstream_sink)
-}
-
-pub(crate) fn run_map_runtime<SK, SV, SM, OK, OV, FO>(
-    source: &CellMap<SK, SV, SM>,
-    op_name: &str,
-    compute_rows: FO,
-) -> CellMap<OK, OV, CellImmutable>
-where
-    SK: Hash + Eq + CellValue,
-    SV: CellValue,
-    SM: Send + Sync + 'static,
-    OK: Hash + Eq + CellValue,
-    OV: CellValue,
-    FO: Fn(&SK, &SV) -> Vec<(OK, OV)> + Send + Sync + 'static,
-{
-    let output = CellMap::<OK, OV, CellMutable>::new();
-    if let Some(parent_name) = (**source.inner.name.load()).as_ref() {
-        output
-            .clone()
-            .with_name(format!("{}::{}", parent_name, op_name));
-    }
-
-    let weak = Arc::downgrade(&output.inner);
-    let sink: crate::map_query::MapDiffSink<OK, OV> = Arc::new(move |diff| {
-        let Some(inner) = weak.upgrade() else { return };
-        let out = CellMap::<OK, OV, CellMutable> {
-            inner,
-            _marker: PhantomData,
-        };
-        out.apply_diff_owned(diff.clone());
-    });
-
-    let guards = install_map_runtime(source, compute_rows, sink);
-    for g in guards {
-        output.own(g);
-    }
-    output.lock()
 }
