@@ -70,7 +70,7 @@ fn map_pipeline_chains_fuse_into_one_subscription() {
     assert_eq!(mat.get(), 22);
 }
 
-use crate::FilterExt;
+use crate::{FilterExt, TryMapExt};
 
 #[test]
 fn filter_pipeline_passes_matching_and_blocks_non_matching() {
@@ -100,4 +100,16 @@ fn filter_pipeline_fuses_with_map() {
     assert_eq!(DepNode::subscriber_count(&src), initial_count + 1);
     src.set(2); // 2+10=12, even, passes
     assert_eq!(out.get(), 1200);
+}
+
+#[test]
+fn try_map_pipeline_produces_result_cell() {
+    let src = Cell::new(10i32);
+    let parsed = src
+        .try_map(|v| if *v > 0 { Ok(v.to_string()) } else { Err("must be positive") })
+        .materialize();
+
+    assert_eq!(parsed.get(), Ok("10".to_string()));
+    src.set(-5);
+    assert_eq!(parsed.get(), Err("must be positive"));
 }

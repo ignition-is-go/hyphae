@@ -1,4 +1,6 @@
-use crate::{CatchErrorExt, Cell, Gettable, MapErrExt, MapOkExt, Mutable, TryMapExt, UnwrapOrExt};
+use crate::{
+    CatchErrorExt, Cell, Gettable, MapErrExt, MapOkExt, Mutable, Pipeline, TryMapExt, UnwrapOrExt,
+};
 
 // ============================================================================
 // TryMap
@@ -7,7 +9,9 @@ use crate::{CatchErrorExt, Cell, Gettable, MapErrExt, MapOkExt, Mutable, TryMapE
 #[test]
 fn test_try_map_success() {
     let source = Cell::new(10i32);
-    let result = source.try_map(|v| -> Result<String, &str> { Ok(v.to_string()) });
+    let result = source
+        .try_map(|v| -> Result<String, &str> { Ok(v.to_string()) })
+        .materialize();
 
     assert_eq!(result.get(), Ok("10".to_string()));
 
@@ -18,13 +22,15 @@ fn test_try_map_success() {
 #[test]
 fn test_try_map_failure() {
     let source = Cell::new(-5i32);
-    let result = source.try_map(|v| -> Result<u32, &str> {
-        if *v >= 0 {
-            Ok(*v as u32)
-        } else {
-            Err("must be non-negative")
-        }
-    });
+    let result = source
+        .try_map(|v| -> Result<u32, &str> {
+            if *v >= 0 {
+                Ok(*v as u32)
+            } else {
+                Err("must be non-negative")
+            }
+        })
+        .materialize();
 
     assert_eq!(result.get(), Err("must be non-negative"));
 
@@ -184,6 +190,7 @@ fn test_error_operator_chain() {
         .try_map(|v| -> Result<i32, &str> {
             if *v > 0 { Ok(*v) } else { Err("negative") }
         })
+        .materialize()
         .map_ok(|v| v * 2)
         .catch_error(|_| 0);
 

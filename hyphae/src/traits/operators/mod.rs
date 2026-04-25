@@ -80,7 +80,7 @@ pub use take_while::TakeWhileExt;
 pub use tap::TapExt;
 pub use throttle::ThrottleExt;
 pub use timeout::TimeoutExt;
-pub use try_map::TryMapExt;
+pub use try_map::{TryMapExt, TryMapPipeline};
 pub use window::WindowExt;
 pub use with_latest_from::WithLatestFromExt;
 pub use zip::ZipExt;
