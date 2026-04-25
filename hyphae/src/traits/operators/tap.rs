@@ -1,27 +1,93 @@
-use super::{CellValue, MapExt, Watchable};
+//! `tap` operator — pure side effect; chains fuse into one closure on root.
+
+use std::{marker::PhantomData, sync::Arc};
+
+use super::CellValue;
 use crate::{
-    cell::{Cell, CellImmutable},
-    pipeline::Pipeline,
+    pipeline::{Pipeline, PipelineInstall},
+    signal::Signal,
+    subscription::SubscriptionGuard,
+    traits::Gettable,
 };
 
-pub trait TapExt<T>: Watchable<T> {
-    /// Perform a side effect for each value without modifying it.
-    /// Equivalent to `map(|x| { f(x); x.clone() })`.
-    #[track_caller]
-    fn tap(&self, f: impl Fn(&T) + Send + Sync + 'static) -> Cell<T, CellImmutable>
-    where
-        T: CellValue,
-        Self: Clone + Send + Sync + 'static,
-    {
-        self.map(move |x| {
-            f(x);
-            x.clone()
-        })
-        .materialize()
+/// Pipeline node representing `source.tap(f)`. Does not allocate a cell.
+pub struct TapPipeline<S, T, F> {
+    source: S,
+    f: Arc<F>,
+    _t: PhantomData<fn(T)>,
+}
+
+impl<S: Clone, T, F> Clone for TapPipeline<S, T, F> {
+    fn clone(&self) -> Self {
+        Self {
+            source: self.source.clone(),
+            f: Arc::clone(&self.f),
+            _t: PhantomData,
+        }
     }
 }
 
-impl<T, W: Watchable<T>> TapExt<T> for W {}
+impl<S, T, F> Gettable<T> for TapPipeline<S, T, F>
+where
+    S: Gettable<T>,
+    F: Fn(&T),
+{
+    fn get(&self) -> T {
+        let v = self.source.get();
+        (self.f)(&v);
+        v
+    }
+}
+
+impl<S, T, F> PipelineInstall<T> for TapPipeline<S, T, F>
+where
+    S: PipelineInstall<T> + Clone + Send + Sync + 'static,
+    T: CellValue,
+    F: Fn(&T) + Send + Sync + 'static,
+{
+    fn install(
+        &self,
+        callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>,
+    ) -> SubscriptionGuard {
+        let f = Arc::clone(&self.f);
+        let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> = Arc::new(move |signal: &Signal<T>| {
+            if let Signal::Value(v) = signal {
+                (f)(v.as_ref());
+            }
+            callback(signal);
+        });
+        self.source.install(wrapped)
+    }
+}
+
+#[allow(private_bounds)]
+impl<S, T, F> Pipeline<T> for TapPipeline<S, T, F>
+where
+    S: Pipeline<T>,
+    T: CellValue,
+    F: Fn(&T) + Send + Sync + 'static,
+{
+}
+
+/// Extension trait for side-effecting observation.
+pub trait TapExt<T: CellValue>: Pipeline<T> {
+    /// Run `f(&value)` for side effects and forward the value untransformed.
+    ///
+    /// Returns a [`TapPipeline`] node. Materialize to observe.
+    #[track_caller]
+    fn tap<F>(&self, f: F) -> TapPipeline<Self, T, F>
+    where
+        F: Fn(&T) + Send + Sync + 'static,
+    {
+        TapPipeline {
+            source: self.clone(),
+            f: Arc::new(f),
+            _t: PhantomData,
+        }
+    }
+}
+
+impl<T: CellValue, P: Pipeline<T>> TapExt<T> for P {}
 
 #[cfg(test)]
 mod tests {
@@ -31,7 +97,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{Gettable, Mutable};
+    use crate::{Cell, Mutable};
 
     #[test]
     fn test_tap_side_effect() {
@@ -41,7 +107,7 @@ mod tests {
         let se = side_effect.clone();
         let tapped = source.tap(move |v| {
             se.store(*v, Ordering::SeqCst);
-        });
+        }).materialize();
 
         source.set(42);
         assert_eq!(side_effect.load(Ordering::SeqCst), 42);

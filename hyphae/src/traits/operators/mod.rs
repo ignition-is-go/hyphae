@@ -77,7 +77,7 @@ pub use switch_map::SwitchMapExt;
 pub use take::TakeExt;
 pub use take_until::TakeUntilExt;
 pub use take_while::TakeWhileExt;
-pub use tap::TapExt;
+pub use tap::{TapExt, TapPipeline};
 pub use throttle::ThrottleExt;
 pub use timeout::TimeoutExt;
 pub use try_map::{TryMapExt, TryMapPipeline};

@@ -113,3 +113,26 @@ fn try_map_pipeline_produces_result_cell() {
     src.set(-5);
     assert_eq!(parsed.get(), Err("must be positive"));
 }
+
+use std::sync::Arc;
+
+use crate::TapExt;
+
+#[test]
+fn tap_pipeline_observes_without_modifying() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    let src = Cell::new(0u64);
+    let seen = Arc::new(AtomicU64::new(0));
+
+    let seen_clone = Arc::clone(&seen);
+    let mat = src
+        .tap(move |v| {
+            seen_clone.store(*v, Ordering::SeqCst);
+        })
+        .materialize();
+
+    src.set(42);
+    assert_eq!(seen.load(Ordering::SeqCst), 42);
+    assert_eq!(mat.get(), 42);
+}

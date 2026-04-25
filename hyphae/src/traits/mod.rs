@@ -24,9 +24,9 @@ pub use operators::{
     FilterPipeline, FinalizeExt, FirstExt, JoinExt, LastExt, MapErrExt, MapExt, MapOkExt,
     MapPipeline, MergeExt, MergeMapExt,
     PairwiseExt, RetryExt, SampleExt, ScanExt, SkipExt, SkipWhileExt, StateMachineBuilder,
-    StateTransitionExt, SwitchMapExt, TakeExt, TakeUntilExt, TakeWhileExt, TapExt, ThrottleExt,
-    TimeoutExt, TryMapExt, TryMapPipeline, UnwrapOrExt, WindowExt, WithLatestFromExt, ZipExt,
-    join_vec,
+    StateTransitionExt, SwitchMapExt, TakeExt, TakeUntilExt, TakeWhileExt, TapExt, TapPipeline,
+    ThrottleExt, TimeoutExt, TryMapExt, TryMapPipeline, UnwrapOrExt, WindowExt, WithLatestFromExt,
+    ZipExt, join_vec,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use operators::{ParallelCell, ParallelExt};
