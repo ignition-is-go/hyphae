@@ -136,3 +136,45 @@ fn tap_pipeline_observes_without_modifying() {
     assert_eq!(seen.load(Ordering::SeqCst), 42);
     assert_eq!(mat.get(), 42);
 }
+
+use crate::{CatchErrorExt, MapErrExt, MapOkExt, UnwrapOrExt};
+
+#[test]
+fn map_ok_transforms_only_ok() {
+    let src: Cell<Result<i32, String>, _> = Cell::new(Ok(5));
+    let doubled = src.map_ok(|v| v * 2).materialize();
+
+    assert_eq!(doubled.get(), Ok(10));
+    src.set(Err("boom".to_string()));
+    assert_eq!(doubled.get(), Err("boom".to_string()));
+}
+
+#[test]
+fn map_err_transforms_only_err() {
+    let src: Cell<Result<i32, String>, _> = Cell::new(Err("oops".to_string()));
+    let wrapped = src.map_err(|e| format!("wrapped: {}", e)).materialize();
+
+    assert_eq!(wrapped.get(), Err("wrapped: oops".to_string()));
+    src.set(Ok(99));
+    assert_eq!(wrapped.get(), Ok(99));
+}
+
+#[test]
+fn catch_error_recovers() {
+    let src: Cell<Result<i32, String>, _> = Cell::new(Err("bad".to_string()));
+    let recovered = src.catch_error(|_| 0i32).materialize();
+
+    assert_eq!(recovered.get(), 0);
+    src.set(Ok(42));
+    assert_eq!(recovered.get(), 42);
+}
+
+#[test]
+fn unwrap_or_provides_default() {
+    let src: Cell<Result<i32, String>, _> = Cell::new(Err("bad".to_string()));
+    let unwrapped = src.unwrap_or(-1i32).materialize();
+
+    assert_eq!(unwrapped.get(), -1);
+    src.set(Ok(77));
+    assert_eq!(unwrapped.get(), 77);
+}
