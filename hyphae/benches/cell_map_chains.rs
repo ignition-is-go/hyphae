@@ -9,9 +9,14 @@
 //! Each `inner_join` produces tuple values of type `(LV, RV)` so the chain's
 //! value type compounds with depth. We hardcode a few representative depths
 //! rather than loop, so closures' nested types resolve cleanly.
+//!
+//! Post-refactor, `inner_join` consumes `self`, takes the right side by
+//! value, and returns a plan node. The whole chain is materialized once at
+//! the end via `MapQuery::materialize`, replacing the per-stage CellMap
+//! allocation + ArcSwap subscription that the old API forced.
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use hyphae::{CellMap, traits::InnerJoinExt};
+use hyphae::{CellMap, MapQuery, traits::InnerJoinExt};
 
 fn make_source(seed: i64) -> CellMap<String, i64> {
     let m = CellMap::<String, i64>::new();
@@ -26,7 +31,7 @@ fn bench_depth_1(c: &mut Criterion) {
     group.bench_with_input(BenchmarkId::from_parameter(1u32), &1u32, |b, _| {
         let a = make_source(0);
         let b_src = make_source(100);
-        let _chain = a.inner_join(&b_src);
+        let _chain = a.clone().inner_join(b_src.clone()).materialize();
         let mut i = 0i64;
         b.iter(|| {
             i = i.wrapping_add(1);
@@ -42,8 +47,11 @@ fn bench_depth_2(c: &mut Criterion) {
         let a = make_source(0);
         let b_src = make_source(100);
         let c_src = make_source(200);
-        let s1 = a.inner_join(&b_src);
-        let _chain = s1.inner_join(&c_src);
+        let _chain = a
+            .clone()
+            .inner_join(b_src.clone())
+            .inner_join(c_src.clone())
+            .materialize();
         let mut i = 0i64;
         b.iter(|| {
             i = i.wrapping_add(1);
@@ -60,9 +68,12 @@ fn bench_depth_3(c: &mut Criterion) {
         let b_src = make_source(100);
         let c_src = make_source(200);
         let d_src = make_source(300);
-        let s1 = a.inner_join(&b_src);
-        let s2 = s1.inner_join(&c_src);
-        let _chain = s2.inner_join(&d_src);
+        let _chain = a
+            .clone()
+            .inner_join(b_src.clone())
+            .inner_join(c_src.clone())
+            .inner_join(d_src.clone())
+            .materialize();
         let mut i = 0i64;
         b.iter(|| {
             i = i.wrapping_add(1);
@@ -81,11 +92,14 @@ fn bench_depth_5(c: &mut Criterion) {
         let d_src = make_source(300);
         let e_src = make_source(400);
         let f_src = make_source(500);
-        let s1 = a.inner_join(&b_src);
-        let s2 = s1.inner_join(&c_src);
-        let s3 = s2.inner_join(&d_src);
-        let s4 = s3.inner_join(&e_src);
-        let _chain = s4.inner_join(&f_src);
+        let _chain = a
+            .clone()
+            .inner_join(b_src.clone())
+            .inner_join(c_src.clone())
+            .inner_join(d_src.clone())
+            .inner_join(e_src.clone())
+            .inner_join(f_src.clone())
+            .materialize();
         let mut i = 0i64;
         b.iter(|| {
             i = i.wrapping_add(1);
