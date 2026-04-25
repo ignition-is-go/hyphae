@@ -200,3 +200,48 @@ fn multi_left_join_plan_collects_matches_per_key() {
     let (_, right_vals) = mat.get_value(&"l1".to_string()).unwrap();
     assert_eq!(right_vals.len(), 2);
 }
+
+use crate::traits::ProjectCellExt;
+
+#[test]
+fn project_cell_plan_reacts_to_inner_pipeline_emissions() {
+    use crate::{MapExt, pipeline::Pipeline};
+
+    let src = CellMap::<String, i32>::new();
+    let weights = CellMap::<String, i32>::new();
+    weights.insert("a".to_string(), 1);
+    weights.insert("b".to_string(), 1);
+
+    src.insert("a".to_string(), 10);
+    src.insert("b".to_string(), 20);
+
+    let weights_for_mapper = weights.clone();
+    let mat = src
+        .clone()
+        .project_cell(move |key, value| {
+            // For each row, derive a pipeline that pulls the weight from
+            // weights and produces Option<(String, i32)>.
+            let key = key.clone();
+            let value = *value;
+            let weights_inner = weights_for_mapper.clone();
+            weights_inner
+                .get(&key)
+                .map(move |w| Some((key.clone(), value * w.unwrap_or(0))))
+                .materialize()
+        })
+        .materialize();
+
+    assert_eq!(mat.get_value(&"a".to_string()), Some(10));
+
+    // Source row update flows through the per-row Watchable.
+    src.insert("a".to_string(), 99);
+    assert_eq!(mat.get_value(&"a".to_string()), Some(99));
+
+    // Inner cell update also flows through.
+    weights.insert("a".to_string(), 3);
+    assert_eq!(mat.get_value(&"a".to_string()), Some(297));
+
+    // Source row removal drops the output row.
+    src.remove(&"a".to_string());
+    assert_eq!(mat.get_value(&"a".to_string()), None);
+}

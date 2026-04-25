@@ -13,7 +13,7 @@ pub use cell_value::CellValue;
 pub use collections::{
     CountByExt, GroupByExt, InnerJoinByKeyPlan, InnerJoinByPairPlan, InnerJoinExt, LeftJoinExt,
     LeftJoinPlan, LeftSemiJoinExt, LeftSemiJoinPlan, MultiLeftJoinExt, MultiLeftJoinPlan,
-    ProjectCellExt,
+    ProjectCellExt, ProjectCellPlan,
     ProjectManyExt, ProjectManyPlan, ProjectMapExt, ProjectPlan, SelectCellExt, SelectExt,
 };
 pub use dep_node::DepNode;

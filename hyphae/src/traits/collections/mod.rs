@@ -18,7 +18,7 @@ pub use left_join::{LeftJoinExt, LeftJoinPlan};
 pub use left_semi_join::{LeftSemiJoinExt, LeftSemiJoinPlan};
 pub use multi_left_join::{MultiLeftJoinExt, MultiLeftJoinPlan};
 pub use project::{ProjectMapExt, ProjectPlan};
-pub use project_cell::ProjectCellExt;
+pub use project_cell::{ProjectCellExt, ProjectCellPlan};
 pub use project_many::{ProjectManyExt, ProjectManyPlan};
 pub use select::SelectExt;
 pub use select_cell::SelectCellExt;

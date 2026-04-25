@@ -4,6 +4,7 @@ use super::ProjectCellExt;
 use crate::{
     cell::CellImmutable,
     cell_map::CellMap,
+    map_query::MapQuery,
     pipeline::Pipeline,
     traits::{CellValue, Gettable, MapExt, Watchable},
 };
@@ -28,25 +29,28 @@ impl<K, V, M> SelectCellExt<K, V> for CellMap<K, V, M>
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
+    M: Clone + Send + Sync + 'static,
 {
     fn select_cell<W, F>(&self, predicate: F) -> CellMap<K, V, CellImmutable>
     where
         W: Watchable<bool> + Gettable<bool> + Clone + Send + Sync + 'static,
         F: Fn(&K, &V) -> W + Send + Sync + 'static,
     {
-        self.project_cell(move |k, v| {
-            let k = k.clone();
-            let v = v.clone();
-            predicate(&k, &v)
-                .map(move |include| {
-                    if *include {
-                        Some((k.clone(), v.clone()))
-                    } else {
-                        None
-                    }
-                })
-                .materialize()
-        })
+        self.clone()
+            .project_cell(move |k, v| {
+                let k = k.clone();
+                let v = v.clone();
+                predicate(&k, &v)
+                    .map(move |include| {
+                        if *include {
+                            Some((k.clone(), v.clone()))
+                        } else {
+                            None
+                        }
+                    })
+                    .materialize()
+            })
+            .materialize()
     }
 }
 
