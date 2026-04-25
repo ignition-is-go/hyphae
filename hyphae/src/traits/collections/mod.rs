@@ -16,7 +16,7 @@ pub use group_by::GroupByExt;
 pub use inner_join::{InnerJoinByKeyPlan, InnerJoinByPairPlan, InnerJoinExt};
 pub use left_join::{LeftJoinExt, LeftJoinPlan};
 pub use left_semi_join::{LeftSemiJoinExt, LeftSemiJoinPlan};
-pub use multi_left_join::MultiLeftJoinExt;
+pub use multi_left_join::{MultiLeftJoinExt, MultiLeftJoinPlan};
 pub use project::ProjectMapExt;
 pub use project_cell::ProjectCellExt;
 pub use project_many::ProjectManyExt;

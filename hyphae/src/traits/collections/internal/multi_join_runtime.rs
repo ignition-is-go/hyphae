@@ -8,6 +8,7 @@ use std::{
 use crate::{
     cell::{CellImmutable, CellMutable},
     cell_map::{CellMap, MapDiff},
+    subscription::SubscriptionGuard,
     traits::{CellValue, reactive_map::ReactiveMap},
 };
 
@@ -427,6 +428,191 @@ where
     changes
 }
 
+// ── The public entry points ─────────────────────────────────────────────
+
+/// Emit a batch of output diffs through `sink`.
+///
+/// Preserves the original `apply_batch` semantics observed by downstream
+/// subscribers: every non-empty group of output diffs produced from a single
+/// upstream diff is delivered as one `MapDiff::Batch`, even when the group
+/// contains a single change. Empty batches are dropped.
+fn emit_changes<OK, OV>(
+    sink: &crate::map_query::MapDiffSink<OK, OV>,
+    changes: Vec<MapDiff<OK, OV>>,
+) where
+    OK: Hash + Eq + CellValue,
+    OV: CellValue,
+{
+    if changes.is_empty() {
+        return;
+    }
+    sink(&MapDiff::Batch { changes });
+}
+
+/// Install multi-join machinery that drives `sink` instead of allocating an
+/// output map.
+///
+/// Subscribes to both source maps, maintains the multi-join state, and pushes
+/// resulting `MapDiff`s into the sink one at a time. Returns the two
+/// subscription guards (caller owns them — typically attaches them to the
+/// materialized output).
+///
+/// Used by `MapQuery` multi-join plan nodes whose materialization owns a
+/// single output cell map; multiple plan stages share that output rather than
+/// each allocating their own.
+pub(crate) fn install_multi_join_runtime<L, R, JK, OK, OV, FL, FR, FO>(
+    left: &L,
+    right: &R,
+    left_join_keys_fn: FL,
+    right_join_key: FR,
+    compute_rows: FO,
+    sink: crate::map_query::MapDiffSink<OK, OV>,
+) -> Vec<SubscriptionGuard>
+where
+    L: ReactiveMap,
+    R: ReactiveMap,
+    JK: Hash + Eq + CellValue,
+    OK: Hash + Eq + CellValue,
+    OV: CellValue,
+    FL: Fn(&L::Key, &L::Value) -> Vec<JK> + Send + Sync + 'static,
+    FR: Fn(&R::Key, &R::Value) -> JK + Send + Sync + 'static,
+    FO: Fn(&L::Key, &L::Value, &[(R::Key, R::Value)]) -> Vec<(OK, OV)> + Send + Sync + 'static,
+{
+    let state = Arc::new(Mutex::new(MultiJoinState::<
+        L::Key,
+        L::Value,
+        R::Key,
+        R::Value,
+        JK,
+        OK,
+        OV,
+    >::default()));
+    let left_join_keys_fn = Arc::new(left_join_keys_fn);
+    let right_join_key = Arc::new(right_join_key);
+    let compute_rows = Arc::new(compute_rows);
+
+    let left_guard = left.subscribe_diffs_reactive({
+        let state = state.clone();
+        let left_join_keys_fn = left_join_keys_fn.clone();
+        let compute_rows = compute_rows.clone();
+        let sink = sink.clone();
+        move |diff| {
+            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut impacted: HashSet<L::Key> = HashSet::new();
+            apply_left_diff(&mut state, diff, left_join_keys_fn.as_ref(), &mut impacted);
+            let changes = recompute_impacted(&mut state, impacted, compute_rows.as_ref());
+            drop(state);
+            emit_changes(&sink, changes);
+        }
+    });
+
+    let right_guard = right.subscribe_diffs_reactive({
+        let state = state.clone();
+        let right_join_key = right_join_key.clone();
+        let compute_rows = compute_rows.clone();
+        let sink = sink.clone();
+        move |diff| {
+            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut impacted: HashSet<L::Key> = HashSet::new();
+            apply_right_diff(&mut state, diff, right_join_key.as_ref(), &mut impacted);
+            let changes = recompute_impacted(&mut state, impacted, compute_rows.as_ref());
+            drop(state);
+            emit_changes(&sink, changes);
+        }
+    });
+
+    vec![left_guard, right_guard]
+}
+
+/// Like [`install_multi_join_runtime`] but takes [`MapQuery`] inputs instead
+/// of raw [`ReactiveMap`] sources.
+///
+/// Each upstream's diff stream is obtained by recursively calling
+/// [`MapQuery::install`](crate::map_query::MapQuery::install) on it, so chains
+/// of plans compose without intermediate [`CellMap`] allocations.
+pub(crate) fn install_multi_join_runtime_via_query<
+    LK,
+    LV,
+    RK,
+    RV,
+    JK,
+    OK,
+    OV,
+    L,
+    R,
+    FL,
+    FR,
+    FO,
+>(
+    left: L,
+    right: R,
+    left_join_keys_fn: FL,
+    right_join_key: FR,
+    compute_rows: FO,
+    sink: crate::map_query::MapDiffSink<OK, OV>,
+) -> Vec<SubscriptionGuard>
+where
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    OK: Hash + Eq + CellValue,
+    OV: CellValue,
+    L: crate::map_query::MapQuery<LK, LV>,
+    R: crate::map_query::MapQuery<RK, RV>,
+    FL: Fn(&LK, &LV) -> Vec<JK> + Send + Sync + 'static,
+    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    FO: Fn(&LK, &LV, &[(RK, RV)]) -> Vec<(OK, OV)> + Send + Sync + 'static,
+{
+    let state = Arc::new(Mutex::new(MultiJoinState::<
+        LK,
+        LV,
+        RK,
+        RV,
+        JK,
+        OK,
+        OV,
+    >::default()));
+    let left_join_keys_fn = Arc::new(left_join_keys_fn);
+    let right_join_key = Arc::new(right_join_key);
+    let compute_rows = Arc::new(compute_rows);
+
+    let left_sink: crate::map_query::MapDiffSink<LK, LV> = {
+        let state = state.clone();
+        let left_join_keys_fn = left_join_keys_fn.clone();
+        let compute_rows = compute_rows.clone();
+        let sink = sink.clone();
+        Arc::new(move |diff| {
+            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut impacted: HashSet<LK> = HashSet::new();
+            apply_left_diff(&mut state, diff, left_join_keys_fn.as_ref(), &mut impacted);
+            let changes = recompute_impacted(&mut state, impacted, compute_rows.as_ref());
+            drop(state);
+            emit_changes(&sink, changes);
+        })
+    };
+
+    let right_sink: crate::map_query::MapDiffSink<RK, RV> = {
+        let state = state.clone();
+        let right_join_key = right_join_key.clone();
+        let compute_rows = compute_rows.clone();
+        let sink = sink.clone();
+        Arc::new(move |diff| {
+            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut impacted: HashSet<LK> = HashSet::new();
+            apply_right_diff(&mut state, diff, right_join_key.as_ref(), &mut impacted);
+            let changes = recompute_impacted(&mut state, impacted, compute_rows.as_ref());
+            drop(state);
+            emit_changes(&sink, changes);
+        })
+    };
+
+    let mut guards = left.install(left_sink);
+    guards.extend(right.install(right_sink));
+    guards
+}
+
 pub(crate) fn run_multi_join_runtime<L, R, JK, OK, OV, FL, FR, FO>(
     left: &L,
     right: &R,
@@ -446,69 +632,29 @@ where
     FO: Fn(&L::Key, &L::Value, &[(R::Key, R::Value)]) -> Vec<(OK, OV)> + Send + Sync + 'static,
 {
     let output = CellMap::<OK, OV, CellMutable>::new();
+    let weak = Arc::downgrade(&output.inner);
 
-    let state = Arc::new(Mutex::new(MultiJoinState::<
-        L::Key,
-        L::Value,
-        R::Key,
-        R::Value,
-        JK,
-        OK,
-        OV,
-    >::default()));
-    let left_join_keys_fn = Arc::new(left_join_keys_fn);
-    let right_join_key = Arc::new(right_join_key);
-    let compute_rows = Arc::new(compute_rows);
-
-    // Subscribe to left side
-    let output_weak = Arc::downgrade(&output.inner);
-    let left_guard = left.subscribe_diffs_reactive({
-        let state = state.clone();
-        let left_join_keys_fn = left_join_keys_fn.clone();
-        let compute_rows = compute_rows.clone();
-        move |diff| {
-            let Some(inner) = output_weak.upgrade() else {
-                return;
-            };
-            let output = CellMap::<OK, OV, CellMutable> {
-                inner,
-                _marker: PhantomData,
-            };
-
-            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-            let mut impacted: HashSet<L::Key> = HashSet::new();
-            apply_left_diff(&mut state, diff, left_join_keys_fn.as_ref(), &mut impacted);
-            let changes = recompute_impacted(&mut state, impacted, compute_rows.as_ref());
-            drop(state);
-            output.apply_batch(changes);
-        }
+    let sink: crate::map_query::MapDiffSink<OK, OV> = Arc::new(move |diff| {
+        let Some(inner) = weak.upgrade() else {
+            return;
+        };
+        let out = CellMap::<OK, OV, CellMutable> {
+            inner,
+            _marker: PhantomData,
+        };
+        out.apply_diff_owned(diff.clone());
     });
 
-    // Subscribe to right side
-    let output_weak = Arc::downgrade(&output.inner);
-    let right_guard = right.subscribe_diffs_reactive({
-        let state = state.clone();
-        let right_join_key = right_join_key.clone();
-        let compute_rows = compute_rows.clone();
-        move |diff| {
-            let Some(inner) = output_weak.upgrade() else {
-                return;
-            };
-            let output = CellMap::<OK, OV, CellMutable> {
-                inner,
-                _marker: PhantomData,
-            };
-
-            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-            let mut impacted: HashSet<L::Key> = HashSet::new();
-            apply_right_diff(&mut state, diff, right_join_key.as_ref(), &mut impacted);
-            let changes = recompute_impacted(&mut state, impacted, compute_rows.as_ref());
-            drop(state);
-            output.apply_batch(changes);
-        }
-    });
-
-    output.own(left_guard);
-    output.own(right_guard);
+    let guards = install_multi_join_runtime(
+        left,
+        right,
+        left_join_keys_fn,
+        right_join_key,
+        compute_rows,
+        sink,
+    );
+    for g in guards {
+        output.own(g);
+    }
     output.lock()
 }

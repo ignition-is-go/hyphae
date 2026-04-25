@@ -12,7 +12,8 @@ pub mod operators;
 pub use cell_value::CellValue;
 pub use collections::{
     CountByExt, GroupByExt, InnerJoinByKeyPlan, InnerJoinByPairPlan, InnerJoinExt, LeftJoinExt,
-    LeftJoinPlan, LeftSemiJoinExt, LeftSemiJoinPlan, MultiLeftJoinExt, ProjectCellExt,
+    LeftJoinPlan, LeftSemiJoinExt, LeftSemiJoinPlan, MultiLeftJoinExt, MultiLeftJoinPlan,
+    ProjectCellExt,
     ProjectManyExt, ProjectMapExt, SelectCellExt, SelectExt,
 };
 pub use dep_node::DepNode;

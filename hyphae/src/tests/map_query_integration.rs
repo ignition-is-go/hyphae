@@ -145,3 +145,21 @@ fn left_semi_join_plan_keeps_left_with_match() {
     assert_eq!(mat.get_value(&"a".to_string()), Some(1));
     assert_eq!(mat.get_value(&"b".to_string()), None);
 }
+
+use crate::traits::MultiLeftJoinExt;
+
+#[test]
+fn multi_left_join_plan_collects_matches_per_key() {
+    let l = CellMap::<String, Vec<String>>::new();
+    let r = CellMap::<String, (String, i32)>::new();
+    l.insert("l1".into(), vec!["g1".into(), "g2".into()]);
+    r.insert("r1".into(), ("g1".into(), 10));
+    r.insert("r2".into(), ("g2".into(), 20));
+
+    let mat = l
+        .clone()
+        .multi_left_join_by(r.clone(), |_k, v| v.clone(), |_k, v| v.0.clone())
+        .materialize();
+    let (_, right_vals) = mat.get_value(&"l1".to_string()).unwrap();
+    assert_eq!(right_vals.len(), 2);
+}
