@@ -24,6 +24,7 @@ impl<K, V, M> SelectExt<K, V> for CellMap<K, V, M>
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
+    M: Send + Sync + 'static,
 {
     fn select<F>(&self, predicate: F) -> CellMap<K, V, CellImmutable>
     where

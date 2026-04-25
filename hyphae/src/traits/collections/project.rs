@@ -28,6 +28,7 @@ impl<K, V, M> ProjectMapExt<K, V> for CellMap<K, V, M>
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
+    M: Send + Sync + 'static,
 {
     fn project<K2, V2, F>(&self, f: F) -> CellMap<K2, V2, CellImmutable>
     where
