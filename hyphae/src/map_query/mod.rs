@@ -106,7 +106,10 @@ where
                 inner,
                 _marker: PhantomData,
             };
-            out.apply_diff_ref(diff);
+            // One clone here is unavoidable (subscribe_diffs_reactive passes
+            // &diff). apply_diff_owned takes it by value, mutates state, and
+            // emits the diff directly via diffs_cell — no Vec, no Batch wrap.
+            out.apply_diff_owned(diff.clone());
         });
 
         let guards = self.install(sink);

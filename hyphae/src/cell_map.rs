@@ -496,12 +496,79 @@ where
         self.inner.len_cell.set(self.inner.data.len());
     }
 
-    /// Apply a single diff to this map.
+    /// Apply a single owned diff to this map and emit it directly (no Batch wrap).
     ///
-    /// Thin wrapper over [`apply_batch`](Self::apply_batch) used by the
-    /// `MapQuery` materialize sink. Clones `diff` once.
-    pub(crate) fn apply_diff_ref(&self, diff: &MapDiff<K, V>) {
-        self.apply_batch(vec![diff.clone()]);
+    /// Used by the `MapQuery` materialize sink. Avoids the per-diff `Vec`
+    /// allocation and double-clone that would result from routing every
+    /// diff through `apply_batch`. Caller must own the diff (one upstream
+    /// clone is unavoidable since `subscribe_diffs_reactive` passes `&diff`).
+    pub(crate) fn apply_diff_owned(&self, diff: MapDiff<K, V>) {
+        match &diff {
+            MapDiff::Initial { entries } => {
+                let stale_keys: Vec<K> =
+                    self.inner.data.iter().map(|r| r.key().clone()).collect();
+                for key in stale_keys {
+                    self.inner.data.remove(&key);
+                    if let Some(weak) = self.inner.key_cells.get(&key)
+                        && let Some(cell) = weak.upgrade()
+                    {
+                        cell.set(None);
+                    }
+                }
+                for (key, value) in entries {
+                    self.inner.data.insert(key.clone(), value.clone());
+                    if let Some(weak) = self.inner.key_cells.get(key)
+                        && let Some(cell) = weak.upgrade()
+                    {
+                        cell.set(Some(value.clone()));
+                    }
+                }
+            }
+            MapDiff::Insert { key, value } => {
+                self.inner.data.insert(key.clone(), value.clone());
+                if let Some(weak) = self.inner.key_cells.get(key)
+                    && let Some(cell) = weak.upgrade()
+                {
+                    cell.set(Some(value.clone()));
+                }
+            }
+            MapDiff::Remove { key, .. } => {
+                self.inner.data.remove(key);
+                if let Some(weak) = self.inner.key_cells.get(key)
+                    && let Some(cell) = weak.upgrade()
+                {
+                    cell.set(None);
+                }
+            }
+            MapDiff::Update { key, new_value, .. } => {
+                if self
+                    .inner
+                    .data
+                    .get(key)
+                    .is_some_and(|existing| existing.value() == new_value)
+                {
+                    return;
+                }
+                self.inner.data.insert(key.clone(), new_value.clone());
+                if let Some(weak) = self.inner.key_cells.get(key)
+                    && let Some(cell) = weak.upgrade()
+                {
+                    cell.set(Some(new_value.clone()));
+                }
+            }
+            MapDiff::Batch { .. } => {
+                // Batches still go through apply_batch (preserves existing
+                // semantics for callers that emit batched diffs).
+                self.apply_batch(match diff {
+                    MapDiff::Batch { changes } => changes,
+                    _ => unreachable!(),
+                });
+                return;
+            }
+        }
+
+        self.inner.len_cell.set(self.inner.data.len());
+        self.inner.diffs_cell.set(diff);
     }
 
     /// Apply a batch of diffs and emit them as one `MapDiff::Batch`.
