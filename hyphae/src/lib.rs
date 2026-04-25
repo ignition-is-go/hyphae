@@ -14,32 +14,53 @@
 //! ## Quick Start
 //!
 //! ```rust
-//! use hyphae::{Cell, MapExt, Mutable, Pipeline, Watchable, JoinExt, Signal, flat};
+//! use hyphae::{Cell, MapExt, Mutable, Watchable, JoinExt, Pipeline, Signal, flat};
 //!
 //! // Create reactive cells
 //! let x = Cell::new(5).with_name("x");
 //! let y = Cell::new(10).with_name("y");
 //!
-//! // Derive new cells
+//! // Pure operators (map/filter/...) return pipelines — no allocation
+//! // until you materialize.
 //! let doubled = x.map(|val| val * 2).materialize().with_name("doubled");
 //!
-//! // Combine multiple cells with join + flat!
+//! // Combine multiple cells with join + flat!. join is stateful — it
+//! // returns a Cell directly. Chaining .map fuses into the join's
+//! // installed callback when materialized.
 //! let sum = x.join(&y).map(flat!(|a, b| a + b)).materialize().with_name("sum");
 //!
-//! // Subscribe to changes (guard auto-unsubscribes on drop)
+//! // Subscribe on the materialized cell
 //! let _guard = sum.subscribe(|signal| {
 //!     if let Signal::Value(value) = signal {
 //!         println!("Sum changed to: {}", value);
 //!     }
 //! });
 //!
-//! // Updates propagate automatically
-//! x.set(20); // Triggers updates to doubled and sum
+//! x.set(20); // Triggers updates
 //! ```
+//!
+//! ## Pipelines vs Cells
+//!
+//! Pure operators (`map`, `filter`, `try_map`, `tap`, `map_ok`, `map_err`,
+//! `catch_error`, `unwrap_or`) return a [`Pipeline`] — an uncompiled chain
+//! that has not yet been materialized into a [`Cell`]. Chaining pipelines
+//! fuses closures at compile time; the fused closure runs only when a
+//! consumer calls [`Pipeline::materialize`].
+//!
+//! [`Cell`] is the materialized, cached, multicast form. Subscribing requires
+//! a cell — there is no `Pipeline::subscribe` by design, forcing callers to
+//! make the memoization decision explicit.
+//!
+//! Stateful operators (`scan`, `debounce`, `throttle`, `buffer_*`, `pairwise`,
+//! `window`, `distinct*`, `sample`, `delay`, `take`, `first`, `last`, `merge`,
+//! `merge_map`, `switch_map`, `with_latest_from`, `zip`, `join`) return cells
+//! directly — they hold per-subscription state, so memoization is unavoidable.
 //!
 //! ## Combining Cells
 //!
-//! Use `join()` to combine cells, and the `flat!` macro to avoid nested tuple destructuring:
+//! Use `join()` to combine cells, and the `flat!` macro to avoid nested tuple destructuring.
+//! `join` is stateful and returns a [`Cell`] directly, so the chain below is a cell
+//! once `.map(...)` fuses onto it — no `.materialize()` needed for `.get()`:
 //!
 //! ```rust
 //! use hyphae::{Cell, Gettable, JoinExt, MapExt, flat};
