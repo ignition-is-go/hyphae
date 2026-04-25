@@ -1,17 +1,25 @@
-//! Blanket [`MapQuery`] implementation for any [`ReactiveMap`].
+//! [`MapQuery`] and [`MapQueryInstall`] implementations for reactive-map sources.
 //!
-//! Every reactive-map source — [`CellMap`], future `NestedMap`, etc. —
-//! implements [`MapQuery`] via this blanket, so `cell_map.materialize()` is
-//! a no-op identity (returns a locked clone) and any reactive map can be
-//! passed as input to a query operator.
+//! Every reactive-map source — [`CellMap`], [`NestedMap`] — implements
+//! `MapQueryInstall` via a blanket on [`ReactiveMap`] so chained query
+//! operators can subscribe to a generic upstream map. `MapQuery<K, V>` is
+//! implemented explicitly per source type so that `materialize` can be
+//! overridden when a no-op is sound.
 //!
-//! Concrete plan-node structs (`InnerJoinPlan`, ...) are NOT `ReactiveMap`
-//! and provide their own `MapQuery` impls.
+//! For [`CellMap`], `materialize` is a marker flip (same `Arc<inner>`, new
+//! `PhantomData<CellImmutable>`) — there is no point allocating a fresh
+//! cell map + forwarding subscription when the upstream is already a
+//! cached, multicast cell map. Concrete plan-node structs (`InnerJoinPlan`,
+//! ...) provide their own `MapQuery` impls and inherit the default
+//! `materialize`.
 
-use std::hash::Hash;
+use std::{hash::Hash, marker::PhantomData};
 
 use super::{MapDiffSink, MapQuery, MapQueryInstall};
 use crate::{
+    cell::CellImmutable,
+    cell_map::CellMap,
+    nested_map::NestedMap,
     subscription::SubscriptionGuard,
     traits::{CellValue, reactive_map::ReactiveMap},
 };
@@ -42,10 +50,31 @@ where
 }
 
 #[allow(private_bounds)]
-impl<M> MapQuery<M::Key, M::Value> for M
+impl<K, V, M> MapQuery<K, V> for CellMap<K, V, M>
 where
-    M: ReactiveMap + Clone,
-    M::Key: CellValue + Hash + Eq,
-    M::Value: CellValue,
+    K: CellValue + Hash + Eq,
+    V: CellValue,
+    M: Clone + Send + Sync + 'static,
 {
+    /// No-op materialize: the cell map is already a cached, multicast source.
+    /// Just flip the marker to `CellImmutable` and reuse the same `Arc<inner>`.
+    fn materialize(self) -> CellMap<K, V, CellImmutable> {
+        CellMap {
+            inner: self.inner,
+            _marker: PhantomData,
+        }
+    }
+}
+
+#[allow(private_bounds)]
+impl<PK, K, V> MapQuery<K, V> for NestedMap<PK, K, V>
+where
+    PK: CellValue + Hash + Eq,
+    K: CellValue + Hash + Eq,
+    V: CellValue,
+{
+    // Inherits the default materialize. A NestedMap is not a CellMap; it
+    // owns its own diff-stream/state and there is no immutable variant to
+    // short-circuit to, so the default allocate-and-forward strategy is
+    // correct.
 }

@@ -1,10 +1,10 @@
-use super::{super::operators::MapExt, CellValue, Gettable, Watchable};
+use super::{super::operators::MapExt, CellValue, Gettable};
 use crate::{
     cell::{Cell, CellImmutable},
     pipeline::Pipeline,
 };
 
-pub trait WithLatestFromExt<T>: Watchable<T> {
+pub trait WithLatestFromExt<T: CellValue>: Pipeline<T> {
     /// When source emits, pair with the latest value from another cell.
     ///
     /// Unlike `join()` which emits when either source changes, this only
@@ -40,12 +40,12 @@ pub trait WithLatestFromExt<T>: Watchable<T> {
     }
 }
 
-impl<T, W: Watchable<T>> WithLatestFromExt<T> for W {}
+impl<T: CellValue, P: Pipeline<T>> WithLatestFromExt<T> for P {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Mutable, Signal};
+    use crate::{Mutable, Signal, traits::Watchable};
 
     #[test]
     fn test_with_latest_from() {

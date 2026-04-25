@@ -70,7 +70,7 @@ pub(crate) struct CellInner<T> {
 /// A reactive cell that holds a value and notifies subscribers on change.
 pub struct Cell<T, M> {
     pub(crate) inner: Arc<CellInner<T>>,
-    _marker: PhantomData<M>,
+    pub(crate) _marker: PhantomData<M>,
 }
 
 /// A weak reference to a Cell that doesn't prevent it from being dropped.

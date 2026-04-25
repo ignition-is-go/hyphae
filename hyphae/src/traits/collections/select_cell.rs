@@ -12,7 +12,7 @@ use crate::{
     map_query::{MapDiffSink, MapQuery, MapQueryInstall},
     pipeline::Pipeline,
     subscription::SubscriptionGuard,
-    traits::{CellValue, Gettable, MapExt, Watchable, collections::ProjectCellPlan},
+    traits::{CellValue, Gettable, MapExt, collections::ProjectCellPlan},
 };
 
 /// Plan node for [`SelectCellExt::select_cell`].
@@ -28,7 +28,7 @@ where
     S: MapQuery<K, V>,
     K: Hash + Eq + CellValue,
     V: CellValue,
-    W: Watchable<bool> + Gettable<bool> + Clone + Send + Sync + 'static,
+    W: Pipeline<bool> + Gettable<bool> + Clone + Send + Sync + 'static,
     F: Fn(&K, &V) -> W + Send + Sync + 'static,
 {
     pub(crate) source: S,
@@ -41,7 +41,7 @@ where
     S: MapQuery<K, V>,
     K: Hash + Eq + CellValue,
     V: CellValue,
-    W: Watchable<bool> + Gettable<bool> + Clone + Send + Sync + 'static,
+    W: Pipeline<bool> + Gettable<bool> + Clone + Send + Sync + 'static,
     F: Fn(&K, &V) -> W + Send + Sync + 'static,
 {
     fn install(self, sink: MapDiffSink<K, V>) -> Vec<SubscriptionGuard> {
@@ -72,7 +72,7 @@ where
     S: MapQuery<K, V>,
     K: Hash + Eq + CellValue,
     V: CellValue,
-    W: Watchable<bool> + Gettable<bool> + Clone + Send + Sync + 'static,
+    W: Pipeline<bool> + Gettable<bool> + Clone + Send + Sync + 'static,
     F: Fn(&K, &V) -> W + Send + Sync + 'static,
 {
 }
@@ -94,7 +94,7 @@ where
     #[track_caller]
     fn select_cell<W, F>(self, predicate: F) -> SelectCellPlan<Self, K, V, W, F>
     where
-        W: Watchable<bool> + Gettable<bool> + Clone + Send + Sync + 'static,
+        W: Pipeline<bool> + Gettable<bool> + Clone + Send + Sync + 'static,
         F: Fn(&K, &V) -> W + Send + Sync + 'static,
     {
         SelectCellPlan {

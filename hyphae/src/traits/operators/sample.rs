@@ -32,7 +32,7 @@ pub trait SampleExt<T>: Watchable<T> {
     where
         T: CellValue,
         U: CellValue,
-        N: Watchable<U> + Clone + Send + Sync + 'static,
+        N: Pipeline<U> + Clone + Send + Sync + 'static,
         Self: Gettable<T> + Clone + Send + Sync + 'static,
     {
         // When notifier fires, get the current value from source
