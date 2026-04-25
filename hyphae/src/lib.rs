@@ -67,6 +67,7 @@ pub mod cell_set;
 pub mod constructors;
 pub mod metrics;
 pub mod nested_map;
+pub mod pipeline;
 pub mod signal;
 pub mod subscription;
 #[cfg(feature = "trace")]
@@ -93,6 +94,7 @@ pub use constructors::from_iter_with_delay;
 pub use constructors::{IntervalTick, interval, interval_precise, interval_precise_with_elapsed};
 pub use metrics::CellMetrics;
 pub use nested_map::NestedMap;
+pub use pipeline::Pipeline;
 pub use signal::Signal;
 pub use subscription::SubscriptionGuard;
 #[cfg(feature = "trace")]

@@ -5,4 +5,5 @@ mod constructors;
 mod disposal;
 mod error_handling;
 mod metrics;
+mod pipeline_integration;
 mod subscription;
