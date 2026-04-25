@@ -24,13 +24,6 @@ use crate::{
 };
 
 pub(crate) mod cell_impl;
-pub mod filter;
-pub mod map;
-pub mod result_ext;
-pub mod tap;
-pub mod try_map;
-
-// Re-exports are added as each concrete pipeline module is implemented.
 
 /// Crate-private installer hook used by [`Pipeline::materialize`].
 ///
