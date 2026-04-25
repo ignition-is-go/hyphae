@@ -115,3 +115,18 @@ fn inner_join_chain_installs_one_subscription_per_root() {
     a.insert("k".into(), 99);
     assert_eq!(mat.get_value(&"k".to_string()), Some(((99, 2), 3)));
 }
+
+use crate::traits::LeftJoinExt;
+
+#[test]
+fn left_join_plan_keeps_unmatched_left() {
+    let l = CellMap::<String, i32>::new();
+    let r = CellMap::<String, i32>::new();
+    l.insert("a".into(), 1);
+    l.insert("b".into(), 2);
+    r.insert("a".into(), 10);
+
+    let mat = l.clone().left_join(r.clone()).materialize();
+    assert_eq!(mat.get_value(&"a".to_string()), Some((1, vec![10])));
+    assert_eq!(mat.get_value(&"b".to_string()), Some((2, vec![])));
+}
