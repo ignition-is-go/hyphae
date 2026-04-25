@@ -11,8 +11,8 @@ mod project_many;
 mod select;
 mod select_cell;
 
-pub use count_by::CountByExt;
-pub use group_by::GroupByExt;
+pub use count_by::{CountByExt, CountByPlan};
+pub use group_by::{GroupByExt, GroupByPlan};
 pub use inner_join::{InnerJoinByKeyPlan, InnerJoinByPairPlan, InnerJoinExt};
 pub use left_join::{LeftJoinExt, LeftJoinPlan};
 pub use left_semi_join::{LeftSemiJoinExt, LeftSemiJoinPlan};
@@ -20,5 +20,5 @@ pub use multi_left_join::{MultiLeftJoinExt, MultiLeftJoinPlan};
 pub use project::{ProjectMapExt, ProjectPlan};
 pub use project_cell::{ProjectCellExt, ProjectCellPlan};
 pub use project_many::{ProjectManyExt, ProjectManyPlan};
-pub use select::SelectExt;
-pub use select_cell::SelectCellExt;
+pub use select::{SelectExt, SelectPlan};
+pub use select_cell::{SelectCellExt, SelectCellPlan};

@@ -245,3 +245,89 @@ fn project_cell_plan_reacts_to_inner_pipeline_emissions() {
     src.remove(&"a".to_string());
     assert_eq!(mat.get_value(&"a".to_string()), None);
 }
+
+use crate::traits::SelectExt;
+
+#[test]
+fn select_plan_filters_rows() {
+    let src = CellMap::<String, i32>::new();
+    src.insert("a".into(), 5);
+    src.insert("b".into(), -1);
+
+    let mat = src.clone().select(|v| *v > 0).materialize();
+    assert_eq!(mat.get_value(&"a".to_string()), Some(5));
+    assert_eq!(mat.get_value(&"b".to_string()), None);
+
+    src.insert("b".into(), 10);
+    assert_eq!(mat.get_value(&"b".to_string()), Some(10));
+    src.insert("a".into(), -5);
+    assert_eq!(mat.get_value(&"a".to_string()), None);
+}
+
+use crate::traits::CountByExt;
+
+#[test]
+fn count_by_plan_groups_and_counts() {
+    let src = CellMap::<String, i32>::new();
+    src.insert("a".into(), 1);
+    src.insert("b".into(), 1);
+    src.insert("c".into(), 2);
+
+    let mat = src.clone().count_by(|_, v| *v).materialize();
+    assert_eq!(mat.get_value(&1), Some(2));
+    assert_eq!(mat.get_value(&2), Some(1));
+
+    src.insert("d".into(), 1);
+    assert_eq!(mat.get_value(&1), Some(3));
+    src.remove(&"a".into());
+    assert_eq!(mat.get_value(&1), Some(2));
+}
+
+use crate::traits::GroupByExt;
+
+#[test]
+fn group_by_plan_groups_rows() {
+    let src = CellMap::<String, i32>::new();
+    src.insert("a".into(), 1);
+    src.insert("b".into(), 1);
+    src.insert("c".into(), 2);
+
+    let mat = src.clone().group_by(|_, v| *v).materialize();
+    let g1 = mat.get_value(&1).unwrap();
+    assert_eq!(g1.len(), 2);
+    let g2 = mat.get_value(&2).unwrap();
+    assert_eq!(g2, vec![2]);
+}
+
+use crate::traits::SelectCellExt;
+
+#[test]
+fn select_cell_plan_reacts_to_gate() {
+    use crate::{MapExt, pipeline::Pipeline};
+
+    let values = CellMap::<String, i32>::new();
+    let gates = CellMap::<String, bool>::new();
+    values.insert("a".into(), 10);
+    values.insert("b".into(), 20);
+    gates.insert("a".into(), true);
+    gates.insert("b".into(), false);
+
+    let gates_for_pred = gates.clone();
+    let mat = values
+        .clone()
+        .select_cell(move |key, _value| {
+            gates_for_pred
+                .get(key)
+                .map(|v| v.unwrap_or(false))
+                .materialize()
+        })
+        .materialize();
+
+    assert_eq!(mat.get_value(&"a".to_string()), Some(10));
+    assert_eq!(mat.get_value(&"b".to_string()), None);
+
+    gates.insert("b".into(), true);
+    assert_eq!(mat.get_value(&"b".to_string()), Some(20));
+    gates.insert("a".into(), false);
+    assert_eq!(mat.get_value(&"a".to_string()), None);
+}

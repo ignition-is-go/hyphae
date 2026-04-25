@@ -124,18 +124,19 @@ pub use subscription::SubscriptionGuard;
 pub use tracing::{CellTraceSnapshot, hot_cells as hot_traced_cells, log_hot_cells};
 pub use traits::{
     AuditExt, BackpressureExt, BufferCountExt, BufferTimeExt, CatchErrorExt, CellValue, ColdExt,
-    ConcatExt, CountByExt, DebounceExt, DedupedExt, DelayExt, DepNode, DistinctExt,
+    ConcatExt, CountByExt, CountByPlan, DebounceExt, DedupedExt, DelayExt, DepNode, DistinctExt,
     DistinctUntilChangedByExt, FilterExt, FilterPipeline, FinalizeExt, FirstExt, Gettable,
-    GroupByExt, HasForeignKey, IdFor, IdType, InnerJoinByKeyPlan, InnerJoinByPairPlan,
+    GroupByExt, GroupByPlan, HasForeignKey, IdFor, IdType, InnerJoinByKeyPlan, InnerJoinByPairPlan,
     InnerJoinExt, JoinExt, JoinKeyFrom, KeyChange,
     LastExt, LeftJoinExt, LeftJoinPlan, LeftSemiJoinExt, LeftSemiJoinPlan, MapErrExt, MapExt,
     MapOkExt, MapPipeline, MergeExt, MergeMapExt,
     MultiLeftJoinExt, MultiLeftJoinPlan, Mutable, PairwiseExt, ProjectCellExt, ProjectCellPlan,
     ProjectManyExt, ProjectManyPlan, ProjectMapExt, ProjectPlan,
-    ReactiveKeys, ReactiveMap, RetryExt, SampleExt, ScanExt, SelectCellExt, SelectExt, SkipExt,
-    SkipWhileExt, StateMachineBuilder, StateTransitionExt, SwitchMapExt, TakeExt, TakeUntilExt,
-    TakeWhileExt, TapExt, TapPipeline, ThrottleExt, TimeoutExt, TryMapExt, TryMapPipeline,
-    UnwrapOrExt, Watchable, WatchableResult, WindowExt, WithLatestFromExt, ZipExt, join_vec,
+    ReactiveKeys, ReactiveMap, RetryExt, SampleExt, ScanExt, SelectCellExt, SelectCellPlan,
+    SelectExt, SelectPlan, SkipExt, SkipWhileExt, StateMachineBuilder, StateTransitionExt,
+    SwitchMapExt, TakeExt, TakeUntilExt, TakeWhileExt, TapExt, TapPipeline, ThrottleExt,
+    TimeoutExt, TryMapExt, TryMapPipeline, UnwrapOrExt, Watchable, WatchableResult, WindowExt,
+    WithLatestFromExt, ZipExt, join_vec,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use traits::{ParallelCell, ParallelExt};
