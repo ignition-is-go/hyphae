@@ -1,5 +1,8 @@
 use super::{super::operators::MapExt, CellValue, Gettable, Watchable};
-use crate::cell::{Cell, CellImmutable};
+use crate::{
+    cell::{Cell, CellImmutable},
+    pipeline::Pipeline,
+};
 
 pub trait SampleExt<T>: Watchable<T> {
     /// Sample the source whenever the notifier emits.
@@ -34,7 +37,7 @@ pub trait SampleExt<T>: Watchable<T> {
     {
         // When notifier fires, get the current value from source
         let source = self.clone();
-        notifier.map(move |_| source.get())
+        notifier.map(move |_| source.get()).materialize()
     }
 }
 

@@ -785,9 +785,10 @@ where
     /// Get an observable Cell of all keys.
     #[track_caller]
     pub fn keys(&self) -> Cell<Vec<K>, CellImmutable> {
-        use crate::traits::MapExt;
+        use crate::{pipeline::Pipeline, traits::MapExt};
         self.entries()
             .map(|entries| entries.iter().map(|(k, _)| k.clone()).collect())
+            .materialize()
     }
 
     /// Get an observable Cell of the map size.

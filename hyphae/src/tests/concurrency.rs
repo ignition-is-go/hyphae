@@ -6,7 +6,7 @@ use std::{
     thread,
 };
 
-use crate::{Cell, Gettable, MapExt, Mutable, Signal, Watchable};
+use crate::{Cell, Gettable, MapExt, Mutable, Pipeline, Signal, Watchable};
 
 // ============================================================================
 // Concurrent Write Tests
@@ -203,7 +203,7 @@ fn test_concurrent_derived_chains() {
 
     let final_counts: Vec<_> = (0..num_chains)
         .map(|_| {
-            let mapped = source.map(|x| x * 2);
+            let mapped = source.map(|x| x * 2).materialize();
             let count = Arc::new(AtomicU64::new(0));
             let cnt = count.clone();
             let _guard = mapped.subscribe(move |_| {
@@ -339,9 +339,9 @@ fn stress_deep_chain() {
     let source = Cell::new(0u64);
     let depth = 100;
 
-    let mut current = source.map(|x| x + 1);
+    let mut current = source.map(|x| x + 1).materialize();
     for _ in 1..depth {
-        current = current.map(|x| x + 1);
+        current = current.map(|x| x + 1).materialize();
     }
 
     let notification_count = Arc::new(AtomicU64::new(0));
@@ -367,7 +367,7 @@ fn stress_wide_fan_out() {
 
     let counts: Vec<_> = (0..fan_out)
         .map(|i| {
-            let mapped = source.map(move |x| x + i as u64);
+            let mapped = source.map(move |x| x + i as u64).materialize();
             let count = Arc::new(AtomicU64::new(0));
             let cnt = count.clone();
             let guard = mapped.subscribe(move |_| {
@@ -441,7 +441,7 @@ fn test_subscriber_sees_consistent_state() {
     let sum = a.map({
         let b = b.clone();
         move |av| *av + b.get()
-    });
+    }).materialize();
 
     let inconsistencies = Arc::new(AtomicU64::new(0));
     let _inc = inconsistencies.clone();
@@ -638,9 +638,9 @@ fn barrage_rapid_chain_creation_destruction() {
                 for i in 0..iterations {
                     // Create a chain of varying depth
                     let depth = (i % 10) + 1;
-                    let mut chain = source.map(|x| x + 1);
+                    let mut chain = source.map(|x| x + 1).materialize();
                     for _ in 1..depth {
-                        chain = chain.map(|x| x + 1);
+                        chain = chain.map(|x| x + 1).materialize();
                     }
 
                     // Subscribe, trigger some updates, then drop
@@ -717,7 +717,7 @@ fn barrage_interleaved_operators() {
             thread::spawn(move || {
                 let pipeline: Box<dyn Fn() -> u64 + Send> = match thread_id % 5 {
                     0 => {
-                        let p = source.map(|x| x * 2).take(100);
+                        let p = source.map(|x| x * 2).materialize().take(100);
                         let _g = p.subscribe(move |s| {
                             if let Signal::Complete = s {
                                 cc.fetch_add(1, Ordering::Relaxed);
@@ -743,7 +743,7 @@ fn barrage_interleaved_operators() {
                         Box::new(move || p.get())
                     }
                     4 => {
-                        let p = source.map(|x| x + 1).filter(|x| *x > 10).map(|x| x * 2);
+                        let p = source.map(|x| x + 1).materialize().filter(|x| *x > 10).map(|x| x * 2).materialize();
                         Box::new(move || p.get())
                     }
                     _ => unreachable!(),
@@ -882,7 +882,7 @@ fn barrage_notification_storm() {
 #[test]
 fn barrage_mixed_lifetimes() {
     let source = Cell::new(0u64);
-    let long_lived_derived = source.map(|x| x * 2);
+    let long_lived_derived = source.map(|x| x * 2).materialize();
 
     let notification_count = Arc::new(AtomicU64::new(0));
     let nc = notification_count.clone();
@@ -899,7 +899,7 @@ fn barrage_mixed_lifetimes() {
             thread::spawn(move || {
                 for i in 0..iterations {
                     // Create short-lived derived cells
-                    let temp = source.map(|x| x + 1);
+                    let temp = source.map(|x| x + 1).materialize();
                     let count = Arc::new(AtomicU64::new(0));
                     let c = count.clone();
                     let guard = temp.subscribe(move |_| {
@@ -935,7 +935,7 @@ fn barrage_extreme_fan_out() {
     // Create massive fan-out
     let guards: Vec<_> = (0..fan_out)
         .map(|i| {
-            let derived = source.map(move |x| x + i as u64);
+            let derived = source.map(move |x| x + i as u64).materialize();
             let tn = total_notifications.clone();
             derived.subscribe(move |_| {
                 tn.fetch_add(1, Ordering::Relaxed);
@@ -959,11 +959,11 @@ fn barrage_extreme_fan_out() {
 fn barrage_cascade_updates() {
     // Create a chain where each level triggers the next
     let level0 = Cell::new(0u64);
-    let level1 = level0.map(|x| x + 1);
-    let level2 = level1.map(|x| x * 2);
-    let level3 = level2.map(|x| x + 10);
-    let level4 = level3.map(|x| x / 2);
-    let level5 = level4.map(|x| x.wrapping_sub(5));
+    let level1 = level0.map(|x| x + 1).materialize();
+    let level2 = level1.map(|x| x * 2).materialize();
+    let level3 = level2.map(|x| x + 10).materialize();
+    let level4 = level3.map(|x| x / 2).materialize();
+    let level5 = level4.map(|x| x.wrapping_sub(5)).materialize();
 
     let final_count = Arc::new(AtomicU64::new(0));
     let fc = final_count.clone();

@@ -1,5 +1,8 @@
 use super::{super::operators::MapExt, CellValue, Gettable, Watchable};
-use crate::cell::{Cell, CellImmutable};
+use crate::{
+    cell::{Cell, CellImmutable},
+    pipeline::Pipeline,
+};
 
 pub trait WithLatestFromExt<T>: Watchable<T> {
     /// When source emits, pair with the latest value from another cell.
@@ -33,7 +36,7 @@ pub trait WithLatestFromExt<T>: Watchable<T> {
     {
         // When self emits, pair with latest from other
         let other = other.clone();
-        self.map(move |t| (t.clone(), other.get()))
+        self.map(move |t| (t.clone(), other.get())).materialize()
     }
 }
 

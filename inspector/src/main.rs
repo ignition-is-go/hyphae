@@ -24,7 +24,7 @@ use crossterm::{
 use dashmap::DashMap;
 use hyphae::registry::CellSnapshot;
 use hyphae::server::start_server;
-use hyphae::{Cell, CellMap, CellMutable, Gettable, MapExt, Mutable, Signal, Watchable};
+use hyphae::{Cell, CellMap, CellMutable, Gettable, MapExt, Mutable, Pipeline, Signal, Watchable};
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
@@ -309,6 +309,7 @@ fn main() -> anyhow::Result<()> {
                 .count();
             format!("Cells: {}  Roots: {}", total, roots)
         })
+        .materialize()
         .with_name("summary");
 
     let shutdown = Arc::new(AtomicBool::new(false));

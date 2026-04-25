@@ -71,13 +71,13 @@ where
 
 pub trait MapExt<T: CellValue>: Pipeline<T> {
     #[track_caller]
-    fn map<U, F>(self, f: F) -> MapPipeline<Self, T, U, F>
+    fn map<U, F>(&self, f: F) -> MapPipeline<Self, T, U, F>
     where
         U: CellValue,
         F: Fn(&T) -> U + Send + Sync + 'static,
     {
         MapPipeline {
-            source: self,
+            source: self.clone(),
             f: Arc::new(f),
             _types: PhantomData,
         }

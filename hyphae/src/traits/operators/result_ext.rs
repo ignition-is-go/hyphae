@@ -1,5 +1,8 @@
 use super::{CellValue, MapExt, Watchable};
-use crate::cell::{Cell, CellImmutable};
+use crate::{
+    cell::{Cell, CellImmutable},
+    pipeline::Pipeline,
+};
 
 /// Extension trait for transforming Ok values in Result cells.
 pub trait MapOkExt<T, E>: Watchable<Result<T, E>> {
@@ -18,6 +21,7 @@ pub trait MapOkExt<T, E>: Watchable<Result<T, E>> {
             Ok(v) => Ok(f(v)),
             Err(e) => Err(e.clone()),
         })
+        .materialize()
     }
 }
 
@@ -46,6 +50,7 @@ pub trait MapErrExt<T, E>: Watchable<Result<T, E>> {
             Ok(v) => Ok(v.clone()),
             Err(e) => Err(f(e)),
         })
+        .materialize()
     }
 }
 
@@ -73,6 +78,7 @@ pub trait CatchErrorExt<T, E>: Watchable<Result<T, E>> {
             Ok(v) => v.clone(),
             Err(e) => f(e),
         })
+        .materialize()
     }
 }
 
@@ -98,6 +104,7 @@ pub trait UnwrapOrExt<T, E>: Watchable<Result<T, E>> {
             Ok(v) => v.clone(),
             Err(_) => default.clone(),
         })
+        .materialize()
     }
 
     /// Unwrap Ok values, computing a fallback for Err.

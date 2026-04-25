@@ -4,6 +4,7 @@ use super::ProjectCellExt;
 use crate::{
     cell::CellImmutable,
     cell_map::CellMap,
+    pipeline::Pipeline,
     traits::{CellValue, Gettable, MapExt, Watchable},
 };
 
@@ -36,13 +37,15 @@ where
         self.project_cell(move |k, v| {
             let k = k.clone();
             let v = v.clone();
-            predicate(&k, &v).map(move |include| {
-                if *include {
-                    Some((k.clone(), v.clone()))
-                } else {
-                    None
-                }
-            })
+            predicate(&k, &v)
+                .map(move |include| {
+                    if *include {
+                        Some((k.clone(), v.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .materialize()
         })
     }
 }
@@ -52,7 +55,7 @@ mod tests {
     use std::sync::mpsc;
 
     use super::*;
-    use crate::{Cell, MapExt, cell_map::MapDiff};
+    use crate::{Cell, MapExt, cell_map::MapDiff, pipeline::Pipeline};
 
     #[test]
     fn select_cell_reacts_to_predicate_changes() {
@@ -66,7 +69,7 @@ mod tests {
 
         let filtered = values.select_cell({
             let gates = gates.clone();
-            move |key, _value| gates.get(key).map(|v| v.unwrap_or(false))
+            move |key, _value| gates.get(key).map(|v| v.unwrap_or(false)).materialize()
         });
 
         assert_eq!(filtered.entries().get().len(), 1);

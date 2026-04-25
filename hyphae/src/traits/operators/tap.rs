@@ -1,5 +1,8 @@
 use super::{CellValue, MapExt, Watchable};
-use crate::cell::{Cell, CellImmutable};
+use crate::{
+    cell::{Cell, CellImmutable},
+    pipeline::Pipeline,
+};
 
 pub trait TapExt<T>: Watchable<T> {
     /// Perform a side effect for each value without modifying it.
@@ -14,6 +17,7 @@ pub trait TapExt<T>: Watchable<T> {
             f(x);
             x.clone()
         })
+        .materialize()
     }
 }
 

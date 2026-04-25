@@ -183,7 +183,7 @@ mod tests {
     use std::sync::mpsc;
 
     use super::*;
-    use crate::{Cell, MapExt};
+    use crate::{Cell, MapExt, pipeline::Pipeline};
 
     #[test]
     fn map_values_cell_reacts_per_row() {
@@ -199,7 +199,7 @@ mod tests {
             let factors = factors.clone();
             move |key, value| {
                 let v = *value;
-                factors.get(key).map(move |f| v * f.unwrap_or(0))
+                factors.get(key).map(move |f| v * f.unwrap_or(0)).materialize()
             }
         });
 

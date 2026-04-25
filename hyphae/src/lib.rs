@@ -14,17 +14,17 @@
 //! ## Quick Start
 //!
 //! ```rust
-//! use hyphae::{Cell, MapExt, Mutable, Watchable, JoinExt, Signal, flat};
+//! use hyphae::{Cell, MapExt, Mutable, Pipeline, Watchable, JoinExt, Signal, flat};
 //!
 //! // Create reactive cells
 //! let x = Cell::new(5).with_name("x");
 //! let y = Cell::new(10).with_name("y");
 //!
 //! // Derive new cells
-//! let doubled = x.map(|val| val * 2).with_name("doubled");
+//! let doubled = x.map(|val| val * 2).materialize().with_name("doubled");
 //!
 //! // Combine multiple cells with join + flat!
-//! let sum = x.join(&y).map(flat!(|a, b| a + b)).with_name("sum");
+//! let sum = x.join(&y).map(flat!(|a, b| a + b)).materialize().with_name("sum");
 //!
 //! // Subscribe to changes (guard auto-unsubscribes on drop)
 //! let _guard = sum.subscribe(|signal| {

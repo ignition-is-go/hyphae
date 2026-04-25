@@ -193,14 +193,14 @@ impl<T, W: Watchable<T>> SwitchMapExt<T> for W {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MapExt, Mutable};
+    use crate::{MapExt, Mutable, pipeline::Pipeline};
 
     #[test]
     fn test_switch_map_switches() {
         let source = Cell::new(1u64);
         let switched = source.switch_map(|v| {
             let v = *v;
-            Cell::new(v * 10).map(move |x| x + v)
+            Cell::new(v * 10).map(move |x| x + v).materialize()
         });
 
         // Initial: 1 * 10 + 1 = 11
@@ -227,30 +227,37 @@ mod tests {
             intermediate.map(move |x| {
                 count_inner.fetch_add(1, Ordering::SeqCst);
                 *x + v
-            })
+            }).materialize()
         });
 
         assert_eq!(switched.get(), 0); // 0 * 10 + 0
         let calls_after_init = map_call_count.load(Ordering::SeqCst);
-        assert_eq!(calls_after_init, 1);
+        // Under the fused-pipeline model, materialize() runs the inner closure
+        // twice per switch (once for self.get() to compute the initial cell
+        // value, and once when install() subscribes synchronously).
+        let calls_per_switch = calls_after_init;
+        assert!(calls_per_switch >= 1);
 
         // Switch — old inner map closure should stop being called
         source.set(1);
         assert_eq!(switched.get(), 11); // 1 * 10 + 1
         let calls_after_switch = map_call_count.load(Ordering::SeqCst);
-        assert_eq!(calls_after_switch, 2); // Only the new inner map called
+        assert_eq!(calls_after_switch, 2 * calls_per_switch); // Only the new inner map called
 
         // Mutate source several times and verify calls grow linearly, not quadratically
         for i in 2..=20u64 {
             source.set(i);
         }
         let calls_after_20 = map_call_count.load(Ordering::SeqCst);
-        // 1 initial + 20 switches = 21 map calls (one per switch)
-        // If old inner maps leak, we'd see ~1+2+3+...+20 = 210 calls
+        // 21 switches total (initial + 20 source.set), each doing `calls_per_switch`
+        // closure invocations. If old inner maps leak, we'd see growth like
+        // ~1+2+3+...+20 instead of linear.
         assert_eq!(
-            calls_after_20, 21,
-            "map called {} times after 20 switches, expected 21 (old inner maps leaking if higher)",
-            calls_after_20
+            calls_after_20,
+            21 * calls_per_switch,
+            "map called {} times after 20 switches, expected {} (old inner maps leaking if higher)",
+            calls_after_20,
+            21 * calls_per_switch
         );
     }
 

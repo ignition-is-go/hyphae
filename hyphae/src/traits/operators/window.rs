@@ -1,7 +1,10 @@
 use std::collections::VecDeque;
 
 use super::{CellValue, MapExt, ScanExt, Watchable};
-use crate::cell::{Cell, CellImmutable};
+use crate::{
+    cell::{Cell, CellImmutable},
+    pipeline::Pipeline,
+};
 
 pub trait WindowExt<T>: Watchable<T> {
     /// Collect values into a sliding window of size `count`.
@@ -46,6 +49,7 @@ pub trait WindowExt<T>: Watchable<T> {
             new_acc
         })
         .map(|deque| deque.iter().cloned().collect())
+        .materialize()
     }
 }
 
