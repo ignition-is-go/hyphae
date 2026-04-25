@@ -81,19 +81,20 @@ pub trait Pipeline<T: CellValue>:
         let cell = Cell::<T, CellMutable>::new(initial);
         let weak = cell.downgrade();
 
-        // Skip the first re-emit: the pipeline's install() will synchronously
-        // invoke `callback` with the current source value on subscription, and
-        // we already captured it as the initial value. Without this guard the
-        // materialized cell double-notifies with the same value on creation.
-        let first = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        // The pipeline's install() may invoke `callback` synchronously with
+        // the current source value on subscription (operators like `map` do).
+        // We've already seeded the cell with `pipeline.get()`, so re-notifying
+        // with the same value would be redundant. The first-emit skip cannot
+        // live inside this callback: operators like `filter` may legitimately
+        // swallow the synchronous initial emit (the cold value fails the
+        // predicate), and a callback-level guard would then mistakenly skip
+        // the *next* legitimate emission. No external subscriber exists during
+        // construction, so a redundant initial cell.notify is harmless: it
+        // updates the store to the same logical value and notifies zero
+        // subscribers. We therefore forward every signal unconditionally.
         let callback: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
             Arc::new(move |signal: &Signal<T>| {
                 if let Some(c) = weak.upgrade() {
-                    if matches!(signal, Signal::Value(_))
-                        && first.swap(false, std::sync::atomic::Ordering::SeqCst)
-                    {
-                        return;
-                    }
                     c.notify(signal.clone());
                 }
             });

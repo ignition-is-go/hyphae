@@ -54,7 +54,7 @@ pub use deduped::DedupedExt;
 pub use delay::DelayExt;
 pub use distinct::DistinctExt;
 pub use distinct_until_changed_by::DistinctUntilChangedByExt;
-pub use filter::FilterExt;
+pub use filter::{FilterExt, FilterPipeline};
 pub use finalize::FinalizeExt;
 pub use first::FirstExt;
 pub use join::JoinExt;

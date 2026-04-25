@@ -726,7 +726,7 @@ fn barrage_interleaved_operators() {
                         Box::new(move || p.get())
                     }
                     1 => {
-                        let p = source.filter(|x| x % 2 == 0).skip(5);
+                        let p = source.filter(|x| x % 2 == 0).materialize().skip(5);
                         let _g = p.subscribe(move |s| {
                             if let Signal::Value(_) = s {
                                 vc.fetch_add(1, Ordering::Relaxed);

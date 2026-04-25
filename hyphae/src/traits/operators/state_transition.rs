@@ -417,7 +417,7 @@ mod tests {
 
     #[test]
     fn test_state_transition_selective_emit() {
-        use crate::{FilterExt, Gettable};
+        use crate::{FilterExt, Gettable, Pipeline};
 
         let source = Cell::new(State::Idle);
         let sm = source.state_transition(|sm| {
@@ -425,7 +425,7 @@ mod tests {
             sm.on(State::Loading, State::Ready, |_, _| false);
             sm.on(State::Ready, State::Idle, |_, _| false);
         });
-        let triggers = sm.filter(|v| *v);
+        let triggers = sm.filter(|v| *v).materialize();
 
         let emission_count = Arc::new(AtomicU32::new(0));
         let ec = emission_count.clone();

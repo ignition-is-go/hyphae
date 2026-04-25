@@ -103,7 +103,10 @@ async fn main() {
 
     // ── Filter: only positive sine values ───────────────────────────────
 
-    let _positive_sine = sine.filter(|v| *v > 0.0).with_name("positive_sine");
+    let _positive_sine = sine
+        .filter(|v| *v > 0.0)
+        .materialize()
+        .with_name("positive_sine");
 
     // ── Pairwise velocity ───────────────────────────────────────────────
 

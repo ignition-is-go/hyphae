@@ -102,9 +102,10 @@ pub use tracing::{CellTraceSnapshot, hot_cells as hot_traced_cells, log_hot_cell
 pub use traits::{
     AuditExt, BackpressureExt, BufferCountExt, BufferTimeExt, CatchErrorExt, CellValue, ColdExt,
     ConcatExt, CountByExt, DebounceExt, DedupedExt, DelayExt, DepNode, DistinctExt,
-    DistinctUntilChangedByExt, FilterExt, FinalizeExt, FirstExt, Gettable, GroupByExt,
-    HasForeignKey, IdFor, IdType, InnerJoinExt, JoinExt, JoinKeyFrom, KeyChange, LastExt,
-    LeftJoinExt, LeftSemiJoinExt, MapErrExt, MapExt, MapOkExt, MapPipeline, MergeExt, MergeMapExt,
+    DistinctUntilChangedByExt, FilterExt, FilterPipeline, FinalizeExt, FirstExt, Gettable,
+    GroupByExt, HasForeignKey, IdFor, IdType, InnerJoinExt, JoinExt, JoinKeyFrom, KeyChange,
+    LastExt, LeftJoinExt, LeftSemiJoinExt, MapErrExt, MapExt, MapOkExt, MapPipeline, MergeExt,
+    MergeMapExt,
     MultiLeftJoinExt, Mutable, PairwiseExt, ProjectCellExt, ProjectManyExt, ProjectMapExt,
     ReactiveKeys, ReactiveMap, RetryExt, SampleExt, ScanExt, SelectCellExt, SelectExt, SkipExt,
     SkipWhileExt, StateMachineBuilder, StateTransitionExt, SwitchMapExt, TakeExt, TakeUntilExt,

@@ -1,57 +1,98 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+//! `filter` operator — pure predicate; chains fuse into one closure on root.
+//!
+//! # Cold `get()` semantics
+//!
+//! `Pipeline::get()` on a `FilterPipeline` returns the source value
+//! **unfiltered** — there is no prior value to fall back on when the current
+//! source value would fail the predicate. Callers who want "last-seen value
+//! that passed" semantics must materialize: the materialized cell caches the
+//! last emitted value and only updates when the predicate passes.
 
-use super::{CellValue, Watchable};
+use std::{marker::PhantomData, sync::Arc};
+
+use super::CellValue;
 use crate::{
-    cell::{Cell, CellImmutable, CellMutable},
+    pipeline::{Pipeline, PipelineInstall},
     signal::Signal,
+    subscription::SubscriptionGuard,
+    traits::Gettable,
 };
 
-pub trait FilterExt<T>: Watchable<T> {
-    #[track_caller]
-    fn filter(
-        &self,
-        predicate: impl Fn(&T) -> bool + Send + Sync + 'static,
-    ) -> Cell<T, CellImmutable>
-    where
-        T: CellValue,
-        Self: Clone + Send + Sync + 'static,
-    {
-        let cell = Cell::<T, CellMutable>::new(self.get());
-        let cell = if let Some(name) = self.name() {
-            cell.with_name(format!("{}::filter", name))
-        } else {
-            cell
-        };
+/// Pipeline node representing `source.filter(p)`. Does not allocate a cell.
+pub struct FilterPipeline<S, T, P> {
+    source: S,
+    predicate: Arc<P>,
+    _t: PhantomData<fn(T)>,
+}
 
-        let weak = cell.downgrade();
-        let predicate = Arc::new(predicate);
-        let first = Arc::new(AtomicBool::new(true));
-        let guard = self.subscribe(move |signal| {
-            if let Some(c) = weak.upgrade() {
-                match signal {
-                    Signal::Value(value) => {
-                        if first.swap(false, Ordering::SeqCst) {
-                            return;
-                        }
-                        if predicate(value.as_ref()) {
-                            c.notify(signal.clone()); // Arc clone, no deep copy
-                        }
-                    }
-                    Signal::Complete => c.notify(Signal::Complete),
-                    Signal::Error(e) => c.notify(Signal::Error(e.clone())),
-                }
-            }
-        });
-        cell.own(guard);
-
-        cell.lock()
+impl<S: Clone, T, P> Clone for FilterPipeline<S, T, P> {
+    fn clone(&self) -> Self {
+        Self {
+            source: self.source.clone(),
+            predicate: Arc::clone(&self.predicate),
+            _t: PhantomData,
+        }
     }
 }
 
-impl<T, W: Watchable<T>> FilterExt<T> for W {}
+impl<S, T, P> Gettable<T> for FilterPipeline<S, T, P>
+where
+    S: Gettable<T>,
+{
+    fn get(&self) -> T {
+        self.source.get()
+    }
+}
+
+impl<S, T, P> PipelineInstall<T> for FilterPipeline<S, T, P>
+where
+    S: PipelineInstall<T> + Clone + Send + Sync + 'static,
+    T: CellValue,
+    P: Fn(&T) -> bool + Send + Sync + 'static,
+{
+    fn install(
+        &self,
+        callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>,
+    ) -> SubscriptionGuard {
+        let predicate = Arc::clone(&self.predicate);
+        let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
+            Arc::new(move |signal: &Signal<T>| match signal {
+                Signal::Value(v) => {
+                    if (predicate)(v.as_ref()) {
+                        callback(signal);
+                    }
+                }
+                Signal::Complete => callback(&Signal::Complete),
+                Signal::Error(e) => callback(&Signal::Error(e.clone())),
+            });
+        self.source.install(wrapped)
+    }
+}
+
+#[allow(private_bounds)]
+impl<S, T, P> Pipeline<T> for FilterPipeline<S, T, P>
+where
+    S: Pipeline<T>,
+    T: CellValue,
+    P: Fn(&T) -> bool + Send + Sync + 'static,
+{
+}
+
+pub trait FilterExt<T: CellValue>: Pipeline<T> {
+    #[track_caller]
+    fn filter<P>(&self, predicate: P) -> FilterPipeline<Self, T, P>
+    where
+        P: Fn(&T) -> bool + Send + Sync + 'static,
+    {
+        FilterPipeline {
+            source: self.clone(),
+            predicate: Arc::new(predicate),
+            _t: PhantomData,
+        }
+    }
+}
+
+impl<T: CellValue, P: Pipeline<T>> FilterExt<T> for P {}
 
 #[cfg(test)]
 mod tests {
@@ -61,12 +102,12 @@ mod tests {
     };
 
     use super::*;
-    use crate::Mutable;
+    use crate::{Cell, Mutable, traits::Watchable};
 
     #[test]
     fn test_filter_passes_matching() {
         let source = Cell::new(10u64);
-        let evens = source.filter(|x| x % 2 == 0);
+        let evens = source.filter(|x| x % 2 == 0).materialize();
         let received = Arc::new(AtomicU64::new(0));
 
         let r = received.clone();
@@ -85,7 +126,7 @@ mod tests {
     #[test]
     fn test_filter_blocks_non_matching() {
         let source = Cell::new(10u64);
-        let evens = source.filter(|x| x % 2 == 0);
+        let evens = source.filter(|x| x % 2 == 0).materialize();
         let received = Arc::new(AtomicU64::new(0));
 
         let r = received.clone();

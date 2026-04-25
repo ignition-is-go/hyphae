@@ -69,3 +69,35 @@ fn map_pipeline_chains_fuse_into_one_subscription() {
     src.set(5);
     assert_eq!(mat.get(), 22);
 }
+
+use crate::FilterExt;
+
+#[test]
+fn filter_pipeline_passes_matching_and_blocks_non_matching() {
+    let src = Cell::new(10u64);
+    let evens = src.filter(|x| x % 2 == 0).materialize();
+
+    assert_eq!(evens.get(), 10);
+    src.set(3);
+    assert_eq!(evens.get(), 10);
+    src.set(6);
+    assert_eq!(evens.get(), 6);
+}
+
+#[test]
+fn filter_pipeline_fuses_with_map() {
+    use crate::traits::DepNode;
+
+    let src = Cell::new(1i64).with_name("src");
+    let initial_count = DepNode::subscriber_count(&src);
+
+    let out = src
+        .map(|x| x + 10)
+        .filter(|x| x % 2 == 0)
+        .map(|x| x * 100)
+        .materialize();
+
+    assert_eq!(DepNode::subscriber_count(&src), initial_count + 1);
+    src.set(2); // 2+10=12, even, passes
+    assert_eq!(out.get(), 1200);
+}
