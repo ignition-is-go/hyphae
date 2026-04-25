@@ -1,66 +1,100 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+//! `map` operator — pure transform; chains fuse into one closure on root.
 
-use super::{CellValue, Watchable};
+use std::{marker::PhantomData, sync::Arc};
+
+use super::CellValue;
 use crate::{
-    cell::{Cell, CellImmutable, CellMutable},
+    pipeline::{Pipeline, PipelineInstall},
     signal::Signal,
+    subscription::SubscriptionGuard,
+    traits::Gettable,
 };
 
-pub trait MapExt<T>: Watchable<T> {
-    #[track_caller]
-    fn map<U: CellValue>(
-        &self,
-        transform: impl Fn(&T) -> U + Send + Sync + 'static,
-    ) -> Cell<U, CellImmutable>
-    where
-        T: CellValue,
-        Self: Clone + Send + Sync + 'static,
-    {
-        let initial = transform(&self.get());
+/// Pipeline node representing `source.map(f)`. Does not allocate a cell.
+pub struct MapPipeline<S, T, U, F> {
+    source: S,
+    f: Arc<F>,
+    _types: PhantomData<fn(T) -> U>,
+}
 
-        let derived = Cell::<U, CellMutable>::new(initial);
-        let derived = if let Some(parent_name) = self.name() {
-            derived.with_name(format!("{}::map", parent_name))
-        } else {
-            derived
-        };
-
-        let weak = derived.downgrade();
-        let first = Arc::new(AtomicBool::new(true));
-        let guard = self.subscribe(move |signal| {
-            if let Some(d) = weak.upgrade() {
-                match signal {
-                    Signal::Value(value) => {
-                        if first.swap(false, Ordering::SeqCst) {
-                            return;
-                        }
-                        d.notify(Signal::value(transform(value.as_ref())));
-                    }
-                    Signal::Complete => d.notify(Signal::Complete),
-                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
-                }
-            }
-        });
-        derived.own(guard);
-
-        derived.lock()
+impl<S: Clone, T, U, F> Clone for MapPipeline<S, T, U, F> {
+    fn clone(&self) -> Self {
+        Self {
+            source: self.source.clone(),
+            f: Arc::clone(&self.f),
+            _types: PhantomData,
+        }
     }
 }
 
-impl<T, W: Watchable<T>> MapExt<T> for W {}
+impl<S, T, U, F> Gettable<U> for MapPipeline<S, T, U, F>
+where
+    S: Gettable<T>,
+    F: Fn(&T) -> U,
+{
+    fn get(&self) -> U {
+        (self.f)(&self.source.get())
+    }
+}
+
+impl<S, T, U, F> PipelineInstall<U> for MapPipeline<S, T, U, F>
+where
+    S: PipelineInstall<T> + Clone + Send + Sync + 'static,
+    T: CellValue,
+    U: CellValue,
+    F: Fn(&T) -> U + Send + Sync + 'static,
+{
+    fn install(
+        &self,
+        callback: Arc<dyn Fn(&Signal<U>) + Send + Sync>,
+    ) -> SubscriptionGuard {
+        let f = Arc::clone(&self.f);
+        let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
+            Arc::new(move |signal: &Signal<T>| match signal {
+                Signal::Value(v) => callback(&Signal::value((f)(v.as_ref()))),
+                Signal::Complete => callback(&Signal::Complete),
+                Signal::Error(e) => callback(&Signal::Error(e.clone())),
+            });
+        self.source.install(wrapped)
+    }
+}
+
+#[allow(private_bounds)]
+impl<S, T, U, F> Pipeline<U> for MapPipeline<S, T, U, F>
+where
+    S: Pipeline<T>,
+    T: CellValue,
+    U: CellValue,
+    F: Fn(&T) -> U + Send + Sync + 'static,
+{
+}
+
+pub trait MapExt<T: CellValue>: Pipeline<T> {
+    #[track_caller]
+    fn map<U, F>(self, f: F) -> MapPipeline<Self, T, U, F>
+    where
+        U: CellValue,
+        F: Fn(&T) -> U + Send + Sync + 'static,
+    {
+        MapPipeline {
+            source: self,
+            f: Arc::new(f),
+            _types: PhantomData,
+        }
+    }
+}
+
+impl<T: CellValue, P: Pipeline<T>> MapExt<T> for P {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Gettable, Mutable, traits::DepNode};
+    use crate::{Cell, Mutable, traits::DepNode};
 
     #[test]
     fn test_map_transform() {
         let source = Cell::new(5);
-        let doubled = source.map(|x| x * 2);
+        let doubled = source.clone().map(|x| x * 2).materialize();
 
         assert_eq!(doubled.get(), 10);
 
@@ -71,7 +105,12 @@ mod tests {
     #[test]
     fn test_map_chain() {
         let source = Cell::new(1);
-        let result = source.map(|x| x + 1).map(|x| x * 2).map(|x| x + 10);
+        let result = source
+            .clone()
+            .map(|x| x + 1)
+            .map(|x| x * 2)
+            .map(|x| x + 10)
+            .materialize();
 
         assert_eq!(result.get(), 14); // ((1 + 1) * 2) + 10
 
@@ -82,7 +121,7 @@ mod tests {
     #[test]
     fn test_map_type_change() {
         let source = Cell::new(42);
-        let stringified = source.map(|x| format!("value: {}", x));
+        let stringified = source.map(|x| format!("value: {}", x)).materialize();
 
         assert_eq!(stringified.get(), "value: 42");
     }
@@ -90,7 +129,7 @@ mod tests {
     #[test]
     fn test_map_tracks_dependency() {
         let source = Cell::new(1).with_name("source");
-        let mapped = source.map(|x| x * 2);
+        let mapped = source.map(|x| x * 2).materialize();
 
         assert_eq!(mapped.dependency_count(), 1);
         assert!(mapped.has_dependencies());

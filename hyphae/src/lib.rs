@@ -104,7 +104,7 @@ pub use traits::{
     ConcatExt, CountByExt, DebounceExt, DedupedExt, DelayExt, DepNode, DistinctExt,
     DistinctUntilChangedByExt, FilterExt, FinalizeExt, FirstExt, Gettable, GroupByExt,
     HasForeignKey, IdFor, IdType, InnerJoinExt, JoinExt, JoinKeyFrom, KeyChange, LastExt,
-    LeftJoinExt, LeftSemiJoinExt, MapErrExt, MapExt, MapOkExt, MergeExt, MergeMapExt,
+    LeftJoinExt, LeftSemiJoinExt, MapErrExt, MapExt, MapOkExt, MapPipeline, MergeExt, MergeMapExt,
     MultiLeftJoinExt, Mutable, PairwiseExt, ProjectCellExt, ProjectManyExt, ProjectMapExt,
     ReactiveKeys, ReactiveMap, RetryExt, SampleExt, ScanExt, SelectCellExt, SelectExt, SkipExt,
     SkipWhileExt, StateMachineBuilder, StateTransitionExt, SwitchMapExt, TakeExt, TakeUntilExt,

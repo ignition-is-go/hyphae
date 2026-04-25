@@ -1,6 +1,6 @@
 //! Integration tests for Pipeline type.
 
-use crate::{Cell, CellMutable, Gettable, Mutable, Pipeline};
+use crate::{Cell, CellMutable, Gettable, MapExt, Mutable, Pipeline};
 
 #[test]
 fn cell_is_pipeline() {
@@ -24,4 +24,48 @@ fn pipeline_materialize_roundtrip() {
 
     c.set(99);
     assert_eq!(mat.get(), 99);
+}
+
+#[test]
+fn map_pipeline_does_not_allocate_intermediate_cell() {
+    let src = Cell::new(5).with_name("src");
+    let pipeline = src.clone().map(|x| x * 2);
+    // The pipeline is NOT a Cell — Pipeline::get() recomputes from source.
+    let v: i32 = pipeline.get();
+    assert_eq!(v, 10);
+    src.set(7);
+    assert_eq!(pipeline.get(), 14);
+}
+
+#[test]
+fn map_pipeline_materializes_to_subscribable_cell() {
+    let src = Cell::new(3);
+    let doubled = src.clone().map(|x| x * 2).materialize();
+    assert_eq!(doubled.get(), 6);
+    src.set(10);
+    assert_eq!(doubled.get(), 20);
+}
+
+#[test]
+fn map_pipeline_chains_fuse_into_one_subscription() {
+    use crate::traits::DepNode;
+
+    let src = Cell::new(1).with_name("src");
+    let initial_count = DepNode::subscriber_count(&src);
+
+    let mat = src
+        .clone()
+        .map(|x| x + 1)
+        .map(|x| x * 2)
+        .map(|x| x + 10)
+        .materialize();
+
+    assert_eq!(
+        DepNode::subscriber_count(&src),
+        initial_count + 1,
+        "chained pipeline must install exactly one subscription on root"
+    );
+    assert_eq!(mat.get(), 14);
+    src.set(5);
+    assert_eq!(mat.get(), 22);
 }

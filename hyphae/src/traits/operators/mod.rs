@@ -60,7 +60,7 @@ pub use first::FirstExt;
 pub use join::JoinExt;
 pub use join_vec::join_vec;
 pub use last::LastExt;
-pub use map::MapExt;
+pub use map::{MapExt, MapPipeline};
 pub use merge::MergeExt;
 pub use merge_map::MergeMapExt;
 pub use pairwise::PairwiseExt;
