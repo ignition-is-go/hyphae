@@ -25,16 +25,6 @@ pub struct FilterPipeline<S, T, P> {
     _t: PhantomData<fn(T)>,
 }
 
-impl<S: Clone, T, P> Clone for FilterPipeline<S, T, P> {
-    fn clone(&self) -> Self {
-        Self {
-            source: self.source.clone(),
-            predicate: Arc::clone(&self.predicate),
-            _t: PhantomData,
-        }
-    }
-}
-
 impl<S, T, P> Gettable<T> for FilterPipeline<S, T, P>
 where
     S: Gettable<T>,
@@ -46,7 +36,7 @@ where
 
 impl<S, T, P> PipelineInstall<T> for FilterPipeline<S, T, P>
 where
-    S: PipelineInstall<T> + Clone + Send + Sync + 'static,
+    S: PipelineInstall<T> + Send + Sync + 'static,
     T: CellValue,
     P: Fn(&T) -> bool + Send + Sync + 'static,
 {

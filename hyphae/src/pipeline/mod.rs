@@ -66,9 +66,18 @@ pub(crate) trait PipelineInstall<T: CellValue>: Send + Sync + 'static {
 /// The `PipelineInstall<T>` supertrait is `pub(crate)`, which seals
 /// `Pipeline` so external crates cannot define new `Pipeline` types. New
 /// pipeline shapes are added inside this crate.
+///
+/// # Not `Clone`
+///
+/// Pipelines are deliberately not `Clone`. Cloning would duplicate the
+/// composed closure work — each clone's `materialize()` installs an
+/// independent subscription on the root source, and both run the entire
+/// op chain on every emission. To share work across consumers, materialize
+/// once into a [`Cell`] (which IS `Clone` — the clone is an `Arc` bump
+/// referencing the same multicast cache) and then clone the cell.
 #[allow(private_bounds)]
 pub trait Pipeline<T: CellValue>:
-    Gettable<T> + PipelineInstall<T> + Clone + Send + Sync + 'static
+    Gettable<T> + PipelineInstall<T> + Sized + Send + Sync + 'static
 {
     /// Compile the pipeline into a [`Cell`] and install a single subscription
     /// on the root source running the fused closure.

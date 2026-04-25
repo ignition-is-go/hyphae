@@ -238,7 +238,7 @@ fn test_concurrent_derived_chains() {
 #[test]
 fn test_concurrent_map_chain_integrity() {
     let source = Cell::new(0u64);
-    let mapped = source.clone().map(|x| x * 2).map(|x| x + 1);
+    let mapped = source.clone().map(|x| x * 2).map(|x| x + 1).materialize();
 
     let errors = Arc::new(AtomicU64::new(0));
     let checks = Arc::new(AtomicU64::new(0));

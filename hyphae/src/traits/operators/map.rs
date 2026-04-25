@@ -17,16 +17,6 @@ pub struct MapPipeline<S, T, U, F> {
     _types: PhantomData<fn(T) -> U>,
 }
 
-impl<S: Clone, T, U, F> Clone for MapPipeline<S, T, U, F> {
-    fn clone(&self) -> Self {
-        Self {
-            source: self.source.clone(),
-            f: Arc::clone(&self.f),
-            _types: PhantomData,
-        }
-    }
-}
-
 impl<S, T, U, F> Gettable<U> for MapPipeline<S, T, U, F>
 where
     S: Gettable<T>,
@@ -39,7 +29,7 @@ where
 
 impl<S, T, U, F> PipelineInstall<U> for MapPipeline<S, T, U, F>
 where
-    S: PipelineInstall<T> + Clone + Send + Sync + 'static,
+    S: PipelineInstall<T> + Send + Sync + 'static,
     T: CellValue,
     U: CellValue,
     F: Fn(&T) -> U + Send + Sync + 'static,

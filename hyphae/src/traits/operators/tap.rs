@@ -17,16 +17,6 @@ pub struct TapPipeline<S, T, F> {
     _t: PhantomData<fn(T)>,
 }
 
-impl<S: Clone, T, F> Clone for TapPipeline<S, T, F> {
-    fn clone(&self) -> Self {
-        Self {
-            source: self.source.clone(),
-            f: Arc::clone(&self.f),
-            _t: PhantomData,
-        }
-    }
-}
-
 impl<S, T, F> Gettable<T> for TapPipeline<S, T, F>
 where
     S: Gettable<T>,
@@ -41,7 +31,7 @@ where
 
 impl<S, T, F> PipelineInstall<T> for TapPipeline<S, T, F>
 where
-    S: PipelineInstall<T> + Clone + Send + Sync + 'static,
+    S: PipelineInstall<T> + Send + Sync + 'static,
     T: CellValue,
     F: Fn(&T) + Send + Sync + 'static,
 {
