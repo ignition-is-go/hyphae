@@ -24,6 +24,9 @@ use crate::{
 };
 
 pub(crate) mod reactive_map_impl;
+pub mod share;
+
+pub use share::{MapQueryShareExt, SharedMapQuery};
 
 /// Boxed diff sink shape used by every [`MapQueryInstall::install`] hop.
 ///

@@ -24,6 +24,9 @@ use crate::{
 };
 
 pub(crate) mod cell_impl;
+pub mod share;
+
+pub use share::{PipelineShareExt, SharedPipeline};
 
 /// Crate-private installer hook used by [`Pipeline::materialize`].
 ///

@@ -331,3 +331,64 @@ fn select_cell_plan_reacts_to_gate() {
     gates.insert("a".into(), false);
     assert_eq!(mat.get_value(&"a".to_string()), None);
 }
+
+// ─── SharedMapQuery / share() tests ─────────────────────────────────────
+
+use crate::MapQueryShareExt;
+use crate::traits::DepNode;
+
+#[test]
+fn shared_map_query_subscribes_upstream_once() {
+    let src = CellMap::<String, i32>::new();
+    src.insert("a".into(), 1);
+    let initial_subs = DepNode::subscriber_count(&src.diffs());
+
+    let shared = src
+        .clone()
+        .project(|k, v| Some((k.clone(), v * 2)))
+        .share();
+
+    // Cloning the share doesn't subscribe.
+    let s1 = shared.clone();
+    let s2 = shared.clone();
+
+    assert_eq!(DepNode::subscriber_count(&src.diffs()), initial_subs);
+
+    // Materializing each fan-out chain causes ONE upstream subscription.
+    let m1 = s1.materialize();
+    let m2 = s2.materialize();
+
+    assert_eq!(
+        DepNode::subscriber_count(&src.diffs()),
+        initial_subs + 1,
+        "share point should subscribe upstream exactly once even with N consumers"
+    );
+
+    src.insert("b".into(), 5);
+    assert_eq!(m1.get_value(&"a".to_string()), Some(2));
+    assert_eq!(m1.get_value(&"b".to_string()), Some(10));
+    assert_eq!(m2.get_value(&"a".to_string()), Some(2));
+    assert_eq!(m2.get_value(&"b".to_string()), Some(10));
+}
+
+#[test]
+fn shared_map_query_drops_upstream_when_all_subscribers_drop() {
+    let src = CellMap::<String, i32>::new();
+    src.insert("a".into(), 1);
+    let initial_subs = DepNode::subscriber_count(&src.diffs());
+
+    let shared = src
+        .clone()
+        .project(|k, v| Some((k.clone(), v * 2)))
+        .share();
+    let m1 = shared.clone().materialize();
+    let m2 = shared.clone().materialize();
+
+    assert_eq!(DepNode::subscriber_count(&src.diffs()), initial_subs + 1);
+
+    drop(m1);
+    drop(m2);
+    drop(shared);
+    // After all subscribers gone, share-point's upstream subscription is released.
+    assert_eq!(DepNode::subscriber_count(&src.diffs()), initial_subs);
+}

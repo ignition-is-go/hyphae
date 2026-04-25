@@ -181,3 +181,89 @@ fn unwrap_or_provides_default() {
     src.set(Ok(77));
     assert_eq!(unwrapped.get(), 77);
 }
+
+// ─── SharedPipeline / share() tests ─────────────────────────────────────
+
+use crate::PipelineShareExt;
+
+#[test]
+fn shared_pipeline_subscribes_upstream_once() {
+    let src = Cell::new(0u64).with_name("src");
+    let initial_subs = crate::traits::DepNode::subscriber_count(&src);
+
+    let shared = src.clone().map(|x| x * 2).share();
+
+    // Cloning the share doesn't subscribe.
+    let s1 = shared.clone();
+    let s2 = shared.clone();
+
+    assert_eq!(crate::traits::DepNode::subscriber_count(&src), initial_subs);
+
+    // Materializing each fan-out chain causes ONE upstream subscription on src.
+    let m1 = s1.map(|x| x + 1).materialize();
+    let m2 = s2.map(|x| x + 10).materialize();
+
+    assert_eq!(
+        crate::traits::DepNode::subscriber_count(&src),
+        initial_subs + 1,
+        "share point should subscribe upstream exactly once even with N consumers"
+    );
+
+    src.set(5);
+    assert_eq!(m1.get(), 5 * 2 + 1);
+    assert_eq!(m2.get(), 5 * 2 + 10);
+}
+
+#[test]
+fn shared_pipeline_drops_upstream_when_all_subscribers_drop() {
+    let src = Cell::new(0u64).with_name("src");
+    let initial_subs = crate::traits::DepNode::subscriber_count(&src);
+
+    let shared = src.clone().map(|x| x * 2).share();
+    let m1 = shared.clone().materialize();
+    let m2 = shared.clone().materialize();
+
+    assert_eq!(crate::traits::DepNode::subscriber_count(&src), initial_subs + 1);
+
+    drop(m1);
+    drop(m2);
+    drop(shared);
+    // After all subscribers gone, share-point's upstream subscription is released.
+    assert_eq!(crate::traits::DepNode::subscriber_count(&src), initial_subs);
+}
+
+#[test]
+fn shared_pipeline_fans_out_to_many_consumers() {
+    use crate::Watchable;
+    use std::sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc as StdArc,
+    };
+
+    let src = Cell::new(1u64);
+    let shared = src.clone().map(|x| x * 10).share();
+
+    // Five direct subscribers via materialize -> subscribe.
+    let counters: Vec<StdArc<AtomicU64>> =
+        (0..5).map(|_| StdArc::new(AtomicU64::new(0))).collect();
+    let mats: Vec<_> = (0..5).map(|_| shared.clone().materialize()).collect();
+    let _guards: Vec<_> = mats
+        .iter()
+        .zip(counters.iter())
+        .map(|(m, c)| {
+            let c = StdArc::clone(c);
+            m.subscribe(move |sig| {
+                if let crate::Signal::Value(v) = sig {
+                    c.store(**v, Ordering::SeqCst);
+                }
+            })
+        })
+        .collect();
+
+    src.set(7);
+
+    // Every subscriber sees 7 * 10.
+    for c in &counters {
+        assert_eq!(c.load(Ordering::SeqCst), 70);
+    }
+}

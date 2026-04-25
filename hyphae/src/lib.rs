@@ -157,9 +157,9 @@ pub use constructors::from_iter_with_delay;
 #[cfg(not(target_arch = "wasm32"))]
 pub use constructors::{IntervalTick, interval, interval_precise, interval_precise_with_elapsed};
 pub use metrics::CellMetrics;
-pub use map_query::MapQuery;
+pub use map_query::{MapQuery, MapQueryShareExt, SharedMapQuery};
 pub use nested_map::NestedMap;
-pub use pipeline::Pipeline;
+pub use pipeline::{Pipeline, PipelineShareExt, SharedPipeline};
 pub use signal::Signal;
 pub use subscription::SubscriptionGuard;
 #[cfg(feature = "trace")]
