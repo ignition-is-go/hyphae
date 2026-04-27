@@ -61,3 +61,7 @@ harness = false
 [[bench]]
 name = "cell_map_chains"
 harness = false
+
+[[bench]]
+name = "view_chains"
+harness = false
