@@ -31,6 +31,11 @@ struct Instance {
     id: Arc<str>,
     lane_id: Arc<str>,
     track_id: Arc<str>,
+    /// Monotonic per-update sequence counter so each iter produces a
+    /// structurally distinct value — prevents `apply_diff_owned`'s no-op
+    /// short-circuit from triggering when a benchmark's modular cycle
+    /// happens to align across fields.
+    seq: u64,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -51,6 +56,7 @@ struct File {
     id: Arc<str>,
     asset_path: Arc<str>,
     size: u64,
+    seq: u64,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -72,6 +78,7 @@ struct Target {
     id: Arc<str>,
     parent_id: Option<Arc<str>>,
     name: Arc<str>,
+    seq: u64,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -79,6 +86,7 @@ struct Action {
     id: Arc<str>,
     target_id: Arc<str>,
     name: Arc<str>,
+    seq: u64,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -157,6 +165,7 @@ fn populate_value_track_sources(n: usize) -> (CellMap<Arc<str>, Arc<Instance>>, 
                 id: id.clone(),
                 lane_id: lane_id.clone(),
                 track_id: s("track:", i % 16),
+                seq: 0,
             }),
         );
     }
@@ -201,6 +210,7 @@ fn populate_assets_sources(
                 id: id.clone(),
                 asset_path,
                 size: 1024 * (i as u64 + 1),
+                seq: 0,
             }),
         );
     }
@@ -251,6 +261,7 @@ fn populate_session_sources(
                 id: id.clone(),
                 parent_id: if i > 0 { Some(s("tgt:", i / 4)) } else { None },
                 name: s("Target ", i),
+                seq: 0,
             }),
         );
     }
@@ -263,6 +274,7 @@ fn populate_session_sources(
                 id: id.clone(),
                 target_id: s("tgt:", i % n_targets),
                 name: s("act ", i),
+                seq: 0,
             }),
         );
     }
@@ -347,6 +359,7 @@ fn bench_mid_view(c: &mut Criterion) {
                         id,
                         lane_id: s("lane:", (tick as usize) % (n / 4).max(1)),
                         track_id: s("track:", black_box(tick) as usize % 16),
+                        seq: tick,
                     }),
                 );
             });
@@ -420,6 +433,7 @@ fn bench_assets_view(c: &mut Criterion) {
                         id,
                         asset_path: s("asset:", (tick as usize) % (n / 4).max(1)),
                         size: black_box(tick),
+                        seq: tick,
                     }),
                 );
             });
@@ -502,6 +516,7 @@ fn bench_deep_view(c: &mut Criterion) {
                         id,
                         target_id: s("tgt:", (tick as usize) % n),
                         name: s("act ", black_box(tick) as usize),
+                        seq: tick,
                     }),
                 );
             });
@@ -543,6 +558,7 @@ fn bench_fan_out(c: &mut Criterion) {
                         id,
                         lane_id: s("lane:", (tick as usize) % (n / 4).max(1)),
                         track_id: s("track:", black_box(tick) as usize % 16),
+                        seq: tick,
                     }),
                 );
             });
@@ -580,6 +596,7 @@ fn bench_batch_mutation(c: &mut Criterion) {
                                         "track:",
                                         black_box(i + tick as usize) % 16,
                                     ),
+                                    seq: tick,
                                 }),
                             )
                         })
@@ -618,6 +635,7 @@ fn bench_select_project(c: &mut Criterion) {
                         id,
                         parent_id: if i > 0 { Some(s("tgt:", i / 4)) } else { None },
                         name: s("Target ", black_box(tick) as usize),
+                        seq: tick,
                     }),
                 );
             });
