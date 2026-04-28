@@ -10,7 +10,7 @@ use std::{hash::Hash, marker::PhantomData, sync::Arc};
 use super::ProjectCellExt;
 use crate::{
     map_query::{MapDiffSink, MapQuery, MapQueryInstall},
-    pipeline::Pipeline,
+    pipeline::{MaterializeDefinite, Pipeline},
     subscription::SubscriptionGuard,
     traits::{CellValue, Gettable, MapExt, collections::ProjectCellPlan},
 };
@@ -23,12 +23,13 @@ use crate::{
 ///
 /// Not [`Clone`]: cloning a plan would silently duplicate per-row
 /// subscription work; share by materializing once.
+#[allow(private_bounds)]
 pub struct SelectCellPlan<S, K, V, W, F>
 where
     S: MapQuery<K, V>,
     K: Hash + Eq + CellValue,
     V: CellValue,
-    W: Pipeline<bool> + Gettable<bool> + Clone + Send + Sync + 'static,
+    W: Pipeline<bool> + crate::pipeline::PipelineSeed<bool> + Gettable<bool> + Clone + Send + Sync + 'static,
     F: Fn(&K, &V) -> W + Send + Sync + 'static,
 {
     pub(crate) source: S,
@@ -41,7 +42,7 @@ where
     S: MapQuery<K, V>,
     K: Hash + Eq + CellValue,
     V: CellValue,
-    W: Pipeline<bool> + Gettable<bool> + Clone + Send + Sync + 'static,
+    W: Pipeline<bool> + crate::pipeline::PipelineSeed<bool> + Gettable<bool> + Clone + Send + Sync + 'static,
     F: Fn(&K, &V) -> W + Send + Sync + 'static,
 {
     fn install(self, sink: MapDiffSink<K, V>) -> Vec<SubscriptionGuard> {
@@ -72,7 +73,7 @@ where
     S: MapQuery<K, V>,
     K: Hash + Eq + CellValue,
     V: CellValue,
-    W: Pipeline<bool> + Gettable<bool> + Clone + Send + Sync + 'static,
+    W: Pipeline<bool> + crate::pipeline::PipelineSeed<bool> + Gettable<bool> + Clone + Send + Sync + 'static,
     F: Fn(&K, &V) -> W + Send + Sync + 'static,
 {
 }
@@ -92,9 +93,10 @@ where
     /// `predicate(&key, &value)` returns a watchable bool; the row is
     /// included when true and excluded when false.
     #[track_caller]
+    #[allow(private_bounds)]
     fn select_cell<W, F>(self, predicate: F) -> SelectCellPlan<Self, K, V, W, F>
     where
-        W: Pipeline<bool> + Gettable<bool> + Clone + Send + Sync + 'static,
+        W: Pipeline<bool> + crate::pipeline::PipelineSeed<bool> + Gettable<bool> + Clone + Send + Sync + 'static,
         F: Fn(&K, &V) -> W + Send + Sync + 'static,
     {
         SelectCellPlan {
@@ -118,7 +120,7 @@ mod tests {
     use std::sync::mpsc;
 
     use super::*;
-    use crate::{Cell, CellMap, MapExt, cell_map::MapDiff, pipeline::Pipeline};
+    use crate::{Cell, CellMap, MapExt, cell_map::MapDiff};
 
     #[test]
     fn select_cell_reacts_to_predicate_changes() {

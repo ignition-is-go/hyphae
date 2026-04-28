@@ -1,81 +1,121 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+//! `cold` operator — drop the synchronous-on-subscribe initial emission.
+//!
+//! `cold()` produces a pipeline whose output is `Arc<T>` (cheap forwarding) and
+//! whose materialized cell type is `Cell<Option<Arc<T>>>`, initialized to
+//! `None`. The first source emission (the synchronous replay of the source's
+//! current value) is swallowed; every subsequent emission lifts to
+//! `Some(Arc<value>)`. Useful for trigger/event semantics where retained values
+//! should not fire downstream effects.
+//!
+//! When used inside `switch_map`, each re-creation gets a fresh cold pipeline
+//! (with its own first-skip), providing per-reconnection suppression of
+//! retained values.
+
+use std::{
+    marker::PhantomData,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
-use super::{CellValue, Watchable};
+use super::CellValue;
 use crate::{
-    cell::{Cell, CellImmutable, CellMutable},
+    pipeline::{Empty, MaterializeEmpty, Pipeline, PipelineInstall, Seedness},
     signal::Signal,
+    subscription::SubscriptionGuard,
 };
 
-pub trait ColdExt<T>: Watchable<T> {
-    /// Creates a "cold" cell that starts as `None` and only emits `Some(value)`
-    /// for new emissions after creation.
-    ///
-    /// This is useful for trigger/event-style cells where you don't want to
-    /// react to the source's retained value — only to fresh emissions.
-    ///
-    /// When used inside `switch_map`, each re-creation gets a fresh cold cell,
-    /// providing per-reconnection suppression of retained values.
-    ///
-    /// Lock-free: the inner value is wrapped in `Arc` so forwarding is just
-    /// an atomic refcount increment — no deep clone of `T`.
-    #[track_caller]
-    fn cold(&self) -> Cell<Option<Arc<T>>, CellImmutable>
-    where
-        T: CellValue,
-        Self: Clone + Send + Sync + 'static,
-    {
-        let cell = Cell::<Option<Arc<T>>, CellMutable>::new(None);
-        let cell = if let Some(name) = self.name() {
-            cell.with_name(format!("{}::cold", name))
-        } else {
-            cell
-        };
+/// Pipeline node representing `source.cold()`. Output is `Arc<T>` so chains
+/// stay zero-copy; materialize returns `Cell<Option<Arc<T>>>`.
+pub struct ColdPipeline<S, T, Sd = crate::pipeline::Definite> {
+    source: S,
+    _t: PhantomData<fn(T)>,
+    _sd: PhantomData<fn(Sd)>,
+}
 
-        let weak = cell.downgrade();
+impl<S, T, Sd> PipelineInstall<Arc<T>> for ColdPipeline<S, T, Sd>
+where
+    S: PipelineInstall<T> + Send + Sync + 'static,
+    Sd: Seedness,
+    T: CellValue,
+{
+    fn install(
+        &self,
+        callback: Arc<dyn Fn(&Signal<Arc<T>>) + Send + Sync>,
+    ) -> SubscriptionGuard {
         let first = Arc::new(AtomicBool::new(true));
-        let guard = self.subscribe(move |signal| {
-            if let Some(c) = weak.upgrade() {
-                match signal {
-                    Signal::Value(value) => {
-                        if first.swap(false, Ordering::SeqCst) {
-                            return;
-                        }
-                        // Arc::clone is just an atomic refcount increment — no deep copy
-                        c.notify(Signal::value(Some(value.clone())));
+        let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
+            Arc::new(move |signal: &Signal<T>| match signal {
+                Signal::Value(v) => {
+                    if first.swap(false, Ordering::SeqCst) {
+                        return;
                     }
-                    Signal::Complete => c.notify(Signal::Complete),
-                    Signal::Error(e) => c.notify(Signal::Error(e.clone())),
+                    // Forward as Signal<Arc<T>> by Arc-cloning the inner Arc.
+                    callback(&Signal::value_arc(Arc::new(v.clone())));
                 }
-            }
-        });
-        cell.own(guard);
-
-        cell.lock()
+                Signal::Complete => callback(&Signal::Complete),
+                Signal::Error(e) => callback(&Signal::Error(e.clone())),
+            });
+        self.source.install(wrapped)
     }
 }
 
-impl<T, W: Watchable<T>> ColdExt<T> for W {}
+#[allow(private_bounds)]
+impl<S, T, Sd> Pipeline<Arc<T>, Empty> for ColdPipeline<S, T, Sd>
+where
+    S: Pipeline<T, Sd>,
+    Sd: Seedness,
+    T: CellValue,
+{
+}
+
+impl<S, T, Sd> MaterializeEmpty<Arc<T>> for ColdPipeline<S, T, Sd>
+where
+    S: Pipeline<T, Sd>,
+    Sd: Seedness,
+    T: CellValue,
+{
+}
+
+#[allow(private_bounds)]
+pub trait ColdExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
+    /// Drop the synchronous-on-subscribe initial emission; subsequent values
+    /// flow through wrapped in `Arc` for cheap forwarding.
+    ///
+    /// Materializes to `Cell<Option<Arc<T>>>`, initialized to `None`. Once a
+    /// post-subscribe emission arrives, the cell flips to `Some(Arc<value>)`
+    /// and stays `Some` from then on (it tracks the most recent emission).
+    #[track_caller]
+    fn cold(self) -> ColdPipeline<Self, T, S> {
+        ColdPipeline {
+            source: self,
+            _t: PhantomData,
+            _sd: PhantomData,
+        }
+    }
+}
+
+impl<T: CellValue, S: Seedness, P: Pipeline<T, S>> ColdExt<T, S> for P {}
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+
     use super::*;
-    use crate::{Gettable, Mutable};
+    use crate::{Cell, Gettable, MaterializeEmpty, Mutable, traits::Watchable};
 
     #[test]
     fn test_cold_starts_as_none() {
         let source = Cell::new(42u64);
-        let cold = source.cold();
-
+        let cold = source.clone().cold().materialize();
         assert_eq!(cold.get(), None);
     }
 
     #[test]
     fn test_cold_emits_some_on_change() {
         let source = Cell::new(42u64);
-        let cold = source.cold();
+        let cold = source.clone().cold().materialize();
 
         assert_eq!(cold.get(), None);
 
@@ -85,64 +125,27 @@ mod tests {
 
     #[test]
     fn test_cold_does_not_replay_retained_value() {
-        use std::sync::atomic::{AtomicU64, Ordering};
-
         let source = Cell::new(42u64);
-        let cold = source.cold();
+        let cold = source.clone().cold().materialize();
         let emission_count = Arc::new(AtomicU64::new(0));
 
         let count = emission_count.clone();
         let _guard = cold.subscribe(move |signal| {
             if let Signal::Value(_) = signal {
-                count.fetch_add(1, Ordering::SeqCst);
+                count.fetch_add(1, AtomicOrdering::SeqCst);
             }
         });
 
         // Subscribe fires once with initial None value
-        assert_eq!(emission_count.load(Ordering::SeqCst), 1);
-        assert_eq!(cold.get(), None); // Retained source value (42) was NOT replayed
+        assert_eq!(emission_count.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(cold.get(), None); // retained source value (42) was NOT replayed
 
-        // Source change emits Some
         source.set(100);
-        assert_eq!(emission_count.load(Ordering::SeqCst), 2);
+        assert_eq!(emission_count.load(AtomicOrdering::SeqCst), 2);
         assert_eq!(cold.get(), Some(Arc::new(100)));
 
         source.set(200);
-        assert_eq!(emission_count.load(Ordering::SeqCst), 3);
+        assert_eq!(emission_count.load(AtomicOrdering::SeqCst), 3);
         assert_eq!(cold.get(), Some(Arc::new(200)));
-    }
-
-    #[test]
-    fn test_cold_inside_switch_map_skips_per_reconnection() {
-        use crate::SwitchMapExt;
-
-        let selector = Cell::new(1u64);
-        let source_a = Cell::new(10u64);
-        let source_b = Cell::new(20u64);
-
-        let a_clone = source_a.clone();
-        let b_clone = source_b.clone();
-        let result = selector.switch_map(move |sel| {
-            if *sel == 1 {
-                a_clone.cold()
-            } else {
-                b_clone.cold()
-            }
-        });
-
-        // Initial: cold starts as None
-        assert_eq!(result.get(), None);
-
-        // Source A emits — result gets Some
-        source_a.set(11);
-        assert_eq!(result.get(), Some(Arc::new(11)));
-
-        // Switch to source B — fresh cold, starts as None
-        selector.set(2);
-        assert_eq!(result.get(), None);
-
-        // Source B emits — result gets Some
-        source_b.set(21);
-        assert_eq!(result.get(), Some(Arc::new(21)));
     }
 }

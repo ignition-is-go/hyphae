@@ -1,86 +1,154 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+//! `distinct_until_changed_by` operator — predicate-gated dedupe.
+//!
+//! Emits when the user-supplied comparator returns `false` (values differ).
+//! First emission has no prior value to compare against, so it always passes —
+//! the operator is therefore [`Definite`] when its source is `Definite`.
+
+use std::{marker::PhantomData, sync::Arc};
 
 use arc_swap::ArcSwap;
 
-use super::{CellValue, Watchable};
+use super::CellValue;
 use crate::{
-    cell::{Cell, CellImmutable, CellMutable},
+    pipeline::{
+        Definite, Empty, MaterializeDefinite, MaterializeEmpty, Pipeline, PipelineInstall,
+        PipelineSeed, Seedness,
+    },
     signal::Signal,
+    subscription::SubscriptionGuard,
 };
 
-pub trait DistinctUntilChangedByExt<T>: Watchable<T> {
+/// Pipeline node representing `source.distinct_until_changed_by(cmp)`.
+pub struct DistinctUntilChangedByPipeline<S, T, F, Sd = Definite> {
+    source: S,
+    comparator: Arc<F>,
+    _t: PhantomData<fn(T)>,
+    _sd: PhantomData<fn(Sd)>,
+}
+
+impl<S, T, F, Sd> PipelineInstall<T> for DistinctUntilChangedByPipeline<S, T, F, Sd>
+where
+    S: PipelineInstall<T> + PipelineSeed<T> + Send + Sync + 'static,
+    Sd: Seedness,
+    T: CellValue,
+    F: Fn(&T, &T) -> bool + Send + Sync + 'static,
+{
+    fn install(
+        &self,
+        callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>,
+    ) -> SubscriptionGuard {
+        let comparator = Arc::clone(&self.comparator);
+        // Seed last_value with source.seed() so the synchronous initial emit
+        // compares equal and is naturally swallowed (the materialized cell is
+        // already seeded with the same value via PipelineSeed).
+        let last_value: Arc<ArcSwap<T>> = Arc::new(ArcSwap::from_pointee(self.source.seed()));
+        let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> = Arc::new(move |signal: &Signal<T>| {
+            match signal {
+                Signal::Value(v) => {
+                    let last = last_value.load();
+                    if !(comparator)(v.as_ref(), last.as_ref()) {
+                        last_value.store(v.clone());
+                        callback(signal);
+                    }
+                }
+                Signal::Complete => callback(&Signal::Complete),
+                Signal::Error(e) => callback(&Signal::Error(e.clone())),
+            }
+        });
+        self.source.install(wrapped)
+    }
+}
+
+impl<S, T, F> PipelineSeed<T> for DistinctUntilChangedByPipeline<S, T, F, Definite>
+where
+    S: PipelineSeed<T>,
+    T: CellValue,
+    F: Fn(&T, &T) -> bool + Send + Sync + 'static,
+{
+    fn seed(&self) -> T {
+        self.source.seed()
+    }
+}
+
+#[allow(private_bounds)]
+impl<S, T, F, Sd> Pipeline<T, Sd> for DistinctUntilChangedByPipeline<S, T, F, Sd>
+where
+    S: Pipeline<T, Sd> + PipelineSeed<T>,
+    Sd: Seedness,
+    T: CellValue,
+    F: Fn(&T, &T) -> bool + Send + Sync + 'static,
+{
+}
+
+impl<S, T, F> MaterializeDefinite<T> for DistinctUntilChangedByPipeline<S, T, F, Definite>
+where
+    S: Pipeline<T, Definite> + PipelineSeed<T>,
+    T: CellValue,
+    F: Fn(&T, &T) -> bool + Send + Sync + 'static,
+{
+}
+
+impl<S, T, F> MaterializeEmpty<T> for DistinctUntilChangedByPipeline<S, T, F, Empty>
+where
+    S: Pipeline<T, Empty> + PipelineSeed<T>,
+    T: CellValue,
+    F: Fn(&T, &T) -> bool + Send + Sync + 'static,
+{
+}
+
+#[allow(private_bounds)]
+pub trait DistinctUntilChangedByExt<T: CellValue, S: Seedness>:
+    Pipeline<T, S> + PipelineSeed<T>
+{
     /// Like `deduped()` but with a custom comparator.
     ///
-    /// Only emits when the comparator returns `false` (values are different).
+    /// Only emits when the comparator returns `false` (values differ).
     ///
     /// # Example
     ///
     /// ```
-    /// use hyphae::{Cell, Mutable, Gettable, DistinctUntilChangedByExt};
+    /// use hyphae::{Cell, DistinctUntilChangedByExt, MaterializeDefinite, Mutable};
     ///
     /// #[derive(Clone, Debug, PartialEq)]
     /// struct User { id: u32, name: String }
     ///
     /// let source = Cell::new(User { id: 1, name: "Alice".into() });
-    /// let by_id = source.distinct_until_changed_by(|a, b| a.id == b.id);
+    /// let by_id = source.clone().distinct_until_changed_by(|a, b| a.id == b.id).materialize();
     ///
-    /// source.set(User { id: 1, name: "Alicia".into() }); // Same id - blocked
-    /// source.set(User { id: 2, name: "Bob".into() });    // Different id - passes
+    /// source.set(User { id: 1, name: "Alicia".into() }); // same id - blocked
+    /// source.set(User { id: 2, name: "Bob".into() });    // different id - passes
     /// ```
     #[track_caller]
-    fn distinct_until_changed_by<F>(&self, comparator: F) -> Cell<T, CellImmutable>
+    fn distinct_until_changed_by<F>(
+        self,
+        comparator: F,
+    ) -> DistinctUntilChangedByPipeline<Self, T, F, S>
     where
-        T: CellValue,
         F: Fn(&T, &T) -> bool + Send + Sync + 'static,
-        Self: Clone + Send + Sync + 'static,
     {
-        let derived = Cell::<T, CellMutable>::new(self.get());
-        let derived = if let Some(name) = self.name() {
-            derived.with_name(format!("{}::distinct_until_changed_by", name))
-        } else {
-            derived
-        };
-
-        let weak = derived.downgrade();
-        let first = Arc::new(AtomicBool::new(true));
-        let last_value: Arc<ArcSwap<T>> = Arc::new(ArcSwap::from_pointee(self.get()));
-        let comparator = Arc::new(comparator);
-
-        let guard = self.subscribe(move |signal| {
-            if let Some(d) = weak.upgrade() {
-                match signal {
-                    Signal::Value(value) => {
-                        if first.swap(false, Ordering::SeqCst) {
-                            return;
-                        }
-                        let last = last_value.load();
-                        if !comparator(&**value, &*last) {
-                            last_value.store(value.clone());
-                            d.notify(signal.clone());
-                        }
-                    }
-                    Signal::Complete => d.notify(Signal::Complete),
-                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
-                }
-            }
-        });
-        derived.own(guard);
-
-        derived.lock()
+        DistinctUntilChangedByPipeline {
+            source: self,
+            comparator: Arc::new(comparator),
+            _t: PhantomData,
+            _sd: PhantomData,
+        }
     }
 }
 
-impl<T, W: Watchable<T>> DistinctUntilChangedByExt<T> for W {}
+impl<T: CellValue, S: Seedness, P: Pipeline<T, S> + PipelineSeed<T>>
+    DistinctUntilChangedByExt<T, S> for P
+{
+}
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
 
     use super::*;
-    use crate::Mutable;
+    use crate::{Cell, MaterializeDefinite, Mutable, traits::Watchable};
 
     #[derive(Clone, Debug, PartialEq)]
     struct User {
@@ -95,7 +163,10 @@ mod tests {
             id: 1,
             name: "Alice".into(),
         });
-        let by_id = source.distinct_until_changed_by(|a, b| a.id == b.id);
+        let by_id = source
+            .clone()
+            .distinct_until_changed_by(|a, b| a.id == b.id)
+            .materialize();
         let count = Arc::new(AtomicU64::new(0));
 
         let c = count.clone();
@@ -105,21 +176,18 @@ mod tests {
 
         assert_eq!(count.load(Ordering::SeqCst), 1); // initial
 
-        // Same id, different name - blocked
         source.set(User {
             id: 1,
             name: "Alicia".into(),
         });
         assert_eq!(count.load(Ordering::SeqCst), 1);
 
-        // Different id - passes
         source.set(User {
             id: 2,
             name: "Bob".into(),
         });
         assert_eq!(count.load(Ordering::SeqCst), 2);
 
-        // Same id again - blocked
         source.set(User {
             id: 2,
             name: "Robert".into(),

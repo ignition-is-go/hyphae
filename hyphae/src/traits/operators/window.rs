@@ -3,10 +3,11 @@ use std::collections::VecDeque;
 use super::{CellValue, MapExt, ScanExt, Watchable};
 use crate::{
     cell::{Cell, CellImmutable},
-    pipeline::Pipeline,
+    pipeline::{Definite, MaterializeDefinite, Pipeline, PipelineSeed},
 };
 
-pub trait WindowExt<T>: Watchable<T> {
+#[allow(private_bounds)]
+pub trait WindowExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> + Watchable<T> {
     /// Collect values into a sliding window of size `count`.
     ///
     /// Emits a `Vec<T>` containing the most recent `count` values each time
@@ -40,20 +41,24 @@ pub trait WindowExt<T>: Watchable<T> {
     {
         assert!(count > 0, "window size must be positive");
 
-        self.scan(VecDeque::with_capacity(count), move |acc, value| {
-            let mut new_acc = acc.clone();
-            new_acc.push_back(value.clone());
-            if new_acc.len() > count {
-                new_acc.pop_front();
-            }
-            new_acc
-        })
-        .map(|deque| deque.iter().cloned().collect())
-        .materialize()
+        self.clone()
+            .scan(VecDeque::with_capacity(count), move |acc, value| {
+                let mut new_acc = acc.clone();
+                new_acc.push_back(value.clone());
+                if new_acc.len() > count {
+                    new_acc.pop_front();
+                }
+                new_acc
+            })
+            .map(|deque| deque.iter().cloned().collect())
+            .materialize()
     }
 }
 
-impl<T, W: Watchable<T>> WindowExt<T> for W {}
+impl<T: CellValue, W: Pipeline<T, Definite> + PipelineSeed<T> + Watchable<T>> WindowExt<T>
+    for W
+{
+}
 
 #[cfg(test)]
 mod tests {

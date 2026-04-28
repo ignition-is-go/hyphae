@@ -1,42 +1,42 @@
 //! `filter` operator — pure predicate; chains fuse into one closure on root.
 //!
-//! # Cold `get()` semantics
+//! # Empty seedness
 //!
-//! `Pipeline::get()` on a `FilterPipeline` returns the source value
-//! **unfiltered** — there is no prior value to fall back on when the current
-//! source value would fail the predicate. Callers who want "last-seen value
-//! that passed" semantics must materialize: the materialized cell caches the
-//! last emitted value and only updates when the predicate passes.
+//! Filter's source initial value may not satisfy the predicate, so there is no
+//! honest seed to give the materialized cell. Filter therefore forces
+//! `Seedness = Empty`: `cell.filter(p).materialize()` returns
+//! `Cell<Option<T>, CellImmutable>`, initialized to `None`.
+//!
+//! Once the predicate is satisfied for the first time, the cell flips to
+//! `Some(value)` and stays `Some(_)` from then on — failing emissions are
+//! swallowed at the install boundary and never reach the cell, so they cannot
+//! revert it to `None`.
 
 use std::{marker::PhantomData, sync::Arc};
 
 use super::CellValue;
 use crate::{
-    pipeline::{Pipeline, PipelineInstall},
+    pipeline::{Definite, Empty, MaterializeEmpty, Pipeline, PipelineInstall, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
-    traits::Gettable,
 };
 
 /// Pipeline node representing `source.filter(p)`. Does not allocate a cell.
-pub struct FilterPipeline<S, T, P> {
+///
+/// The `Sd` parameter records the source's seedness so the trait impls below
+/// can bind it without falling foul of E0207. The output seedness is always
+/// [`Empty`] regardless of source.
+pub struct FilterPipeline<S, T, P, Sd = Definite> {
     source: S,
     predicate: Arc<P>,
     _t: PhantomData<fn(T)>,
+    _sd: PhantomData<fn(Sd)>,
 }
 
-impl<S, T, P> Gettable<T> for FilterPipeline<S, T, P>
-where
-    S: Gettable<T>,
-{
-    fn get(&self) -> T {
-        self.source.get()
-    }
-}
-
-impl<S, T, P> PipelineInstall<T> for FilterPipeline<S, T, P>
+impl<S, T, P, Sd> PipelineInstall<T> for FilterPipeline<S, T, P, Sd>
 where
     S: PipelineInstall<T> + Send + Sync + 'static,
+    Sd: Seedness,
     T: CellValue,
     P: Fn(&T) -> bool + Send + Sync + 'static,
 {
@@ -60,17 +60,28 @@ where
 }
 
 #[allow(private_bounds)]
-impl<S, T, P> Pipeline<T> for FilterPipeline<S, T, P>
+impl<S, T, P, Sd> Pipeline<T, Empty> for FilterPipeline<S, T, P, Sd>
 where
-    S: Pipeline<T>,
+    S: Pipeline<T, Sd>,
+    Sd: Seedness,
     T: CellValue,
     P: Fn(&T) -> bool + Send + Sync + 'static,
 {
 }
 
-pub trait FilterExt<T: CellValue>: Pipeline<T> {
+impl<S, T, P, Sd> MaterializeEmpty<T> for FilterPipeline<S, T, P, Sd>
+where
+    S: Pipeline<T, Sd>,
+    Sd: Seedness,
+    T: CellValue,
+    P: Fn(&T) -> bool + Send + Sync + 'static,
+{
+}
+
+#[allow(private_bounds)]
+pub trait FilterExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     #[track_caller]
-    fn filter<P>(self, predicate: P) -> FilterPipeline<Self, T, P>
+    fn filter<P>(self, predicate: P) -> FilterPipeline<Self, T, P, S>
     where
         P: Fn(&T) -> bool + Send + Sync + 'static,
     {
@@ -78,11 +89,12 @@ pub trait FilterExt<T: CellValue>: Pipeline<T> {
             source: self,
             predicate: Arc::new(predicate),
             _t: PhantomData,
+            _sd: PhantomData,
         }
     }
 }
 
-impl<T: CellValue, P: Pipeline<T>> FilterExt<T> for P {}
+impl<T: CellValue, S: Seedness, P: Pipeline<T, S>> FilterExt<T, S> for P {}
 
 #[cfg(test)]
 mod tests {
@@ -92,10 +104,11 @@ mod tests {
     };
 
     use super::*;
-    use crate::{Cell, Mutable, traits::Watchable};
+    use crate::{Cell, Gettable, MaterializeEmpty, Mutable, traits::Watchable};
 
     #[test]
     fn test_filter_passes_matching() {
+        // Initial 10 passes is_even, so cell starts Some(10).
         let source = Cell::new(10u64);
         let evens = source.clone().filter(|x| x % 2 == 0).materialize();
         let received = Arc::new(AtomicU64::new(0));
@@ -103,7 +116,9 @@ mod tests {
         let r = received.clone();
         let _guard = evens.subscribe(move |signal| {
             if let Signal::Value(v) = signal {
-                r.store(**v, Ordering::SeqCst);
+                if let Some(x) = v.as_ref() {
+                    r.store(*x, Ordering::SeqCst);
+                }
             }
         });
 
@@ -122,7 +137,9 @@ mod tests {
         let r = received.clone();
         let _guard = evens.subscribe(move |signal| {
             if let Signal::Value(v) = signal {
-                r.store(**v, Ordering::SeqCst);
+                if let Some(x) = v.as_ref() {
+                    r.store(*x, Ordering::SeqCst);
+                }
             }
         });
 
@@ -131,5 +148,20 @@ mod tests {
 
         source.set(6); // even - should pass
         assert_eq!(received.load(Ordering::SeqCst), 6);
+    }
+
+    #[test]
+    fn test_filter_initial_failing_predicate_is_none() {
+        // Initial 11 fails is_even — cell must start None.
+        let source = Cell::new(11u64);
+        let evens = source.clone().filter(|x| x % 2 == 0).materialize();
+
+        assert_eq!(evens.get(), None);
+
+        source.set(4);
+        assert_eq!(evens.get(), Some(4));
+
+        source.set(7); // odd, swallowed; must NOT revert to None
+        assert_eq!(evens.get(), Some(4));
     }
 }

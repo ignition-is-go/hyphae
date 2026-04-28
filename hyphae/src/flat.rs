@@ -4,7 +4,7 @@
 /// This macro generates the nested pattern from a flat parameter list:
 ///
 /// ```
-/// use hyphae::{Cell, Gettable, JoinExt, MapExt, flat};
+/// use hyphae::{Cell, Gettable, JoinExt, MapExt, MaterializeDefinite, flat};
 ///
 /// let a = Cell::new(1);
 /// let b = Cell::new(2);
@@ -12,7 +12,12 @@
 /// let d = Cell::new(4);
 ///
 /// // flat!(|a, b, c, d| ...) expands to |(((a, b), c), d)| ...
-/// let sum = a.join(&b).join(&c).join(&d).map(flat!(|a, b, c, d| a + b + c + d));
+/// let sum = a
+///     .join(&b)
+///     .join(&c)
+///     .join(&d)
+///     .map(flat!(|a, b, c, d| a + b + c + d))
+///     .materialize();
 /// assert_eq!(sum.get(), 10);
 /// ```
 #[macro_export]

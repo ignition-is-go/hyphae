@@ -193,7 +193,7 @@ impl<T, W: Watchable<T>> SwitchMapExt<T> for W {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MapExt, Mutable, pipeline::Pipeline};
+    use crate::{MaterializeDefinite, MapExt, Mutable};
 
     #[test]
     fn test_switch_map_switches() {

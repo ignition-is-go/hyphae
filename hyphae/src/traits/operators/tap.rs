@@ -4,10 +4,9 @@ use std::{marker::PhantomData, sync::Arc};
 
 use super::CellValue;
 use crate::{
-    pipeline::{Pipeline, PipelineInstall},
+    pipeline::{Definite, Empty, MaterializeDefinite, MaterializeEmpty, Pipeline, PipelineInstall, PipelineSeed, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
-    traits::Gettable,
 };
 
 /// Pipeline node representing `source.tap(f)`. Does not allocate a cell.
@@ -15,18 +14,6 @@ pub struct TapPipeline<S, T, F> {
     source: S,
     f: Arc<F>,
     _t: PhantomData<fn(T)>,
-}
-
-impl<S, T, F> Gettable<T> for TapPipeline<S, T, F>
-where
-    S: Gettable<T>,
-    F: Fn(&T),
-{
-    fn get(&self) -> T {
-        let v = self.source.get();
-        (self.f)(&v);
-        v
-    }
 }
 
 impl<S, T, F> PipelineInstall<T> for TapPipeline<S, T, F>
@@ -50,17 +37,48 @@ where
     }
 }
 
-#[allow(private_bounds)]
-impl<S, T, F> Pipeline<T> for TapPipeline<S, T, F>
+impl<S, T, F> PipelineSeed<T> for TapPipeline<S, T, F>
 where
-    S: Pipeline<T>,
+    S: PipelineSeed<T>,
+    T: CellValue,
+    F: Fn(&T) + Send + Sync + 'static,
+{
+    fn seed(&self) -> T {
+        let v = self.source.seed();
+        (self.f)(&v);
+        v
+    }
+}
+
+#[allow(private_bounds)]
+impl<S, T, F, Sd> Pipeline<T, Sd> for TapPipeline<S, T, F>
+where
+    S: Pipeline<T, Sd>,
+    Sd: Seedness,
+    T: CellValue,
+    F: Fn(&T) + Send + Sync + 'static,
+{
+}
+
+impl<S, T, F> MaterializeDefinite<T> for TapPipeline<S, T, F>
+where
+    S: Pipeline<T, Definite> + PipelineSeed<T>,
+    T: CellValue,
+    F: Fn(&T) + Send + Sync + 'static,
+{
+}
+
+impl<S, T, F> MaterializeEmpty<T> for TapPipeline<S, T, F>
+where
+    S: Pipeline<T, Empty>,
     T: CellValue,
     F: Fn(&T) + Send + Sync + 'static,
 {
 }
 
 /// Extension trait for side-effecting observation.
-pub trait TapExt<T: CellValue>: Pipeline<T> {
+#[allow(private_bounds)]
+pub trait TapExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// Run `f(&value)` for side effects and forward the value untransformed.
     ///
     /// Returns a [`TapPipeline`] node. Materialize to observe.
@@ -77,7 +95,7 @@ pub trait TapExt<T: CellValue>: Pipeline<T> {
     }
 }
 
-impl<T: CellValue, P: Pipeline<T>> TapExt<T> for P {}
+impl<T: CellValue, S: Seedness, P: Pipeline<T, S>> TapExt<T, S> for P {}
 
 #[cfg(test)]
 mod tests {
@@ -87,7 +105,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{Cell, Mutable};
+    use crate::{Cell, Gettable, MaterializeDefinite, Mutable};
 
     #[test]
     fn test_tap_side_effect() {

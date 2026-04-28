@@ -1,43 +1,48 @@
-use super::{super::operators::MapExt, CellValue, Gettable, Watchable};
-use crate::{
-    cell::{Cell, CellImmutable},
-    pipeline::Pipeline,
-};
+//! `sample(notifier)` operator — emit the source's current value whenever the
+//! notifier fires.
+//!
+//! Returns a [`Pipeline`] (specifically a [`MapPipeline`] over the notifier).
+//! Materialize to subscribe; further operators can also chain off it.
+
+use super::{super::operators::MapExt, CellValue, Gettable, MapPipeline, Watchable};
+use crate::pipeline::{Pipeline, PipelineSeed};
 
 pub trait SampleExt<T>: Watchable<T> {
-    /// Sample the source whenever the notifier emits.
+    /// Emit the source's latest value each time the notifier fires.
     ///
-    /// Emits the latest value from the source each time the notifier fires.
     /// Ignores the notifier's value; only uses it as a trigger.
     ///
     /// # Example
     ///
     /// ```
-    /// use hyphae::{Cell, Mutable, Gettable, SampleExt};
+    /// use hyphae::{Cell, Gettable, MaterializeDefinite, Mutable, SampleExt};
     ///
     /// let source = Cell::new(0);
     /// let ticker = Cell::new(());
-    /// let sampled = source.sample(&ticker);
+    /// let sampled = source.sample(&ticker).materialize();
     ///
     /// source.set(1);
     /// source.set(2);
     /// source.set(3);
-    /// ticker.set(()); // Emits 3 (latest from source)
+    /// ticker.set(()); // emits 3 (latest from source)
     ///
     /// source.set(4);
-    /// ticker.set(()); // Emits 4
+    /// ticker.set(()); // emits 4
     /// ```
     #[track_caller]
-    fn sample<N, U>(&self, notifier: &N) -> Cell<T, CellImmutable>
+    #[allow(private_bounds)]
+    fn sample<N, U>(
+        &self,
+        notifier: &N,
+    ) -> MapPipeline<N, U, T, impl Fn(&U) -> T + Send + Sync + 'static>
     where
         T: CellValue,
         U: CellValue,
-        N: Pipeline<U> + Clone + Send + Sync + 'static,
+        N: Pipeline<U> + PipelineSeed<U> + Clone + Send + Sync + 'static,
         Self: Gettable<T> + Clone + Send + Sync + 'static,
     {
-        // When notifier fires, get the current value from source
         let source = self.clone();
-        notifier.clone().map(move |_| source.get()).materialize()
+        notifier.clone().map(move |_| source.get())
     }
 }
 
@@ -46,13 +51,16 @@ impl<T, W: Watchable<T>> SampleExt<T> for W {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Mutable, Signal};
+    use crate::{
+        Cell, MaterializeDefinite, Mutable, Signal,
+        cell::CellImmutable,
+    };
 
     #[test]
     fn test_sample() {
         let source = Cell::new(0);
         let ticker = Cell::new(());
-        let sampled = source.sample(&ticker);
+        let sampled: Cell<i32, CellImmutable> = source.sample(&ticker).materialize();
 
         let (tx, rx) = std::sync::mpsc::channel::<i32>();
         let _guard = sampled.subscribe(move |signal| {
@@ -70,7 +78,7 @@ mod tests {
         source.set(3);
         assert!(rx.try_recv().is_err());
 
-        // Ticker fires - emits latest (3)
+        // Ticker fires — emits latest (3)
         ticker.set(());
         assert_eq!(rx.recv().ok(), Some(3));
 
@@ -78,7 +86,7 @@ mod tests {
         source.set(4);
         source.set(5);
 
-        // Ticker fires - emits 5
+        // Ticker fires — emits 5
         ticker.set(());
         assert_eq!(rx.recv().ok(), Some(5));
     }

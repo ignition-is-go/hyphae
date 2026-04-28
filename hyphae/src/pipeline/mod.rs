@@ -2,17 +2,28 @@
 //!
 //! A [`Pipeline`] is a recipe for a reactive computation — a chain of pure
 //! operators (`map`, `filter`, ...) that has not yet been materialized into
-//! a [`Cell`]. Pipelines deliberately do not implement `subscribe`: to observe
-//! output you must call [`Pipeline::materialize`], which installs a single
-//! subscription on the root source and returns a subscribable cell.
+//! a [`Cell`]. Pipelines deliberately do not implement `subscribe` or expose
+//! a public `get`: to observe output you must call `.materialize()`, which
+//! installs a single subscription on the root source and returns a
+//! subscribable cell.
 //!
-//! This design makes the memoization boundary explicit. Today, chaining
-//! operators on a `Cell` creates an intermediate cell per operator — each
-//! caching its value and notifying downstream subscribers. That is the right
-//! choice when the derived value is consumed by many subscribers, but wasteful
-//! when it is consumed by one. By moving pure operators onto `Pipeline`, the
-//! cost of an intermediate cell is paid only when the caller explicitly asks
-//! for one with `.materialize()`.
+//! # Seedness
+//!
+//! Pipelines carry a [`Seedness`] type marker indicating whether they have a
+//! definite initial value at the moment of materialization:
+//!
+//! - [`Definite`] — every emission is a real value of `T`. `.materialize()`
+//!   returns `Cell<T, CellImmutable>` via [`MaterializeDefinite`]. Used by
+//!   `map`, `tap`, `try_map`, `map_ok`, etc.
+//! - [`Empty`] — the pipeline may swallow the synchronous-on-subscribe initial
+//!   emission (e.g. `filter` whose predicate fails on the source's initial
+//!   value). `.materialize()` returns `Cell<Option<T>, CellImmutable>` via
+//!   [`MaterializeEmpty`], initialized to `None`. The cell transitions
+//!   monotonically `None → Some(T)` once the first emission lands; subsequent
+//!   failures do not revert.
+//!
+//! Operators that may swallow the initial value force `S = Empty`, and
+//! downstream operators (`map`, `tap`, ...) propagate `S` through the chain.
 
 use std::sync::Arc;
 
@@ -20,7 +31,7 @@ use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     signal::Signal,
     subscription::SubscriptionGuard,
-    traits::{CellValue, Gettable},
+    traits::CellValue,
 };
 
 pub(crate) mod cell_impl;
@@ -28,86 +39,134 @@ pub mod share;
 
 pub use share::{PipelineShareExt, SharedPipeline};
 
-/// Crate-private installer hook used by [`Pipeline::materialize`].
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// Type-level marker on [`Pipeline`] indicating whether the pipeline is
+/// guaranteed to have a definite initial value at materialize time.
+///
+/// See module docs for the [`Definite`] / [`Empty`] distinction.
+#[allow(private_bounds)]
+pub trait Seedness: sealed::Sealed + Send + Sync + 'static {}
+
+/// Pipeline has a guaranteed initial value (`materialize → Cell<T>`).
+pub struct Definite;
+
+/// Pipeline may have no initial value (`materialize → Cell<Option<T>>`).
+pub struct Empty;
+
+impl sealed::Sealed for Definite {}
+impl sealed::Sealed for Empty {}
+impl Seedness for Definite {}
+impl Seedness for Empty {}
+
+/// Crate-private installer hook used by `materialize`.
 ///
 /// `install` subscribes the pipeline's composed callback to the root source
 /// and returns the guard. The fused closure transforms root-source signals
 /// into the pipeline's output signal type and invokes the provided callback.
-///
-/// This is separate from `Pipeline` so that the public trait stays minimal
-/// and cannot be accidentally used to subscribe without materializing.
 pub(crate) trait PipelineInstall<T: CellValue>: Send + Sync + 'static {
-    /// Install `callback` such that every future value signal from the root
-    /// source flows through the pipeline's composed op and invokes `callback`
-    /// with the resulting `Signal<T>`.
-    ///
-    /// The returned guard owns the subscription on the root source. Dropping
-    /// it ends the chain. The root-source `DepNode` is accessible via
-    /// `guard.source()` for introspection.
     fn install(
         &self,
         callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>,
     ) -> SubscriptionGuard;
 }
 
+/// Seed hook used to initialize the materialized cell for [`Definite`]
+/// pipelines.
+///
+/// Only [`Definite`] pipelines implement this trait — [`Empty`] pipelines have
+/// no honest initial value and instead seed `None` at the cell boundary.
+///
+/// This trait is sealed via the crate-private [`PipelineInstall`] supertrait,
+/// so external crates can name it (so it can appear in pipeline operator
+/// return types) but cannot implement it. It is intentionally not part of the
+/// `Pipeline<T, Definite>` supertrait list — the seed mechanism is an
+/// implementation detail of materialization, not a public way to read pipeline
+/// values pre-materialization.
+///
+/// `seed()` is allowed to recompute through the source on every call. It is
+/// only ever invoked once per `materialize` call.
+#[allow(private_bounds)]
+pub trait PipelineSeed<T: CellValue>: PipelineInstall<T> {
+    #[doc(hidden)]
+    fn seed(&self) -> T;
+}
+
 /// Uncompiled reactive operation chain.
 ///
 /// Pipelines are built by chaining pure operators on a source (`Cell` or
-/// another `Pipeline`). They deliberately do not expose `subscribe` — call
-/// [`Pipeline::materialize`] to produce a subscribable [`Cell`].
+/// another `Pipeline`). They deliberately do not expose `subscribe` or a
+/// public `get` — call `.materialize()` to produce a subscribable [`Cell`].
 ///
-/// # Invariants
-///
-/// - `get()` recomputes from the root source on every call. Do not use in
-///   hot loops — materialize first.
-/// - `materialize(self)` consumes the pipeline and installs a single
-///   subscription on the root source running the fully fused closure.
-/// - No intermediate `Cell` is allocated anywhere in a pipeline chain.
+/// The `S: Seedness` parameter tracks whether the pipeline has a definite
+/// initial value. See module docs.
 ///
 /// # Sealing
 ///
 /// The `PipelineInstall<T>` supertrait is `pub(crate)`, which seals
-/// `Pipeline` so external crates cannot define new `Pipeline` types. New
-/// pipeline shapes are added inside this crate.
+/// `Pipeline` so external crates cannot define new `Pipeline` types.
 ///
 /// # Not `Clone`
 ///
 /// Pipelines are deliberately not `Clone`. Cloning would duplicate the
-/// composed closure work — each clone's `materialize()` installs an
-/// independent subscription on the root source, and both run the entire
-/// op chain on every emission. To share work across consumers, materialize
-/// once into a [`Cell`] (which IS `Clone` — the clone is an `Arc` bump
-/// referencing the same multicast cache) and then clone the cell.
+/// composed closure work. To share work across consumers, materialize once
+/// into a [`Cell`] (clone is an `Arc` bump on the multicast cache) or use
+/// [`PipelineShareExt::share`].
 #[allow(private_bounds)]
-pub trait Pipeline<T: CellValue>:
-    Gettable<T> + PipelineInstall<T> + Sized + Send + Sync + 'static
+pub trait Pipeline<T: CellValue, S: Seedness = Definite>:
+    PipelineInstall<T> + Sized + Send + Sync + 'static
 {
-    /// Compile the pipeline into a [`Cell`] and install a single subscription
-    /// on the root source running the fused closure.
-    ///
-    /// This is the only way to observe pipeline output. Every subscribe in
-    /// the codebase is on a cell, never on a pipeline — which is the point.
+}
+
+/// Compile a [`Definite`] pipeline into a `Cell<T, CellImmutable>`.
+///
+/// Installs a single subscription on the root source running the fully fused
+/// closure and seeds the cell with `self.seed()`. Implementors get the default
+/// body for free; the only override in the codebase is on [`Cell`] itself,
+/// where materialize is a marker flip on the same `Arc<inner>`.
+#[allow(private_bounds)]
+pub trait MaterializeDefinite<T: CellValue>:
+    Pipeline<T, Definite> + PipelineSeed<T>
+{
     #[track_caller]
     fn materialize(self) -> Cell<T, CellImmutable> {
-        let initial = self.get();
+        let initial = self.seed();
         let cell = Cell::<T, CellMutable>::new(initial);
         let weak = cell.downgrade();
 
-        // The pipeline's install() may invoke `callback` synchronously with
-        // the current source value on subscription (operators like `map` do).
-        // We've already seeded the cell with `pipeline.get()`, so re-notifying
-        // with the same value would be redundant. The first-emit skip cannot
-        // live inside this callback: operators like `filter` may legitimately
-        // swallow the synchronous initial emit (the cold value fails the
-        // predicate), and a callback-level guard would then mistakenly skip
-        // the *next* legitimate emission. No external subscriber exists during
-        // construction, so a redundant initial cell.notify is harmless: it
-        // updates the store to the same logical value and notifies zero
-        // subscribers. We therefore forward every signal unconditionally.
         let callback: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
             Arc::new(move |signal: &Signal<T>| {
                 if let Some(c) = weak.upgrade() {
                     c.notify(signal.clone());
+                }
+            });
+
+        let guard = self.install(callback);
+        cell.own(guard);
+        cell.lock()
+    }
+}
+
+/// Compile an [`Empty`] pipeline into a `Cell<Option<T>, CellImmutable>`.
+///
+/// The cell starts as `None`. The install callback lifts each `Signal<T>`
+/// into `Signal<Option<T>>` via `Some(value)` before notifying. Once a value
+/// has landed, the cell stays `Some(_)` — failing emissions never reach the
+/// cell and so cannot revert it.
+#[allow(private_bounds)]
+pub trait MaterializeEmpty<T: CellValue>: Pipeline<T, Empty> {
+    #[track_caller]
+    fn materialize(self) -> Cell<Option<T>, CellImmutable> {
+        let cell = Cell::<Option<T>, CellMutable>::new(None);
+        let weak = cell.downgrade();
+
+        let callback: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
+            Arc::new(move |signal: &Signal<T>| {
+                if let Some(c) = weak.upgrade() {
+                    let lifted: Signal<Option<T>> = signal.map(|v| Some(v.clone()));
+                    c.notify(lifted);
                 }
             });
 

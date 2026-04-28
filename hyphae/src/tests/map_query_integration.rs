@@ -1,6 +1,6 @@
 //! Integration tests for MapQuery type.
 
-use crate::{CellMap, MapQuery, traits::CellValue, traits::InnerJoinExt};
+use crate::{MaterializeDefinite, CellMap, MapQuery, traits::CellValue, traits::InnerJoinExt};
 
 #[test]
 fn cell_map_is_map_query() {
@@ -205,7 +205,7 @@ use crate::traits::ProjectCellExt;
 
 #[test]
 fn project_cell_plan_reacts_to_inner_pipeline_emissions() {
-    use crate::{MapExt, pipeline::Pipeline};
+    use crate::{MapExt};
 
     let src = CellMap::<String, i32>::new();
     let weights = CellMap::<String, i32>::new();
@@ -303,7 +303,7 @@ use crate::traits::SelectCellExt;
 
 #[test]
 fn select_cell_plan_reacts_to_gate() {
-    use crate::{MapExt, pipeline::Pipeline};
+    use crate::{MapExt};
 
     let values = CellMap::<String, i32>::new();
     let gates = CellMap::<String, bool>::new();

@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-use crate::{Cell, Gettable, MapExt, Mutable, Pipeline, Signal, traits::Watchable};
+use crate::{MaterializeDefinite, Cell, Gettable, MapExt, Mutable, Signal, traits::Watchable};
 
 // ============================================================================
 // WeakCell Tests

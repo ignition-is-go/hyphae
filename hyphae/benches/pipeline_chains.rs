@@ -37,7 +37,9 @@ use std::sync::{
 };
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use hyphae::{Cell, FilterExt, MapExt, Mutable, Pipeline, TapExt, Watchable};
+use hyphae::{
+    Cell, FilterExt, MapExt, MaterializeDefinite, MaterializeEmpty, Mutable, TapExt, Watchable,
+};
 use seq_macro::seq;
 
 /// Reference point: one source cell, one subscriber, no chain.

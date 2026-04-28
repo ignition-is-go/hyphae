@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use crate::{
     cell::{Cell, CellImmutable, CellMutable, WeakCell},
+    pipeline::MaterializeDefinite,
     signal::Signal,
     subscription::SubscriptionGuard,
     traits::{CellValue, Mutable, Watchable},
@@ -860,7 +861,7 @@ where
     /// Get an observable Cell of all keys.
     #[track_caller]
     pub fn keys(&self) -> Cell<Vec<K>, CellImmutable> {
-        use crate::{pipeline::Pipeline, traits::MapExt};
+        use crate::traits::MapExt;
         self.entries()
             .map(|entries| entries.iter().map(|(k, _)| k.clone()).collect())
             .materialize()

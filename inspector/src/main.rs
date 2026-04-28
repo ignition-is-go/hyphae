@@ -24,7 +24,9 @@ use crossterm::{
 use dashmap::DashMap;
 use hyphae::registry::CellSnapshot;
 use hyphae::server::start_server;
-use hyphae::{Cell, CellMap, CellMutable, Gettable, MapExt, Mutable, Pipeline, Signal, Watchable};
+use hyphae::{
+    Cell, CellMap, CellMutable, Gettable, MapExt, MaterializeDefinite, Mutable, Signal, Watchable,
+};
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,

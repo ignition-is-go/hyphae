@@ -1,18 +1,23 @@
 //! Integration tests for Pipeline type.
 
-use crate::{Cell, CellMutable, Gettable, MapExt, Mutable, Pipeline};
+use crate::{
+    Cell, CellMutable, Gettable, MapExt, MaterializeDefinite, MaterializeEmpty, Mutable, Pipeline,
+};
 
 #[test]
 fn cell_is_pipeline() {
+    // Cell: Pipeline<i32, Definite> — pin the bound so this fails to compile if
+    // Cell stops implementing Pipeline. Pipelines no longer have a public get,
+    // so we read through materialize.
     let c = Cell::new(10);
-    // Cell: Pipeline<i32> — get() comes from Gettable, which Pipeline requires.
-    // Force the Pipeline bound to be the resolved path so the test fails to
-    // compile if Cell ever stops implementing Pipeline.
-    fn assert_pipeline<T: crate::traits::CellValue, P: Pipeline<T>>(p: &P) -> T {
-        p.get()
+    fn assert_pipeline<T, P>(_p: &P)
+    where
+        T: crate::traits::CellValue,
+        P: Pipeline<T>,
+    {
     }
-    let v: i32 = assert_pipeline::<i32, Cell<i32, CellMutable>>(&c);
-    assert_eq!(v, 10);
+    assert_pipeline::<i32, Cell<i32, CellMutable>>(&c);
+    assert_eq!(c.get(), 10);
 }
 
 #[test]
@@ -27,14 +32,12 @@ fn pipeline_materialize_roundtrip() {
 }
 
 #[test]
-fn map_pipeline_does_not_allocate_intermediate_cell() {
+fn map_pipeline_materializes_to_cell() {
     let src = Cell::new(5).with_name("src");
-    let pipeline = src.clone().map(|x| x * 2);
-    // The pipeline is NOT a Cell — Pipeline::get() recomputes from source.
-    let v: i32 = pipeline.get();
-    assert_eq!(v, 10);
+    let doubled = src.clone().map(|x| x * 2).materialize();
+    assert_eq!(doubled.get(), 10);
     src.set(7);
-    assert_eq!(pipeline.get(), 14);
+    assert_eq!(doubled.get(), 14);
 }
 
 #[test]
@@ -74,14 +77,38 @@ use crate::{FilterExt, TryMapExt};
 
 #[test]
 fn filter_pipeline_passes_matching_and_blocks_non_matching() {
+    // Initial source value (10) passes the predicate, so the materialized
+    // cell starts as Some(10). Failing emissions don't reset; passing
+    // emissions update.
     let src = Cell::new(10u64);
     let evens = src.clone().filter(|x| x % 2 == 0).materialize();
 
-    assert_eq!(evens.get(), 10);
+    assert_eq!(evens.get(), Some(10));
     src.set(3);
-    assert_eq!(evens.get(), 10);
+    assert_eq!(evens.get(), Some(10));
     src.set(6);
-    assert_eq!(evens.get(), 6);
+    assert_eq!(evens.get(), Some(6));
+}
+
+#[test]
+fn filter_pipeline_initial_failing_predicate_yields_none() {
+    // Initial source value (11) FAILS the predicate. There is no honest
+    // seed for the filter pipeline, so materialize returns Cell<Option<T>>
+    // initialized to None. Once a value passes, transitions monotonically
+    // to Some(value); subsequent failures don't revert.
+    let src = Cell::new(11u64);
+    let evens = src.clone().filter(|x| x % 2 == 0).materialize();
+
+    assert_eq!(evens.get(), None);
+
+    src.set(4);
+    assert_eq!(evens.get(), Some(4));
+
+    src.set(7); // fails predicate — must NOT revert to None
+    assert_eq!(evens.get(), Some(4));
+
+    src.set(8);
+    assert_eq!(evens.get(), Some(8));
 }
 
 #[test]
@@ -99,8 +126,8 @@ fn filter_pipeline_fuses_with_map() {
         .materialize();
 
     assert_eq!(DepNode::subscriber_count(&src), initial_count + 1);
-    src.set(2); // 2+10=12, even, passes
-    assert_eq!(out.get(), 1200);
+    src.set(2); // 2+10=12, even, passes; chain materializes to Cell<Option<i64>>
+    assert_eq!(out.get(), Some(1200));
 }
 
 #[test]

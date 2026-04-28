@@ -14,7 +14,7 @@
 //! ## Quick Start
 //!
 //! ```rust
-//! use hyphae::{Cell, MapExt, Mutable, Watchable, JoinExt, Pipeline, Signal, flat};
+//! use hyphae::{Cell, MapExt, MaterializeDefinite, Mutable, Watchable, JoinExt, Pipeline, Signal, flat};
 //!
 //! // Create reactive cells
 //! let x = Cell::new(5).with_name("x");
@@ -63,7 +63,7 @@
 //! once `.map(...)` fuses onto it — no `.materialize()` needed for `.get()`:
 //!
 //! ```rust
-//! use hyphae::{Cell, Gettable, JoinExt, MapExt, flat};
+//! use hyphae::{Cell, Gettable, JoinExt, MapExt, MaterializeDefinite, flat};
 //!
 //! let a = Cell::new(1);
 //! let b = Cell::new(2);
@@ -72,7 +72,12 @@
 //!
 //! // Without flat!: |(((a, b), c), d)| - deeply nested
 //! // With flat!: |a, b, c, d| - clean and simple
-//! let sum = a.join(&b).join(&c).join(&d).map(flat!(|a, b, c, d| a + b + c + d));
+//! let sum = a
+//!     .join(&b)
+//!     .join(&c)
+//!     .join(&d)
+//!     .map(flat!(|a, b, c, d| a + b + c + d))
+//!     .materialize();
 //! assert_eq!(sum.get(), 10);
 //! ```
 //!
@@ -159,7 +164,10 @@ pub use constructors::{IntervalTick, interval, interval_precise, interval_precis
 pub use metrics::CellMetrics;
 pub use map_query::{MapQuery, MapQueryShareExt, SharedMapQuery};
 pub use nested_map::NestedMap;
-pub use pipeline::{Pipeline, PipelineShareExt, SharedPipeline};
+pub use pipeline::{
+    Definite, Empty, MaterializeDefinite, MaterializeEmpty, Pipeline, PipelineShareExt,
+    Seedness, SharedPipeline,
+};
 pub use signal::Signal;
 pub use subscription::SubscriptionGuard;
 #[cfg(feature = "trace")]

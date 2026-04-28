@@ -269,7 +269,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Cell, CellMap, MapExt, pipeline::Pipeline};
+    use crate::{MaterializeDefinite, Cell, CellMap, MapExt};
 
     #[test]
     fn project_cell_reacts_to_inner_pipeline_emissions() {

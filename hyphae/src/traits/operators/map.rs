@@ -4,10 +4,9 @@ use std::{marker::PhantomData, sync::Arc};
 
 use super::CellValue;
 use crate::{
-    pipeline::{Pipeline, PipelineInstall},
+    pipeline::{Definite, Empty, MaterializeDefinite, MaterializeEmpty, Pipeline, PipelineInstall, PipelineSeed, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
-    traits::Gettable,
 };
 
 /// Pipeline node representing `source.map(f)`. Does not allocate a cell.
@@ -15,16 +14,6 @@ pub struct MapPipeline<S, T, U, F> {
     source: S,
     f: Arc<F>,
     _types: PhantomData<fn(T) -> U>,
-}
-
-impl<S, T, U, F> Gettable<U> for MapPipeline<S, T, U, F>
-where
-    S: Gettable<T>,
-    F: Fn(&T) -> U,
-{
-    fn get(&self) -> U {
-        (self.f)(&self.source.get())
-    }
 }
 
 impl<S, T, U, F> PipelineInstall<U> for MapPipeline<S, T, U, F>
@@ -49,17 +38,51 @@ where
     }
 }
 
-#[allow(private_bounds)]
-impl<S, T, U, F> Pipeline<U> for MapPipeline<S, T, U, F>
+// Seed only exists when the source has a seed (i.e. source is Definite).
+impl<S, T, U, F> PipelineSeed<U> for MapPipeline<S, T, U, F>
 where
-    S: Pipeline<T>,
+    S: PipelineSeed<T>,
+    T: CellValue,
+    U: CellValue,
+    F: Fn(&T) -> U + Send + Sync + 'static,
+{
+    fn seed(&self) -> U {
+        (self.f)(&self.source.seed())
+    }
+}
+
+// Map propagates the source's Seedness.
+#[allow(private_bounds)]
+impl<S, T, U, F, Sd> Pipeline<U, Sd> for MapPipeline<S, T, U, F>
+where
+    S: Pipeline<T, Sd>,
+    Sd: Seedness,
     T: CellValue,
     U: CellValue,
     F: Fn(&T) -> U + Send + Sync + 'static,
 {
 }
 
-pub trait MapExt<T: CellValue>: Pipeline<T> {
+impl<S, T, U, F> MaterializeDefinite<U> for MapPipeline<S, T, U, F>
+where
+    S: Pipeline<T, Definite> + PipelineSeed<T>,
+    T: CellValue,
+    U: CellValue,
+    F: Fn(&T) -> U + Send + Sync + 'static,
+{
+}
+
+impl<S, T, U, F> MaterializeEmpty<U> for MapPipeline<S, T, U, F>
+where
+    S: Pipeline<T, Empty>,
+    T: CellValue,
+    U: CellValue,
+    F: Fn(&T) -> U + Send + Sync + 'static,
+{
+}
+
+#[allow(private_bounds)]
+pub trait MapExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     #[track_caller]
     fn map<U, F>(self, f: F) -> MapPipeline<Self, T, U, F>
     where
@@ -74,12 +97,12 @@ pub trait MapExt<T: CellValue>: Pipeline<T> {
     }
 }
 
-impl<T: CellValue, P: Pipeline<T>> MapExt<T> for P {}
+impl<T: CellValue, S: Seedness, P: Pipeline<T, S>> MapExt<T, S> for P {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Cell, Mutable, traits::DepNode};
+    use crate::{Cell, Gettable, MaterializeDefinite, Mutable, traits::DepNode};
 
     #[test]
     fn test_map_transform() {

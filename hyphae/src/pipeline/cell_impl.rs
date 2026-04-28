@@ -1,26 +1,24 @@
-//! `Pipeline` and `PipelineInstall` implementations for source types.
+//! `Pipeline` and supporting trait implementations for source types.
 //!
 //! Every `Watchable` source — `Cell`, `BoundedInput`, ... — implements
-//! `PipelineInstall<T>` via a blanket so chained operators can subscribe
-//! to a generic upstream pipeline. `Pipeline<T>` itself is implemented
-//! explicitly per source type so that materialize() can be overridden
-//! when a no-op is sound.
+//! [`PipelineInstall`] via a blanket so chained operators can subscribe
+//! to a generic upstream pipeline. [`PipelineSeed`] is implemented for
+//! sources that have a definite current value.
 //!
-//! For [`Cell`], `materialize` is a marker flip (same `Arc<inner>`, new
-//! `PhantomData<CellImmutable>`) — there is no point allocating a fresh
-//! cell + forwarding subscription when the upstream is already a cached,
-//! multicast cell. Concrete pipeline structs (`MapPipeline`, ...) provide
-//! their own `Pipeline` impls and inherit the default `materialize`.
+//! [`Pipeline<T, Definite>`] is implemented explicitly per source type.
+//! [`MaterializeDefinite`] is overridden on [`Cell`] to skip the cell+forward
+//! allocation: a cell is already a cached, multicast source, so materializing
+//! is just a marker flip on the same `Arc<inner>`.
 
 use std::{marker::PhantomData, sync::Arc};
 
 use crate::{
     bounded_input::BoundedInput,
     cell::{Cell, CellImmutable},
-    pipeline::{Pipeline, PipelineInstall},
+    pipeline::{Definite, MaterializeDefinite, Pipeline, PipelineInstall, PipelineSeed},
     signal::Signal,
     subscription::SubscriptionGuard,
-    traits::{CellValue, Watchable},
+    traits::{CellValue, Gettable, Watchable},
 };
 
 impl<T: CellValue, W: Watchable<T>> PipelineInstall<T> for W {
@@ -32,8 +30,22 @@ impl<T: CellValue, W: Watchable<T>> PipelineInstall<T> for W {
     }
 }
 
+impl<T: CellValue, M: Send + Sync + 'static> PipelineSeed<T> for Cell<T, M> {
+    fn seed(&self) -> T {
+        self.get()
+    }
+}
+
+impl<T: CellValue> PipelineSeed<T> for BoundedInput<T> {
+    fn seed(&self) -> T {
+        self.get()
+    }
+}
+
 #[allow(private_bounds)]
-impl<T: CellValue, M: Send + Sync + 'static> Pipeline<T> for Cell<T, M> {
+impl<T: CellValue, M: Send + Sync + 'static> Pipeline<T, Definite> for Cell<T, M> {}
+
+impl<T: CellValue, M: Send + Sync + 'static> MaterializeDefinite<T> for Cell<T, M> {
     /// No-op materialize: the cell is already a cached, multicast source.
     /// Just flip the marker to `CellImmutable` and reuse the same `Arc<inner>`.
     fn materialize(self) -> Cell<T, CellImmutable> {
@@ -45,9 +57,9 @@ impl<T: CellValue, M: Send + Sync + 'static> Pipeline<T> for Cell<T, M> {
 }
 
 #[allow(private_bounds)]
-impl<T: CellValue> Pipeline<T> for BoundedInput<T> {
-    // Inherits the default materialize. BoundedInput has no underlying
-    // immutable cell to short-circuit to (the inner cell is wrapped in a
-    // bounded-channel structure), so the default allocate-and-forward
-    // strategy is correct here.
+impl<T: CellValue> Pipeline<T, Definite> for BoundedInput<T> {}
+
+impl<T: CellValue> MaterializeDefinite<T> for BoundedInput<T> {
+    // Default body is correct: BoundedInput has no underlying immutable cell
+    // to short-circuit to, so allocate a fresh cell + forwarding subscription.
 }

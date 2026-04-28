@@ -6,7 +6,10 @@ use std::{
     thread,
 };
 
-use crate::{Cell, Gettable, MapExt, Mutable, Pipeline, Signal, Watchable};
+use crate::{
+    Cell, Gettable, MapExt, MaterializeDefinite, MaterializeEmpty, Mutable, Signal,
+    Watchable,
+};
 
 // ============================================================================
 // Concurrent Write Tests
@@ -492,7 +495,7 @@ fn test_subscriber_outlives_source() {
 fn test_derived_outlives_source_with_updates() {
     let derived = {
         let source = Cell::new(0u64);
-        source.map(|x| x * 2)
+        source.map(|x| x * 2).materialize()
         // source dropped here
     };
 
@@ -509,7 +512,7 @@ fn test_concurrent_complete_signals() {
     use crate::TakeExt;
 
     let source = Cell::new(0u64);
-    let taken = source.take(5);
+    let taken = source.clone().take(5).materialize();
 
     let complete_count = Arc::new(AtomicUsize::new(0));
     let value_count = Arc::new(AtomicUsize::new(0));
@@ -591,17 +594,21 @@ fn barrage_all_operations_concurrent() {
                         }
                         3 => {
                             // Create derived and read
-                            let mapped = source.clone().map(|x| x.wrapping_mul(2));
+                            let mapped = source.clone().map(|x| x.wrapping_mul(2)).materialize();
                             let _ = mapped.get();
                         }
                         4 => {
                             // Create filter chain
-                            let filtered = source.clone().filter(|x| x % 2 == 0);
+                            let filtered =
+                                source.clone().filter(|x| x % 2 == 0).materialize();
                             let _ = filtered.get();
                         }
                         5 => {
                             // Create scan
-                            let scanned = source.scan(0u64, |acc, x| acc.wrapping_add(*x));
+                            let scanned = source
+                                .clone()
+                                .scan(0u64, |acc, x| acc.wrapping_add(*x))
+                                .materialize();
                             let _ = scanned.get();
                         }
                         _ => unreachable!(),
@@ -717,7 +724,7 @@ fn barrage_interleaved_operators() {
             thread::spawn(move || {
                 let pipeline: Box<dyn Fn() -> u64 + Send> = match thread_id % 5 {
                     0 => {
-                        let p = source.map(|x| x * 2).materialize().take(100);
+                        let p = source.map(|x| x * 2).materialize().take(100).materialize();
                         let _g = p.subscribe(move |s| {
                             if let Signal::Complete = s {
                                 cc.fetch_add(1, Ordering::Relaxed);
@@ -726,25 +733,37 @@ fn barrage_interleaved_operators() {
                         Box::new(move || p.get())
                     }
                     1 => {
-                        let p = source.filter(|x| x % 2 == 0).materialize().skip(5);
+                        let p = source
+                            .filter(|x| x % 2 == 0)
+                            .materialize()
+                            .skip(5)
+                            .materialize();
                         let _g = p.subscribe(move |s| {
                             if let Signal::Value(_) = s {
                                 vc.fetch_add(1, Ordering::Relaxed);
                             }
                         });
-                        Box::new(move || p.get())
+                        Box::new(move || p.get().flatten().unwrap_or(0))
                     }
                     2 => {
-                        let p = source.scan(0u64, |acc, x| acc.wrapping_add(*x));
+                        let p = source
+                            .clone()
+                            .scan(0u64, |acc, x| acc.wrapping_add(*x))
+                            .materialize();
                         Box::new(move || p.get())
                     }
                     3 => {
-                        let p = source.deduped();
+                        let p = source.deduped().materialize();
                         Box::new(move || p.get())
                     }
                     4 => {
-                        let p = source.map(|x| x + 1).materialize().filter(|x| *x > 10).map(|x| x * 2).materialize();
-                        Box::new(move || p.get())
+                        let p = source
+                            .map(|x| x + 1)
+                            .materialize()
+                            .filter(|x| *x > 10)
+                            .map(|x| x * 2)
+                            .materialize();
+                        Box::new(move || p.get().unwrap_or(0))
                     }
                     _ => unreachable!(),
                 };

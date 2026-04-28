@@ -417,7 +417,7 @@ mod tests {
 
     #[test]
     fn test_state_transition_selective_emit() {
-        use crate::{FilterExt, Gettable, Pipeline};
+        use crate::{FilterExt, Gettable, MaterializeEmpty};
 
         let source = Cell::new(State::Idle);
         let sm = source.state_transition(|sm| {
@@ -446,6 +446,6 @@ mod tests {
 
         source.set(State::Loading); // true again - emits
         assert_eq!(emission_count.load(Ordering::SeqCst), 3);
-        assert!(triggers.get());
+        assert_eq!(triggers.get(), Some(true));
     }
 }

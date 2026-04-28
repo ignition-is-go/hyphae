@@ -22,6 +22,12 @@
 //! `SharedPipeline` that has been fully drained will not reactivate. Hold the
 //! `SharedPipeline` (or one materialized leaf) for as long as you want the
 //! shared work to keep running.
+//!
+//! # Definite-only
+//!
+//! `share()` currently requires a [`Definite`] upstream pipeline.
+//! [`Empty`](crate::pipeline::Empty) pipelines are not share-able yet — sharing
+//! a may-be-empty stream needs additional design for the seed contract.
 
 use std::sync::{Arc, Mutex};
 
@@ -29,16 +35,18 @@ use arc_swap::ArcSwap;
 use uuid::Uuid;
 
 use crate::{
-    pipeline::{Pipeline, PipelineInstall},
+    pipeline::{
+        Definite, MaterializeDefinite, Pipeline, PipelineInstall, PipelineSeed,
+    },
     signal::Signal,
     subscription::SubscriptionGuard,
-    traits::{CellValue, Gettable},
+    traits::CellValue,
 };
 
 /// Type-erased upstream handle: holds the original pipeline alive and exposes
-/// `get()` + `install()` so [`SharedPipeline`] can defer materialization.
+/// `seed()` + `install()` so [`SharedPipeline`] can defer materialization.
 trait UpstreamHandle<T>: Send + Sync + 'static {
-    fn get(&self) -> T;
+    fn seed(&self) -> T;
     fn install_upstream(
         &self,
         sink: Arc<dyn Fn(&Signal<T>) + Send + Sync>,
@@ -50,10 +58,10 @@ struct UpstreamWrap<P>(P);
 impl<T, P> UpstreamHandle<T> for UpstreamWrap<P>
 where
     T: CellValue,
-    P: Pipeline<T>,
+    P: Pipeline<T, Definite> + PipelineSeed<T>,
 {
-    fn get(&self) -> T {
-        self.0.get()
+    fn seed(&self) -> T {
+        self.0.seed()
     }
     fn install_upstream(
         &self,
@@ -66,7 +74,7 @@ where
 type Subscriber<T> = Arc<dyn Fn(&Signal<T>) + Send + Sync>;
 
 pub(crate) struct SharedPipelineInner<T: CellValue> {
-    /// Original pipeline kept alive so `get()` can recompute and so the first
+    /// Original pipeline kept alive so `seed()` can recompute and so the first
     /// downstream install can subscribe. Type-erased through `UpstreamHandle`.
     upstream: Arc<dyn UpstreamHandle<T>>,
     /// Held subscription on the upstream once the first downstream consumer
@@ -116,7 +124,7 @@ impl<T: CellValue> SharedPipelineInner<T> {
 /// # Example
 ///
 /// ```
-/// use hyphae::{Cell, Gettable, MapExt, Mutable, Pipeline, PipelineShareExt};
+/// use hyphae::{Cell, Gettable, MapExt, MaterializeDefinite, Mutable, PipelineShareExt};
 ///
 /// let src = Cell::new(1u64);
 /// let shared = src.clone().map(|x| x * 2).share();
@@ -144,9 +152,9 @@ impl<T: CellValue> Clone for SharedPipeline<T> {
 impl<T: CellValue> SharedPipeline<T> {
     /// Wrap a pipeline in a shared, multicast handle.
     ///
-    /// Prefer the [`PipelineShareExt::share`] extension method — it reads as
-    /// `pipeline.share()` at the call site.
-    pub fn new<P: Pipeline<T>>(p: P) -> Self {
+    /// Prefer the [`PipelineShareExt::share`] extension method.
+    #[allow(private_bounds)]
+    pub fn new<P: Pipeline<T, Definite> + PipelineSeed<T>>(p: P) -> Self {
         let upstream: Arc<dyn UpstreamHandle<T>> = Arc::new(UpstreamWrap(p));
         Self {
             inner: Arc::new(SharedPipelineInner {
@@ -159,11 +167,11 @@ impl<T: CellValue> SharedPipeline<T> {
     }
 }
 
-impl<T: CellValue> Gettable<T> for SharedPipeline<T> {
-    fn get(&self) -> T {
-        // Recompute through the upstream. Mirrors how `MapPipeline::get`
+impl<T: CellValue> PipelineSeed<T> for SharedPipeline<T> {
+    fn seed(&self) -> T {
+        // Recompute through the upstream. Mirrors how `MapPipeline::seed`
         // works on a non-shared chain.
-        self.inner.upstream.get()
+        self.inner.upstream.seed()
     }
 }
 
@@ -216,17 +224,12 @@ impl<T: CellValue> PipelineInstall<T> for SharedPipeline<T> {
             };
             let remaining = inner.remove_subscriber(id);
             if remaining == 0 {
-                // Last consumer left — release upstream subscription. A
-                // future install on this same SharedPipeline will re-subscribe
-                // upstream from scratch.
                 let mut slot = inner
                     .upstream_guard
                     .lock()
                     .expect("share upstream_guard poisoned");
                 let _drop_outside_lock = slot.take();
                 drop(slot);
-                // Drop happens here, after releasing the lock, to avoid running
-                // upstream cleanup callbacks under our lock.
                 drop(_drop_outside_lock);
             }
         })
@@ -234,25 +237,32 @@ impl<T: CellValue> PipelineInstall<T> for SharedPipeline<T> {
 }
 
 #[allow(private_bounds)]
-impl<T: CellValue> Pipeline<T> for SharedPipeline<T> {
-    // Default `materialize` is correct: it allocates a Cell that subscribes
-    // through `install()` above, which adds one entry to the share-point
-    // subscriber list and (on first install) one upstream subscription.
+impl<T: CellValue> Pipeline<T, Definite> for SharedPipeline<T> {}
+
+impl<T: CellValue> MaterializeDefinite<T> for SharedPipeline<T> {
+    // Default body is correct: allocate a Cell, install through
+    // PipelineInstall above (which adds one entry to the share-point
+    // subscriber list and, on first install, one upstream subscription).
 }
 
 /// Extension trait that adds [`share`](PipelineShareExt::share) to any
-/// [`Pipeline`].
+/// [`Definite`] [`Pipeline`].
 ///
 /// `share()` consumes the pipeline and returns a Clone-able
 /// [`SharedPipeline`] handle. Each clone of the handle, when materialized
 /// (or otherwise installed), adds one fan-out subscriber but does NOT add
 /// another upstream subscription — the share point subscribes upstream
 /// exactly once, the first time it has a consumer.
-pub trait PipelineShareExt<T: CellValue>: Pipeline<T> {
-    /// Convert this pipeline into a Clone-able multicast handle.
+#[allow(private_bounds)]
+pub trait PipelineShareExt<T: CellValue>:
+    Pipeline<T, Definite> + PipelineSeed<T>
+{
     fn share(self) -> SharedPipeline<T> {
         SharedPipeline::new(self)
     }
 }
 
-impl<T: CellValue, P: Pipeline<T>> PipelineShareExt<T> for P {}
+impl<T: CellValue, P: Pipeline<T, Definite> + PipelineSeed<T>>
+    PipelineShareExt<T> for P
+{
+}

@@ -4,9 +4,12 @@
 //! transformations and allocate no intermediate cells.
 
 use super::{CellValue, MapExt, MapPipeline};
-use crate::pipeline::Pipeline;
+use crate::pipeline::{Pipeline, Seedness};
 
-pub trait MapOkExt<T: CellValue, E: CellValue>: Pipeline<Result<T, E>> {
+#[allow(private_bounds)]
+pub trait MapOkExt<T: CellValue, E: CellValue, S: Seedness>:
+    Pipeline<Result<T, E>, S>
+{
     #[track_caller]
     fn map_ok<U, F>(
         self,
@@ -29,9 +32,15 @@ pub trait MapOkExt<T: CellValue, E: CellValue>: Pipeline<Result<T, E>> {
     }
 }
 
-impl<T: CellValue, E: CellValue, P: Pipeline<Result<T, E>>> MapOkExt<T, E> for P {}
+impl<T: CellValue, E: CellValue, S: Seedness, P: Pipeline<Result<T, E>, S>>
+    MapOkExt<T, E, S> for P
+{
+}
 
-pub trait MapErrExt<T: CellValue, E: CellValue>: Pipeline<Result<T, E>> {
+#[allow(private_bounds)]
+pub trait MapErrExt<T: CellValue, E: CellValue, S: Seedness>:
+    Pipeline<Result<T, E>, S>
+{
     #[track_caller]
     fn map_err<E2, F>(
         self,
@@ -54,9 +63,15 @@ pub trait MapErrExt<T: CellValue, E: CellValue>: Pipeline<Result<T, E>> {
     }
 }
 
-impl<T: CellValue, E: CellValue, P: Pipeline<Result<T, E>>> MapErrExt<T, E> for P {}
+impl<T: CellValue, E: CellValue, S: Seedness, P: Pipeline<Result<T, E>, S>>
+    MapErrExt<T, E, S> for P
+{
+}
 
-pub trait CatchErrorExt<T: CellValue, E: CellValue>: Pipeline<Result<T, E>> {
+#[allow(private_bounds)]
+pub trait CatchErrorExt<T: CellValue, E: CellValue, S: Seedness>:
+    Pipeline<Result<T, E>, S>
+{
     #[track_caller]
     fn catch_error<F>(
         self,
@@ -78,9 +93,15 @@ pub trait CatchErrorExt<T: CellValue, E: CellValue>: Pipeline<Result<T, E>> {
     }
 }
 
-impl<T: CellValue, E: CellValue, P: Pipeline<Result<T, E>>> CatchErrorExt<T, E> for P {}
+impl<T: CellValue, E: CellValue, S: Seedness, P: Pipeline<Result<T, E>, S>>
+    CatchErrorExt<T, E, S> for P
+{
+}
 
-pub trait UnwrapOrExt<T: CellValue, E: CellValue>: Pipeline<Result<T, E>> {
+#[allow(private_bounds)]
+pub trait UnwrapOrExt<T: CellValue, E: CellValue, S: Seedness>:
+    Pipeline<Result<T, E>, S>
+{
     #[track_caller]
     fn unwrap_or(
         self,
@@ -118,4 +139,7 @@ pub trait UnwrapOrExt<T: CellValue, E: CellValue>: Pipeline<Result<T, E>> {
     }
 }
 
-impl<T: CellValue, E: CellValue, P: Pipeline<Result<T, E>>> UnwrapOrExt<T, E> for P {}
+impl<T: CellValue, E: CellValue, S: Seedness, P: Pipeline<Result<T, E>, S>>
+    UnwrapOrExt<T, E, S> for P
+{
+}
