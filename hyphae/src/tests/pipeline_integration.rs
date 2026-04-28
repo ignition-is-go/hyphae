@@ -135,7 +135,13 @@ fn try_map_pipeline_produces_result_cell() {
     let src = Cell::new(10i32);
     let parsed = src
         .clone()
-        .try_map(|v| if *v > 0 { Ok(v.to_string()) } else { Err("must be positive") })
+        .try_map(|v| {
+            if *v > 0 {
+                Ok(v.to_string())
+            } else {
+                Err("must be positive")
+            }
+        })
         .materialize();
 
     assert_eq!(parsed.get(), Ok("10".to_string()));
@@ -182,7 +188,10 @@ fn map_ok_transforms_only_ok() {
 #[test]
 fn map_err_transforms_only_err() {
     let src: Cell<Result<i32, String>, _> = Cell::new(Err("oops".to_string()));
-    let wrapped = src.clone().map_err(|e| format!("wrapped: {}", e)).materialize();
+    let wrapped = src
+        .clone()
+        .map_err(|e| format!("wrapped: {}", e))
+        .materialize();
 
     assert_eq!(wrapped.get(), Err("wrapped: oops".to_string()));
     src.set(Ok(99));
@@ -250,7 +259,10 @@ fn shared_pipeline_drops_upstream_when_all_subscribers_drop() {
     let m1 = shared.clone().materialize();
     let m2 = shared.clone().materialize();
 
-    assert_eq!(crate::traits::DepNode::subscriber_count(&src), initial_subs + 1);
+    assert_eq!(
+        crate::traits::DepNode::subscriber_count(&src),
+        initial_subs + 1
+    );
 
     drop(m1);
     drop(m2);
@@ -263,16 +275,15 @@ fn shared_pipeline_drops_upstream_when_all_subscribers_drop() {
 fn shared_pipeline_fans_out_to_many_consumers() {
     use crate::Watchable;
     use std::sync::{
-        atomic::{AtomicU64, Ordering},
         Arc as StdArc,
+        atomic::{AtomicU64, Ordering},
     };
 
     let src = Cell::new(1u64);
     let shared = src.clone().map(|x| x * 10).share();
 
     // Five direct subscribers via materialize -> subscribe.
-    let counters: Vec<StdArc<AtomicU64>> =
-        (0..5).map(|_| StdArc::new(AtomicU64::new(0))).collect();
+    let counters: Vec<StdArc<AtomicU64>> = (0..5).map(|_| StdArc::new(AtomicU64::new(0))).collect();
     let mats: Vec<_> = (0..5).map(|_| shared.clone().materialize()).collect();
     let _guards: Vec<_> = mats
         .iter()

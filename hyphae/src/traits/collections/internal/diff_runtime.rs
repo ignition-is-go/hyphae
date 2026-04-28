@@ -122,20 +122,7 @@ where
 ///
 /// Used by `CountByPlan` and `GroupByPlan` to install grouping machinery
 /// into a downstream sink without materializing an intermediate `CellMap`.
-pub(crate) fn install_grouped_runtime_via_query<
-    SK,
-    SV,
-    GK,
-    GS,
-    OV,
-    S,
-    FG,
-    FI,
-    FU,
-    FR,
-    FM,
-    FE,
->(
+pub(crate) fn install_grouped_runtime_via_query<SK, SV, GK, GS, OV, S, FG, FI, FU, FR, FM, FE>(
     source: S,
     ops: GroupedOps<SK, SV, GK, GS, OV, FG, FI, FU, FR, FM, FE>,
     sink: MapDiffSink<GK, OV>,

@@ -4,11 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::{
-    cell_map::MapDiff,
-    subscription::SubscriptionGuard,
-    traits::CellValue,
-};
+use crate::{cell_map::MapDiff, subscription::SubscriptionGuard, traits::CellValue};
 
 struct JoinState<LK, LV, RK, RV, JK, OK, OV>
 where
@@ -406,10 +402,8 @@ where
 /// subscribers: every non-empty group of output diffs produced from a single
 /// upstream diff is delivered as one `MapDiff::Batch`, even when the group
 /// contains a single change. Empty batches are dropped.
-fn emit_changes<OK, OV>(
-    sink: &crate::map_query::MapDiffSink<OK, OV>,
-    changes: Vec<MapDiff<OK, OV>>,
-) where
+fn emit_changes<OK, OV>(sink: &crate::map_query::MapDiffSink<OK, OV>, changes: Vec<MapDiff<OK, OV>>)
+where
     OK: Hash + Eq + CellValue,
     OV: CellValue,
 {

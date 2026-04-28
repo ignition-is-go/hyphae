@@ -7,8 +7,7 @@ use std::{
 };
 
 use crate::{
-    Cell, Gettable, MapExt, MaterializeDefinite, MaterializeEmpty, Mutable, Signal,
-    Watchable,
+    Cell, Gettable, MapExt, MaterializeDefinite, MaterializeEmpty, Mutable, Signal, Watchable,
 };
 
 // ============================================================================
@@ -441,10 +440,13 @@ fn test_subscriber_sees_consistent_state() {
     let b = Cell::new(0u64);
 
     // Create a derived cell that depends on both
-    let sum = a.clone().map({
-        let b = b.clone();
-        move |av| *av + b.get()
-    }).materialize();
+    let sum = a
+        .clone()
+        .map({
+            let b = b.clone();
+            move |av| *av + b.get()
+        })
+        .materialize();
 
     let inconsistencies = Arc::new(AtomicU64::new(0));
     let _inc = inconsistencies.clone();
@@ -599,8 +601,7 @@ fn barrage_all_operations_concurrent() {
                         }
                         4 => {
                             // Create filter chain
-                            let filtered =
-                                source.clone().filter(|x| x % 2 == 0).materialize();
+                            let filtered = source.clone().filter(|x| x % 2 == 0).materialize();
                             let _ = filtered.get();
                         }
                         5 => {

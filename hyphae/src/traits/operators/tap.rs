@@ -4,7 +4,10 @@ use std::{marker::PhantomData, sync::Arc};
 
 use super::CellValue;
 use crate::{
-    pipeline::{Definite, Empty, MaterializeDefinite, MaterializeEmpty, Pipeline, PipelineInstall, PipelineSeed, Seedness},
+    pipeline::{
+        Definite, Empty, MaterializeDefinite, MaterializeEmpty, Pipeline, PipelineInstall,
+        PipelineSeed, Seedness,
+    },
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -22,10 +25,7 @@ where
     T: CellValue,
     F: Fn(&T) + Send + Sync + 'static,
 {
-    fn install(
-        &self,
-        callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>,
-    ) -> SubscriptionGuard {
+    fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
         let f = Arc::clone(&self.f);
         let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> = Arc::new(move |signal: &Signal<T>| {
             if let Signal::Value(v) = signal {
@@ -113,9 +113,12 @@ mod tests {
         let side_effect = Arc::new(AtomicU64::new(0));
 
         let se = side_effect.clone();
-        let tapped = source.clone().tap(move |v| {
-            se.store(*v, Ordering::SeqCst);
-        }).materialize();
+        let tapped = source
+            .clone()
+            .tap(move |v| {
+                se.store(*v, Ordering::SeqCst);
+            })
+            .materialize();
 
         source.set(42);
         assert_eq!(side_effect.load(Ordering::SeqCst), 42);

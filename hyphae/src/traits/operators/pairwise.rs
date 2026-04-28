@@ -28,10 +28,7 @@ where
     Sd: Seedness,
     T: CellValue,
 {
-    fn install(
-        &self,
-        callback: Arc<dyn Fn(&Signal<(T, T)>) + Send + Sync>,
-    ) -> SubscriptionGuard {
+    fn install(&self, callback: Arc<dyn Fn(&Signal<(T, T)>) + Send + Sync>) -> SubscriptionGuard {
         // Seed `last` with source.seed(). The synchronous initial emit will
         // come in with the same value, so we want to swallow it (no pair yet).
         // Use a flag to detect the very first emission and store it without
@@ -48,10 +45,7 @@ where
                     }
                     let prev = last.load_full();
                     last.store(v.clone());
-                    callback(&Signal::value((
-                        (*prev).clone(),
-                        v.as_ref().clone(),
-                    )));
+                    callback(&Signal::value(((*prev).clone(), v.as_ref().clone())));
                 }
                 Signal::Complete => callback(&Signal::Complete),
                 Signal::Error(e) => callback(&Signal::Error(e.clone())),

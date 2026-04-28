@@ -4,7 +4,10 @@ use std::{marker::PhantomData, sync::Arc};
 
 use super::CellValue;
 use crate::{
-    pipeline::{Definite, Empty, MaterializeDefinite, MaterializeEmpty, Pipeline, PipelineInstall, PipelineSeed, Seedness},
+    pipeline::{
+        Definite, Empty, MaterializeDefinite, MaterializeEmpty, Pipeline, PipelineInstall,
+        PipelineSeed, Seedness,
+    },
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -23,10 +26,7 @@ where
     U: CellValue,
     F: Fn(&T) -> U + Send + Sync + 'static,
 {
-    fn install(
-        &self,
-        callback: Arc<dyn Fn(&Signal<U>) + Send + Sync>,
-    ) -> SubscriptionGuard {
+    fn install(&self, callback: Arc<dyn Fn(&Signal<U>) + Send + Sync>) -> SubscriptionGuard {
         let f = Arc::clone(&self.f);
         let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
             Arc::new(move |signal: &Signal<T>| match signal {

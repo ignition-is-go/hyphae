@@ -67,13 +67,10 @@ where
     T: CellValue,
     F: FnOnce() + Send + Sync + 'static,
 {
-    fn install(
-        &self,
-        callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>,
-    ) -> SubscriptionGuard {
+    fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
         let oncecb = Arc::clone(&self.callback);
-        let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> = Arc::new(move |signal: &Signal<T>| {
-            match signal {
+        let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
+            Arc::new(move |signal: &Signal<T>| match signal {
                 Signal::Value(_) => callback(signal),
                 Signal::Complete => {
                     oncecb.call();
@@ -83,8 +80,7 @@ where
                     oncecb.call();
                     callback(signal);
                 }
-            }
-        });
+            });
         self.source.install(wrapped)
     }
 }
@@ -180,9 +176,12 @@ mod tests {
         let finalized = Arc::new(AtomicBool::new(false));
 
         let f = finalized.clone();
-        let _finalized_cell = source.clone().finalize(move || {
-            f.store(true, Ordering::SeqCst);
-        }).materialize();
+        let _finalized_cell = source
+            .clone()
+            .finalize(move || {
+                f.store(true, Ordering::SeqCst);
+            })
+            .materialize();
 
         assert!(!finalized.load(Ordering::SeqCst));
 
@@ -196,9 +195,12 @@ mod tests {
         let finalized = Arc::new(AtomicBool::new(false));
 
         let f = finalized.clone();
-        let _finalized_cell = source.clone().finalize(move || {
-            f.store(true, Ordering::SeqCst);
-        }).materialize();
+        let _finalized_cell = source
+            .clone()
+            .finalize(move || {
+                f.store(true, Ordering::SeqCst);
+            })
+            .materialize();
 
         assert!(!finalized.load(Ordering::SeqCst));
 
@@ -212,9 +214,12 @@ mod tests {
         let count = Arc::new(AtomicU32::new(0));
 
         let c = count.clone();
-        let _finalized_cell = source.clone().finalize(move || {
-            c.fetch_add(1, AtomicOrdering::SeqCst);
-        }).materialize();
+        let _finalized_cell = source
+            .clone()
+            .finalize(move || {
+                c.fetch_add(1, AtomicOrdering::SeqCst);
+            })
+            .materialize();
 
         source.complete();
         source.complete(); // second complete

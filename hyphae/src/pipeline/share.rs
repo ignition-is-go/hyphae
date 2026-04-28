@@ -35,9 +35,7 @@ use arc_swap::ArcSwap;
 use uuid::Uuid;
 
 use crate::{
-    pipeline::{
-        Definite, MaterializeDefinite, Pipeline, PipelineInstall, PipelineSeed,
-    },
+    pipeline::{Definite, MaterializeDefinite, Pipeline, PipelineInstall, PipelineSeed},
     signal::Signal,
     subscription::SubscriptionGuard,
     traits::CellValue,
@@ -47,10 +45,7 @@ use crate::{
 /// `seed()` + `install()` so [`SharedPipeline`] can defer materialization.
 trait UpstreamHandle<T>: Send + Sync + 'static {
     fn seed(&self) -> T;
-    fn install_upstream(
-        &self,
-        sink: Arc<dyn Fn(&Signal<T>) + Send + Sync>,
-    ) -> SubscriptionGuard;
+    fn install_upstream(&self, sink: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard;
 }
 
 struct UpstreamWrap<P>(P);
@@ -63,10 +58,7 @@ where
     fn seed(&self) -> T {
         self.0.seed()
     }
-    fn install_upstream(
-        &self,
-        sink: Arc<dyn Fn(&Signal<T>) + Send + Sync>,
-    ) -> SubscriptionGuard {
+    fn install_upstream(&self, sink: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
         self.0.install(sink)
     }
 }
@@ -104,8 +96,11 @@ impl<T: CellValue> SharedPipelineInner<T> {
     fn remove_subscriber(&self, id: Uuid) -> usize {
         let _w = self.subs_writer.lock().expect("share subs_writer poisoned");
         let current = self.subscribers.load();
-        let mut next: Vec<(Uuid, Subscriber<T>)> =
-            (**current).iter().filter(|(i, _)| *i != id).cloned().collect();
+        let mut next: Vec<(Uuid, Subscriber<T>)> = (**current)
+            .iter()
+            .filter(|(i, _)| *i != id)
+            .cloned()
+            .collect();
         let remaining = next.len();
         next.shrink_to_fit();
         self.subscribers.store(Arc::new(next));
@@ -176,10 +171,7 @@ impl<T: CellValue> PipelineSeed<T> for SharedPipeline<T> {
 }
 
 impl<T: CellValue> PipelineInstall<T> for SharedPipeline<T> {
-    fn install(
-        &self,
-        callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>,
-    ) -> SubscriptionGuard {
+    fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
         let id = Uuid::new_v4();
 
         // 1. Register the callback. Order matters: if we registered AFTER
@@ -254,15 +246,10 @@ impl<T: CellValue> MaterializeDefinite<T> for SharedPipeline<T> {
 /// another upstream subscription — the share point subscribes upstream
 /// exactly once, the first time it has a consumer.
 #[allow(private_bounds)]
-pub trait PipelineShareExt<T: CellValue>:
-    Pipeline<T, Definite> + PipelineSeed<T>
-{
+pub trait PipelineShareExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
     fn share(self) -> SharedPipeline<T> {
         SharedPipeline::new(self)
     }
 }
 
-impl<T: CellValue, P: Pipeline<T, Definite> + PipelineSeed<T>>
-    PipelineShareExt<T> for P
-{
-}
+impl<T: CellValue, P: Pipeline<T, Definite> + PipelineSeed<T>> PipelineShareExt<T> for P {}

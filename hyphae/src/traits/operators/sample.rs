@@ -51,10 +51,7 @@ impl<T, W: Watchable<T>> SampleExt<T> for W {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        Cell, MaterializeDefinite, Mutable, Signal,
-        cell::CellImmutable,
-    };
+    use crate::{Cell, MaterializeDefinite, Mutable, Signal, cell::CellImmutable};
 
     #[test]
     fn test_sample() {

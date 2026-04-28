@@ -11,9 +11,7 @@ use crate::{
     subscription::SubscriptionGuard,
     traits::{
         CellValue,
-        collections::internal::diff_runtime::{
-            GroupedOps, install_grouped_runtime_via_query,
-        },
+        collections::internal::diff_runtime::{GroupedOps, install_grouped_runtime_via_query},
     },
 };
 

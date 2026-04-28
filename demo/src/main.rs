@@ -8,8 +8,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hyphae::{
-    Cell, CellImmutable, CellMap, FilterExt, JoinExt, MapExt, PairwiseExt, Pipeline, ScanExt,
-    Signal, SwitchMapExt, Watchable, WindowExt, interval, join_vec,
+    Cell, CellImmutable, CellMap, FilterExt, JoinExt, MapExt, MaterializeDefinite,
+    MaterializeEmpty, PairwiseExt, ScanExt, Signal, SwitchMapExt, Watchable, WindowExt, interval,
+    join_vec,
 };
 
 #[tokio::main]
@@ -54,6 +55,7 @@ async fn main() {
     // ── Running average of sine using scan ───────────────────────────────
 
     let _running_avg = sine
+        .clone()
         .scan((0.0_f64, 0_u64), |state, value| {
             let (sum, count) = state;
             (sum + value, count + 1)
@@ -96,9 +98,15 @@ async fn main() {
     let fast_for_switch = fast.clone();
     let _phase_signal = phase
         .switch_map(move |phase_name| match *phase_name {
-            "rising" => fast_for_switch.clone().map(|t| (*t as f64 * 0.05).min(1.0)).materialize(),
+            "rising" => fast_for_switch
+                .clone()
+                .map(|t| (*t as f64 * 0.05).min(1.0))
+                .materialize(),
             "peak" => Cell::new(1.0).lock(),
-            "falling" => fast_for_switch.clone().map(|t| (1.0 - *t as f64 * 0.05).max(0.0)).materialize(),
+            "falling" => fast_for_switch
+                .clone()
+                .map(|t| (1.0 - *t as f64 * 0.05).max(0.0))
+                .materialize(),
             _ => Cell::new(0.0).lock(),
         })
         .with_name("phase_signal");
@@ -114,8 +122,11 @@ async fn main() {
     // ── Pairwise velocity ───────────────────────────────────────────────
 
     let velocity = sine
+        .clone()
         .pairwise()
         .map(|(prev, curr)| ((curr - prev) * 1000.0).round() / 1000.0)
+        .materialize()
+        .map(|v| v.unwrap_or(0.0))
         .materialize()
         .with_name("velocity");
 

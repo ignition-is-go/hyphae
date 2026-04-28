@@ -35,17 +35,14 @@ where
     Sd: Seedness,
     T: CellValue,
 {
-    fn install(
-        &self,
-        callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>,
-    ) -> SubscriptionGuard {
+    fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
         // Skip the synchronous-on-subscribe initial replay so the source's
         // retained value does not count as an emission; only true post-subscribe
         // emissions feed `last_value`.
         let last_value: Arc<ArcSwap<Option<T>>> = Arc::new(ArcSwap::from_pointee(None));
         let first = Arc::new(AtomicBool::new(true));
-        let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> = Arc::new(move |signal: &Signal<T>| {
-            match signal {
+        let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
+            Arc::new(move |signal: &Signal<T>| match signal {
                 Signal::Value(v) => {
                     if first.swap(false, AtomicOrdering::SeqCst) {
                         return;
@@ -60,8 +57,7 @@ where
                     callback(&Signal::Complete);
                 }
                 Signal::Error(e) => callback(&Signal::Error(e.clone())),
-            }
-        });
+            });
         self.source.install(wrapped)
     }
 }
@@ -96,15 +92,12 @@ where
     Sd: Seedness,
     T: CellValue,
 {
-    fn install(
-        &self,
-        callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>,
-    ) -> SubscriptionGuard {
+    fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
         let last_value: Arc<ArcSwap<Option<T>>> = Arc::new(ArcSwap::from_pointee(None));
         let default = self.default.clone();
         let first = Arc::new(AtomicBool::new(true));
-        let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> = Arc::new(move |signal: &Signal<T>| {
-            match signal {
+        let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
+            Arc::new(move |signal: &Signal<T>| match signal {
                 Signal::Value(v) => {
                     if first.swap(false, AtomicOrdering::SeqCst) {
                         return;
@@ -121,8 +114,7 @@ where
                     callback(&Signal::Complete);
                 }
                 Signal::Error(e) => callback(&Signal::Error(e.clone())),
-            }
-        });
+            });
         self.source.install(wrapped)
     }
 }

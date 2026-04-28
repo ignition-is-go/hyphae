@@ -33,17 +33,14 @@ where
     T: CellValue,
     F: Fn(&T, &T) -> bool + Send + Sync + 'static,
 {
-    fn install(
-        &self,
-        callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>,
-    ) -> SubscriptionGuard {
+    fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
         let comparator = Arc::clone(&self.comparator);
         // Seed last_value with source.seed() so the synchronous initial emit
         // compares equal and is naturally swallowed (the materialized cell is
         // already seeded with the same value via PipelineSeed).
         let last_value: Arc<ArcSwap<T>> = Arc::new(ArcSwap::from_pointee(self.source.seed()));
-        let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> = Arc::new(move |signal: &Signal<T>| {
-            match signal {
+        let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
+            Arc::new(move |signal: &Signal<T>| match signal {
                 Signal::Value(v) => {
                     let last = last_value.load();
                     if !(comparator)(v.as_ref(), last.as_ref()) {
@@ -53,8 +50,7 @@ where
                 }
                 Signal::Complete => callback(&Signal::Complete),
                 Signal::Error(e) => callback(&Signal::Error(e.clone())),
-            }
-        });
+            });
         self.source.install(wrapped)
     }
 }
@@ -135,8 +131,8 @@ pub trait DistinctUntilChangedByExt<T: CellValue, S: Seedness>:
     }
 }
 
-impl<T: CellValue, S: Seedness, P: Pipeline<T, S> + PipelineSeed<T>>
-    DistinctUntilChangedByExt<T, S> for P
+impl<T: CellValue, S: Seedness, P: Pipeline<T, S> + PipelineSeed<T>> DistinctUntilChangedByExt<T, S>
+    for P
 {
 }
 

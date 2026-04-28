@@ -62,8 +62,7 @@ where
         // intermediate sink below — projects `Some(...) -> (K2, V2)` and `None
         // -> Remove`, tracking the last emitted `(K2, V2)` per source key so
         // we know what to Remove on transitions.
-        let last_emitted: Arc<Mutex<HashMap<K, (K2, V2)>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let last_emitted: Arc<Mutex<HashMap<K, (K2, V2)>>> = Arc::new(Mutex::new(HashMap::new()));
 
         let intermediate_sink: MapDiffSink<K, Option<(K2, V2)>> = {
             let last_emitted = last_emitted.clone();
@@ -242,12 +241,7 @@ where
     where
         K2: Hash + Eq + CellValue,
         V2: CellValue,
-        W: Watchable<Option<(K2, V2)>>
-            + Gettable<Option<(K2, V2)>>
-            + Clone
-            + Send
-            + Sync
-            + 'static,
+        W: Watchable<Option<(K2, V2)>> + Gettable<Option<(K2, V2)>> + Clone + Send + Sync + 'static,
         F: Fn(&K, &V) -> W + Send + Sync + 'static,
     {
         ProjectCellPlan {
@@ -269,7 +263,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MaterializeDefinite, Cell, CellMap, MapExt};
+    use crate::{Cell, CellMap, MapExt, MaterializeDefinite};
 
     #[test]
     fn project_cell_reacts_to_inner_pipeline_emissions() {
@@ -347,9 +341,7 @@ mod tests {
 
         let mat = src
             .clone()
-            .project_cell(|key, value| {
-                Cell::new(Some((key.clone(), *value * 10))).lock()
-            })
+            .project_cell(|key, value| Cell::new(Some((key.clone(), *value * 10))).lock())
             .materialize();
 
         assert_eq!(mat.get_value(&"a".to_string()), Some(10));

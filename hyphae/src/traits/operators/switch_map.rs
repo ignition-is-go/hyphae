@@ -193,7 +193,7 @@ impl<T, W: Watchable<T>> SwitchMapExt<T> for W {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MaterializeDefinite, MapExt, Mutable};
+    use crate::{MapExt, MaterializeDefinite, Mutable};
 
     #[test]
     fn test_switch_map_switches() {
@@ -224,10 +224,12 @@ mod tests {
             // Simulate: query_map().items() — an intermediate cell
             let intermediate = Cell::new(v * 10);
             // Simulate: .map() on items
-            intermediate.map(move |x| {
-                count_inner.fetch_add(1, Ordering::SeqCst);
-                *x + v
-            }).materialize()
+            intermediate
+                .map(move |x| {
+                    count_inner.fetch_add(1, Ordering::SeqCst);
+                    *x + v
+                })
+                .materialize()
         });
 
         assert_eq!(switched.get(), 0); // 0 * 10 + 0

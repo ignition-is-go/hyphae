@@ -161,12 +161,12 @@ pub use cell_set::{CellSet, SetDiff};
 pub use constructors::from_iter_with_delay;
 #[cfg(not(target_arch = "wasm32"))]
 pub use constructors::{IntervalTick, interval, interval_precise, interval_precise_with_elapsed};
-pub use metrics::CellMetrics;
 pub use map_query::{MapQuery, MapQueryShareExt, SharedMapQuery};
+pub use metrics::CellMetrics;
 pub use nested_map::NestedMap;
 pub use pipeline::{
-    Definite, Empty, MaterializeDefinite, MaterializeEmpty, Pipeline, PipelineShareExt,
-    Seedness, SharedPipeline,
+    Definite, Empty, MaterializeDefinite, MaterializeEmpty, Pipeline, PipelineShareExt, Seedness,
+    SharedPipeline,
 };
 pub use signal::Signal;
 pub use subscription::SubscriptionGuard;
@@ -177,16 +177,15 @@ pub use traits::{
     ConcatExt, CountByExt, CountByPlan, DebounceExt, DedupedExt, DelayExt, DepNode, DistinctExt,
     DistinctUntilChangedByExt, FilterExt, FilterPipeline, FinalizeExt, FirstExt, Gettable,
     GroupByExt, GroupByPlan, HasForeignKey, IdFor, IdType, InnerJoinByKeyPlan, InnerJoinByPairPlan,
-    InnerJoinExt, JoinExt, JoinKeyFrom, KeyChange,
-    LastExt, LeftJoinExt, LeftJoinPlan, LeftSemiJoinExt, LeftSemiJoinPlan, MapErrExt, MapExt,
-    MapOkExt, MapPipeline, MergeExt, MergeMapExt,
-    MultiLeftJoinExt, MultiLeftJoinPlan, Mutable, PairwiseExt, ProjectCellExt, ProjectCellPlan,
-    ProjectManyExt, ProjectManyPlan, ProjectMapExt, ProjectPlan,
-    ReactiveKeys, ReactiveMap, RetryExt, SampleExt, ScanExt, SelectCellExt, SelectCellPlan,
-    SelectExt, SelectPlan, SkipExt, SkipWhileExt, StateMachineBuilder, StateTransitionExt,
-    SwitchMapExt, TakeExt, TakeUntilExt, TakeWhileExt, TapExt, TapPipeline, ThrottleExt,
-    TimeoutExt, TryMapExt, TryMapPipeline, UnwrapOrExt, Watchable, WatchableResult, WindowExt,
-    WithLatestFromExt, ZipExt, join_vec,
+    InnerJoinExt, JoinExt, JoinKeyFrom, KeyChange, LastExt, LeftJoinExt, LeftJoinPlan,
+    LeftSemiJoinExt, LeftSemiJoinPlan, MapErrExt, MapExt, MapOkExt, MapPipeline, MergeExt,
+    MergeMapExt, MultiLeftJoinExt, MultiLeftJoinPlan, Mutable, PairwiseExt, ProjectCellExt,
+    ProjectCellPlan, ProjectManyExt, ProjectManyPlan, ProjectMapExt, ProjectPlan, ReactiveKeys,
+    ReactiveMap, RetryExt, SampleExt, ScanExt, SelectCellExt, SelectCellPlan, SelectExt,
+    SelectPlan, SkipExt, SkipWhileExt, StateMachineBuilder, StateTransitionExt, SwitchMapExt,
+    TakeExt, TakeUntilExt, TakeWhileExt, TapExt, TapPipeline, ThrottleExt, TimeoutExt, TryMapExt,
+    TryMapPipeline, UnwrapOrExt, Watchable, WatchableResult, WindowExt, WithLatestFromExt, ZipExt,
+    join_vec,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use traits::{ParallelCell, ParallelExt};

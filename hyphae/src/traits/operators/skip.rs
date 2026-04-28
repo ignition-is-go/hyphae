@@ -33,13 +33,10 @@ where
     Sd: Seedness,
     T: CellValue,
 {
-    fn install(
-        &self,
-        callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>,
-    ) -> SubscriptionGuard {
+    fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
         let to_skip = Arc::new(AtomicUsize::new(self.count));
-        let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> = Arc::new(move |signal: &Signal<T>| {
-            match signal {
+        let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
+            Arc::new(move |signal: &Signal<T>| match signal {
                 Signal::Value(_) => {
                     let prev = to_skip.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
                         if n > 0 { Some(n - 1) } else { None }
@@ -50,8 +47,7 @@ where
                 }
                 Signal::Complete => callback(&Signal::Complete),
                 Signal::Error(e) => callback(&Signal::Error(e.clone())),
-            }
-        });
+            });
         self.source.install(wrapped)
     }
 }

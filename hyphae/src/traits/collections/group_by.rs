@@ -11,9 +11,7 @@ use crate::{
     subscription::SubscriptionGuard,
     traits::{
         CellValue,
-        collections::internal::diff_runtime::{
-            GroupedOps, install_grouped_runtime_via_query,
-        },
+        collections::internal::diff_runtime::{GroupedOps, install_grouped_runtime_via_query},
     },
 };
 
@@ -47,20 +45,7 @@ where
 {
     fn install(self, sink: MapDiffSink<GK, Vec<V>>) -> Vec<SubscriptionGuard> {
         let group_key = self.group_key;
-        install_grouped_runtime_via_query::<
-            K,
-            V,
-            GK,
-            BTreeMap<K, V>,
-            Vec<V>,
-            S,
-            _,
-            _,
-            _,
-            _,
-            _,
-            _,
-        >(
+        install_grouped_runtime_via_query::<K, V, GK, BTreeMap<K, V>, Vec<V>, S, _, _, _, _, _, _>(
             self.source,
             GroupedOps {
                 make_group_key: move |k, v| group_key(k, v),
@@ -73,9 +58,7 @@ where
                 on_remove: |rows: &mut BTreeMap<K, V>, key: &K, _: &V| {
                     rows.remove(key);
                 },
-                materialize: |rows: &BTreeMap<K, V>| {
-                    rows.values().cloned().collect::<Vec<_>>()
-                },
+                materialize: |rows: &BTreeMap<K, V>| rows.values().cloned().collect::<Vec<_>>(),
                 is_empty: |rows: &BTreeMap<K, V>| rows.is_empty(),
                 new_group_state: BTreeMap::new,
                 _marker: std::marker::PhantomData,

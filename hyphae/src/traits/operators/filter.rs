@@ -40,10 +40,7 @@ where
     T: CellValue,
     P: Fn(&T) -> bool + Send + Sync + 'static,
 {
-    fn install(
-        &self,
-        callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>,
-    ) -> SubscriptionGuard {
+    fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
         let predicate = Arc::clone(&self.predicate);
         let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
             Arc::new(move |signal: &Signal<T>| match signal {

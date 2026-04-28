@@ -33,14 +33,11 @@ where
     T: CellValue,
     F: Fn(&T) -> bool + Send + Sync + 'static,
 {
-    fn install(
-        &self,
-        callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>,
-    ) -> SubscriptionGuard {
+    fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
         let predicate = Arc::clone(&self.predicate);
         let stopped = Arc::new(AtomicBool::new(false));
-        let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> = Arc::new(move |signal: &Signal<T>| {
-            match signal {
+        let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
+            Arc::new(move |signal: &Signal<T>| match signal {
                 Signal::Value(v) => {
                     if stopped.load(Ordering::SeqCst) {
                         return;
@@ -54,8 +51,7 @@ where
                 }
                 Signal::Complete => callback(&Signal::Complete),
                 Signal::Error(e) => callback(&Signal::Error(e.clone())),
-            }
-        });
+            });
         self.source.install(wrapped)
     }
 }

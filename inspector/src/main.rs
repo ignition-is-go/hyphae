@@ -712,10 +712,8 @@ fn main() -> anyhow::Result<()> {
                         selected_index.set(0);
                     }
                 }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    if selected + 1 < tree_len {
-                        selected_index.set(selected + 1);
-                    }
+                KeyCode::Down | KeyCode::Char('j') if selected + 1 < tree_len => {
+                    selected_index.set(selected + 1);
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     selected_index.set(selected.saturating_sub(1));

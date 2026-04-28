@@ -120,7 +120,7 @@ impl<T, W: Watchable<T>> MergeMapExt<T> for W {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MaterializeDefinite, MapExt};
+    use crate::{MapExt, MaterializeDefinite};
 
     #[test]
     fn test_merge_map_merges() {

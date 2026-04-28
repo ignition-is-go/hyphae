@@ -53,9 +53,7 @@ where
             // the batch buffer or directly into the sink, then wires the
             // Watchable's subscription to emit Update on each subsequent
             // emission.
-            let attach = |key: K,
-                          value: V,
-                          mut batch_changes: Option<&mut Vec<MapDiff<K, U>>>| {
+            let attach = |key: K, value: V, mut batch_changes: Option<&mut Vec<MapDiff<K, U>>>| {
                 // Drop any previous per-row guard before installing a new one.
                 if let Some((_, old_guard)) = per_key_guards.remove(&key) {
                     drop(old_guard);
@@ -94,8 +92,7 @@ where
                 let key_for_sub = key.clone();
                 let last_value_for_sub = last_value.clone();
                 let sink_for_sub = sink.clone();
-                let first =
-                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+                let first = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
                 let sub_guard = inner_cell.subscribe(move |signal| {
                     if let Signal::Value(v) = signal {
                         if first.swap(false, std::sync::atomic::Ordering::SeqCst) {
@@ -103,9 +100,8 @@ where
                         }
                         let new_value: U = (**v).clone();
                         let prior = {
-                            let mut last = last_value_for_sub
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner());
+                            let mut last =
+                                last_value_for_sub.lock().unwrap_or_else(|e| e.into_inner());
                             last.insert(key_for_sub.clone(), new_value.clone())
                         };
                         let diff_out = match prior {
@@ -200,11 +196,7 @@ where
                                 }
                             }
                             MapDiff::Insert { key, value } => {
-                                attach(
-                                    key.clone(),
-                                    value.clone(),
-                                    Some(&mut downstream_changes),
-                                );
+                                attach(key.clone(), value.clone(), Some(&mut downstream_changes));
                             }
                             MapDiff::Remove { key, .. } => {
                                 detach(key, Some(&mut downstream_changes));
@@ -239,7 +231,7 @@ mod tests {
     use std::sync::mpsc;
 
     use super::*;
-    use crate::{MaterializeDefinite, Cell, CellMap, MapExt, cell_map::MapDiff};
+    use crate::{Cell, CellMap, MapExt, MaterializeDefinite, cell_map::MapDiff};
 
     /// Capture every diff emitted into a `MapDiffSink` and replay them onto
     /// an in-memory `HashMap<K, U>` to assert per-row state.
@@ -260,7 +252,10 @@ mod tests {
             Arc::new(move |diff| {
                 let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
                 apply_to_hashmap(&mut state, diff);
-                diffs.lock().unwrap_or_else(|e| e.into_inner()).push(diff.clone());
+                diffs
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(diff.clone());
             })
         };
         (sink, state, diffs)

@@ -40,10 +40,7 @@ where
     Sd: Seedness,
     T: CellValue,
 {
-    fn install(
-        &self,
-        callback: Arc<dyn Fn(&Signal<Arc<T>>) + Send + Sync>,
-    ) -> SubscriptionGuard {
+    fn install(&self, callback: Arc<dyn Fn(&Signal<Arc<T>>) + Send + Sync>) -> SubscriptionGuard {
         let first = Arc::new(AtomicBool::new(true));
         let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
             Arc::new(move |signal: &Signal<T>| match signal {

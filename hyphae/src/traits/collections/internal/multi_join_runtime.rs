@@ -4,11 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::{
-    cell_map::MapDiff,
-    subscription::SubscriptionGuard,
-    traits::CellValue,
-};
+use crate::{cell_map::MapDiff, subscription::SubscriptionGuard, traits::CellValue};
 
 struct MultiJoinState<LK, LV, RK, RV, JK, OK, OV>
 where
@@ -434,10 +430,8 @@ where
 /// subscribers: every non-empty group of output diffs produced from a single
 /// upstream diff is delivered as one `MapDiff::Batch`, even when the group
 /// contains a single change. Empty batches are dropped.
-fn emit_changes<OK, OV>(
-    sink: &crate::map_query::MapDiffSink<OK, OV>,
-    changes: Vec<MapDiff<OK, OV>>,
-) where
+fn emit_changes<OK, OV>(sink: &crate::map_query::MapDiffSink<OK, OV>, changes: Vec<MapDiff<OK, OV>>)
+where
     OK: Hash + Eq + CellValue,
     OV: CellValue,
 {
@@ -460,20 +454,7 @@ fn emit_changes<OK, OV>(
 /// Used by `MapQuery` multi-join plan nodes whose materialization owns a
 /// single output cell map; multiple plan stages share that output rather than
 /// each allocating their own.
-pub(crate) fn install_multi_join_runtime_via_query<
-    LK,
-    LV,
-    RK,
-    RV,
-    JK,
-    OK,
-    OV,
-    L,
-    R,
-    FL,
-    FR,
-    FO,
->(
+pub(crate) fn install_multi_join_runtime_via_query<LK, LV, RK, RV, JK, OK, OV, L, R, FL, FR, FO>(
     left: L,
     right: R,
     left_join_keys_fn: FL,
@@ -495,15 +476,9 @@ where
     FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
     FO: Fn(&LK, &LV, &[(RK, RV)]) -> Vec<(OK, OV)> + Send + Sync + 'static,
 {
-    let state = Arc::new(Mutex::new(MultiJoinState::<
-        LK,
-        LV,
-        RK,
-        RV,
-        JK,
-        OK,
-        OV,
-    >::default()));
+    let state = Arc::new(Mutex::new(
+        MultiJoinState::<LK, LV, RK, RV, JK, OK, OV>::default(),
+    ));
     let left_join_keys_fn = Arc::new(left_join_keys_fn);
     let right_join_key = Arc::new(right_join_key);
     let compute_rows = Arc::new(compute_rows);

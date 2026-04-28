@@ -138,7 +138,13 @@ fn s(prefix: &str, i: usize) -> Arc<str> {
 
 /// Build N instances pointing to N/4 distinct lanes (so each lane is referenced
 /// by ~4 instances on average — roughly the rship pattern).
-fn populate_value_track_sources(n: usize) -> (CellMap<Arc<str>, Arc<Instance>>, CellMap<Arc<str>, Arc<Lane>>, CellMap<Arc<str>, Arc<Keyframe>>) {
+fn populate_value_track_sources(
+    n: usize,
+) -> (
+    CellMap<Arc<str>, Arc<Instance>>,
+    CellMap<Arc<str>, Arc<Lane>>,
+    CellMap<Arc<str>, Arc<Keyframe>>,
+) {
     let instances = CellMap::<Arc<str>, Arc<Instance>>::new();
     let lanes = CellMap::<Arc<str>, Arc<Lane>>::new();
     let keyframes = CellMap::<Arc<str>, Arc<Keyframe>>::new();
@@ -392,10 +398,7 @@ fn build_assets_view(
             |_id, t| t.asset_path.clone(),
         )
         .project(|asset_path, (files, transfers)| {
-            Some((
-                asset_path.clone(),
-                (files.clone(), transfers.clone()),
-            ))
+            Some((asset_path.clone(), (files.clone(), transfers.clone())))
         })
         .left_join_by(
             metadata.clone(),
@@ -462,10 +465,7 @@ fn build_session_view(
             |_id, a| a.target_id.clone(),
         )
         .project(|tgt_id, (target, action_list)| {
-            Some((
-                tgt_id.clone(),
-                (target.clone(), action_list.clone()),
-            ))
+            Some((tgt_id.clone(), (target.clone(), action_list.clone())))
         })
         .left_join_by(
             emitters.clone(),
@@ -532,37 +532,41 @@ fn bench_fan_out(c: &mut Criterion) {
     group.sample_size(50);
     let n = 1_000usize;
     for n_subs in [1usize, 5, 20, 100] {
-        group.bench_with_input(BenchmarkId::from_parameter(n_subs), &n_subs, |b, &n_subs| {
-            let (instances, lanes, keyframes) = populate_value_track_sources(n);
-            let view = build_mid_view(&instances, &lanes, &keyframes);
+        group.bench_with_input(
+            BenchmarkId::from_parameter(n_subs),
+            &n_subs,
+            |b, &n_subs| {
+                let (instances, lanes, keyframes) = populate_value_track_sources(n);
+                let view = build_mid_view(&instances, &lanes, &keyframes);
 
-            // Attach N independent diff subscribers to the materialized view's
-            // diff stream — models the fan-out where N consumers observe the same
-            // derived view.
-            let _guards: Vec<_> = (0..n_subs)
-                .map(|_| {
-                    view.subscribe_diffs(|diff| {
-                        // No-op subscriber, but still pays the dispatch cost.
-                        black_box(diff);
+                // Attach N independent diff subscribers to the materialized view's
+                // diff stream — models the fan-out where N consumers observe the same
+                // derived view.
+                let _guards: Vec<_> = (0..n_subs)
+                    .map(|_| {
+                        view.subscribe_diffs(|diff| {
+                            // No-op subscriber, but still pays the dispatch cost.
+                            black_box(diff);
+                        })
                     })
-                })
-                .collect();
+                    .collect();
 
-            let mut tick = 0u64;
-            b.iter(|| {
-                tick = tick.wrapping_add(1);
-                let id = s("inst:", (tick as usize) % n);
-                instances.insert(
-                    id.clone(),
-                    Arc::new(Instance {
-                        id,
-                        lane_id: s("lane:", (tick as usize) % (n / 4).max(1)),
-                        track_id: s("track:", black_box(tick) as usize % 16),
-                        seq: tick,
-                    }),
-                );
-            });
-        });
+                let mut tick = 0u64;
+                b.iter(|| {
+                    tick = tick.wrapping_add(1);
+                    let id = s("inst:", (tick as usize) % n);
+                    instances.insert(
+                        id.clone(),
+                        Arc::new(Instance {
+                            id,
+                            lane_id: s("lane:", (tick as usize) % (n / 4).max(1)),
+                            track_id: s("track:", black_box(tick) as usize % 16),
+                            seq: tick,
+                        }),
+                    );
+                });
+            },
+        );
     }
     group.finish();
 }
@@ -592,10 +596,7 @@ fn bench_batch_mutation(c: &mut Criterion) {
                                 Arc::new(Instance {
                                     id,
                                     lane_id: s("lane:", (tick as usize) % (n / 4).max(1)),
-                                    track_id: s(
-                                        "track:",
-                                        black_box(i + tick as usize) % 16,
-                                    ),
+                                    track_id: s("track:", black_box(i + tick as usize) % 16),
                                     seq: tick,
                                 }),
                             )

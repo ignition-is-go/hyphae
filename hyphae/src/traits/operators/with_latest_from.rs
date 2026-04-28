@@ -50,7 +50,9 @@ impl<T: CellValue, P: Pipeline<T> + PipelineSeed<T>> WithLatestFromExt<T> for P 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Cell, MaterializeDefinite, Mutable, Signal, cell::CellImmutable, traits::Watchable};
+    use crate::{
+        Cell, MaterializeDefinite, Mutable, Signal, cell::CellImmutable, traits::Watchable,
+    };
 
     #[test]
     fn test_with_latest_from() {

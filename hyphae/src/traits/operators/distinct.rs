@@ -4,11 +4,7 @@
 //! treated as the first "seen" value, so the materialized cell starts at
 //! `source.seed()` and only updates on values not previously emitted.
 
-use std::{
-    hash::Hash,
-    marker::PhantomData,
-    sync::Arc,
-};
+use std::{hash::Hash, marker::PhantomData, sync::Arc};
 
 use dashmap::DashSet;
 
@@ -35,16 +31,13 @@ where
     Sd: Seedness,
     T: CellValue + Eq + Hash,
 {
-    fn install(
-        &self,
-        callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>,
-    ) -> SubscriptionGuard {
+    fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
         let seen: Arc<DashSet<T>> = Arc::new(DashSet::new());
         // Pre-insert source's seed so the synchronous initial replay is naturally
         // gated (the cell already holds it).
         seen.insert(self.source.seed());
-        let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> = Arc::new(move |signal: &Signal<T>| {
-            match signal {
+        let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
+            Arc::new(move |signal: &Signal<T>| match signal {
                 Signal::Value(v) => {
                     if seen.insert(v.as_ref().clone()) {
                         callback(signal);
@@ -52,8 +45,7 @@ where
                 }
                 Signal::Complete => callback(&Signal::Complete),
                 Signal::Error(e) => callback(&Signal::Error(e.clone())),
-            }
-        });
+            });
         self.source.install(wrapped)
     }
 }
@@ -121,8 +113,8 @@ pub trait DistinctExt<T: CellValue + Eq + Hash, S: Seedness>:
     }
 }
 
-impl<T: CellValue + Eq + Hash, S: Seedness, P: Pipeline<T, S> + PipelineSeed<T>>
-    DistinctExt<T, S> for P
+impl<T: CellValue + Eq + Hash, S: Seedness, P: Pipeline<T, S> + PipelineSeed<T>> DistinctExt<T, S>
+    for P
 {
 }
 

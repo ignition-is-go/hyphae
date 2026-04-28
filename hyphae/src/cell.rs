@@ -584,8 +584,11 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
                     .expect("cell subscribers_writer poisoned");
                 let current = cell.inner.subscribers.load();
                 let prev_len = current.len();
-                let next: Vec<(Uuid, Arc<Subscriber<T>>)> =
-                    (**current).iter().filter(|(i, _)| *i != id).cloned().collect();
+                let next: Vec<(Uuid, Arc<Subscriber<T>>)> = (**current)
+                    .iter()
+                    .filter(|(i, _)| *i != id)
+                    .cloned()
+                    .collect();
                 let removed = next.len() != prev_len;
                 if removed {
                     cell.inner.subscribers.store(Arc::new(next));
@@ -601,8 +604,7 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
             #[cfg(feature = "trace")]
             crate::tracing::update_subscriber_count(
                 cell.inner.id,
-                cell.inner.subscribers.load().len()
-                    + cell.inner.result_subscribers.load().len(),
+                cell.inner.subscribers.load().len() + cell.inner.result_subscribers.load().len(),
             );
         })
     }
@@ -617,8 +619,11 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
                 .expect("cell subscribers_writer poisoned");
             let current = self.inner.subscribers.load();
             let prev_len = current.len();
-            let next: Vec<(Uuid, Arc<Subscriber<T>>)> =
-                (**current).iter().filter(|(i, _)| *i != id).cloned().collect();
+            let next: Vec<(Uuid, Arc<Subscriber<T>>)> = (**current)
+                .iter()
+                .filter(|(i, _)| *i != id)
+                .cloned()
+                .collect();
             let removed = next.len() != prev_len;
             if removed {
                 self.inner.subscribers.store(Arc::new(next));
@@ -635,8 +640,11 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
                 .expect("cell result_subscribers_writer poisoned");
             let current = self.inner.result_subscribers.load();
             let prev_len = current.len();
-            let next: Vec<(Uuid, Arc<ResultSubscriber<T>>)> =
-                (**current).iter().filter(|(i, _)| *i != id).cloned().collect();
+            let next: Vec<(Uuid, Arc<ResultSubscriber<T>>)> = (**current)
+                .iter()
+                .filter(|(i, _)| *i != id)
+                .cloned()
+                .collect();
             let removed = next.len() != prev_len;
             if removed {
                 self.inner.result_subscribers.store(Arc::new(next));
@@ -651,8 +659,7 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
             #[cfg(feature = "trace")]
             crate::tracing::update_subscriber_count(
                 self.inner.id,
-                self.inner.subscribers.load().len()
-                    + self.inner.result_subscribers.load().len(),
+                self.inner.subscribers.load().len() + self.inner.result_subscribers.load().len(),
             );
         }
     }
@@ -738,24 +745,24 @@ impl<T: CellValue, U: Send + Sync + 'static> WatchableResult<T> for Cell<T, U> {
                     .expect("cell result_subscribers_writer poisoned");
                 let current = cell.inner.result_subscribers.load();
                 let prev_len = current.len();
-                let next: Vec<(Uuid, Arc<ResultSubscriber<T>>)> =
-                    (**current).iter().filter(|(i, _)| *i != id).cloned().collect();
+                let next: Vec<(Uuid, Arc<ResultSubscriber<T>>)> = (**current)
+                    .iter()
+                    .filter(|(i, _)| *i != id)
+                    .cloned()
+                    .collect();
                 let removed = next.len() != prev_len;
                 if removed {
                     cell.inner.result_subscribers.store(Arc::new(next));
                 }
                 removed
             };
-            if removed
-                && let Some(m) = &metrics
-            {
+            if removed && let Some(m) = &metrics {
                 m.record_subscriber_removed();
             }
             #[cfg(feature = "trace")]
             crate::tracing::update_subscriber_count(
                 cell.inner.id,
-                cell.inner.subscribers.load().len()
-                    + cell.inner.result_subscribers.load().len(),
+                cell.inner.subscribers.load().len() + cell.inner.result_subscribers.load().len(),
             );
         })
     }

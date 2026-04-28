@@ -4,11 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::{
-    cell_map::MapDiff,
-    subscription::SubscriptionGuard,
-    traits::CellValue,
-};
+use crate::{cell_map::MapDiff, subscription::SubscriptionGuard, traits::CellValue};
 
 struct MapState<SK, SV, OK, OV>
 where

@@ -2,18 +2,11 @@ use super::{CellValue, DistinctUntilChangedByExt, DistinctUntilChangedByPipeline
 use crate::pipeline::{Pipeline, PipelineSeed, Seedness};
 
 #[allow(private_bounds)]
-pub trait DedupedExt<T: CellValue, S: Seedness>:
-    Pipeline<T, S> + PipelineSeed<T>
-{
+pub trait DedupedExt<T: CellValue, S: Seedness>: Pipeline<T, S> + PipelineSeed<T> {
     #[track_caller]
     fn deduped(
         self,
-    ) -> DistinctUntilChangedByPipeline<
-        Self,
-        T,
-        impl Fn(&T, &T) -> bool + Send + Sync + 'static,
-        S,
-    >
+    ) -> DistinctUntilChangedByPipeline<Self, T, impl Fn(&T, &T) -> bool + Send + Sync + 'static, S>
     where
         T: PartialEq,
     {

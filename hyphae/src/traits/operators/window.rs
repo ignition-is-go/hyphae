@@ -55,10 +55,7 @@ pub trait WindowExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> + Wat
     }
 }
 
-impl<T: CellValue, W: Pipeline<T, Definite> + PipelineSeed<T> + Watchable<T>> WindowExt<T>
-    for W
-{
-}
+impl<T: CellValue, W: Pipeline<T, Definite> + PipelineSeed<T> + Watchable<T>> WindowExt<T> for W {}
 
 #[cfg(test)]
 mod tests {

@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-use crate::{MaterializeDefinite, Cell, Gettable, MapExt, Mutable, Signal, traits::Watchable};
+use crate::{Cell, Gettable, MapExt, MaterializeDefinite, Mutable, Signal, traits::Watchable};
 
 // ============================================================================
 // WeakCell Tests
@@ -59,10 +59,13 @@ fn test_derived_cell_drop_stops_notifications() {
 
     {
         let count = call_count.clone();
-        let _derived = source.clone().map(move |v| {
-            count.fetch_add(1, Ordering::SeqCst);
-            *v * 2
-        }).materialize();
+        let _derived = source
+            .clone()
+            .map(move |v| {
+                count.fetch_add(1, Ordering::SeqCst);
+                *v * 2
+            })
+            .materialize();
 
         // Under the fused-pipeline model, materialize() calls the map closure
         // twice on creation: once for `self.get()` to compute the initial cell

@@ -4,7 +4,10 @@ use std::{marker::PhantomData, sync::Arc};
 
 use super::CellValue;
 use crate::{
-    pipeline::{Definite, Empty, MaterializeDefinite, MaterializeEmpty, Pipeline, PipelineInstall, PipelineSeed, Seedness},
+    pipeline::{
+        Definite, Empty, MaterializeDefinite, MaterializeEmpty, Pipeline, PipelineInstall,
+        PipelineSeed, Seedness,
+    },
     signal::Signal,
     subscription::SubscriptionGuard,
 };

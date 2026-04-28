@@ -35,17 +35,14 @@ where
     U: CellValue,
     F: Fn(&U, &T) -> U + Send + Sync + 'static,
 {
-    fn install(
-        &self,
-        callback: Arc<dyn Fn(&Signal<U>) + Send + Sync>,
-    ) -> SubscriptionGuard {
+    fn install(&self, callback: Arc<dyn Fn(&Signal<U>) + Send + Sync>) -> SubscriptionGuard {
         let f = Arc::clone(&self.f);
         // Capture a fresh accumulator seeded with `initial`. The first
         // emission (the synchronous initial replay) advances it to first_acc,
         // which matches the cell's seed.
         let acc: Arc<ArcSwap<U>> = Arc::new(ArcSwap::from_pointee(self.initial.clone()));
-        let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> = Arc::new(move |signal: &Signal<T>| {
-            match signal {
+        let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
+            Arc::new(move |signal: &Signal<T>| match signal {
                 Signal::Value(v) => {
                     let current = (**acc.load()).clone();
                     let next = f(&current, v.as_ref());
@@ -54,8 +51,7 @@ where
                 }
                 Signal::Complete => callback(&Signal::Complete),
                 Signal::Error(e) => callback(&Signal::Error(e.clone())),
-            }
-        });
+            });
         self.source.install(wrapped)
     }
 }

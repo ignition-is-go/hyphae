@@ -29,7 +29,13 @@ where
     S: MapQuery<K, V>,
     K: Hash + Eq + CellValue,
     V: CellValue,
-    W: Pipeline<bool> + crate::pipeline::PipelineSeed<bool> + Gettable<bool> + Clone + Send + Sync + 'static,
+    W: Pipeline<bool>
+        + crate::pipeline::PipelineSeed<bool>
+        + Gettable<bool>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
     F: Fn(&K, &V) -> W + Send + Sync + 'static,
 {
     pub(crate) source: S,
@@ -42,7 +48,13 @@ where
     S: MapQuery<K, V>,
     K: Hash + Eq + CellValue,
     V: CellValue,
-    W: Pipeline<bool> + crate::pipeline::PipelineSeed<bool> + Gettable<bool> + Clone + Send + Sync + 'static,
+    W: Pipeline<bool>
+        + crate::pipeline::PipelineSeed<bool>
+        + Gettable<bool>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
     F: Fn(&K, &V) -> W + Send + Sync + 'static,
 {
     fn install(self, sink: MapDiffSink<K, V>) -> Vec<SubscriptionGuard> {
@@ -73,7 +85,13 @@ where
     S: MapQuery<K, V>,
     K: Hash + Eq + CellValue,
     V: CellValue,
-    W: Pipeline<bool> + crate::pipeline::PipelineSeed<bool> + Gettable<bool> + Clone + Send + Sync + 'static,
+    W: Pipeline<bool>
+        + crate::pipeline::PipelineSeed<bool>
+        + Gettable<bool>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
     F: Fn(&K, &V) -> W + Send + Sync + 'static,
 {
 }
@@ -96,7 +114,13 @@ where
     #[allow(private_bounds)]
     fn select_cell<W, F>(self, predicate: F) -> SelectCellPlan<Self, K, V, W, F>
     where
-        W: Pipeline<bool> + crate::pipeline::PipelineSeed<bool> + Gettable<bool> + Clone + Send + Sync + 'static,
+        W: Pipeline<bool>
+            + crate::pipeline::PipelineSeed<bool>
+            + Gettable<bool>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
         F: Fn(&K, &V) -> W + Send + Sync + 'static,
     {
         SelectCellPlan {

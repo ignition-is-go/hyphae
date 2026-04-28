@@ -91,8 +91,11 @@ where
     fn remove_subscriber(&self, id: Uuid) -> usize {
         let _w = self.subs_writer.lock().expect("share subs_writer poisoned");
         let current = self.subscribers.load();
-        let mut next: Vec<(Uuid, DiffSubscriber<K, V>)> =
-            (**current).iter().filter(|(i, _)| *i != id).cloned().collect();
+        let mut next: Vec<(Uuid, DiffSubscriber<K, V>)> = (**current)
+            .iter()
+            .filter(|(i, _)| *i != id)
+            .cloned()
+            .collect();
         let remaining = next.len();
         next.shrink_to_fit();
         self.subscribers.store(Arc::new(next));
@@ -135,8 +138,7 @@ where
 
     fn snapshot_initial(&self) -> MapDiff<K, V> {
         let state = self.state.lock().expect("share state poisoned");
-        let entries: Vec<(K, V)> =
-            state.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let entries: Vec<(K, V)> = state.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         MapDiff::Initial { entries }
     }
 }
@@ -212,11 +214,7 @@ where
         //   2. Synthesize an Initial from our state snapshot and deliver it
         //      to the new `sink` so it sees a coherent starting state.
         let upstream_take = {
-            let mut slot = self
-                .inner
-                .upstream
-                .lock()
-                .expect("share upstream poisoned");
+            let mut slot = self.inner.upstream.lock().expect("share upstream poisoned");
             slot.take()
         };
 

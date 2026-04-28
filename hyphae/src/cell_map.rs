@@ -506,8 +506,7 @@ where
     pub(crate) fn apply_diff_owned(&self, diff: MapDiff<K, V>) {
         match &diff {
             MapDiff::Initial { entries } => {
-                let stale_keys: Vec<K> =
-                    self.inner.data.iter().map(|r| r.key().clone()).collect();
+                let stale_keys: Vec<K> = self.inner.data.iter().map(|r| r.key().clone()).collect();
                 for key in stale_keys {
                     self.inner.data.remove(&key);
                     if let Some(weak) = self.inner.key_cells.get(&key)

@@ -1,6 +1,6 @@
 //! Integration tests for MapQuery type.
 
-use crate::{MaterializeDefinite, CellMap, MapQuery, traits::CellValue, traits::InnerJoinExt};
+use crate::{CellMap, MapQuery, MaterializeDefinite, traits::CellValue, traits::InnerJoinExt};
 
 #[test]
 fn cell_map_is_map_query() {
@@ -172,12 +172,7 @@ fn project_many_plan_emits_multiple_rows_per_source() {
 
     let mat = src
         .clone()
-        .project_many(|k, v| {
-            vec![
-                (format!("a:{k}"), v * 10),
-                (format!("b:{k}"), v * 100),
-            ]
-        })
+        .project_many(|k, v| vec![(format!("a:{k}"), v * 10), (format!("b:{k}"), v * 100)])
         .materialize();
     assert_eq!(mat.get_value(&"a:x".to_string()), Some(20));
     assert_eq!(mat.get_value(&"b:x".to_string()), Some(200));
@@ -205,7 +200,7 @@ use crate::traits::ProjectCellExt;
 
 #[test]
 fn project_cell_plan_reacts_to_inner_pipeline_emissions() {
-    use crate::{MapExt};
+    use crate::MapExt;
 
     let src = CellMap::<String, i32>::new();
     let weights = CellMap::<String, i32>::new();
@@ -303,7 +298,7 @@ use crate::traits::SelectCellExt;
 
 #[test]
 fn select_cell_plan_reacts_to_gate() {
-    use crate::{MapExt};
+    use crate::MapExt;
 
     let values = CellMap::<String, i32>::new();
     let gates = CellMap::<String, bool>::new();
@@ -343,10 +338,7 @@ fn shared_map_query_subscribes_upstream_once() {
     src.insert("a".into(), 1);
     let initial_subs = DepNode::subscriber_count(&src.diffs());
 
-    let shared = src
-        .clone()
-        .project(|k, v| Some((k.clone(), v * 2)))
-        .share();
+    let shared = src.clone().project(|k, v| Some((k.clone(), v * 2))).share();
 
     // Cloning the share doesn't subscribe.
     let s1 = shared.clone();
@@ -377,10 +369,7 @@ fn shared_map_query_drops_upstream_when_all_subscribers_drop() {
     src.insert("a".into(), 1);
     let initial_subs = DepNode::subscriber_count(&src.diffs());
 
-    let shared = src
-        .clone()
-        .project(|k, v| Some((k.clone(), v * 2)))
-        .share();
+    let shared = src.clone().project(|k, v| Some((k.clone(), v * 2))).share();
     let m1 = shared.clone().materialize();
     let m2 = shared.clone().materialize();
 

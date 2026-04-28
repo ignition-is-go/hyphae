@@ -9,10 +9,7 @@ use std::{hash::Hash, marker::PhantomData, sync::Arc};
 use crate::{
     map_query::{MapDiffSink, MapQuery, MapQueryInstall},
     subscription::SubscriptionGuard,
-    traits::{
-        CellValue,
-        collections::internal::map_runtime::install_map_runtime_via_query,
-    },
+    traits::{CellValue, collections::internal::map_runtime::install_map_runtime_via_query},
 };
 
 /// Plan node for [`ProjectMapExt::project`].

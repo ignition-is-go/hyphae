@@ -67,10 +67,7 @@ impl Seedness for Empty {}
 /// and returns the guard. The fused closure transforms root-source signals
 /// into the pipeline's output signal type and invokes the provided callback.
 pub(crate) trait PipelineInstall<T: CellValue>: Send + Sync + 'static {
-    fn install(
-        &self,
-        callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>,
-    ) -> SubscriptionGuard;
+    fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard;
 }
 
 /// Seed hook used to initialize the materialized cell for [`Definite`]
@@ -127,9 +124,7 @@ pub trait Pipeline<T: CellValue, S: Seedness = Definite>:
 /// body for free; the only override in the codebase is on [`Cell`] itself,
 /// where materialize is a marker flip on the same `Arc<inner>`.
 #[allow(private_bounds)]
-pub trait MaterializeDefinite<T: CellValue>:
-    Pipeline<T, Definite> + PipelineSeed<T>
-{
+pub trait MaterializeDefinite<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
     #[track_caller]
     fn materialize(self) -> Cell<T, CellImmutable> {
         let initial = self.seed();

@@ -7,9 +7,7 @@ use super::{CellValue, MapExt, MapPipeline};
 use crate::pipeline::{Pipeline, Seedness};
 
 #[allow(private_bounds)]
-pub trait MapOkExt<T: CellValue, E: CellValue, S: Seedness>:
-    Pipeline<Result<T, E>, S>
-{
+pub trait MapOkExt<T: CellValue, E: CellValue, S: Seedness>: Pipeline<Result<T, E>, S> {
     #[track_caller]
     fn map_ok<U, F>(
         self,
@@ -32,15 +30,13 @@ pub trait MapOkExt<T: CellValue, E: CellValue, S: Seedness>:
     }
 }
 
-impl<T: CellValue, E: CellValue, S: Seedness, P: Pipeline<Result<T, E>, S>>
-    MapOkExt<T, E, S> for P
+impl<T: CellValue, E: CellValue, S: Seedness, P: Pipeline<Result<T, E>, S>> MapOkExt<T, E, S>
+    for P
 {
 }
 
 #[allow(private_bounds)]
-pub trait MapErrExt<T: CellValue, E: CellValue, S: Seedness>:
-    Pipeline<Result<T, E>, S>
-{
+pub trait MapErrExt<T: CellValue, E: CellValue, S: Seedness>: Pipeline<Result<T, E>, S> {
     #[track_caller]
     fn map_err<E2, F>(
         self,
@@ -63,8 +59,8 @@ pub trait MapErrExt<T: CellValue, E: CellValue, S: Seedness>:
     }
 }
 
-impl<T: CellValue, E: CellValue, S: Seedness, P: Pipeline<Result<T, E>, S>>
-    MapErrExt<T, E, S> for P
+impl<T: CellValue, E: CellValue, S: Seedness, P: Pipeline<Result<T, E>, S>> MapErrExt<T, E, S>
+    for P
 {
 }
 
@@ -76,12 +72,7 @@ pub trait CatchErrorExt<T: CellValue, E: CellValue, S: Seedness>:
     fn catch_error<F>(
         self,
         f: F,
-    ) -> MapPipeline<
-        Self,
-        Result<T, E>,
-        T,
-        impl Fn(&Result<T, E>) -> T + Send + Sync + 'static,
-    >
+    ) -> MapPipeline<Self, Result<T, E>, T, impl Fn(&Result<T, E>) -> T + Send + Sync + 'static>
     where
         Self: Sized,
         F: Fn(&E) -> T + Send + Sync + 'static,
@@ -93,25 +84,18 @@ pub trait CatchErrorExt<T: CellValue, E: CellValue, S: Seedness>:
     }
 }
 
-impl<T: CellValue, E: CellValue, S: Seedness, P: Pipeline<Result<T, E>, S>>
-    CatchErrorExt<T, E, S> for P
+impl<T: CellValue, E: CellValue, S: Seedness, P: Pipeline<Result<T, E>, S>> CatchErrorExt<T, E, S>
+    for P
 {
 }
 
 #[allow(private_bounds)]
-pub trait UnwrapOrExt<T: CellValue, E: CellValue, S: Seedness>:
-    Pipeline<Result<T, E>, S>
-{
+pub trait UnwrapOrExt<T: CellValue, E: CellValue, S: Seedness>: Pipeline<Result<T, E>, S> {
     #[track_caller]
     fn unwrap_or(
         self,
         default: T,
-    ) -> MapPipeline<
-        Self,
-        Result<T, E>,
-        T,
-        impl Fn(&Result<T, E>) -> T + Send + Sync + 'static,
-    >
+    ) -> MapPipeline<Self, Result<T, E>, T, impl Fn(&Result<T, E>) -> T + Send + Sync + 'static>
     where
         Self: Sized,
     {
@@ -125,12 +109,7 @@ pub trait UnwrapOrExt<T: CellValue, E: CellValue, S: Seedness>:
     fn unwrap_or_else<F>(
         self,
         f: F,
-    ) -> MapPipeline<
-        Self,
-        Result<T, E>,
-        T,
-        impl Fn(&Result<T, E>) -> T + Send + Sync + 'static,
-    >
+    ) -> MapPipeline<Self, Result<T, E>, T, impl Fn(&Result<T, E>) -> T + Send + Sync + 'static>
     where
         Self: Sized,
         F: Fn(&E) -> T + Send + Sync + 'static,
@@ -139,7 +118,7 @@ pub trait UnwrapOrExt<T: CellValue, E: CellValue, S: Seedness>:
     }
 }
 
-impl<T: CellValue, E: CellValue, S: Seedness, P: Pipeline<Result<T, E>, S>>
-    UnwrapOrExt<T, E, S> for P
+impl<T: CellValue, E: CellValue, S: Seedness, P: Pipeline<Result<T, E>, S>> UnwrapOrExt<T, E, S>
+    for P
 {
 }

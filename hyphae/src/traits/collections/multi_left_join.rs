@@ -10,8 +10,7 @@ use crate::{
     map_query::{MapDiffSink, MapQuery, MapQueryInstall},
     subscription::SubscriptionGuard,
     traits::{
-        CellValue,
-        collections::internal::multi_join_runtime::install_multi_join_runtime_via_query,
+        CellValue, collections::internal::multi_join_runtime::install_multi_join_runtime_via_query,
     },
 };
 
@@ -149,7 +148,11 @@ mod tests {
         let right = CellMap::<String, i32>::new();
         let joined = left
             .clone()
-            .multi_left_join_by(right.clone(), |_k, _v| Vec::<String>::new(), |k, _v| k.clone())
+            .multi_left_join_by(
+                right.clone(),
+                |_k, _v| Vec::<String>::new(),
+                |k, _v| k.clone(),
+            )
             .materialize();
 
         left.insert("l1".to_string(), 1);

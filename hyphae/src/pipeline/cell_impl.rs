@@ -22,10 +22,7 @@ use crate::{
 };
 
 impl<T: CellValue, W: Watchable<T>> PipelineInstall<T> for W {
-    fn install(
-        &self,
-        callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>,
-    ) -> SubscriptionGuard {
+    fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
         self.subscribe(move |signal| callback(signal))
     }
 }
