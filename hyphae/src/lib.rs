@@ -134,10 +134,12 @@ pub mod cell_map;
 pub mod cell_set;
 pub mod constructors;
 pub mod map_query;
+#[cfg(feature = "metrics")]
 pub mod metrics;
 pub mod nested_map;
 pub mod pipeline;
 pub mod signal;
+pub mod source;
 pub mod subscription;
 #[cfg(feature = "trace")]
 pub mod tracing;
@@ -155,19 +157,26 @@ mod tests;
 pub use async_support::{AsyncWatchableExt, CellStream};
 pub use bounded_input::{BoundedInput, BoundedInputMetrics, OverflowPolicy};
 pub use bounded_output::BoundedOutput;
-pub use cell::{Cell, CellImmutable, CellMutable, SlowSubscriberAlert};
+pub use cell::{Cell, CellImmutable, CellMutable};
+#[cfg(feature = "metrics")]
+pub use cell::SlowSubscriberAlert;
 pub use cell_map::{CellMap, MapDiff, WeakCellMap};
 pub use cell_set::{CellSet, SetDiff};
 pub use constructors::from_iter_with_delay;
 #[cfg(not(target_arch = "wasm32"))]
-pub use constructors::{IntervalTick, interval, interval_precise, interval_precise_with_elapsed};
+pub use constructors::{
+    IntervalTick, interval, interval_precise, interval_precise_source,
+    interval_precise_with_elapsed, interval_precise_with_elapsed_source, interval_source,
+};
 pub use map_query::{MapQuery, MapQueryShareExt, SharedMapQuery};
+#[cfg(feature = "metrics")]
 pub use metrics::CellMetrics;
 pub use nested_map::NestedMap;
 pub use pipeline::{
     Definite, Empty, MaterializeDefinite, MaterializeEmpty, Pipeline, PipelineShareExt, Seedness,
     SharedPipeline,
 };
+pub use source::{SampleOnSourceExt, Source, WeakSource};
 pub use signal::Signal;
 pub use subscription::SubscriptionGuard;
 #[cfg(feature = "trace")]

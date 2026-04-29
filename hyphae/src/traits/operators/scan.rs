@@ -4,9 +4,10 @@
 //! `f(initial, source.seed())` (the accumulator after one source emission), so
 //! `scan(0, +).materialize().get()` on `Cell::new(1)` returns `1`.
 
-use std::{marker::PhantomData, sync::Arc};
-
-use arc_swap::ArcSwap;
+use std::{
+    marker::PhantomData,
+    sync::{Arc, Mutex},
+};
 
 use super::CellValue;
 use crate::{
@@ -40,13 +41,16 @@ where
         // Capture a fresh accumulator seeded with `initial`. The first
         // emission (the synchronous initial replay) advances it to first_acc,
         // which matches the cell's seed.
-        let acc: Arc<ArcSwap<U>> = Arc::new(ArcSwap::from_pointee(self.initial.clone()));
+        let acc: Arc<Mutex<U>> = Arc::new(Mutex::new(self.initial.clone()));
         let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
             Arc::new(move |signal: &Signal<T>| match signal {
                 Signal::Value(v) => {
-                    let current = (**acc.load()).clone();
-                    let next = f(&current, v.as_ref());
-                    acc.store(Arc::new(next.clone()));
+                    let next = {
+                        let mut guard = acc.lock().expect("scan poisoned");
+                        let next = f(&*guard, v.as_ref());
+                        *guard = next.clone();
+                        next
+                    };
                     callback(&Signal::value(next));
                 }
                 Signal::Complete => callback(&Signal::Complete),

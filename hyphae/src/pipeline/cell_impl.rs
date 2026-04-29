@@ -21,7 +21,16 @@ use crate::{
     traits::{CellValue, Gettable, Watchable},
 };
 
-impl<T: CellValue, W: Watchable<T>> PipelineInstall<T> for W {
+// Per-source `PipelineInstall` impls. We don't blanket-impl over `W: Watchable`
+// because that would prevent us from impl-ing `PipelineInstall` for non-
+// `Watchable` types like `Source<T>` (which is intentionally not `Gettable`).
+impl<T: CellValue, M: Send + Sync + 'static> PipelineInstall<T> for Cell<T, M> {
+    fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
+        self.subscribe(move |signal| callback(signal))
+    }
+}
+
+impl<T: CellValue> PipelineInstall<T> for BoundedInput<T> {
     fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
         self.subscribe(move |signal| callback(signal))
     }

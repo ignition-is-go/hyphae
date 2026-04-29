@@ -8,12 +8,10 @@
 use std::{
     marker::PhantomData,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering as AtomicOrdering},
     },
 };
-
-use arc_swap::ArcSwap;
 
 use super::CellValue;
 use crate::{
@@ -39,7 +37,7 @@ where
         // Skip the synchronous-on-subscribe initial replay so the source's
         // retained value does not count as an emission; only true post-subscribe
         // emissions feed `last_value`.
-        let last_value: Arc<ArcSwap<Option<T>>> = Arc::new(ArcSwap::from_pointee(None));
+        let last_value: Arc<Mutex<Option<T>>> = Arc::new(Mutex::new(None));
         let first = Arc::new(AtomicBool::new(true));
         let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
             Arc::new(move |signal: &Signal<T>| match signal {
@@ -47,11 +45,11 @@ where
                     if first.swap(false, AtomicOrdering::SeqCst) {
                         return;
                     }
-                    last_value.store(Arc::new(Some(v.as_ref().clone())));
+                    *last_value.lock().expect("last poisoned") = Some(v.as_ref().clone());
                 }
                 Signal::Complete => {
-                    let val = last_value.load();
-                    if let Some(v) = (**val).clone() {
+                    let val = last_value.lock().expect("last poisoned").clone();
+                    if let Some(v) = val {
                         callback(&Signal::value(v));
                     }
                     callback(&Signal::Complete);
@@ -93,7 +91,7 @@ where
     T: CellValue,
 {
     fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
-        let last_value: Arc<ArcSwap<Option<T>>> = Arc::new(ArcSwap::from_pointee(None));
+        let last_value: Arc<Mutex<Option<T>>> = Arc::new(Mutex::new(None));
         let default = self.default.clone();
         let first = Arc::new(AtomicBool::new(true));
         let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
@@ -102,12 +100,12 @@ where
                     if first.swap(false, AtomicOrdering::SeqCst) {
                         return;
                     }
-                    last_value.store(Arc::new(Some(v.as_ref().clone())));
+                    *last_value.lock().expect("last_or poisoned") = Some(v.as_ref().clone());
                 }
                 Signal::Complete => {
-                    let val = last_value.load();
-                    let emit = match &**val {
-                        Some(v) => v.clone(),
+                    let val = last_value.lock().expect("last_or poisoned").clone();
+                    let emit = match val {
+                        Some(v) => v,
                         None => default.clone(),
                     };
                     callback(&Signal::value(emit));

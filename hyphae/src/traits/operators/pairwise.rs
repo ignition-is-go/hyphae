@@ -4,9 +4,10 @@
 //! produce, so the materialized cell starts as `None` and flips to
 //! `Some((prev, current))` once the second emission lands.
 
-use std::{marker::PhantomData, sync::Arc};
-
-use arc_swap::ArcSwap;
+use std::{
+    marker::PhantomData,
+    sync::{Arc, Mutex},
+};
 
 use super::CellValue;
 use crate::{
@@ -33,19 +34,23 @@ where
         // come in with the same value, so we want to swallow it (no pair yet).
         // Use a flag to detect the very first emission and store it without
         // emitting; subsequent emissions emit (prev, curr) and update prev.
-        let last: Arc<ArcSwap<T>> = Arc::new(ArcSwap::from_pointee(self.source.seed()));
+        let last: Arc<Mutex<T>> = Arc::new(Mutex::new(self.source.seed()));
         let saw_first = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> = Arc::new(move |signal: &Signal<T>| {
             match signal {
                 Signal::Value(v) => {
                     if !saw_first.swap(true, std::sync::atomic::Ordering::SeqCst) {
                         // First emission: just remember it, no pair to emit.
-                        last.store(v.clone());
+                        *last.lock().expect("pairwise poisoned") = (**v).clone();
                         return;
                     }
-                    let prev = last.load_full();
-                    last.store(v.clone());
-                    callback(&Signal::value(((*prev).clone(), v.as_ref().clone())));
+                    let prev = {
+                        let mut guard = last.lock().expect("pairwise poisoned");
+                        let prev = guard.clone();
+                        *guard = (**v).clone();
+                        prev
+                    };
+                    callback(&Signal::value((prev, v.as_ref().clone())));
                 }
                 Signal::Complete => callback(&Signal::Complete),
                 Signal::Error(e) => callback(&Signal::Error(e.clone())),

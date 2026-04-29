@@ -4,9 +4,10 @@
 //! First emission has no prior value to compare against, so it always passes —
 //! the operator is therefore [`Definite`] when its source is `Definite`.
 
-use std::{marker::PhantomData, sync::Arc};
-
-use arc_swap::ArcSwap;
+use std::{
+    marker::PhantomData,
+    sync::{Arc, Mutex},
+};
 
 use super::CellValue;
 use crate::{
@@ -38,13 +39,21 @@ where
         // Seed last_value with source.seed() so the synchronous initial emit
         // compares equal and is naturally swallowed (the materialized cell is
         // already seeded with the same value via PipelineSeed).
-        let last_value: Arc<ArcSwap<T>> = Arc::new(ArcSwap::from_pointee(self.source.seed()));
+        //
+        // `Mutex<T>` (not `ArcSwap<T>`): the install closure runs serially
+        // from a single upstream notify thread, so we don't need arc_swap's
+        // multi-reader debt machinery. Uncontended `Mutex::lock` is one
+        // CAS; the prior value drops inline at end-of-scope.
+        let last_value: Arc<Mutex<T>> = Arc::new(Mutex::new(self.source.seed()));
         let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
             Arc::new(move |signal: &Signal<T>| match signal {
                 Signal::Value(v) => {
-                    let last = last_value.load();
-                    if !(comparator)(v.as_ref(), last.as_ref()) {
-                        last_value.store(v.clone());
+                    let mut last = last_value.lock().expect("distinct_until_changed_by poisoned");
+                    if !(comparator)(v.as_ref(), &*last) {
+                        *last = (**v).clone();
+                        // Release the lock before invoking the callback to
+                        // avoid holding it across user code.
+                        drop(last);
                         callback(signal);
                     }
                 }

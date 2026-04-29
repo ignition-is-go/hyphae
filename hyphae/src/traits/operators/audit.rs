@@ -1,13 +1,11 @@
 use std::{
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread,
     time::Duration,
 };
-
-use arc_swap::ArcSwap;
 
 use super::{CellValue, Watchable};
 use crate::{
@@ -45,7 +43,7 @@ pub trait AuditExt<T>: Watchable<T> {
 
         let weak = derived.downgrade();
         let first = Arc::new(AtomicBool::new(true));
-        let latest: Arc<ArcSwap<Option<T>>> = Arc::new(ArcSwap::from_pointee(None));
+        let latest: Arc<Mutex<Option<T>>> = Arc::new(Mutex::new(None));
         let generation = Arc::new(AtomicU64::new(0));
         let in_window = Arc::new(AtomicBool::new(false));
 
@@ -58,7 +56,7 @@ pub trait AuditExt<T>: Watchable<T> {
                         }
 
                         // Store latest value
-                        latest.store(Arc::new(Some((**value).clone())));
+                        *latest.lock().expect("audit poisoned") = Some((**value).clone());
 
                         // If not in a window, start one
                         if !in_window.swap(true, Ordering::SeqCst) {
@@ -73,9 +71,9 @@ pub trait AuditExt<T>: Watchable<T> {
                                 // Only emit if this is still the current window
                                 if gen_ref.load(Ordering::SeqCst) == current_gen {
                                     if let Some(d2) = weak2.upgrade() {
-                                        let val = latest2.load();
-                                        if let Some(v) = &**val {
-                                            d2.notify(Signal::value(v.clone()));
+                                        let val = latest2.lock().expect("audit poisoned").clone();
+                                        if let Some(v) = val {
+                                            d2.notify(Signal::value(v));
                                         }
                                     }
                                     in_win.store(false, Ordering::SeqCst);

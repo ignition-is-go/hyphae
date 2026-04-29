@@ -5,6 +5,7 @@ mod constructors;
 mod disposal;
 mod error_handling;
 mod map_query_integration;
+#[cfg(feature = "metrics")]
 mod metrics;
 mod pipeline_integration;
 mod subscription;

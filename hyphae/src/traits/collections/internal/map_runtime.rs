@@ -1,11 +1,14 @@
 use std::{
-    collections::{HashMap, HashSet},
     hash::Hash,
     sync::{Arc, Mutex},
 };
 
+use rustc_hash::{FxHashMap, FxHashSet};
+
 use crate::{cell_map::MapDiff, subscription::SubscriptionGuard, traits::CellValue};
 
+// Internal projection state — keys are workspace-trusted (entity IDs, etc.),
+// so we use FxHash for ~2-3× faster hashing than std's SipHash13.
 struct MapState<SK, SV, OK, OV>
 where
     SK: Hash + Eq + CellValue,
@@ -13,9 +16,9 @@ where
     OK: Hash + Eq + CellValue,
     OV: CellValue,
 {
-    source_rows: HashMap<SK, SV>,
-    source_output_keys: HashMap<SK, HashSet<OK>>,
-    output_cache: HashMap<OK, OV>,
+    source_rows: FxHashMap<SK, SV>,
+    source_output_keys: FxHashMap<SK, FxHashSet<OK>>,
+    output_cache: FxHashMap<OK, OV>,
 }
 
 impl<SK, SV, OK, OV> Default for MapState<SK, SV, OK, OV>
@@ -27,17 +30,17 @@ where
 {
     fn default() -> Self {
         Self {
-            source_rows: HashMap::new(),
-            source_output_keys: HashMap::new(),
-            output_cache: HashMap::new(),
+            source_rows: FxHashMap::default(),
+            source_output_keys: FxHashMap::default(),
+            output_cache: FxHashMap::default(),
         }
     }
 }
 
 fn apply_source_diff<SK, SV>(
-    source_rows: &mut HashMap<SK, SV>,
+    source_rows: &mut FxHashMap<SK, SV>,
     diff: &MapDiff<SK, SV>,
-    impacted: &mut HashSet<SK>,
+    impacted: &mut FxHashSet<SK>,
 ) where
     SK: Hash + Eq + CellValue,
     SV: CellValue,
@@ -80,7 +83,7 @@ fn apply_source_diff<SK, SV>(
 
 fn recompute_impacted<SK, SV, OK, OV, FO>(
     state: &mut MapState<SK, SV, OK, OV>,
-    impacted: HashSet<SK>,
+    impacted: FxHashSet<SK>,
     compute_rows: &FO,
 ) -> Vec<MapDiff<OK, OV>>
 where
@@ -115,7 +118,7 @@ where
             continue;
         };
 
-        let mut desired_rows: HashMap<OK, OV> = HashMap::new();
+        let mut desired_rows: FxHashMap<OK, OV> = FxHashMap::default();
         for (out_key, out_value) in compute_rows(&source_key, source_value) {
             desired_rows.insert(out_key, out_value);
         }
@@ -126,7 +129,7 @@ where
             continue;
         }
 
-        let desired_keys: HashSet<OK> = desired_rows.keys().cloned().collect();
+        let desired_keys: FxHashSet<OK> = desired_rows.keys().cloned().collect();
 
         for stale_key in previous_output_keys
             .iter()
@@ -232,7 +235,7 @@ where
         let sink = sink.clone();
         Arc::new(move |diff| {
             let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-            let mut impacted: HashSet<SK> = HashSet::new();
+            let mut impacted: FxHashSet<SK> = FxHashSet::default();
             apply_source_diff(&mut state.source_rows, diff, &mut impacted);
             let changes = recompute_impacted(&mut state, impacted, compute_rows.as_ref());
             drop(state);

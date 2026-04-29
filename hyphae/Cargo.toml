@@ -18,7 +18,8 @@ path = "src/lib.rs"
 default = []
 async = ["flume", "futures-core"]
 inspector = ["serde", "serde_json", "tokio", "uuid/serde"]
-trace = []
+metrics = []
+trace = ["metrics"]
 
 [dependencies]
 anyhow = "1"
@@ -26,6 +27,7 @@ arc-swap.workspace = true
 crossbeam = "0.8"
 dashmap.workspace = true
 log.workspace = true
+rustc-hash.workspace = true
 flume = { workspace = true, optional = true }
 futures-core = { workspace = true, optional = true }
 serde = { version = "1", features = ["derive"], optional = true }

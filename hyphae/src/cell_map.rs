@@ -3,9 +3,13 @@
 //! `CellMap` wraps a concurrent HashMap where each entry can be individually observed.
 //! Changes to keys trigger reactive updates to observers.
 
-use std::{collections::HashMap, hash::Hash, marker::PhantomData, sync::Arc};
+use std::{
+    collections::HashMap,
+    hash::Hash,
+    marker::PhantomData,
+    sync::{Arc, Mutex},
+};
 
-use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use uuid::Uuid;
 
@@ -47,8 +51,9 @@ where
     len_cell: Cell<usize, CellMutable>,
     /// Subscription guards owned by this map (dropped when map drops).
     owned: DashMap<Uuid, SubscriptionGuard>,
-    /// Optional name for debugging.
-    pub(crate) name: ArcSwap<Option<Arc<str>>>,
+    /// Optional name for debugging. Cold path — set once via `with_name`,
+    /// read by per-key cell formatting helpers.
+    pub(crate) name: Mutex<Option<Arc<str>>>,
 }
 
 /// A reactive HashMap with per-key observability.
@@ -269,7 +274,7 @@ where
                 diffs_cell,
                 len_cell,
                 owned: DashMap::new(),
-                name: ArcSwap::from_pointee(None),
+                name: Mutex::new(None),
             }),
             _marker: PhantomData,
         }
@@ -688,7 +693,7 @@ where
             .len_cell
             .clone()
             .with_name(format!("{}::len", name));
-        self.inner.name.store(Arc::new(Some(name)));
+        *self.inner.name.lock().expect("cell_map name poisoned") = Some(name);
         self
     }
 
@@ -739,7 +744,13 @@ where
         // Create new cell with current value
         let current = self.inner.data.get(key).map(|r| r.value().clone());
         let cell = Cell::new(current);
-        if let Some(map_name) = (**self.inner.name.load()).as_ref() {
+        if let Some(map_name) = self
+            .inner
+            .name
+            .lock()
+            .expect("cell_map name poisoned")
+            .as_ref()
+        {
             cell.clone().with_name(format!("{}[{:?}]", map_name, key));
         }
 
@@ -776,7 +787,13 @@ where
         )));
 
         let cell = Cell::new(initial);
-        if let Some(map_name) = (**self.inner.name.load()).as_ref() {
+        if let Some(map_name) = self
+            .inner
+            .name
+            .lock()
+            .expect("cell_map name poisoned")
+            .as_ref()
+        {
             cell.clone().with_name(format!("{}::entries", map_name));
         }
         let weak_cell = cell.downgrade();
@@ -829,7 +846,13 @@ where
         )));
 
         let cell = Cell::new(initial.into_iter().map(|(_, value)| value).collect());
-        if let Some(map_name) = (**self.inner.name.load()).as_ref() {
+        if let Some(map_name) = self
+            .inner
+            .name
+            .lock()
+            .expect("cell_map name poisoned")
+            .as_ref()
+        {
             cell.clone().with_name(format!("{}::items", map_name));
         }
         let weak_cell = cell.downgrade();
