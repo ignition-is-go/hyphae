@@ -1,0 +1,19 @@
+# Drop this file at .github/workflows/notify-docs.yml in each upstream repo
+# (rship, myko, hyphae, optik, pulse-unreal, rship-control-plane,
+# rship-music-analysis). Adjust `branches:` if the upstream's default is not
+# `main` — rship uses `release/*` and `dev`; myko uses `main` and `dev`.
+#
+# All real logic lives in the reusable workflow this calls
+# (pulse-deploy/.github/workflows/notify-docs.yml). Changes there are picked up
+# automatically by every upstream — no need to update the stubs.
+
+name: Notify pulse-docs
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  notify:
+    uses: ignition-is-go/pulse-deploy/.github/workflows/notify-docs.yml@main
+    secrets: inherit
