@@ -1,3 +1,5 @@
+#[cfg(feature = "metrics")]
+use std::time::Duration;
 use std::{
     fmt::Debug,
     marker::PhantomData,
@@ -7,8 +9,6 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-#[cfg(feature = "metrics")]
-use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
@@ -581,7 +581,12 @@ impl<T: CellValue, U: Send + Sync + 'static> Gettable<T> for Cell<T, U> {
     fn get(&self) -> T {
         // Brief lock to clone the Arc (refcount bump), release, then deref
         // and clone T outside the lock. Keeps the critical section small.
-        let arc = self.inner.value.lock().expect("cell value poisoned").clone();
+        let arc = self
+            .inner
+            .value
+            .lock()
+            .expect("cell value poisoned")
+            .clone();
         (*arc).clone()
     }
 }
@@ -592,7 +597,12 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
         callback: impl Fn(&Signal<T>) + Send + Sync + 'static,
     ) -> SubscriptionGuard {
         // Send current value immediately (Arc clone, no deep copy)
-        let current = self.inner.value.lock().expect("cell value poisoned").clone();
+        let current = self
+            .inner
+            .value
+            .lock()
+            .expect("cell value poisoned")
+            .clone();
         callback(&Signal::Value(current));
 
         // If already complete or errored, send that signal too
@@ -732,7 +742,11 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
     }
 
     fn error(&self) -> Option<Arc<anyhow::Error>> {
-        self.inner.error.lock().expect("cell error poisoned").clone()
+        self.inner
+            .error
+            .lock()
+            .expect("cell error poisoned")
+            .clone()
     }
 }
 
@@ -754,7 +768,12 @@ impl<T: CellValue, U: Send + Sync + 'static> WatchableResult<T> for Cell<T, U> {
         let id = Uuid::new_v4();
 
         // Send current value immediately (Arc clone, no deep copy).
-        let current = self.inner.value.lock().expect("cell value poisoned").clone();
+        let current = self
+            .inner
+            .value
+            .lock()
+            .expect("cell value poisoned")
+            .clone();
         if let Err(err) = callback(&Signal::Value(current)) {
             log_err(&id, &err);
         }
@@ -765,7 +784,12 @@ impl<T: CellValue, U: Send + Sync + 'static> WatchableResult<T> for Cell<T, U> {
                 log_err(&id, &err);
             }
         } else if self.inner.errored.load(Ordering::SeqCst)
-            && let Some(e) = self.inner.error.lock().expect("cell error poisoned").clone()
+            && let Some(e) = self
+                .inner
+                .error
+                .lock()
+                .expect("cell error poisoned")
+                .clone()
             && let Err(err) = callback(&Signal::Error(e))
         {
             log_err(&id, &err);

@@ -157,9 +157,9 @@ mod tests;
 pub use async_support::{AsyncWatchableExt, CellStream};
 pub use bounded_input::{BoundedInput, BoundedInputMetrics, OverflowPolicy};
 pub use bounded_output::BoundedOutput;
-pub use cell::{Cell, CellImmutable, CellMutable};
 #[cfg(feature = "metrics")]
 pub use cell::SlowSubscriberAlert;
+pub use cell::{Cell, CellImmutable, CellMutable};
 pub use cell_map::{CellMap, MapDiff, WeakCellMap};
 pub use cell_set::{CellSet, SetDiff};
 pub use constructors::from_iter_with_delay;
@@ -176,8 +176,8 @@ pub use pipeline::{
     Definite, Empty, MaterializeDefinite, MaterializeEmpty, Pipeline, PipelineShareExt, Seedness,
     SharedPipeline,
 };
-pub use source::{SampleOnSourceExt, Source, WeakSource};
 pub use signal::Signal;
+pub use source::{SampleOnSourceExt, Source, WeakSource};
 pub use subscription::SubscriptionGuard;
 #[cfg(feature = "trace")]
 pub use tracing::{CellTraceSnapshot, hot_cells as hot_traced_cells, log_hot_cells};

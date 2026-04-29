@@ -48,7 +48,9 @@ where
         let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
             Arc::new(move |signal: &Signal<T>| match signal {
                 Signal::Value(v) => {
-                    let mut last = last_value.lock().expect("distinct_until_changed_by poisoned");
+                    let mut last = last_value
+                        .lock()
+                        .expect("distinct_until_changed_by poisoned");
                     if !(comparator)(v.as_ref(), &*last) {
                         *last = (**v).clone();
                         // Release the lock before invoking the callback to

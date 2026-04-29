@@ -37,12 +37,8 @@ impl<T: CellValue> ParallelCell<T> {
     /// Notify all subscribers in parallel using Rayon.
     pub fn notify(&self, value: T) {
         let signal = Signal::value(value);
-        *self
-            .inner
-            .inner
-            .value
-            .lock()
-            .expect("cell value poisoned") = signal.arc().unwrap().clone();
+        *self.inner.inner.value.lock().expect("cell value poisoned") =
+            signal.arc().unwrap().clone();
 
         // Lock-free Arc bump on the subscriber list, then fan out in parallel.
         let subs = self.inner.inner.subscribers.load();

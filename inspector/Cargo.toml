@@ -1,6 +1,6 @@
 [package]
 name = "hyphae-inspector"
-version = "0.7.0"
+version = "1.0.0"
 publish = false
 edition.workspace = true
 authors.workspace = true
