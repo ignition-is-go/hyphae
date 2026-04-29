@@ -1,16 +1,14 @@
 use std::{
-    collections::{HashMap, HashSet},
     hash::Hash,
-    marker::PhantomData,
     sync::{Arc, Mutex},
 };
 
-use crate::{
-    cell::{CellImmutable, CellMutable},
-    cell_map::{CellMap, MapDiff},
-    traits::CellValue,
-};
+use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::{cell_map::MapDiff, subscription::SubscriptionGuard, traits::CellValue};
+
+// Internal projection state — keys are workspace-trusted (entity IDs, etc.),
+// so we use FxHash for ~2-3× faster hashing than std's SipHash13.
 struct MapState<SK, SV, OK, OV>
 where
     SK: Hash + Eq + CellValue,
@@ -18,9 +16,9 @@ where
     OK: Hash + Eq + CellValue,
     OV: CellValue,
 {
-    source_rows: HashMap<SK, SV>,
-    source_output_keys: HashMap<SK, HashSet<OK>>,
-    output_cache: HashMap<OK, OV>,
+    source_rows: FxHashMap<SK, SV>,
+    source_output_keys: FxHashMap<SK, FxHashSet<OK>>,
+    output_cache: FxHashMap<OK, OV>,
 }
 
 impl<SK, SV, OK, OV> Default for MapState<SK, SV, OK, OV>
@@ -32,17 +30,17 @@ where
 {
     fn default() -> Self {
         Self {
-            source_rows: HashMap::new(),
-            source_output_keys: HashMap::new(),
-            output_cache: HashMap::new(),
+            source_rows: FxHashMap::default(),
+            source_output_keys: FxHashMap::default(),
+            output_cache: FxHashMap::default(),
         }
     }
 }
 
 fn apply_source_diff<SK, SV>(
-    source_rows: &mut HashMap<SK, SV>,
+    source_rows: &mut FxHashMap<SK, SV>,
     diff: &MapDiff<SK, SV>,
-    impacted: &mut HashSet<SK>,
+    impacted: &mut FxHashSet<SK>,
 ) where
     SK: Hash + Eq + CellValue,
     SV: CellValue,
@@ -85,7 +83,7 @@ fn apply_source_diff<SK, SV>(
 
 fn recompute_impacted<SK, SV, OK, OV, FO>(
     state: &mut MapState<SK, SV, OK, OV>,
-    impacted: HashSet<SK>,
+    impacted: FxHashSet<SK>,
     compute_rows: &FO,
 ) -> Vec<MapDiff<OK, OV>>
 where
@@ -120,7 +118,7 @@ where
             continue;
         };
 
-        let mut desired_rows: HashMap<OK, OV> = HashMap::new();
+        let mut desired_rows: FxHashMap<OK, OV> = FxHashMap::default();
         for (out_key, out_value) in compute_rows(&source_key, source_value) {
             desired_rows.insert(out_key, out_value);
         }
@@ -131,7 +129,7 @@ where
             continue;
         }
 
-        let desired_keys: HashSet<OK> = desired_rows.keys().cloned().collect();
+        let desired_keys: FxHashSet<OK> = desired_rows.keys().cloned().collect();
 
         for stale_key in previous_output_keys
             .iter()
@@ -194,46 +192,56 @@ where
     }
 }
 
-pub(crate) fn run_map_runtime<SK, SV, SM, OK, OV, FO>(
-    source: &CellMap<SK, SV, SM>,
-    op_name: &str,
+/// Wrap a non-empty change vector in `MapDiff::Batch`, dropping empty groups.
+fn emit_changes<K, V>(changes: Vec<MapDiff<K, V>>, sink: &crate::map_query::MapDiffSink<K, V>)
+where
+    K: Hash + Eq + CellValue,
+    V: CellValue,
+{
+    if changes.is_empty() {
+        return;
+    }
+    sink(&MapDiff::Batch { changes });
+}
+
+/// Install map-runtime machinery that drives `sink` instead of allocating an output map.
+///
+/// Subscribes upstream via [`MapQuery::install`](crate::map_query::MapQuery::install),
+/// maintains projection state, and emits resulting diffs (batched per upstream
+/// diff) into the sink. Returns the subscription guards, which the caller owns.
+///
+/// Used by `MapQuery` plan nodes (`ProjectPlan`, `ProjectManyPlan`,
+/// `SelectPlan`) whose materialization shares one output cell map. Chains of
+/// plans compose without intermediate [`CellMap`](crate::CellMap) allocations.
+pub(crate) fn install_map_runtime_via_query<SK, SV, OK, OV, S, FO>(
+    source: S,
     compute_rows: FO,
-) -> CellMap<OK, OV, CellImmutable>
+    sink: crate::map_query::MapDiffSink<OK, OV>,
+) -> Vec<SubscriptionGuard>
 where
     SK: Hash + Eq + CellValue,
     SV: CellValue,
     OK: Hash + Eq + CellValue,
     OV: CellValue,
+    S: crate::map_query::MapQuery<SK, SV>,
     FO: Fn(&SK, &SV) -> Vec<(OK, OV)> + Send + Sync + 'static,
 {
-    let output = CellMap::<OK, OV, CellMutable>::new();
-    if let Some(parent_name) = (**source.inner.name.load()).as_ref() {
-        output
-            .clone()
-            .with_name(format!("{}::{}", parent_name, op_name));
-    }
-
     let state = Arc::new(Mutex::new(MapState::<SK, SV, OK, OV>::default()));
     let compute_rows = Arc::new(compute_rows);
-    let output_weak = Arc::downgrade(&output.inner);
 
-    let guard = source.subscribe_diffs(move |diff| {
-        let Some(inner) = output_weak.upgrade() else {
-            return;
-        };
-        let output = CellMap::<OK, OV, CellMutable> {
-            inner,
-            _marker: PhantomData,
-        };
+    let upstream_sink: crate::map_query::MapDiffSink<SK, SV> = {
+        let state = state.clone();
+        let compute_rows = compute_rows.clone();
+        let sink = sink.clone();
+        Arc::new(move |diff| {
+            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut impacted: FxHashSet<SK> = FxHashSet::default();
+            apply_source_diff(&mut state.source_rows, diff, &mut impacted);
+            let changes = recompute_impacted(&mut state, impacted, compute_rows.as_ref());
+            drop(state);
+            emit_changes(changes, &sink);
+        })
+    };
 
-        let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-        let mut impacted: HashSet<SK> = HashSet::new();
-        apply_source_diff(&mut state.source_rows, diff, &mut impacted);
-        let changes = recompute_impacted(&mut state, impacted, compute_rows.as_ref());
-        drop(state);
-        output.apply_batch(changes);
-    });
-
-    output.own(guard);
-    output.lock()
+    source.install(upstream_sink)
 }

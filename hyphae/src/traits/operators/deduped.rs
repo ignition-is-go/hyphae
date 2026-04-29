@@ -1,18 +1,20 @@
-use super::{CellValue, DistinctUntilChangedByExt, Watchable};
-use crate::cell::{Cell, CellImmutable};
+use super::{CellValue, DistinctUntilChangedByExt, DistinctUntilChangedByPipeline};
+use crate::pipeline::{Pipeline, PipelineSeed, Seedness};
 
-pub trait DedupedExt<T>: Watchable<T> {
+#[allow(private_bounds)]
+pub trait DedupedExt<T: CellValue, S: Seedness>: Pipeline<T, S> + PipelineSeed<T> {
     #[track_caller]
-    fn deduped(&self) -> Cell<T, CellImmutable>
+    fn deduped(
+        self,
+    ) -> DistinctUntilChangedByPipeline<Self, T, impl Fn(&T, &T) -> bool + Send + Sync + 'static, S>
     where
-        T: CellValue + PartialEq,
-        Self: Clone + Send + Sync + 'static,
+        T: PartialEq,
     {
         self.distinct_until_changed_by(|a, b| a == b)
     }
 }
 
-impl<T, W: Watchable<T>> DedupedExt<T> for W {}
+impl<T: CellValue, S: Seedness, P: Pipeline<T, S> + PipelineSeed<T>> DedupedExt<T, S> for P {}
 
 #[cfg(test)]
 mod tests {
@@ -22,12 +24,12 @@ mod tests {
     };
 
     use super::*;
-    use crate::{Mutable, Signal};
+    use crate::{Cell, MaterializeDefinite, Mutable, Signal, traits::Watchable};
 
     #[test]
     fn test_deduped_blocks_duplicates() {
         let source = Cell::new(1u64);
-        let deduped = source.deduped();
+        let deduped = source.clone().deduped().materialize();
         let count = Arc::new(AtomicU64::new(0));
 
         let c = count.clone();
@@ -50,7 +52,7 @@ mod tests {
     #[test]
     fn test_deduped_propagates_completion() {
         let source = Cell::new(0);
-        let deduped = source.deduped();
+        let deduped = source.clone().deduped().materialize();
 
         let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let c = completed.clone();

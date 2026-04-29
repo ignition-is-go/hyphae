@@ -1,4 +1,7 @@
-use crate::{CatchErrorExt, Cell, Gettable, MapErrExt, MapOkExt, Mutable, TryMapExt, UnwrapOrExt};
+use crate::{
+    CatchErrorExt, Cell, Gettable, MapErrExt, MapOkExt, MaterializeDefinite, Mutable, TryMapExt,
+    UnwrapOrExt,
+};
 
 // ============================================================================
 // TryMap
@@ -7,7 +10,10 @@ use crate::{CatchErrorExt, Cell, Gettable, MapErrExt, MapOkExt, Mutable, TryMapE
 #[test]
 fn test_try_map_success() {
     let source = Cell::new(10i32);
-    let result = source.try_map(|v| -> Result<String, &str> { Ok(v.to_string()) });
+    let result = source
+        .clone()
+        .try_map(|v| -> Result<String, &str> { Ok(v.to_string()) })
+        .materialize();
 
     assert_eq!(result.get(), Ok("10".to_string()));
 
@@ -18,13 +24,16 @@ fn test_try_map_success() {
 #[test]
 fn test_try_map_failure() {
     let source = Cell::new(-5i32);
-    let result = source.try_map(|v| -> Result<u32, &str> {
-        if *v >= 0 {
-            Ok(*v as u32)
-        } else {
-            Err("must be non-negative")
-        }
-    });
+    let result = source
+        .clone()
+        .try_map(|v| -> Result<u32, &str> {
+            if *v >= 0 {
+                Ok(*v as u32)
+            } else {
+                Err("must be non-negative")
+            }
+        })
+        .materialize();
 
     assert_eq!(result.get(), Err("must be non-negative"));
 
@@ -42,7 +51,7 @@ fn test_try_map_failure() {
 #[test]
 fn test_map_ok_transforms_ok() {
     let source: Cell<Result<i32, &str>, _> = Cell::new(Ok(10));
-    let mapped = source.map_ok(|v| v * 2);
+    let mapped = source.clone().map_ok(|v| v * 2).materialize();
 
     assert_eq!(mapped.get(), Ok(20));
 
@@ -53,7 +62,7 @@ fn test_map_ok_transforms_ok() {
 #[test]
 fn test_map_ok_passes_through_err() {
     let source: Cell<Result<i32, &str>, _> = Cell::new(Err("error"));
-    let mapped = source.map_ok(|v| v * 2);
+    let mapped = source.clone().map_ok(|v| v * 2).materialize();
 
     assert_eq!(mapped.get(), Err("error"));
 
@@ -71,7 +80,7 @@ fn test_map_ok_passes_through_err() {
 #[test]
 fn test_map_err_transforms_err() {
     let source: Cell<Result<i32, &str>, _> = Cell::new(Err("oops"));
-    let mapped = source.map_err(|e| e.len());
+    let mapped = source.clone().map_err(|e| e.len()).materialize();
 
     assert_eq!(mapped.get(), Err(4)); // "oops".len() == 4
 
@@ -82,7 +91,7 @@ fn test_map_err_transforms_err() {
 #[test]
 fn test_map_err_passes_through_ok() {
     let source: Cell<Result<i32, &str>, _> = Cell::new(Ok(42));
-    let mapped = source.map_err(|e| e.len());
+    let mapped = source.clone().map_err(|e| e.len()).materialize();
 
     assert_eq!(mapped.get(), Ok(42));
 
@@ -100,7 +109,7 @@ fn test_map_err_passes_through_ok() {
 #[test]
 fn test_catch_error_recovers() {
     let source: Cell<Result<i32, &str>, _> = Cell::new(Err("failed"));
-    let recovered = source.catch_error(|_| -1);
+    let recovered = source.clone().catch_error(|_| -1).materialize();
 
     assert_eq!(recovered.get(), -1);
 
@@ -114,7 +123,10 @@ fn test_catch_error_recovers() {
 #[test]
 fn test_catch_error_with_error_info() {
     let source: Cell<Result<String, i32>, _> = Cell::new(Err(404));
-    let recovered = source.catch_error(|code| format!("Error {}", code));
+    let recovered = source
+        .clone()
+        .catch_error(|code| format!("Error {}", code))
+        .materialize();
 
     assert_eq!(recovered.get(), "Error 404");
 
@@ -129,7 +141,7 @@ fn test_catch_error_with_error_info() {
 #[test]
 fn test_unwrap_or_with_ok() {
     let source: Cell<Result<i32, &str>, _> = Cell::new(Ok(42));
-    let unwrapped = source.unwrap_or(0);
+    let unwrapped = source.unwrap_or(0).materialize();
 
     assert_eq!(unwrapped.get(), 42);
 }
@@ -137,7 +149,7 @@ fn test_unwrap_or_with_ok() {
 #[test]
 fn test_unwrap_or_with_err() {
     let source: Cell<Result<i32, &str>, _> = Cell::new(Err("error"));
-    let unwrapped = source.unwrap_or(0);
+    let unwrapped = source.clone().unwrap_or(0).materialize();
 
     assert_eq!(unwrapped.get(), 0);
 
@@ -155,7 +167,7 @@ fn test_unwrap_or_with_err() {
 #[test]
 fn test_unwrap_or_else_with_ok() {
     let source: Cell<Result<i32, &str>, _> = Cell::new(Ok(42));
-    let unwrapped = source.unwrap_or_else(|_| -1);
+    let unwrapped = source.unwrap_or_else(|_| -1).materialize();
 
     assert_eq!(unwrapped.get(), 42);
 }
@@ -163,7 +175,10 @@ fn test_unwrap_or_else_with_ok() {
 #[test]
 fn test_unwrap_or_else_with_err() {
     let source: Cell<Result<String, i32>, _> = Cell::new(Err(404));
-    let unwrapped = source.unwrap_or_else(|code| format!("default-{}", code));
+    let unwrapped = source
+        .clone()
+        .unwrap_or_else(|code| format!("default-{}", code))
+        .materialize();
 
     assert_eq!(unwrapped.get(), "default-404");
 
@@ -181,11 +196,13 @@ fn test_error_operator_chain() {
 
     // try_map -> map_ok -> catch_error
     let result = source
+        .clone()
         .try_map(|v| -> Result<i32, &str> {
             if *v > 0 { Ok(*v) } else { Err("negative") }
         })
         .map_ok(|v| v * 2)
-        .catch_error(|_| 0);
+        .catch_error(|_| 0)
+        .materialize();
 
     assert_eq!(result.get(), 20);
 

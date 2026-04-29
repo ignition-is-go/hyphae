@@ -120,14 +120,14 @@ impl<T, W: Watchable<T>> MergeMapExt<T> for W {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::MapExt;
+    use crate::{MapExt, MaterializeDefinite};
 
     #[test]
     fn test_merge_map_merges() {
         let source = Cell::new(1u64);
         let merged = source.merge_map(|v| {
             // Must return CellImmutable, use map to create one
-            Cell::new(*v).map(|x| x * 10)
+            Cell::new(*v).map(|x| x * 10).materialize()
         });
 
         assert_eq!(merged.get(), 10);

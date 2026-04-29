@@ -1,92 +1,129 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+//! `take_while(p)` operator — emit values while predicate returns true, then complete.
+//!
+//! [`Empty`] seedness: the predicate may fail on the first emission, in which
+//! case nothing ever lands in the cell and it stays `None` forever.
+
+use std::{
+    marker::PhantomData,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
-use super::{CellValue, Watchable};
+use super::CellValue;
 use crate::{
-    cell::{Cell, CellImmutable, CellMutable},
+    pipeline::{Empty, MaterializeEmpty, Pipeline, PipelineInstall, Seedness},
     signal::Signal,
+    subscription::SubscriptionGuard,
 };
 
-pub trait TakeWhileExt<T>: Watchable<T> {
-    /// Take values while predicate returns true, then stop.
-    #[track_caller]
-    fn take_while<F>(&self, predicate: F) -> Cell<T, CellImmutable>
-    where
-        T: CellValue,
-        F: Fn(&T) -> bool + Send + Sync + 'static,
-        Self: Clone + Send + Sync + 'static,
-    {
-        let initial = self.get();
-        let derived = Cell::<T, CellMutable>::new(initial);
-        let derived = if let Some(name) = self.name() {
-            derived.with_name(format!("{}::take_while", name))
-        } else {
-            derived
-        };
+/// Pipeline node representing `source.take_while(p)`.
+pub struct TakeWhilePipeline<S, T, F, Sd = crate::pipeline::Definite> {
+    source: S,
+    predicate: Arc<F>,
+    _t: PhantomData<fn(T)>,
+    _sd: PhantomData<fn(Sd)>,
+}
 
+impl<S, T, F, Sd> PipelineInstall<T> for TakeWhilePipeline<S, T, F, Sd>
+where
+    S: PipelineInstall<T> + Send + Sync + 'static,
+    Sd: Seedness,
+    T: CellValue,
+    F: Fn(&T) -> bool + Send + Sync + 'static,
+{
+    fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
+        let predicate = Arc::clone(&self.predicate);
         let stopped = Arc::new(AtomicBool::new(false));
-        let weak = derived.downgrade();
-        let first = Arc::new(AtomicBool::new(true));
-        let guard = self.subscribe(move |signal| {
-            if let Some(d) = weak.upgrade() {
-                match signal {
-                    Signal::Value(value) => {
-                        if first.swap(false, Ordering::SeqCst) {
-                            return;
-                        }
-                        if stopped.load(Ordering::SeqCst) {
-                            return;
-                        }
-                        if !predicate(value.as_ref()) {
-                            stopped.store(true, Ordering::SeqCst);
-                            d.notify(Signal::Complete);
-                            return;
-                        }
-                        d.notify(signal.clone());
+        let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
+            Arc::new(move |signal: &Signal<T>| match signal {
+                Signal::Value(v) => {
+                    if stopped.load(Ordering::SeqCst) {
+                        return;
                     }
-                    Signal::Complete => d.notify(Signal::Complete),
-                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
+                    if predicate(v.as_ref()) {
+                        callback(signal);
+                    } else {
+                        stopped.store(true, Ordering::SeqCst);
+                        callback(&Signal::Complete);
+                    }
                 }
-            }
-        });
-        derived.own(guard);
-
-        derived.lock()
+                Signal::Complete => callback(&Signal::Complete),
+                Signal::Error(e) => callback(&Signal::Error(e.clone())),
+            });
+        self.source.install(wrapped)
     }
 }
 
-impl<T, W: Watchable<T>> TakeWhileExt<T> for W {}
+#[allow(private_bounds)]
+impl<S, T, F, Sd> Pipeline<T, Empty> for TakeWhilePipeline<S, T, F, Sd>
+where
+    S: Pipeline<T, Sd>,
+    Sd: Seedness,
+    T: CellValue,
+    F: Fn(&T) -> bool + Send + Sync + 'static,
+{
+}
+
+impl<S, T, F, Sd> MaterializeEmpty<T> for TakeWhilePipeline<S, T, F, Sd>
+where
+    S: Pipeline<T, Sd>,
+    Sd: Seedness,
+    T: CellValue,
+    F: Fn(&T) -> bool + Send + Sync + 'static,
+{
+}
+
+#[allow(private_bounds)]
+pub trait TakeWhileExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
+    /// Forward values while the predicate returns `true`. On the first `false`,
+    /// emit `Complete` and ignore all subsequent values.
+    #[track_caller]
+    fn take_while<F>(self, predicate: F) -> TakeWhilePipeline<Self, T, F, S>
+    where
+        F: Fn(&T) -> bool + Send + Sync + 'static,
+    {
+        TakeWhilePipeline {
+            source: self,
+            predicate: Arc::new(predicate),
+            _t: PhantomData,
+            _sd: PhantomData,
+        }
+    }
+}
+
+impl<T: CellValue, S: Seedness, P: Pipeline<T, S>> TakeWhileExt<T, S> for P {}
 
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::AtomicBool;
 
     use super::*;
-    use crate::{Gettable, Mutable};
+    use crate::{Cell, Gettable, MaterializeEmpty, Mutable, traits::Watchable};
 
     #[test]
     fn test_take_while() {
         let source = Cell::new(1u64);
-        let taken = source.take_while(|x| *x < 5);
+        let taken = source.clone().take_while(|x| *x < 5).materialize();
 
-        assert_eq!(taken.get(), 1);
+        // Initial sync emit: predicate(1) == true, cell becomes Some(1).
+        assert_eq!(taken.get(), Some(1));
 
         source.set(3);
-        assert_eq!(taken.get(), 3);
+        assert_eq!(taken.get(), Some(3));
 
-        source.set(5); // Predicate fails, stops
-        assert_eq!(taken.get(), 3);
+        source.set(5); // predicate fails, completes; cell freezes at last passing value.
+        assert_eq!(taken.get(), Some(3));
 
-        source.set(2); // Even though valid, already stopped
-        assert_eq!(taken.get(), 3);
+        source.set(2); // already stopped — ignored.
+        assert_eq!(taken.get(), Some(3));
     }
 
     #[test]
     fn test_take_while_completes_on_predicate_fail() {
         let source = Cell::new(1u64);
-        let taken = source.take_while(|x| *x < 5);
+        let taken = source.clone().take_while(|x| *x < 5).materialize();
         let completed = Arc::new(AtomicBool::new(false));
 
         let c = completed.clone();
@@ -98,7 +135,7 @@ mod tests {
 
         assert!(!taken.is_complete());
 
-        source.set(5); // Predicate fails
+        source.set(5); // predicate fails
 
         assert!(taken.is_complete());
         assert!(completed.load(Ordering::SeqCst));

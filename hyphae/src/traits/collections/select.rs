@@ -1,12 +1,75 @@
-use std::hash::Hash;
+//! Select plan node implementing [`MapQuery`].
+//!
+//! `select` builds an uncompiled plan node that composes with other
+//! [`MapQuery`] operators. Call [`MapQuery::materialize`] to compile a plan
+//! into a subscribable [`CellMap`](crate::CellMap).
+
+use std::{hash::Hash, marker::PhantomData, sync::Arc};
 
 use crate::{
-    cell::CellImmutable,
-    cell_map::CellMap,
-    traits::{CellValue, collections::internal::map_runtime::run_map_runtime},
+    map_query::{MapDiffSink, MapQuery, MapQueryInstall},
+    subscription::SubscriptionGuard,
+    traits::{CellValue, collections::internal::map_runtime::install_map_runtime_via_query},
 };
 
-pub trait SelectExt<K, V>
+/// Plan node for [`SelectExt::select`].
+///
+/// Filters source rows by a predicate over the value. Output key/value
+/// types match the input.
+///
+/// Not [`Clone`]: cloning a plan would silently duplicate filter work;
+/// share by materializing once.
+pub struct SelectPlan<S, K, V, F>
+where
+    S: MapQuery<K, V>,
+    K: Hash + Eq + CellValue,
+    V: CellValue,
+    F: Fn(&V) -> bool + Send + Sync + 'static,
+{
+    pub(crate) source: S,
+    pub(crate) predicate: Arc<F>,
+    pub(crate) _types: PhantomData<fn() -> (K, V)>,
+}
+
+impl<S, K, V, F> MapQueryInstall<K, V> for SelectPlan<S, K, V, F>
+where
+    S: MapQuery<K, V>,
+    K: Hash + Eq + CellValue,
+    V: CellValue,
+    F: Fn(&V) -> bool + Send + Sync + 'static,
+{
+    fn install(self, sink: MapDiffSink<K, V>) -> Vec<SubscriptionGuard> {
+        let predicate = self.predicate;
+        install_map_runtime_via_query::<K, V, K, V, S, _>(
+            self.source,
+            move |k, v| {
+                if predicate(v) {
+                    vec![(k.clone(), v.clone())]
+                } else {
+                    Vec::new()
+                }
+            },
+            sink,
+        )
+    }
+}
+
+#[allow(private_bounds)]
+impl<S, K, V, F> MapQuery<K, V> for SelectPlan<S, K, V, F>
+where
+    S: MapQuery<K, V>,
+    K: Hash + Eq + CellValue,
+    V: CellValue,
+    F: Fn(&V) -> bool + Send + Sync + 'static,
+{
+}
+
+/// Select operator returning a [`MapQuery`] plan node.
+///
+/// `select` consumes `self` and returns an uncompiled plan node; call
+/// [`MapQuery::materialize`] on the result to obtain a subscribable
+/// [`CellMap`](crate::CellMap).
+pub trait SelectExt<K, V>: MapQuery<K, V>
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
@@ -15,28 +78,24 @@ where
     ///
     /// `predicate(&value)` decides whether a row is present in the output map.
     #[track_caller]
-    fn select<F>(&self, predicate: F) -> CellMap<K, V, CellImmutable>
-    where
-        F: Fn(&V) -> bool + Send + Sync + 'static;
-}
-
-impl<K, V, M> SelectExt<K, V> for CellMap<K, V, M>
-where
-    K: Hash + Eq + CellValue,
-    V: CellValue,
-{
-    fn select<F>(&self, predicate: F) -> CellMap<K, V, CellImmutable>
+    fn select<F>(self, predicate: F) -> SelectPlan<Self, K, V, F>
     where
         F: Fn(&V) -> bool + Send + Sync + 'static,
     {
-        run_map_runtime(self, "select", move |k, v| {
-            if predicate(v) {
-                vec![(k.clone(), v.clone())]
-            } else {
-                Vec::new()
-            }
-        })
+        SelectPlan {
+            source: self,
+            predicate: Arc::new(predicate),
+            _types: PhantomData,
+        }
     }
+}
+
+impl<K, V, M> SelectExt<K, V> for M
+where
+    K: Hash + Eq + CellValue,
+    V: CellValue,
+    M: MapQuery<K, V>,
+{
 }
 
 #[cfg(test)]
@@ -49,7 +108,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        MapDiff,
+        CellMap, MapDiff,
         traits::{Gettable, Watchable},
     };
 
@@ -60,7 +119,7 @@ mod tests {
         map.insert("b".to_string(), 15);
         map.insert("c".to_string(), 25);
 
-        let filtered = map.select(|v| *v > 10);
+        let filtered = map.clone().select(|v| *v > 10).materialize();
         assert_eq!(filtered.entries().get().len(), 2);
         assert!(filtered.contains_key(&"b".to_string()));
         assert!(filtered.contains_key(&"c".to_string()));
@@ -75,7 +134,7 @@ mod tests {
     #[test]
     fn select_batch_resilience_and_no_extra_side_emissions() {
         let map = CellMap::<String, i32>::new();
-        let filtered = map.select(|v| *v > 10);
+        let filtered = map.clone().select(|v| *v > 10).materialize();
 
         let (tx, rx) = mpsc::channel::<MapDiff<String, i32>>();
         let _guard = filtered.subscribe_diffs(move |diff| {
@@ -100,7 +159,7 @@ mod tests {
     #[test]
     fn select_entries_observable() {
         let map = CellMap::<String, i32>::new();
-        let filtered = map.select(|v| *v > 10);
+        let filtered = map.clone().select(|v| *v > 10).materialize();
         let entries = filtered.entries();
 
         let count = Arc::new(AtomicUsize::new(0));

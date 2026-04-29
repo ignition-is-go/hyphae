@@ -24,7 +24,9 @@ use crossterm::{
 use dashmap::DashMap;
 use hyphae::registry::CellSnapshot;
 use hyphae::server::start_server;
-use hyphae::{Cell, CellMap, CellMutable, Gettable, MapExt, Mutable, Signal, Watchable};
+use hyphae::{
+    Cell, CellMap, CellMutable, Gettable, MapExt, MaterializeDefinite, Mutable, Signal, Watchable,
+};
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
@@ -297,6 +299,7 @@ fn main() -> anyhow::Result<()> {
     // Derived cells
     let snapshot_entries = snapshots.entries();
     let summary = snapshot_entries
+        .clone()
         .map(|entries| {
             let total = entries.len();
             let all_dep_ids: HashSet<Uuid> = entries
@@ -309,6 +312,7 @@ fn main() -> anyhow::Result<()> {
                 .count();
             format!("Cells: {}  Roots: {}", total, roots)
         })
+        .materialize()
         .with_name("summary");
 
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -708,10 +712,8 @@ fn main() -> anyhow::Result<()> {
                         selected_index.set(0);
                     }
                 }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    if selected + 1 < tree_len {
-                        selected_index.set(selected + 1);
-                    }
+                KeyCode::Down | KeyCode::Char('j') if selected + 1 < tree_len => {
+                    selected_index.set(selected + 1);
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     selected_index.set(selected.saturating_sub(1));

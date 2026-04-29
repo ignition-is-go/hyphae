@@ -11,8 +11,10 @@ pub mod operators;
 
 pub use cell_value::CellValue;
 pub use collections::{
-    CountByExt, GroupByExt, InnerJoinExt, LeftJoinExt, LeftSemiJoinExt, MultiLeftJoinExt,
-    ProjectCellExt, ProjectManyExt, ProjectMapExt, SelectCellExt, SelectExt,
+    CountByExt, CountByPlan, GroupByExt, GroupByPlan, InnerJoinByKeyPlan, InnerJoinByPairPlan,
+    InnerJoinExt, LeftJoinExt, LeftJoinPlan, LeftSemiJoinExt, LeftSemiJoinPlan, MultiLeftJoinExt,
+    MultiLeftJoinPlan, ProjectCellExt, ProjectCellPlan, ProjectManyExt, ProjectManyPlan,
+    ProjectMapExt, ProjectPlan, SelectCellExt, SelectCellPlan, SelectExt, SelectPlan,
 };
 pub use dep_node::DepNode;
 pub use foreign_key::{HasForeignKey, IdFor, IdType, JoinKeyFrom};
@@ -21,10 +23,11 @@ pub use mutable::Mutable;
 pub use operators::{
     AuditExt, BackpressureExt, BufferCountExt, BufferTimeExt, CatchErrorExt, ColdExt, ConcatExt,
     DebounceExt, DedupedExt, DelayExt, DistinctExt, DistinctUntilChangedByExt, FilterExt,
-    FinalizeExt, FirstExt, JoinExt, LastExt, MapErrExt, MapExt, MapOkExt, MergeExt, MergeMapExt,
-    PairwiseExt, RetryExt, SampleExt, ScanExt, SkipExt, SkipWhileExt, StateMachineBuilder,
-    StateTransitionExt, SwitchMapExt, TakeExt, TakeUntilExt, TakeWhileExt, TapExt, ThrottleExt,
-    TimeoutExt, TryMapExt, UnwrapOrExt, WindowExt, WithLatestFromExt, ZipExt, join_vec,
+    FilterPipeline, FinalizeExt, FirstExt, JoinExt, LastExt, MapErrExt, MapExt, MapOkExt,
+    MapPipeline, MergeExt, MergeMapExt, PairwiseExt, RetryExt, SampleExt, ScanExt, SkipExt,
+    SkipWhileExt, StateMachineBuilder, StateTransitionExt, SwitchMapExt, TakeExt, TakeUntilExt,
+    TakeWhileExt, TapExt, TapPipeline, ThrottleExt, TimeoutExt, TryMapExt, TryMapPipeline,
+    UnwrapOrExt, WindowExt, WithLatestFromExt, ZipExt, join_vec,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use operators::{ParallelCell, ParallelExt};

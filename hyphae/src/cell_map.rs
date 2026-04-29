@@ -3,14 +3,19 @@
 //! `CellMap` wraps a concurrent HashMap where each entry can be individually observed.
 //! Changes to keys trigger reactive updates to observers.
 
-use std::{collections::HashMap, hash::Hash, marker::PhantomData, sync::Arc};
+use std::{
+    collections::HashMap,
+    hash::Hash,
+    marker::PhantomData,
+    sync::{Arc, Mutex},
+};
 
-use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use uuid::Uuid;
 
 use crate::{
     cell::{Cell, CellImmutable, CellMutable, WeakCell},
+    pipeline::MaterializeDefinite,
     signal::Signal,
     subscription::SubscriptionGuard,
     traits::{CellValue, Mutable, Watchable},
@@ -46,8 +51,9 @@ where
     len_cell: Cell<usize, CellMutable>,
     /// Subscription guards owned by this map (dropped when map drops).
     owned: DashMap<Uuid, SubscriptionGuard>,
-    /// Optional name for debugging.
-    pub(crate) name: ArcSwap<Option<Arc<str>>>,
+    /// Optional name for debugging. Cold path — set once via `with_name`,
+    /// read by per-key cell formatting helpers.
+    pub(crate) name: Mutex<Option<Arc<str>>>,
 }
 
 /// A reactive HashMap with per-key observability.
@@ -268,7 +274,7 @@ where
                 diffs_cell,
                 len_cell,
                 owned: DashMap::new(),
-                name: ArcSwap::from_pointee(None),
+                name: Mutex::new(None),
             }),
             _marker: PhantomData,
         }
@@ -496,6 +502,80 @@ where
         self.inner.len_cell.set(self.inner.data.len());
     }
 
+    /// Apply a single owned diff to this map and emit it directly (no Batch wrap).
+    ///
+    /// Used by the `MapQuery` materialize sink. Avoids the per-diff `Vec`
+    /// allocation and double-clone that would result from routing every
+    /// diff through `apply_batch`. Caller must own the diff (one upstream
+    /// clone is unavoidable since `subscribe_diffs_reactive` passes `&diff`).
+    pub(crate) fn apply_diff_owned(&self, diff: MapDiff<K, V>) {
+        match &diff {
+            MapDiff::Initial { entries } => {
+                let stale_keys: Vec<K> = self.inner.data.iter().map(|r| r.key().clone()).collect();
+                for key in stale_keys {
+                    self.inner.data.remove(&key);
+                    if let Some(weak) = self.inner.key_cells.get(&key)
+                        && let Some(cell) = weak.upgrade()
+                    {
+                        cell.set(None);
+                    }
+                }
+                for (key, value) in entries {
+                    self.inner.data.insert(key.clone(), value.clone());
+                    if let Some(weak) = self.inner.key_cells.get(key)
+                        && let Some(cell) = weak.upgrade()
+                    {
+                        cell.set(Some(value.clone()));
+                    }
+                }
+            }
+            MapDiff::Insert { key, value } => {
+                self.inner.data.insert(key.clone(), value.clone());
+                if let Some(weak) = self.inner.key_cells.get(key)
+                    && let Some(cell) = weak.upgrade()
+                {
+                    cell.set(Some(value.clone()));
+                }
+            }
+            MapDiff::Remove { key, .. } => {
+                self.inner.data.remove(key);
+                if let Some(weak) = self.inner.key_cells.get(key)
+                    && let Some(cell) = weak.upgrade()
+                {
+                    cell.set(None);
+                }
+            }
+            MapDiff::Update { key, new_value, .. } => {
+                if self
+                    .inner
+                    .data
+                    .get(key)
+                    .is_some_and(|existing| existing.value() == new_value)
+                {
+                    return;
+                }
+                self.inner.data.insert(key.clone(), new_value.clone());
+                if let Some(weak) = self.inner.key_cells.get(key)
+                    && let Some(cell) = weak.upgrade()
+                {
+                    cell.set(Some(new_value.clone()));
+                }
+            }
+            MapDiff::Batch { .. } => {
+                // Batches still go through apply_batch (preserves existing
+                // semantics for callers that emit batched diffs).
+                self.apply_batch(match diff {
+                    MapDiff::Batch { changes } => changes,
+                    _ => unreachable!(),
+                });
+                return;
+            }
+        }
+
+        self.inner.len_cell.set(self.inner.data.len());
+        self.inner.diffs_cell.set(diff);
+    }
+
     /// Apply a batch of diffs and emit them as one `MapDiff::Batch`.
     pub fn apply_batch(&self, changes: Vec<MapDiff<K, V>>) {
         if changes.is_empty() {
@@ -613,7 +693,7 @@ where
             .len_cell
             .clone()
             .with_name(format!("{}::len", name));
-        self.inner.name.store(Arc::new(Some(name)));
+        *self.inner.name.lock().expect("cell_map name poisoned") = Some(name);
         self
     }
 
@@ -664,7 +744,13 @@ where
         // Create new cell with current value
         let current = self.inner.data.get(key).map(|r| r.value().clone());
         let cell = Cell::new(current);
-        if let Some(map_name) = (**self.inner.name.load()).as_ref() {
+        if let Some(map_name) = self
+            .inner
+            .name
+            .lock()
+            .expect("cell_map name poisoned")
+            .as_ref()
+        {
             cell.clone().with_name(format!("{}[{:?}]", map_name, key));
         }
 
@@ -701,7 +787,13 @@ where
         )));
 
         let cell = Cell::new(initial);
-        if let Some(map_name) = (**self.inner.name.load()).as_ref() {
+        if let Some(map_name) = self
+            .inner
+            .name
+            .lock()
+            .expect("cell_map name poisoned")
+            .as_ref()
+        {
             cell.clone().with_name(format!("{}::entries", map_name));
         }
         let weak_cell = cell.downgrade();
@@ -754,7 +846,13 @@ where
         )));
 
         let cell = Cell::new(initial.into_iter().map(|(_, value)| value).collect());
-        if let Some(map_name) = (**self.inner.name.load()).as_ref() {
+        if let Some(map_name) = self
+            .inner
+            .name
+            .lock()
+            .expect("cell_map name poisoned")
+            .as_ref()
+        {
             cell.clone().with_name(format!("{}::items", map_name));
         }
         let weak_cell = cell.downgrade();
@@ -788,6 +886,7 @@ where
         use crate::traits::MapExt;
         self.entries()
             .map(|entries| entries.iter().map(|(k, _)| k.clone()).collect())
+            .materialize()
     }
 
     /// Get an observable Cell of the map size.

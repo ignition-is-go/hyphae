@@ -2,12 +2,10 @@ use std::{
     collections::HashMap,
     hash::Hash,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
 };
-
-use arc_swap::ArcSwap;
 
 use super::{CellValue, Watchable};
 use crate::{
@@ -168,7 +166,7 @@ pub trait StateTransitionExt<S>: Watchable<S> {
 
         let weak = derived.downgrade();
         let first = Arc::new(AtomicBool::new(true));
-        let current_state: Arc<ArcSwap<S>> = Arc::new(ArcSwap::from_pointee(self.get()));
+        let current_state: Arc<Mutex<S>> = Arc::new(Mutex::new(self.get()));
 
         let guard = self.subscribe(move |signal| {
             if let Some(d) = weak.upgrade() {
@@ -178,40 +176,44 @@ pub trait StateTransitionExt<S>: Watchable<S> {
                             return;
                         }
 
-                        let current = current_state.load();
-                        let key = ((**current).clone(), (**next).clone());
-
-                        // Always advance state to track upstream reality.
-                        // This ensures undefined transitions don't "stick"
-                        // the state machine — only defined transitions
-                        // produce output.
-                        current_state.store(next.clone());
+                        // Hold the lock just long enough to clone-and-replace
+                        // the current state. Release before invoking user
+                        // handlers so a panicking handler can't poison the
+                        // mutex.
+                        let current = {
+                            let mut guard =
+                                current_state.lock().expect("state_transition poisoned");
+                            let prev = guard.clone();
+                            *guard = (**next).clone();
+                            prev
+                        };
+                        let key = (current.clone(), (**next).clone());
 
                         // Check if transition is defined
                         if !transitions.contains_key(&key) {
                             if let Some(ref handler) = on_invalid {
-                                handler(&*current, &**next);
+                                handler(&current, &**next);
                             }
                             return;
                         }
 
                         // Check guard if defined
                         if let Some(guard_fn) = guards.get(&key)
-                            && !guard_fn(&*current, &**next)
+                            && !guard_fn(&current, &**next)
                         {
                             return; // Guard rejected
                         }
 
                         // Valid transition - execute handlers
                         // 1. on_exit for current state
-                        if let Some(exit_fn) = on_exit.get(&*current) {
-                            exit_fn(&*current);
+                        if let Some(exit_fn) = on_exit.get(&current) {
+                            exit_fn(&current);
                         }
 
                         // 2. transition handler — returns value to emit
                         let output = transitions
                             .get(&key)
-                            .map(|trans_fn| trans_fn(&*current, &**next));
+                            .map(|trans_fn| trans_fn(&current, &**next));
 
                         // 3. on_enter for next state
                         if let Some(enter_fn) = on_enter.get(&**next) {
@@ -417,7 +419,7 @@ mod tests {
 
     #[test]
     fn test_state_transition_selective_emit() {
-        use crate::{FilterExt, Gettable};
+        use crate::{FilterExt, Gettable, MaterializeEmpty};
 
         let source = Cell::new(State::Idle);
         let sm = source.state_transition(|sm| {
@@ -425,7 +427,7 @@ mod tests {
             sm.on(State::Loading, State::Ready, |_, _| false);
             sm.on(State::Ready, State::Idle, |_, _| false);
         });
-        let triggers = sm.filter(|v| *v);
+        let triggers = sm.filter(|v| *v).materialize();
 
         let emission_count = Arc::new(AtomicU32::new(0));
         let ec = emission_count.clone();
@@ -446,6 +448,6 @@ mod tests {
 
         source.set(State::Loading); // true again - emits
         assert_eq!(emission_count.load(Ordering::SeqCst), 3);
-        assert!(triggers.get());
+        assert_eq!(triggers.get(), Some(true));
     }
 }

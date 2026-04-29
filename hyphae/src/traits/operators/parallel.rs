@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use rayon::prelude::*;
 
 use super::{CellValue, Gettable, Watchable};
@@ -39,19 +37,17 @@ impl<T: CellValue> ParallelCell<T> {
     /// Notify all subscribers in parallel using Rayon.
     pub fn notify(&self, value: T) {
         let signal = Signal::value(value);
-        self.inner.inner.value.store(signal.arc().unwrap().clone());
-
-        // Collect subscribers and notify in parallel
-        let callbacks: Vec<_> = self
+        *self
             .inner
             .inner
-            .subscribers
-            .iter()
-            .map(|entry| Arc::clone(&entry.value().callback))
-            .collect();
+            .value
+            .lock()
+            .expect("cell value poisoned") = signal.arc().unwrap().clone();
 
-        callbacks.par_iter().for_each(|callback| {
-            callback(&signal);
+        // Lock-free Arc bump on the subscriber list, then fan out in parallel.
+        let subs = self.inner.inner.subscribers.load();
+        subs.par_iter().for_each(|(_, sub)| {
+            (sub.callback)(&signal);
         });
     }
 }
@@ -71,17 +67,12 @@ pub trait ParallelExt<T>: Watchable<T> {
             if let Some(inner) = weak.upgrade() {
                 match signal {
                     Signal::Value(value) => {
-                        inner.inner.value.store(value.clone()); // Arc clone
+                        *inner.inner.value.lock().expect("cell value poisoned") = value.clone();
 
-                        let callbacks: Vec<_> = inner
-                            .inner
-                            .subscribers
-                            .iter()
-                            .map(|entry| Arc::clone(&entry.value().callback))
-                            .collect();
-
-                        callbacks.par_iter().for_each(|callback| {
-                            callback(signal);
+                        // Lock-free Arc bump on the subscriber list.
+                        let subs = inner.inner.subscribers.load();
+                        subs.par_iter().for_each(|(_, sub)| {
+                            (sub.callback)(signal);
                         });
                     }
                     Signal::Complete => inner.notify(Signal::Complete),

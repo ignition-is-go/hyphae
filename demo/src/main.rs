@@ -8,8 +8,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hyphae::{
-    Cell, CellImmutable, CellMap, FilterExt, JoinExt, MapExt, PairwiseExt, ScanExt, Signal,
-    SwitchMapExt, Watchable, WindowExt, interval, join_vec,
+    Cell, CellImmutable, CellMap, FilterExt, JoinExt, MapExt, MaterializeDefinite,
+    MaterializeEmpty, PairwiseExt, ScanExt, Signal, SwitchMapExt, Watchable, WindowExt, interval,
+    join_vec,
 };
 
 #[tokio::main]
@@ -26,17 +27,21 @@ async fn main() {
     // ── Derived: sine + cosine from fast clock ──────────────────────────
 
     let sine = fast
+        .clone()
         .map(|tick| {
             let t = *tick as f64 * 0.1;
             (t.sin() * 100.0).round() / 100.0
         })
+        .materialize()
         .with_name("sine");
 
     let cosine = fast
+        .clone()
         .map(|tick| {
             let t = *tick as f64 * 0.1;
             (t.cos() * 100.0).round() / 100.0
         })
+        .materialize()
         .with_name("cosine");
 
     // ── Magnitude from sine+cosine (should always be ~1.0) ──────────────
@@ -44,11 +49,13 @@ async fn main() {
     let _magnitude = sine
         .join(&cosine)
         .map(|(s, c)| ((s * s + c * c).sqrt() * 1000.0).round() / 1000.0)
+        .materialize()
         .with_name("magnitude");
 
     // ── Running average of sine using scan ───────────────────────────────
 
     let _running_avg = sine
+        .clone()
         .scan((0.0_f64, 0_u64), |state, value| {
             let (sum, count) = state;
             (sum + value, count + 1)
@@ -60,6 +67,7 @@ async fn main() {
                 (sum / *count as f64 * 1000.0).round() / 1000.0
             }
         })
+        .materialize()
         .with_name("running_avg");
 
     // ── Fibonacci sequence on medium clock ───────────────────────────────
@@ -70,6 +78,7 @@ async fn main() {
             (*b, a.wrapping_add(*b))
         })
         .map(|(a, _)| *a)
+        .materialize()
         .with_name("fibonacci");
 
     // ── Phase selector on slow clock ────────────────────────────────────
@@ -81,6 +90,7 @@ async fn main() {
             2 => "falling",
             _ => "trough",
         })
+        .materialize()
         .with_name("phase");
 
     // ── Switch map: signal shape depends on phase ───────────────────────
@@ -88,22 +98,36 @@ async fn main() {
     let fast_for_switch = fast.clone();
     let _phase_signal = phase
         .switch_map(move |phase_name| match *phase_name {
-            "rising" => fast_for_switch.map(|t| (*t as f64 * 0.05).min(1.0)),
+            "rising" => fast_for_switch
+                .clone()
+                .map(|t| (*t as f64 * 0.05).min(1.0))
+                .materialize(),
             "peak" => Cell::new(1.0).lock(),
-            "falling" => fast_for_switch.map(|t| (1.0 - *t as f64 * 0.05).max(0.0)),
+            "falling" => fast_for_switch
+                .clone()
+                .map(|t| (1.0 - *t as f64 * 0.05).max(0.0))
+                .materialize(),
             _ => Cell::new(0.0).lock(),
         })
         .with_name("phase_signal");
 
     // ── Filter: only positive sine values ───────────────────────────────
 
-    let _positive_sine = sine.filter(|v| *v > 0.0).with_name("positive_sine");
+    let _positive_sine = sine
+        .clone()
+        .filter(|v| *v > 0.0)
+        .materialize()
+        .with_name("positive_sine");
 
     // ── Pairwise velocity ───────────────────────────────────────────────
 
     let velocity = sine
+        .clone()
         .pairwise()
         .map(|(prev, curr)| ((curr - prev) * 1000.0).round() / 1000.0)
+        .materialize()
+        .map(|v| v.unwrap_or(0.0))
+        .materialize()
         .with_name("velocity");
 
     // ── Sliding window of last 5 fibonacci values ───────────────────────
@@ -157,6 +181,7 @@ async fn main() {
                 (avg * 100.0).round() / 100.0,
             )
         })
+        .materialize()
         .with_name("stats");
 
     // ── Run forever ─────────────────────────────────────────────────────

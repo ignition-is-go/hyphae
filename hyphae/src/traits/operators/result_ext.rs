@@ -1,123 +1,124 @@
-use super::{CellValue, MapExt, Watchable};
-use crate::cell::{Cell, CellImmutable};
+//! Result-typed pipeline operators: map_ok, map_err, catch_error, unwrap_or.
+//!
+//! These wrap `MapExt::map` with fixed per-variant closures. They are pure
+//! transformations and allocate no intermediate cells.
 
-/// Extension trait for transforming Ok values in Result cells.
-pub trait MapOkExt<T, E>: Watchable<Result<T, E>> {
-    /// Transform the Ok value, passing through Err unchanged.
-    /// Equivalent to `map(|r| r.as_ref().map(f).map_or_else(|e| Err(e.clone()), Ok))`.
+use super::{CellValue, MapExt, MapPipeline};
+use crate::pipeline::{Pipeline, Seedness};
+
+#[allow(private_bounds)]
+pub trait MapOkExt<T: CellValue, E: CellValue, S: Seedness>: Pipeline<Result<T, E>, S> {
     #[track_caller]
-    fn map_ok<U, F>(&self, f: F) -> Cell<Result<U, E>, CellImmutable>
+    fn map_ok<U, F>(
+        self,
+        f: F,
+    ) -> MapPipeline<
+        Self,
+        Result<T, E>,
+        Result<U, E>,
+        impl Fn(&Result<T, E>) -> Result<U, E> + Send + Sync + 'static,
+    >
     where
-        T: CellValue,
+        Self: Sized,
         U: CellValue,
-        E: CellValue,
         F: Fn(&T) -> U + Send + Sync + 'static,
-        Self: Clone + Send + Sync + 'static,
     {
-        self.map(move |r| match r {
+        self.map(move |r: &Result<T, E>| match r {
             Ok(v) => Ok(f(v)),
             Err(e) => Err(e.clone()),
         })
     }
 }
 
-impl<T, E, W> MapOkExt<T, E> for W
-where
-    T: CellValue,
-    E: CellValue,
-    W: Watchable<Result<T, E>>,
+impl<T: CellValue, E: CellValue, S: Seedness, P: Pipeline<Result<T, E>, S>> MapOkExt<T, E, S>
+    for P
 {
 }
 
-/// Extension trait for transforming Err values in Result cells.
-pub trait MapErrExt<T, E>: Watchable<Result<T, E>> {
-    /// Transform the Err value, passing through Ok unchanged.
-    /// Equivalent to `map(|r| r.clone().map_err(|e| f(&e)))`.
+#[allow(private_bounds)]
+pub trait MapErrExt<T: CellValue, E: CellValue, S: Seedness>: Pipeline<Result<T, E>, S> {
     #[track_caller]
-    fn map_err<E2, F>(&self, f: F) -> Cell<Result<T, E2>, CellImmutable>
+    fn map_err<E2, F>(
+        self,
+        f: F,
+    ) -> MapPipeline<
+        Self,
+        Result<T, E>,
+        Result<T, E2>,
+        impl Fn(&Result<T, E>) -> Result<T, E2> + Send + Sync + 'static,
+    >
     where
-        T: CellValue,
-        E: CellValue,
+        Self: Sized,
         E2: CellValue,
         F: Fn(&E) -> E2 + Send + Sync + 'static,
-        Self: Clone + Send + Sync + 'static,
     {
-        self.map(move |r| match r {
+        self.map(move |r: &Result<T, E>| match r {
             Ok(v) => Ok(v.clone()),
             Err(e) => Err(f(e)),
         })
     }
 }
 
-impl<T, E, W> MapErrExt<T, E> for W
-where
-    T: CellValue,
-    E: CellValue,
-    W: Watchable<Result<T, E>>,
+impl<T: CellValue, E: CellValue, S: Seedness, P: Pipeline<Result<T, E>, S>> MapErrExt<T, E, S>
+    for P
 {
 }
 
-/// Extension trait for recovering from errors.
-pub trait CatchErrorExt<T, E>: Watchable<Result<T, E>> {
-    /// Recover from errors by providing a fallback value.
-    /// Converts `Cell<Result<T, E>>` to `Cell<T>` by handling errors.
+#[allow(private_bounds)]
+pub trait CatchErrorExt<T: CellValue, E: CellValue, S: Seedness>:
+    Pipeline<Result<T, E>, S>
+{
     #[track_caller]
-    fn catch_error<F>(&self, f: F) -> Cell<T, CellImmutable>
+    fn catch_error<F>(
+        self,
+        f: F,
+    ) -> MapPipeline<Self, Result<T, E>, T, impl Fn(&Result<T, E>) -> T + Send + Sync + 'static>
     where
-        T: CellValue,
-        E: CellValue,
+        Self: Sized,
         F: Fn(&E) -> T + Send + Sync + 'static,
-        Self: Clone + Send + Sync + 'static,
     {
-        self.map(move |r| match r {
+        self.map(move |r: &Result<T, E>| match r {
             Ok(v) => v.clone(),
             Err(e) => f(e),
         })
     }
 }
 
-impl<T, E, W> CatchErrorExt<T, E> for W
-where
-    T: CellValue,
-    E: CellValue,
-    W: Watchable<Result<T, E>>,
+impl<T: CellValue, E: CellValue, S: Seedness, P: Pipeline<Result<T, E>, S>> CatchErrorExt<T, E, S>
+    for P
 {
 }
 
-/// Extension trait for unwrapping Result cells with defaults.
-pub trait UnwrapOrExt<T, E>: Watchable<Result<T, E>> {
-    /// Unwrap Ok values, using a default for Err.
+#[allow(private_bounds)]
+pub trait UnwrapOrExt<T: CellValue, E: CellValue, S: Seedness>: Pipeline<Result<T, E>, S> {
     #[track_caller]
-    fn unwrap_or(&self, default: T) -> Cell<T, CellImmutable>
+    fn unwrap_or(
+        self,
+        default: T,
+    ) -> MapPipeline<Self, Result<T, E>, T, impl Fn(&Result<T, E>) -> T + Send + Sync + 'static>
     where
-        T: CellValue,
-        E: CellValue,
-        Self: Clone + Send + Sync + 'static,
+        Self: Sized,
     {
-        self.map(move |r| match r {
+        self.map(move |r: &Result<T, E>| match r {
             Ok(v) => v.clone(),
             Err(_) => default.clone(),
         })
     }
 
-    /// Unwrap Ok values, computing a fallback for Err.
-    /// Equivalent to `catch_error(f)`.
     #[track_caller]
-    fn unwrap_or_else<F>(&self, f: F) -> Cell<T, CellImmutable>
+    fn unwrap_or_else<F>(
+        self,
+        f: F,
+    ) -> MapPipeline<Self, Result<T, E>, T, impl Fn(&Result<T, E>) -> T + Send + Sync + 'static>
     where
-        T: CellValue,
-        E: CellValue,
+        Self: Sized,
         F: Fn(&E) -> T + Send + Sync + 'static,
-        Self: Clone + Send + Sync + 'static,
     {
         self.catch_error(f)
     }
 }
 
-impl<T, E, W> UnwrapOrExt<T, E> for W
-where
-    T: CellValue,
-    E: CellValue,
-    W: Watchable<Result<T, E>>,
+impl<T: CellValue, E: CellValue, S: Seedness, P: Pipeline<Result<T, E>, S>> UnwrapOrExt<T, E, S>
+    for P
 {
 }

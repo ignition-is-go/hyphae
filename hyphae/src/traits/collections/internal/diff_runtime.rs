@@ -1,66 +1,16 @@
 use std::{
     collections::{HashMap, HashSet},
     hash::Hash,
-    marker::PhantomData,
     sync::{Arc, Mutex},
 };
 
 use super::map_runtime::flatten_diff;
 use crate::{
-    cell::{CellImmutable, CellMutable},
-    cell_map::{CellMap, MapDiff},
+    cell_map::MapDiff,
+    map_query::{MapDiffSink, MapQuery},
+    subscription::SubscriptionGuard,
     traits::CellValue,
 };
-
-pub(crate) fn run_diff_runtime<SK, SV, SM, OK, OV, ST, FS>(
-    source: &CellMap<SK, SV, SM>,
-    op_name: &str,
-    initial_state: ST,
-    apply_atomic: FS,
-) -> CellMap<OK, OV, CellImmutable>
-where
-    SK: Hash + Eq + CellValue,
-    SV: CellValue,
-    OK: Hash + Eq + CellValue,
-    OV: CellValue,
-    ST: Send + Sync + 'static,
-    FS: Fn(&mut ST, &MapDiff<SK, SV>, &mut Vec<MapDiff<OK, OV>>) + Send + Sync + 'static,
-{
-    let output = CellMap::<OK, OV, CellMutable>::new();
-    if let Some(parent_name) = (**source.inner.name.load()).as_ref() {
-        output
-            .clone()
-            .with_name(format!("{}::{}", parent_name, op_name));
-    }
-
-    let state = Arc::new(Mutex::new(initial_state));
-    let apply_atomic = Arc::new(apply_atomic);
-    let output_weak = Arc::downgrade(&output.inner);
-
-    let guard = source.subscribe_diffs(move |diff| {
-        let Some(inner) = output_weak.upgrade() else {
-            return;
-        };
-        let output = CellMap::<OK, OV, CellMutable> {
-            inner,
-            _marker: PhantomData,
-        };
-
-        let mut atomic_diffs: Vec<MapDiff<SK, SV>> = Vec::new();
-        flatten_diff(diff, &mut atomic_diffs);
-        let mut emitted = Vec::<MapDiff<OK, OV>>::new();
-        {
-            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-            for atomic in &atomic_diffs {
-                apply_atomic(&mut state, atomic, &mut emitted);
-            }
-        }
-        output.apply_batch(emitted);
-    });
-
-    output.own(guard);
-    output.lock()
-}
 
 #[derive(Clone)]
 struct GroupedState<SK, GK, GS>
@@ -111,17 +61,79 @@ where
     pub _marker: std::marker::PhantomData<fn(&SK, &SV) -> GK>,
 }
 
-pub(crate) fn run_grouped_runtime<SK, SV, SM, GK, GS, OV, FG, FI, FU, FR, FM, FE>(
-    source: &CellMap<SK, SV, SM>,
-    op_name: &str,
+/// Wrap a non-empty change vector in `MapDiff::Batch`, dropping empty groups.
+fn emit_changes<K, V>(changes: Vec<MapDiff<K, V>>, sink: &MapDiffSink<K, V>)
+where
+    K: Hash + Eq + CellValue,
+    V: CellValue,
+{
+    if changes.is_empty() {
+        return;
+    }
+    sink(&MapDiff::Batch { changes });
+}
+
+/// Sink-driven diff runtime for [`MapQuery`] plan nodes.
+///
+/// Subscribes upstream by calling [`MapQuery::install`] on `source` with an
+/// intermediate sink that flattens incoming diffs, drives `apply_atomic` to
+/// build the downstream change set, and forwards a single `Batch` per
+/// upstream emission to `sink`. No intermediate `CellMap` is allocated.
+pub(crate) fn install_diff_runtime_via_query<SK, SV, OK, OV, S, ST, FS>(
+    source: S,
+    initial_state: ST,
+    apply_atomic: FS,
+    sink: MapDiffSink<OK, OV>,
+) -> Vec<SubscriptionGuard>
+where
+    SK: Hash + Eq + CellValue,
+    SV: CellValue,
+    OK: Hash + Eq + CellValue,
+    OV: CellValue,
+    S: MapQuery<SK, SV>,
+    ST: Send + Sync + 'static,
+    FS: Fn(&mut ST, &MapDiff<SK, SV>, &mut Vec<MapDiff<OK, OV>>) + Send + Sync + 'static,
+{
+    let state = Arc::new(Mutex::new(initial_state));
+    let apply_atomic = Arc::new(apply_atomic);
+
+    let upstream_sink: MapDiffSink<SK, SV> = {
+        let state = state.clone();
+        let apply_atomic = apply_atomic.clone();
+        let sink = sink.clone();
+        Arc::new(move |diff| {
+            let mut atomic_diffs: Vec<MapDiff<SK, SV>> = Vec::new();
+            flatten_diff(diff, &mut atomic_diffs);
+            let mut emitted = Vec::<MapDiff<OK, OV>>::new();
+            {
+                let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+                for atomic in &atomic_diffs {
+                    apply_atomic(&mut state, atomic, &mut emitted);
+                }
+            }
+            emit_changes(emitted, &sink);
+        })
+    };
+
+    source.install(upstream_sink)
+}
+
+/// Sink-driven grouped runtime for [`MapQuery`] plan nodes.
+///
+/// Used by `CountByPlan` and `GroupByPlan` to install grouping machinery
+/// into a downstream sink without materializing an intermediate `CellMap`.
+pub(crate) fn install_grouped_runtime_via_query<SK, SV, GK, GS, OV, S, FG, FI, FU, FR, FM, FE>(
+    source: S,
     ops: GroupedOps<SK, SV, GK, GS, OV, FG, FI, FU, FR, FM, FE>,
-) -> CellMap<GK, OV, CellImmutable>
+    sink: MapDiffSink<GK, OV>,
+) -> Vec<SubscriptionGuard>
 where
     SK: Hash + Eq + CellValue,
     SV: CellValue,
     GK: Hash + Eq + CellValue,
     GS: Clone + Send + Sync + 'static,
     OV: CellValue,
+    S: MapQuery<SK, SV>,
     FG: Fn(&SK, &SV) -> GK + Send + Sync + 'static,
     FI: Fn(&mut GS, &SK, &SV) + Send + Sync + 'static,
     FU: Fn(&mut GS, &SK, &SV, &SV) + Send + Sync + 'static,
@@ -130,9 +142,8 @@ where
     FE: Fn(&GS) -> bool + Send + Sync + 'static,
 {
     let ops = Arc::new(ops);
-    run_diff_runtime(
+    install_diff_runtime_via_query::<SK, SV, GK, OV, S, GroupedState<SK, GK, GS>, _>(
         source,
-        op_name,
         GroupedState::<SK, GK, GS>::default(),
         move |state: &mut GroupedState<SK, GK, GS>,
               diff: &MapDiff<SK, SV>,
@@ -230,7 +241,7 @@ where
                     }
                 }
                 MapDiff::Batch { .. } => {
-                    unreachable!("run_diff_runtime flattens MapDiff::Batch before apply_atomic")
+                    unreachable!("install_diff_runtime_via_query flattens MapDiff::Batch")
                 }
             }
 
@@ -258,5 +269,6 @@ where
                 }
             }
         },
+        sink,
     )
 }

@@ -92,7 +92,7 @@ impl<T, W: Watchable<T>> JoinExt<T> for W {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MapExt, Mutable};
+    use crate::{Gettable, MapExt, MaterializeDefinite, Mutable};
 
     #[test]
     fn test_join_combines_cells() {
@@ -121,7 +121,8 @@ mod tests {
             .join(&b)
             .join(&c)
             .join(&d)
-            .map(flat!(|a, b, c, d| a + b + c + d));
+            .map(flat!(|a, b, c, d| a + b + c + d))
+            .materialize();
 
         assert_eq!(sum.get(), 10);
     }

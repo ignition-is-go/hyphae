@@ -1,30 +1,26 @@
-use super::{CellValue, TakeExt, Watchable};
-use crate::cell::{Cell, CellImmutable};
+use super::{CellValue, TakeExt, TakePipeline};
+use crate::pipeline::{Pipeline, Seedness};
 
-pub trait FirstExt<T>: Watchable<T> {
-    /// Take only the first value, then complete.
-    /// Equivalent to `take(1)`.
+#[allow(private_bounds)]
+pub trait FirstExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
+    /// Take only the first value, then complete. Equivalent to `take(1)`.
     #[track_caller]
-    fn first(&self) -> Cell<T, CellImmutable>
-    where
-        T: CellValue,
-        Self: Clone + Send + Sync + 'static,
-    {
+    fn first(self) -> TakePipeline<Self, T, S> {
         self.take(1)
     }
 }
 
-impl<T, W: Watchable<T>> FirstExt<T> for W {}
+impl<T: CellValue, S: Seedness, P: Pipeline<T, S>> FirstExt<T, S> for P {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Gettable, Mutable};
+    use crate::{Cell, Gettable, MaterializeDefinite, Mutable, traits::Watchable};
 
     #[test]
     fn test_first() {
         let source = Cell::new(42);
-        let first = source.first();
+        let first = source.clone().first().materialize();
 
         assert_eq!(first.get(), 42);
         assert!(first.is_complete()); // Completes immediately
