@@ -616,7 +616,14 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
 
         let id = Uuid::new_v4();
         let sub = Arc::new(Subscriber::new(callback));
-        {
+        // Swap-and-defer: pull the old `Arc<Vec<…>>` out of the locked block
+        // so it drops AFTER `subscribers_writer` is released. The old vec's
+        // drop can recursively touch this cell's drop chain (Subscribers
+        // capture upstream cell handles that may be the only owner), and we
+        // must not run user-visible Drops while holding any internal lock —
+        // doing so allows two cells dropping concurrently to acquire each
+        // other's `subscribers_writer` and deadlock.
+        let _old = {
             let _w = self
                 .inner
                 .subscribers_writer
@@ -625,8 +632,8 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
             let current = self.inner.subscribers.load();
             let mut next = (**current).clone();
             next.push((id, sub));
-            self.inner.subscribers.store(Arc::new(next));
-        }
+            self.inner.subscribers.swap(Arc::new(next))
+        };
 
         // Record subscriber added if metrics enabled
         #[cfg(feature = "metrics")]
@@ -644,7 +651,8 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
         #[cfg(feature = "metrics")]
         let metrics = self.inner.metrics.clone();
         SubscriptionGuard::new(id, source, move || {
-            let removed = {
+            // Swap-and-defer: see subscribe() above.
+            let (removed, _old) = {
                 let _w = cell
                     .inner
                     .subscribers_writer
@@ -657,11 +665,11 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
                     .filter(|(i, _)| *i != id)
                     .cloned()
                     .collect();
-                let removed = next.len() != prev_len;
-                if removed {
-                    cell.inner.subscribers.store(Arc::new(next));
+                if next.len() != prev_len {
+                    (true, Some(cell.inner.subscribers.swap(Arc::new(next))))
+                } else {
+                    (false, None)
                 }
-                removed
             };
             #[cfg(feature = "metrics")]
             if removed && let Some(m) = &metrics {
@@ -678,8 +686,11 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
     }
 
     fn unsubscribe(&self, id: Uuid) {
-        // Try removing from subscribers first.
-        let removed_from_subs = {
+        // Swap-and-defer: see subscribe() — the displaced `Arc<Vec<…>>`s
+        // (`_old_subs`, `_old_result_subs`) drop AFTER both writer locks are
+        // released so cascading Subscriber/Cell Drops never run with an
+        // internal cell mutex held.
+        let (removed_from_subs, _old_subs) = {
             let _w = self
                 .inner
                 .subscribers_writer
@@ -692,14 +703,14 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
                 .filter(|(i, _)| *i != id)
                 .cloned()
                 .collect();
-            let removed = next.len() != prev_len;
-            if removed {
-                self.inner.subscribers.store(Arc::new(next));
+            if next.len() != prev_len {
+                (true, Some(self.inner.subscribers.swap(Arc::new(next))))
+            } else {
+                (false, None)
             }
-            removed
         };
-        let removed_from_result = if removed_from_subs {
-            false
+        let (removed_from_result, _old_result_subs) = if removed_from_subs {
+            (false, None)
         } else {
             let _w = self
                 .inner
@@ -713,11 +724,14 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
                 .filter(|(i, _)| *i != id)
                 .cloned()
                 .collect();
-            let removed = next.len() != prev_len;
-            if removed {
-                self.inner.result_subscribers.store(Arc::new(next));
+            if next.len() != prev_len {
+                (
+                    true,
+                    Some(self.inner.result_subscribers.swap(Arc::new(next))),
+                )
+            } else {
+                (false, None)
             }
-            removed
         };
         if removed_from_subs || removed_from_result {
             // Record subscriber removed if metrics enabled
@@ -796,7 +810,8 @@ impl<T: CellValue, U: Send + Sync + 'static> WatchableResult<T> for Cell<T, U> {
         }
 
         let sub = Arc::new(ResultSubscriber::new(callback));
-        {
+        // Swap-and-defer: see Watchable::subscribe above.
+        let _old = {
             let _w = self
                 .inner
                 .result_subscribers_writer
@@ -805,8 +820,8 @@ impl<T: CellValue, U: Send + Sync + 'static> WatchableResult<T> for Cell<T, U> {
             let current = self.inner.result_subscribers.load();
             let mut next = (**current).clone();
             next.push((id, sub));
-            self.inner.result_subscribers.store(Arc::new(next));
-        }
+            self.inner.result_subscribers.swap(Arc::new(next))
+        };
 
         #[cfg(feature = "metrics")]
         if let Some(metrics) = &self.inner.metrics {
@@ -823,7 +838,8 @@ impl<T: CellValue, U: Send + Sync + 'static> WatchableResult<T> for Cell<T, U> {
         #[cfg(feature = "metrics")]
         let metrics = self.inner.metrics.clone();
         SubscriptionGuard::new(id, source, move || {
-            let removed = {
+            // Swap-and-defer: see Watchable::subscribe above.
+            let (removed, _old) = {
                 let _w = cell
                     .inner
                     .result_subscribers_writer
@@ -836,11 +852,14 @@ impl<T: CellValue, U: Send + Sync + 'static> WatchableResult<T> for Cell<T, U> {
                     .filter(|(i, _)| *i != id)
                     .cloned()
                     .collect();
-                let removed = next.len() != prev_len;
-                if removed {
-                    cell.inner.result_subscribers.store(Arc::new(next));
+                if next.len() != prev_len {
+                    (
+                        true,
+                        Some(cell.inner.result_subscribers.swap(Arc::new(next))),
+                    )
+                } else {
+                    (false, None)
                 }
-                removed
             };
             #[cfg(feature = "metrics")]
             if removed && let Some(m) = &metrics {
