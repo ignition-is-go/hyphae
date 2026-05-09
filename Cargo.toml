@@ -23,6 +23,7 @@ dashmap = "6.1.0"
 flume = "0.11"
 log = "0.4"
 futures-core = "0.3"
+parking_lot = "0.12"
 ratatui = { version = "0.29", default-features = false, features = ["crossterm"] }
 rustc-hash = "2.1"
 serde = { version = "1", features = ["derive"] }

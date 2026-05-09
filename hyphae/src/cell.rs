@@ -10,6 +10,7 @@ use std::{
     },
 };
 
+#[cfg(feature = "metrics")]
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use uuid::Uuid;
@@ -46,17 +47,19 @@ pub struct CellImmutable;
 /// The inner data of a Cell, wrapped in Arc for shared ownership.
 pub(crate) struct CellInner<T> {
     pub(crate) id: Uuid,
-    /// Lock-free subscriber registry. Read on every notify (`.load()`),
-    /// rebuilt on subscribe / unsubscribe under `subscribers_writer`.
-    pub(crate) subscribers: ArcSwap<Vec<(Uuid, Arc<Subscriber<T>>)>>,
-    /// Serializes mutation of `subscribers` so subscribe / unsubscribe build
-    /// the next snapshot from the current one without lost updates. Notify
-    /// readers do not acquire this — they go through `subscribers` directly.
-    pub(crate) subscribers_writer: Mutex<()>,
+    /// Subscriber registry stored as `Mutex<Arc<Vec<…>>>`. Reads (notify) take
+    /// the lock briefly to clone the Arc and drop the lock before invoking
+    /// callbacks, so user code never runs with an internal cell mutex held.
+    /// Writes (subscribe/unsubscribe) take the lock, build the next snapshot,
+    /// `mem::replace` the slot, and let the displaced Arc drop *outside* the
+    /// lock — the same swap-and-defer invariant that `subscribers_writer +
+    /// ArcSwap` previously provided, but without arc-swap's per-mutation
+    /// `Debt::pay_all` slot-walk that dominated cell-drop cascades.
+    pub(crate) subscribers: parking_lot::Mutex<Arc<Vec<(Uuid, Arc<Subscriber<T>>)>>>,
     /// Fallible subscribers. Invoked after `subscribers` on each notify;
     /// `Err` values are logged via `log::error!` and do not propagate.
-    pub(crate) result_subscribers: ArcSwap<Vec<(Uuid, Arc<ResultSubscriber<T>>)>>,
-    pub(crate) result_subscribers_writer: Mutex<()>,
+    pub(crate) result_subscribers:
+        parking_lot::Mutex<Arc<Vec<(Uuid, Arc<ResultSubscriber<T>>)>>>,
     /// The cell's current value. Stored as `Mutex<Arc<T>>` rather than
     /// `ArcSwap<T>` so writes don't pay arc_swap's reader-debt-slot scan.
     /// Reads `lock + clone (Arc bump) + unlock`. Writes
@@ -161,10 +164,8 @@ impl<T: CellValue> Cell<T, CellMutable> {
     pub fn new(initial_value: T) -> Self {
         let inner = Arc::new(CellInner {
             id: Uuid::new_v4(),
-            subscribers: ArcSwap::from_pointee(Vec::new()),
-            subscribers_writer: Mutex::new(()),
-            result_subscribers: ArcSwap::from_pointee(Vec::new()),
-            result_subscribers_writer: Mutex::new(()),
+            subscribers: parking_lot::Mutex::new(Arc::new(Vec::new())),
+            result_subscribers: parking_lot::Mutex::new(Arc::new(Vec::new())),
             value: Mutex::new(Arc::new(initial_value)),
             name: Mutex::new(None),
             owned: DashMap::new(),
@@ -195,10 +196,8 @@ impl<T: CellValue> Cell<T, CellMutable> {
     pub fn with_metrics(initial_value: T) -> Self {
         let inner = Arc::new(CellInner {
             id: Uuid::new_v4(),
-            subscribers: ArcSwap::from_pointee(Vec::new()),
-            subscribers_writer: Mutex::new(()),
-            result_subscribers: ArcSwap::from_pointee(Vec::new()),
-            result_subscribers_writer: Mutex::new(()),
+            subscribers: parking_lot::Mutex::new(Arc::new(Vec::new())),
+            result_subscribers: parking_lot::Mutex::new(Arc::new(Vec::new())),
             value: Mutex::new(Arc::new(initial_value)),
             name: Mutex::new(None),
             owned: DashMap::new(),
@@ -418,7 +417,9 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
     }
 
     fn subscriber_count(&self) -> usize {
-        self.inner.subscribers.load().len() + self.inner.result_subscribers.load().len()
+        let subs = Arc::clone(&*self.inner.subscribers.lock());
+        let result_subs = Arc::clone(&*self.inner.result_subscribers.lock());
+        subs.len() + result_subs.len()
     }
 
     fn owned_count(&self) -> usize {
@@ -475,9 +476,12 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
             }
         }
 
-        // Hot path: lock-free Arc bump on the subscriber list, then iterate
-        // and invoke each callback. No mutex, no Vec allocation per notify.
-        let subs = self.inner.subscribers.load();
+        // Hot path: take the subscribers mutex briefly to clone the Arc<Vec>,
+        // drop the lock, then iterate the snapshot with no internal lock held.
+        // Subscriber callbacks run lock-free; subscribers added during this
+        // iteration land in the next notify's snapshot (same semantics as the
+        // previous ArcSwap-based load).
+        let subs = Arc::clone(&*self.inner.subscribers.lock());
 
         // Slow-subscriber config is only consulted when metrics are enabled
         // and configured. Defer the ArcSwap loads until then so the steady
@@ -527,7 +531,8 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         // above still applies (a panic in a result-subscriber halts the rest of
         // this loop). Use `subscribe_result` when you want a structured error
         // channel instead of `panic!`.
-        let result_subs = self.inner.result_subscribers.load();
+        // Same snapshot pattern as `subscribers` above.
+        let result_subs = Arc::clone(&*self.inner.result_subscribers.lock());
 
         for (subscriber_id, sub) in result_subs.iter() {
             #[cfg(feature = "metrics")]
@@ -616,23 +621,18 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
 
         let id = Uuid::new_v4();
         let sub = Arc::new(Subscriber::new(callback));
-        // Swap-and-defer: pull the old `Arc<Vec<…>>` out of the locked block
-        // so it drops AFTER `subscribers_writer` is released. The old vec's
-        // drop can recursively touch this cell's drop chain (Subscribers
-        // capture upstream cell handles that may be the only owner), and we
-        // must not run user-visible Drops while holding any internal lock —
-        // doing so allows two cells dropping concurrently to acquire each
-        // other's `subscribers_writer` and deadlock.
+        // Swap-and-defer: build the next snapshot under the lock, swap it in
+        // with `mem::replace`, and let the displaced `Arc<Vec<…>>` drop AFTER
+        // the lock guard does. The old vec's drop can recursively touch this
+        // cell's drop chain (Subscribers capture upstream cell handles that
+        // may be the only owner), and user-visible Drops must not run while
+        // any internal cell mutex is held — that allowed two cells dropping
+        // concurrently to acquire each other's mutex and deadlock.
         let _old = {
-            let _w = self
-                .inner
-                .subscribers_writer
-                .lock()
-                .expect("cell subscribers_writer poisoned");
-            let current = self.inner.subscribers.load();
-            let mut next = (**current).clone();
+            let mut guard = self.inner.subscribers.lock();
+            let mut next: Vec<(Uuid, Arc<Subscriber<T>>)> = (**guard).clone();
             next.push((id, sub));
-            self.inner.subscribers.swap(Arc::new(next))
+            std::mem::replace(&mut *guard, Arc::new(next))
         };
 
         // Record subscriber added if metrics enabled
@@ -641,10 +641,11 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
             metrics.record_subscriber_added();
         }
         #[cfg(feature = "trace")]
-        crate::tracing::update_subscriber_count(
-            self.inner.id,
-            self.inner.subscribers.load().len() + self.inner.result_subscribers.load().len(),
-        );
+        {
+            let subs_len = Arc::clone(&*self.inner.subscribers.lock()).len();
+            let result_len = Arc::clone(&*self.inner.result_subscribers.lock()).len();
+            crate::tracing::update_subscriber_count(self.inner.id, subs_len + result_len);
+        }
 
         let source: Arc<dyn DepNode> = Arc::new(self.clone());
         let cell = self.clone();
@@ -653,20 +654,15 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
         SubscriptionGuard::new(id, source, move || {
             // Swap-and-defer: see subscribe() above.
             let (removed, _old) = {
-                let _w = cell
-                    .inner
-                    .subscribers_writer
-                    .lock()
-                    .expect("cell subscribers_writer poisoned");
-                let current = cell.inner.subscribers.load();
-                let prev_len = current.len();
-                let next: Vec<(Uuid, Arc<Subscriber<T>>)> = (**current)
+                let mut guard = cell.inner.subscribers.lock();
+                let prev_len = guard.len();
+                let next: Vec<(Uuid, Arc<Subscriber<T>>)> = (**guard)
                     .iter()
                     .filter(|(i, _)| *i != id)
                     .cloned()
                     .collect();
                 if next.len() != prev_len {
-                    (true, Some(cell.inner.subscribers.swap(Arc::new(next))))
+                    (true, Some(std::mem::replace(&mut *guard, Arc::new(next))))
                 } else {
                     (false, None)
                 }
@@ -678,33 +674,29 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
             #[cfg(not(feature = "metrics"))]
             let _ = removed;
             #[cfg(feature = "trace")]
-            crate::tracing::update_subscriber_count(
-                cell.inner.id,
-                cell.inner.subscribers.load().len() + cell.inner.result_subscribers.load().len(),
-            );
+            {
+                let subs_len = Arc::clone(&*cell.inner.subscribers.lock()).len();
+                let result_len = Arc::clone(&*cell.inner.result_subscribers.lock()).len();
+                crate::tracing::update_subscriber_count(cell.inner.id, subs_len + result_len);
+            }
         })
     }
 
     fn unsubscribe(&self, id: Uuid) {
         // Swap-and-defer: see subscribe() — the displaced `Arc<Vec<…>>`s
-        // (`_old_subs`, `_old_result_subs`) drop AFTER both writer locks are
+        // (`_old_subs`, `_old_result_subs`) drop AFTER each lock guard is
         // released so cascading Subscriber/Cell Drops never run with an
         // internal cell mutex held.
         let (removed_from_subs, _old_subs) = {
-            let _w = self
-                .inner
-                .subscribers_writer
-                .lock()
-                .expect("cell subscribers_writer poisoned");
-            let current = self.inner.subscribers.load();
-            let prev_len = current.len();
-            let next: Vec<(Uuid, Arc<Subscriber<T>>)> = (**current)
+            let mut guard = self.inner.subscribers.lock();
+            let prev_len = guard.len();
+            let next: Vec<(Uuid, Arc<Subscriber<T>>)> = (**guard)
                 .iter()
                 .filter(|(i, _)| *i != id)
                 .cloned()
                 .collect();
             if next.len() != prev_len {
-                (true, Some(self.inner.subscribers.swap(Arc::new(next))))
+                (true, Some(std::mem::replace(&mut *guard, Arc::new(next))))
             } else {
                 (false, None)
             }
@@ -712,23 +704,15 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
         let (removed_from_result, _old_result_subs) = if removed_from_subs {
             (false, None)
         } else {
-            let _w = self
-                .inner
-                .result_subscribers_writer
-                .lock()
-                .expect("cell result_subscribers_writer poisoned");
-            let current = self.inner.result_subscribers.load();
-            let prev_len = current.len();
-            let next: Vec<(Uuid, Arc<ResultSubscriber<T>>)> = (**current)
+            let mut guard = self.inner.result_subscribers.lock();
+            let prev_len = guard.len();
+            let next: Vec<(Uuid, Arc<ResultSubscriber<T>>)> = (**guard)
                 .iter()
                 .filter(|(i, _)| *i != id)
                 .cloned()
                 .collect();
             if next.len() != prev_len {
-                (
-                    true,
-                    Some(self.inner.result_subscribers.swap(Arc::new(next))),
-                )
+                (true, Some(std::mem::replace(&mut *guard, Arc::new(next))))
             } else {
                 (false, None)
             }
@@ -740,10 +724,11 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
                 metrics.record_subscriber_removed();
             }
             #[cfg(feature = "trace")]
-            crate::tracing::update_subscriber_count(
-                self.inner.id,
-                self.inner.subscribers.load().len() + self.inner.result_subscribers.load().len(),
-            );
+            {
+                let subs_len = Arc::clone(&*self.inner.subscribers.lock()).len();
+                let result_len = Arc::clone(&*self.inner.result_subscribers.lock()).len();
+                crate::tracing::update_subscriber_count(self.inner.id, subs_len + result_len);
+            }
         }
     }
 
@@ -812,15 +797,10 @@ impl<T: CellValue, U: Send + Sync + 'static> WatchableResult<T> for Cell<T, U> {
         let sub = Arc::new(ResultSubscriber::new(callback));
         // Swap-and-defer: see Watchable::subscribe above.
         let _old = {
-            let _w = self
-                .inner
-                .result_subscribers_writer
-                .lock()
-                .expect("cell result_subscribers_writer poisoned");
-            let current = self.inner.result_subscribers.load();
-            let mut next = (**current).clone();
+            let mut guard = self.inner.result_subscribers.lock();
+            let mut next: Vec<(Uuid, Arc<ResultSubscriber<T>>)> = (**guard).clone();
             next.push((id, sub));
-            self.inner.result_subscribers.swap(Arc::new(next))
+            std::mem::replace(&mut *guard, Arc::new(next))
         };
 
         #[cfg(feature = "metrics")]
@@ -828,10 +808,11 @@ impl<T: CellValue, U: Send + Sync + 'static> WatchableResult<T> for Cell<T, U> {
             metrics.record_subscriber_added();
         }
         #[cfg(feature = "trace")]
-        crate::tracing::update_subscriber_count(
-            self.inner.id,
-            self.inner.subscribers.load().len() + self.inner.result_subscribers.load().len(),
-        );
+        {
+            let subs_len = Arc::clone(&*self.inner.subscribers.lock()).len();
+            let result_len = Arc::clone(&*self.inner.result_subscribers.lock()).len();
+            crate::tracing::update_subscriber_count(self.inner.id, subs_len + result_len);
+        }
 
         let source: Arc<dyn DepNode> = Arc::new(self.clone());
         let cell = self.clone();
@@ -840,23 +821,15 @@ impl<T: CellValue, U: Send + Sync + 'static> WatchableResult<T> for Cell<T, U> {
         SubscriptionGuard::new(id, source, move || {
             // Swap-and-defer: see Watchable::subscribe above.
             let (removed, _old) = {
-                let _w = cell
-                    .inner
-                    .result_subscribers_writer
-                    .lock()
-                    .expect("cell result_subscribers_writer poisoned");
-                let current = cell.inner.result_subscribers.load();
-                let prev_len = current.len();
-                let next: Vec<(Uuid, Arc<ResultSubscriber<T>>)> = (**current)
+                let mut guard = cell.inner.result_subscribers.lock();
+                let prev_len = guard.len();
+                let next: Vec<(Uuid, Arc<ResultSubscriber<T>>)> = (**guard)
                     .iter()
                     .filter(|(i, _)| *i != id)
                     .cloned()
                     .collect();
                 if next.len() != prev_len {
-                    (
-                        true,
-                        Some(cell.inner.result_subscribers.swap(Arc::new(next))),
-                    )
+                    (true, Some(std::mem::replace(&mut *guard, Arc::new(next))))
                 } else {
                     (false, None)
                 }
@@ -868,10 +841,11 @@ impl<T: CellValue, U: Send + Sync + 'static> WatchableResult<T> for Cell<T, U> {
             #[cfg(not(feature = "metrics"))]
             let _ = removed;
             #[cfg(feature = "trace")]
-            crate::tracing::update_subscriber_count(
-                cell.inner.id,
-                cell.inner.subscribers.load().len() + cell.inner.result_subscribers.load().len(),
-            );
+            {
+                let subs_len = Arc::clone(&*cell.inner.subscribers.lock()).len();
+                let result_len = Arc::clone(&*cell.inner.result_subscribers.lock()).len();
+                crate::tracing::update_subscriber_count(cell.inner.id, subs_len + result_len);
+            }
         })
     }
 }
@@ -925,7 +899,9 @@ impl<T: CellValue> DepNode for CellInner<T> {
     }
 
     fn subscriber_count(&self) -> usize {
-        self.subscribers.load().len() + self.result_subscribers.load().len()
+        let subs = Arc::clone(&*self.subscribers.lock());
+        let result_subs = Arc::clone(&*self.result_subscribers.lock());
+        subs.len() + result_subs.len()
     }
 
     fn owned_count(&self) -> usize {

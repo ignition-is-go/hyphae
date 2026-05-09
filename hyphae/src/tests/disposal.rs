@@ -185,57 +185,57 @@ fn test_subscription_cleaned_up_on_derived_drop() {
     let source = Cell::new(0u64);
 
     // Check initial subscriber count
-    let initial_count = source.inner.subscribers.load().len();
+    let initial_count = source.inner.subscribers.lock().len();
 
     {
         let _derived = source.clone().map(|v| *v * 2).materialize();
         // map() creates one subscription on source
-        assert_eq!(source.inner.subscribers.load().len(), initial_count + 1);
+        assert_eq!(source.inner.subscribers.lock().len(), initial_count + 1);
     } // derived dropped here - should unsubscribe
 
     // Subscription should be cleaned up
-    assert_eq!(source.inner.subscribers.load().len(), initial_count);
+    assert_eq!(source.inner.subscribers.lock().len(), initial_count);
 }
 
 #[test]
 fn test_chained_subscriptions_cleaned_up() {
     let source = Cell::new(0u64);
-    let initial_count = source.inner.subscribers.load().len();
+    let initial_count = source.inner.subscribers.lock().len();
 
     {
         let derived1 = source.clone().map(|v| *v * 2).materialize();
-        let d1_initial = derived1.inner.subscribers.load().len();
+        let d1_initial = derived1.inner.subscribers.lock().len();
 
         {
             let _derived2 = derived1.clone().map(|v| *v + 1).materialize();
             // derived2 subscribes to derived1
-            assert_eq!(derived1.inner.subscribers.load().len(), d1_initial + 1);
+            assert_eq!(derived1.inner.subscribers.lock().len(), d1_initial + 1);
         } // derived2 dropped
 
         // derived1 subscription should be cleaned up
-        assert_eq!(derived1.inner.subscribers.load().len(), d1_initial);
+        assert_eq!(derived1.inner.subscribers.lock().len(), d1_initial);
     } // derived1 dropped
 
     // source subscription should be cleaned up
-    assert_eq!(source.inner.subscribers.load().len(), initial_count);
+    assert_eq!(source.inner.subscribers.lock().len(), initial_count);
 }
 
 #[test]
 fn test_multiple_derived_cells_independent_cleanup() {
     let source = Cell::new(0u64);
-    let initial_count = source.inner.subscribers.load().len();
+    let initial_count = source.inner.subscribers.lock().len();
 
     let derived1 = source.clone().map(|v| *v * 2).materialize();
-    assert_eq!(source.inner.subscribers.load().len(), initial_count + 1);
+    assert_eq!(source.inner.subscribers.lock().len(), initial_count + 1);
 
     let derived2 = source.clone().map(|v| *v + 1).materialize();
-    assert_eq!(source.inner.subscribers.load().len(), initial_count + 2);
+    assert_eq!(source.inner.subscribers.lock().len(), initial_count + 2);
 
     drop(derived1);
     // Only derived1's subscription should be cleaned up
-    assert_eq!(source.inner.subscribers.load().len(), initial_count + 1);
+    assert_eq!(source.inner.subscribers.lock().len(), initial_count + 1);
 
     drop(derived2);
     // Now both should be cleaned up
-    assert_eq!(source.inner.subscribers.load().len(), initial_count);
+    assert_eq!(source.inner.subscribers.lock().len(), initial_count);
 }

@@ -67,11 +67,12 @@ where
     /// diff so a late-binding subscriber can be replayed an Initial without
     /// re-running the upstream plan.
     state: Mutex<HashMap<K, V>>,
-    /// Lock-free subscriber registry. Read on every emission (`.load()`),
-    /// rebuilt on subscribe / unsubscribe under the writer mutex.
-    subscribers: ArcSwap<Vec<(Uuid, DiffSubscriber<K, V>)>>,
-    /// Serializes mutation of `subscribers`. Emission readers do not acquire.
-    subs_writer: Mutex<()>,
+    /// Subscriber registry as `Mutex<Arc<Vec<…>>>`. Reads (fanout) take the
+    /// lock briefly to clone the Arc and drop it before invoking callbacks.
+    /// Writes (subscribe/unsubscribe) build the next snapshot under the lock
+    /// and let the displaced Arc drop *outside* the lock. See
+    /// `Cell::subscribers` for the rationale.
+    subscribers: parking_lot::Mutex<Arc<Vec<(Uuid, DiffSubscriber<K, V>)>>>,
 }
 
 impl<K, V> SharedMapQueryInner<K, V>
@@ -80,25 +81,28 @@ where
     V: CellValue,
 {
     fn add_subscriber(&self, id: Uuid, cb: DiffSubscriber<K, V>) {
-        let _w = self.subs_writer.lock().expect("share subs_writer poisoned");
-        let current = self.subscribers.load();
-        let mut next = (**current).clone();
-        next.push((id, cb));
-        self.subscribers.store(Arc::new(next));
+        // Swap-and-defer: see Cell::subscribe.
+        let _old = {
+            let mut guard = self.subscribers.lock();
+            let mut next: Vec<(Uuid, DiffSubscriber<K, V>)> = (**guard).clone();
+            next.push((id, cb));
+            std::mem::replace(&mut *guard, Arc::new(next))
+        };
     }
 
     /// Returns the remaining subscriber count after removal.
     fn remove_subscriber(&self, id: Uuid) -> usize {
-        let _w = self.subs_writer.lock().expect("share subs_writer poisoned");
-        let current = self.subscribers.load();
-        let mut next: Vec<(Uuid, DiffSubscriber<K, V>)> = (**current)
-            .iter()
-            .filter(|(i, _)| *i != id)
-            .cloned()
-            .collect();
-        let remaining = next.len();
-        next.shrink_to_fit();
-        self.subscribers.store(Arc::new(next));
+        let (remaining, _old) = {
+            let mut guard = self.subscribers.lock();
+            let mut next: Vec<(Uuid, DiffSubscriber<K, V>)> = (**guard)
+                .iter()
+                .filter(|(i, _)| *i != id)
+                .cloned()
+                .collect();
+            let remaining = next.len();
+            next.shrink_to_fit();
+            (remaining, std::mem::replace(&mut *guard, Arc::new(next)))
+        };
         remaining
     }
 
@@ -186,8 +190,7 @@ where
                 upstream: Mutex::new(Some(upstream)),
                 upstream_guards: Mutex::new(Vec::new()),
                 state: Mutex::new(HashMap::new()),
-                subscribers: ArcSwap::from_pointee(Vec::new()),
-                subs_writer: Mutex::new(()),
+                subscribers: parking_lot::Mutex::new(Arc::new(Vec::new())),
             }),
         }
     }
@@ -227,8 +230,8 @@ where
                 };
                 // 1. Update internal state under its own Mutex.
                 inner.apply_diff(diff);
-                // 2. Lock-free fanout to the subscriber snapshot.
-                let subs = inner.subscribers.load();
+                // 2. Brief mutex acquire + Arc::clone snapshot, then fan out lock-free.
+                let subs = Arc::clone(&*inner.subscribers.lock());
                 for (_, cb) in subs.iter() {
                     cb(diff);
                 }

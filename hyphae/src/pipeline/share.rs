@@ -73,37 +73,38 @@ pub(crate) struct SharedPipelineInner<T: CellValue> {
     /// installs. `None` until that point and again after the last downstream
     /// subscriber drops.
     upstream_guard: Mutex<Option<SubscriptionGuard>>,
-    /// Lock-free subscriber registry. Read on every emission (`.load()`),
-    /// rebuilt on subscribe / unsubscribe under the inner registry mutex.
-    subscribers: ArcSwap<Vec<(Uuid, Subscriber<T>)>>,
-    /// Serializes mutation of `subscribers` so subscribe / unsubscribe can
-    /// build the next snapshot from the current one without lost updates.
-    /// Emission readers do not acquire this — they go through `subscribers`
-    /// directly.
-    subs_writer: Mutex<()>,
+    /// Subscriber registry as `Mutex<Arc<Vec<…>>>`. Reads (fanout) take the
+    /// lock briefly to clone the Arc and drop it before invoking callbacks.
+    /// Writes (subscribe/unsubscribe) build the next snapshot under the lock
+    /// and let the displaced Arc drop *outside* the lock. See
+    /// `Cell::subscribers` for the rationale.
+    subscribers: parking_lot::Mutex<Arc<Vec<(Uuid, Subscriber<T>)>>>,
 }
 
 impl<T: CellValue> SharedPipelineInner<T> {
     fn add_subscriber(&self, id: Uuid, cb: Subscriber<T>) {
-        let _w = self.subs_writer.lock().expect("share subs_writer poisoned");
-        let current = self.subscribers.load();
-        let mut next = (**current).clone();
-        next.push((id, cb));
-        self.subscribers.store(Arc::new(next));
+        // Swap-and-defer: see Cell::subscribe.
+        let _old = {
+            let mut guard = self.subscribers.lock();
+            let mut next: Vec<(Uuid, Subscriber<T>)> = (**guard).clone();
+            next.push((id, cb));
+            std::mem::replace(&mut *guard, Arc::new(next))
+        };
     }
 
     /// Returns the remaining subscriber count after removal.
     fn remove_subscriber(&self, id: Uuid) -> usize {
-        let _w = self.subs_writer.lock().expect("share subs_writer poisoned");
-        let current = self.subscribers.load();
-        let mut next: Vec<(Uuid, Subscriber<T>)> = (**current)
-            .iter()
-            .filter(|(i, _)| *i != id)
-            .cloned()
-            .collect();
-        let remaining = next.len();
-        next.shrink_to_fit();
-        self.subscribers.store(Arc::new(next));
+        let (remaining, _old) = {
+            let mut guard = self.subscribers.lock();
+            let mut next: Vec<(Uuid, Subscriber<T>)> = (**guard)
+                .iter()
+                .filter(|(i, _)| *i != id)
+                .cloned()
+                .collect();
+            let remaining = next.len();
+            next.shrink_to_fit();
+            (remaining, std::mem::replace(&mut *guard, Arc::new(next)))
+        };
         remaining
     }
 }
@@ -155,8 +156,7 @@ impl<T: CellValue> SharedPipeline<T> {
             inner: Arc::new(SharedPipelineInner {
                 upstream,
                 upstream_guard: Mutex::new(None),
-                subscribers: ArcSwap::from_pointee(Vec::new()),
-                subs_writer: Mutex::new(()),
+                subscribers: parking_lot::Mutex::new(Arc::new(Vec::new())),
             }),
         }
     }
@@ -195,9 +195,9 @@ impl<T: CellValue> PipelineInstall<T> for SharedPipeline<T> {
                         let Some(inner) = weak.upgrade() else {
                             return;
                         };
-                        // Hot path: lock-free Arc bump on the subscriber list,
-                        // then iterate and invoke each callback. No mutex.
-                        let subs = inner.subscribers.load();
+                        // Hot path: brief mutex acquire + Arc::clone snapshot,
+                        // then iterate callbacks lock-free.
+                        let subs = Arc::clone(&*inner.subscribers.lock());
                         for (_, cb) in subs.iter() {
                             cb(signal);
                         }

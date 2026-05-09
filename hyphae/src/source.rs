@@ -49,12 +49,14 @@ use crate::{
 /// Inner data of a [`Source`], shared via `Arc`.
 pub(crate) struct SourceInner<T> {
     pub(crate) id: Uuid,
-    /// Lock-free subscriber registry. Read on every emit (`.load()`), rebuilt
-    /// on subscribe / unsubscribe under `subscribers_writer`.
-    pub(crate) subscribers: ArcSwap<Vec<(Uuid, Arc<Subscriber<T>>)>>,
-    /// Serializes mutation of `subscribers` so subscribe / unsubscribe build
-    /// the next snapshot from the current one without lost updates.
-    pub(crate) subscribers_writer: Mutex<()>,
+    /// Subscriber registry stored as `Mutex<Arc<Vec<…>>>`. Reads (emit, complete)
+    /// take the lock briefly to clone the Arc and drop it before invoking
+    /// callbacks — user code never runs with this mutex held. Writes
+    /// (subscribe/unsubscribe) build the next snapshot under the lock and let
+    /// the displaced Arc drop *outside* the lock so cascading drops don't run
+    /// with any internal mutex held. See `Cell::subscribers` for the rationale
+    /// (avoids arc-swap's per-mutation `Debt::pay_all` slot-walk).
+    pub(crate) subscribers: parking_lot::Mutex<Arc<Vec<(Uuid, Arc<Subscriber<T>>)>>>,
     /// Owned subscription guards (e.g. upstream timers feeding this source).
     pub(crate) owned: DashMap<Uuid, SubscriptionGuard>,
     /// Whether this source has completed (no more values will be emitted).
@@ -116,8 +118,7 @@ impl<T: CellValue> Source<T> {
     pub fn new() -> Self {
         let inner = Arc::new(SourceInner {
             id: Uuid::new_v4(),
-            subscribers: ArcSwap::from_pointee(Vec::new()),
-            subscribers_writer: Mutex::new(()),
+            subscribers: parking_lot::Mutex::new(Arc::new(Vec::new())),
             owned: DashMap::new(),
             completed: AtomicBool::new(false),
             caller: Location::caller(),
@@ -175,35 +176,32 @@ impl<T: CellValue> Source<T> {
         let id = Uuid::new_v4();
         let cb: SubscriberCallback<T> = Arc::new(callback);
         let sub = Arc::new(Subscriber { callback: cb });
-        {
-            let _w = self
-                .inner
-                .subscribers_writer
-                .lock()
-                .expect("source subscribers_writer poisoned");
-            let current = self.inner.subscribers.load();
-            let mut next = (**current).clone();
+        // Swap-and-defer: see Cell::subscribe.
+        let _old = {
+            let mut guard = self.inner.subscribers.lock();
+            let mut next: Vec<(Uuid, Arc<Subscriber<T>>)> = (**guard).clone();
             next.push((id, sub));
-            self.inner.subscribers.store(Arc::new(next));
-        }
+            std::mem::replace(&mut *guard, Arc::new(next))
+        };
 
         let source: Arc<dyn DepNode> = Arc::new(self.clone());
         let inner = self.inner.clone();
         SubscriptionGuard::new(id, source, move || {
-            let _w = inner
-                .subscribers_writer
-                .lock()
-                .expect("source subscribers_writer poisoned");
-            let current = inner.subscribers.load();
-            let prev_len = current.len();
-            let next: Vec<(Uuid, Arc<Subscriber<T>>)> = (**current)
-                .iter()
-                .filter(|(i, _)| *i != id)
-                .cloned()
-                .collect();
-            if next.len() != prev_len {
-                inner.subscribers.store(Arc::new(next));
-            }
+            let _old = {
+                let mut guard = inner.subscribers.lock();
+                let prev_len = guard.len();
+                let next: Vec<(Uuid, Arc<Subscriber<T>>)> = (**guard)
+                    .iter()
+                    .filter(|(i, _)| *i != id)
+                    .cloned()
+                    .collect();
+                if next.len() != prev_len {
+                    Some(std::mem::replace(&mut *guard, Arc::new(next)))
+                } else {
+                    None
+                }
+            };
+            let _ = _old;
         })
     }
 
@@ -221,7 +219,8 @@ impl<T: CellValue> Source<T> {
         let arc_value = Arc::new(value);
         let signal = Signal::Value(arc_value);
 
-        let subs = self.inner.subscribers.load();
+        // Brief mutex acquire + Arc::clone snapshot, then iterate callbacks lock-free.
+        let subs = Arc::clone(&*self.inner.subscribers.lock());
         // Subscriber callbacks must not panic — same contract as Cell::notify.
         for (_id, sub) in subs.iter() {
             (sub.callback)(&signal);
@@ -235,7 +234,7 @@ impl<T: CellValue> Source<T> {
             return;
         }
         let signal: Signal<T> = Signal::Complete;
-        let subs = self.inner.subscribers.load();
+        let subs = Arc::clone(&*self.inner.subscribers.lock());
         for (_id, sub) in subs.iter() {
             (sub.callback)(&signal);
         }
@@ -318,7 +317,7 @@ impl<T: Send + Sync> DepNode for Source<T> {
     }
 
     fn subscriber_count(&self) -> usize {
-        self.inner.subscribers.load().len()
+        Arc::clone(&*self.inner.subscribers.lock()).len()
     }
 
     fn owned_count(&self) -> usize {
@@ -341,7 +340,7 @@ impl<T: Send + Sync> DepNode for SourceInner<T> {
     }
 
     fn subscriber_count(&self) -> usize {
-        self.subscribers.load().len()
+        Arc::clone(&*self.subscribers.lock()).len()
     }
 
     fn owned_count(&self) -> usize {

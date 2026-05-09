@@ -27,6 +27,7 @@ arc-swap.workspace = true
 crossbeam = "0.8"
 dashmap.workspace = true
 log.workspace = true
+parking_lot.workspace = true
 rustc-hash.workspace = true
 flume = { workspace = true, optional = true }
 futures-core = { workspace = true, optional = true }
