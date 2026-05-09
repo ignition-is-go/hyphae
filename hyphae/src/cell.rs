@@ -58,8 +58,7 @@ pub(crate) struct CellInner<T> {
     pub(crate) subscribers: parking_lot::Mutex<Arc<Vec<(Uuid, Arc<Subscriber<T>>)>>>,
     /// Fallible subscribers. Invoked after `subscribers` on each notify;
     /// `Err` values are logged via `log::error!` and do not propagate.
-    pub(crate) result_subscribers:
-        parking_lot::Mutex<Arc<Vec<(Uuid, Arc<ResultSubscriber<T>>)>>>,
+    pub(crate) result_subscribers: parking_lot::Mutex<Arc<Vec<(Uuid, Arc<ResultSubscriber<T>>)>>>,
     /// The cell's current value. Stored as `Mutex<Arc<T>>` rather than
     /// `ArcSwap<T>` so writes don't pay arc_swap's reader-debt-slot scan.
     /// Reads `lock + clone (Arc bump) + unlock`. Writes
