@@ -29,12 +29,11 @@ use std::{
     marker::PhantomData,
     panic::Location,
     sync::{
-        Arc, Mutex, Weak,
+        Arc, Weak,
         atomic::{AtomicBool, Ordering},
     },
 };
 
-use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use uuid::Uuid;
 

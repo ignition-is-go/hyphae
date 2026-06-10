@@ -31,7 +31,6 @@
 
 use std::sync::{Arc, Mutex};
 
-use arc_swap::ArcSwap;
 use uuid::Uuid;
 
 use crate::{
