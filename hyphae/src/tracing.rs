@@ -110,7 +110,7 @@ pub fn record_notify(
 
     if let Some(log_every) = trace_log_every() {
         let seq = TRACE_NOTIFY_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
-        if seq % log_every == 0 {
+        if seq.is_multiple_of(log_every) {
             let _ = catch_unwind(AssertUnwindSafe(|| log_hot_cells(trace_top_n())));
         }
     }
