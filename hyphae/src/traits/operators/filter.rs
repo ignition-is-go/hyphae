@@ -112,10 +112,10 @@ mod tests {
 
         let r = received.clone();
         let _guard = evens.subscribe(move |signal| {
-            if let Signal::Value(v) = signal {
-                if let Some(x) = v.as_ref() {
-                    r.store(*x, Ordering::SeqCst);
-                }
+            if let Signal::Value(v) = signal
+                && let Some(x) = v.as_ref()
+            {
+                r.store(*x, Ordering::SeqCst);
             }
         });
 
@@ -133,10 +133,10 @@ mod tests {
 
         let r = received.clone();
         let _guard = evens.subscribe(move |signal| {
-            if let Signal::Value(v) = signal {
-                if let Some(x) = v.as_ref() {
-                    r.store(*x, Ordering::SeqCst);
-                }
+            if let Signal::Value(v) = signal
+                && let Some(x) = v.as_ref()
+            {
+                r.store(*x, Ordering::SeqCst);
             }
         });
 

@@ -179,7 +179,7 @@ impl<T: CellValue> Cell<T, CellMutable> {
             slow_subscriber_callback: ArcSwap::from_pointee(None),
             caller: Location::caller(),
         });
-        #[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
+        #[cfg(feature = "inspector")]
         crate::registry::registry().register(inner.id, Arc::downgrade(&inner) as Weak<dyn DepNode>);
         #[cfg(feature = "trace")]
         crate::tracing::register_cell(inner.id, Some(Location::caller().to_string()));
@@ -208,7 +208,7 @@ impl<T: CellValue> Cell<T, CellMutable> {
             slow_subscriber_callback: ArcSwap::from_pointee(None),
             caller: Location::caller(),
         });
-        #[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
+        #[cfg(feature = "inspector")]
         crate::registry::registry().register(inner.id, Arc::downgrade(&inner) as Weak<dyn DepNode>);
         #[cfg(feature = "trace")]
         crate::tracing::register_cell(inner.id, Some(Location::caller().to_string()));
@@ -352,7 +352,7 @@ impl<T, M> Cell<T, M> {
 
     /// Take ownership of a subscription guard, dropping it when this cell is dropped.
     pub fn own(&self, guard: SubscriptionGuard) {
-        #[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
+        #[cfg(feature = "inspector")]
         crate::registry::registry().mark_owned(guard.source().id(), self.inner.id);
         self.inner.owned.insert(Uuid::new_v4(), guard);
         #[cfg(feature = "trace")]
@@ -365,7 +365,7 @@ impl<T, M> Cell<T, M> {
     /// This is used by `switch_map` to ensure the old inner subscription is cleaned up
     /// when switching to a new inner cell.
     pub fn own_keyed(&self, key: Uuid, guard: SubscriptionGuard) {
-        #[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
+        #[cfg(feature = "inspector")]
         {
             // Unmark old owned cell if being replaced
             if let Some((_, old_guard)) = self.inner.owned.remove(&key) {
@@ -454,7 +454,7 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
             .inner
             .metrics
             .as_ref()
-            .map(|_| std::time::Instant::now());
+            .map(|_| crate::platform::Instant::now());
 
         match &signal {
             Signal::Value(arc_value) => {
@@ -503,7 +503,7 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         // loudly rather than be silently swallowed.
         for (_subscriber_id, sub) in subs.iter() {
             #[cfg(feature = "metrics")]
-            let sub_start = metrics.as_ref().map(|_| std::time::Instant::now());
+            let sub_start = metrics.as_ref().map(|_| crate::platform::Instant::now());
 
             (sub.callback)(&signal);
 
@@ -535,7 +535,7 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
 
         for (subscriber_id, sub) in result_subs.iter() {
             #[cfg(feature = "metrics")]
-            let sub_start = metrics.as_ref().map(|_| std::time::Instant::now());
+            let sub_start = metrics.as_ref().map(|_| crate::platform::Instant::now());
 
             if let Err(err) = (sub.callback)(&signal) {
                 log::error!(
@@ -867,7 +867,7 @@ impl<T: CellValue> Mutable<T> for Cell<T, CellMutable> {
 // Inspector feature: DepNode for CellInner + Drop to deregister
 // ============================================================================
 
-#[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
+#[cfg(feature = "inspector")]
 impl<T: CellValue> DepNode for CellInner<T> {
     fn id(&self) -> Uuid {
         self.id
@@ -921,7 +921,7 @@ impl<T> Drop for CellInner<T> {
     fn drop(&mut self) {
         #[cfg(feature = "trace")]
         crate::tracing::deregister_cell(&self.id);
-        #[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
+        #[cfg(feature = "inspector")]
         crate::registry::registry().deregister(&self.id);
     }
 }

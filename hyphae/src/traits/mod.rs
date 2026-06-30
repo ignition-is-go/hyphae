@@ -29,7 +29,6 @@ pub use operators::{
     TakeWhileExt, TapExt, TapPipeline, ThrottleExt, TimeoutExt, TryMapExt, TryMapPipeline,
     UnwrapOrExt, WindowExt, WithLatestFromExt, ZipExt, join_vec,
 };
-#[cfg(not(target_arch = "wasm32"))]
 pub use operators::{ParallelCell, ParallelExt};
 pub use reactive_keys::{KeyChange, ReactiveKeys};
 pub use reactive_map::ReactiveMap;

@@ -84,12 +84,9 @@ impl CellMetrics {
 
     /// Get the average time per notify() call (nanoseconds).
     pub fn avg_notify_time_ns(&self) -> u64 {
-        let count = self.notify_count();
-        if count == 0 {
-            0
-        } else {
-            self.total_notify_time_ns() / count
-        }
+        self.total_notify_time_ns()
+            .checked_div(self.notify_count())
+            .unwrap_or(0)
     }
 
     /// Get the slowest subscriber callback time (nanoseconds).

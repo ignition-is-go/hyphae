@@ -1,7 +1,8 @@
-use std::{thread, time::Duration};
+use std::time::Duration;
 
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
+    platform,
     signal::Signal,
     traits::CellValue,
 };
@@ -21,18 +22,23 @@ where
     let first = iter.next()?;
     let cell = Cell::<T, CellMutable>::new(first);
 
-    // Use weak ref so thread doesn't keep cell alive
+    // Use weak ref so the timer doesn't keep the cell alive
     let weak = cell.downgrade();
-    thread::spawn(move || {
-        for value in iter {
-            thread::sleep(delay);
+    platform::spawn_interval(delay, false, move |_count| match iter.next() {
+        Some(value) => {
             // Exit when cell is dropped
-            let Some(c) = weak.upgrade() else { break };
+            let Some(c) = weak.upgrade() else {
+                return false;
+            };
             c.notify(Signal::value(value));
+            true
         }
-        // Complete when iterator exhausted
-        if let Some(c) = weak.upgrade() {
-            c.notify(Signal::Complete);
+        None => {
+            // Complete when iterator exhausted
+            if let Some(c) = weak.upgrade() {
+                c.notify(Signal::Complete);
+            }
+            false
         }
     });
 

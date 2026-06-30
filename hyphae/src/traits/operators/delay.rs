@@ -1,7 +1,10 @@
-use std::{thread, time::Duration};
+use std::time::Duration;
 
 use super::{CellValue, Watchable};
-use crate::cell::{Cell, CellImmutable, CellMutable};
+use crate::{
+    cell::{Cell, CellImmutable, CellMutable},
+    platform,
+};
 
 pub trait DelayExt<T>: Watchable<T> {
     #[track_caller]
@@ -21,8 +24,7 @@ pub trait DelayExt<T>: Watchable<T> {
         let guard = self.subscribe(move |signal| {
             let signal = signal.clone();
             let weak = weak.clone();
-            thread::spawn(move || {
-                thread::sleep(duration);
+            platform::spawn_delayed(duration, move || {
                 if let Some(c) = weak.upgrade() {
                     c.notify(signal);
                 }
@@ -42,6 +44,8 @@ mod tests {
         Arc,
         atomic::{AtomicU64, Ordering},
     };
+
+    use std::thread;
 
     use super::*;
     use crate::{Mutable, Signal};

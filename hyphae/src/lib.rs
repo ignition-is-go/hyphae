@@ -138,6 +138,7 @@ pub mod map_query;
 pub mod metrics;
 pub mod nested_map;
 pub mod pipeline;
+pub(crate) mod platform;
 pub mod signal;
 pub mod source;
 pub mod subscription;
@@ -145,9 +146,12 @@ pub mod subscription;
 pub mod tracing;
 pub mod traits;
 
-#[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
+// Both are available on wasm: the registry is fully portable; the `server`
+// module keeps a uniform public API but its TCP transport (tokio/mio) is
+// native-only, so on wasm `start_server` returns an inert handle.
+#[cfg(feature = "inspector")]
 pub mod registry;
-#[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
+#[cfg(feature = "inspector")]
 pub mod server;
 
 #[cfg(test)]
@@ -163,7 +167,6 @@ pub use cell::{Cell, CellImmutable, CellMutable};
 pub use cell_map::{CellMap, MapDiff, WeakCellMap};
 pub use cell_set::{CellSet, SetDiff};
 pub use constructors::from_iter_with_delay;
-#[cfg(not(target_arch = "wasm32"))]
 pub use constructors::{
     IntervalTick, interval, interval_precise, interval_precise_source,
     interval_precise_with_elapsed, interval_precise_with_elapsed_source, interval_source,
@@ -196,5 +199,4 @@ pub use traits::{
     TryMapPipeline, UnwrapOrExt, Watchable, WatchableResult, WindowExt, WithLatestFromExt, ZipExt,
     join_vec,
 };
-#[cfg(not(target_arch = "wasm32"))]
 pub use traits::{ParallelCell, ParallelExt};

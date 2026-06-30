@@ -22,7 +22,6 @@ mod map;
 mod merge;
 mod merge_map;
 mod pairwise;
-#[cfg(not(target_arch = "wasm32"))]
 mod parallel;
 mod result_ext;
 mod retry;
@@ -64,7 +63,6 @@ pub use map::{MapExt, MapPipeline};
 pub use merge::MergeExt;
 pub use merge_map::MergeMapExt;
 pub use pairwise::{PairwiseExt, PairwisePipeline};
-#[cfg(not(target_arch = "wasm32"))]
 pub use parallel::{ParallelCell, ParallelExt};
 pub use result_ext::{CatchErrorExt, MapErrExt, MapOkExt, UnwrapOrExt};
 pub use retry::RetryExt;

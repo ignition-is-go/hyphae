@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "hyphae",
+    "hyphae-leptos",
     "demo",
     "inspector",
 ]
@@ -14,6 +15,9 @@ license = "MIT OR Apache-2.0"
 
 [workspace.lints.clippy]
 disallowed_types = "deny"
+# Reactive combinators and keyed signal maps nest generics deeply; the layered
+# types are the natural shape here, so don't fail the lint pipeline on them.
+type_complexity = "allow"
 
 [workspace.dependencies]
 anyhow = "1.0.100"
