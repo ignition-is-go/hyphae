@@ -9,7 +9,10 @@ use std::sync::{
 };
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use hyphae::{Cell, FilterExt, MapExt, Mutable, ParallelExt, Pipeline, ScanExt, Signal, Watchable};
+use hyphae::{
+    Cell, FilterExt, MapExt, MaterializeDefinite, MaterializeEmpty, Mutable, ParallelExt, ScanExt,
+    Signal, Watchable,
+};
 use seq_macro::seq;
 
 fn bench_single_cell_propagation(c: &mut Criterion) {
@@ -192,13 +195,17 @@ fn bench_complex_graph(c: &mut Criterion) {
                         .map(|x| x * 2)
                         .filter(|x| x % 2 == 0)
                         .materialize();
-                    let pipeline = filtered.scan(0u64, |acc, x| acc + x);
+                    // `filtered` carries `Option<u64>` (filtered-out -> None);
+                    // scan returns a pipeline, so materialize before subscribing.
+                    let scanned = filtered
+                        .scan(0u64, |acc, x| *acc + (*x).unwrap_or(0))
+                        .materialize();
 
                     let counter = counter.clone();
                     (0..10)
                         .map(move |_| {
                             let cnt = counter.clone();
-                            pipeline.subscribe(move |_| {
+                            scanned.subscribe(move |_| {
                                 cnt.fetch_add(1, Ordering::Relaxed);
                             })
                         })
@@ -225,14 +232,17 @@ fn bench_pairwise_chain(c: &mut Criterion) {
     c.bench_function("pairwise chain depth 10", |b| {
         let source = Cell::new(0u64);
 
-        // pairwise returns a Cell; map returns a Pipeline. To pairwise the
-        // mapped output we must materialize between each map and the next
-        // pairwise (pairwise requires Watchable, which only Cell implements).
-        let p1 = source.pairwise();
+        // pairwise yields an `Empty`-seeded pipeline; materializing it gives a
+        // `Cell<Option<_>>`, so each subsequent pairwise pairs `Option` values.
+        // We must materialize between each map and the next pairwise (pairwise
+        // requires Watchable, which only Cell implements).
+        let p1 = source.clone().pairwise();
         let p2 = p1.map(|(a, b)| a + b).materialize();
         let p3 = p2.pairwise();
-        let p4 = p3.map(|(a, b)| a + b).materialize();
-        let p5 = p4.pairwise();
+        let p4 = p3
+            .map(|(a, b)| (*a).unwrap_or(0) + (*b).unwrap_or(0))
+            .materialize();
+        let p5 = p4.pairwise().materialize();
 
         let counter = Arc::new(AtomicU64::new(0));
         let cnt = counter.clone();
