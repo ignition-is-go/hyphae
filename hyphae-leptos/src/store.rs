@@ -178,7 +178,7 @@ where
 
 /// A fine-grained reactive store over a hyphae [`CellMap`].
 ///
-/// Build one with [`CellMapStoreExt::into_leptos_store`]. Derefs to [`MapGroup`]
+/// Build one with [`CellMapStoreExt::to_leptos_store`]. Derefs to [`MapGroup`]
 /// for `keys()` / `value()` access. Call within a reactive owner; the
 /// underlying hyphae subscription is released on cleanup.
 pub struct CellMapStore<K, V>
@@ -342,7 +342,7 @@ where
     V: CellValue,
 {
     /// Create a fine-grained [`CellMapStore`] driven by this map's diffs.
-    fn into_leptos_store(&self) -> CellMapStore<K, V>;
+    fn to_leptos_store(&self) -> CellMapStore<K, V>;
 }
 
 impl<K, V, M> CellMapStoreExt<K, V> for CellMap<K, V, M>
@@ -350,7 +350,7 @@ where
     K: Hash + Eq + CellValue,
     V: CellValue,
 {
-    fn into_leptos_store(&self) -> CellMapStore<K, V> {
+    fn to_leptos_store(&self) -> CellMapStore<K, V> {
         CellMapStore::new(self)
     }
 }
@@ -363,7 +363,7 @@ where
     V: CellValue,
 {
     /// Create a fine-grained [`NestedMapStore`] driven by this nested map.
-    fn into_leptos_store(&self) -> NestedMapStore<PK, K, V>;
+    fn to_leptos_store(&self) -> NestedMapStore<PK, K, V>;
 }
 
 impl<PK, K, V> NestedMapStoreExt<PK, K, V> for NestedMap<PK, K, V>
@@ -372,7 +372,7 @@ where
     K: Hash + Eq + CellValue,
     V: CellValue,
 {
-    fn into_leptos_store(&self) -> NestedMapStore<PK, K, V> {
+    fn to_leptos_store(&self) -> NestedMapStore<PK, K, V> {
         NestedMapStore::new(self)
     }
 }
@@ -392,7 +392,7 @@ mod tests {
             map.insert(1, "a".into());
 
             // Initial snapshot is applied synchronously on subscribe.
-            let store = map.into_leptos_store();
+            let store = map.to_leptos_store();
             assert!(store.contains_key(&1));
             assert_eq!(store.get(&1), Some("a".to_string()));
             assert_eq!(store.keys().get_untracked(), vec![1]);
@@ -424,7 +424,7 @@ mod tests {
         let owner = Owner::new();
         owner.with(|| {
             let map: CellMap<u32, String> = CellMap::new();
-            let store = map.into_leptos_store();
+            let store = map.to_leptos_store();
 
             // Bind to a key that doesn't exist yet — `None` for now.
             let sig = store.value(&7);
@@ -449,7 +449,7 @@ mod tests {
             orders.insert(3, "cust_b".into());
 
             let nested = orders.nest(|v: &String| v.clone());
-            let store = nested.into_leptos_store();
+            let store = nested.to_leptos_store();
 
             let mut parents = store.parents().get_untracked();
             parents.sort();

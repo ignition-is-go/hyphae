@@ -14,16 +14,16 @@
 //!
 //! ```ignore
 //! use hyphae::Cell;
-//! use hyphae_leptos::{IntoLeptosSignal, BindLeptosSignal};
+//! use hyphae_leptos::ToLeptosSignal;
 //!
+//! // A mutable cell bridges both ways -> RwSignal (an <input> and the cell
+//! // stay in sync).
 //! let temperature = Cell::new(20.0);
+//! let bound = temperature.to_leptos_signal();
 //!
-//! // One-way: the cell drives a read signal.
-//! let reading = temperature.into_leptos_signal();
+//! // A derived/locked (immutable) cell bridges one way -> ReadSignal.
+//! let reading = temperature.clone().lock().to_leptos_signal();
 //! view! { <p>"Temp: " {move || reading.get()}</p> };
-//!
-//! // Two-way: an <input> and the cell stay in sync.
-//! let bound = temperature.bind_leptos_signal();
 //! ```
 //!
 //! ## CellMaps → stores
@@ -37,7 +37,7 @@
 //! use hyphae_leptos::CellMapStoreExt;
 //!
 //! let users: CellMap<u64, String> = CellMap::new();
-//! let store = users.into_leptos_store();
+//! let store = users.to_leptos_store();
 //!
 //! view! {
 //!     // `value` returns a `ReadSignal<Option<V>>` — present once the key's
@@ -60,7 +60,7 @@
 mod signal;
 mod store;
 
-pub use signal::{BindLeptosSignal, IntoLeptosSignal};
+pub use signal::ToLeptosSignal;
 pub use store::{
     CellMapStore, CellMapStoreExt, MapGroup, NestedMapStore, NestedMapStoreExt,
 };
