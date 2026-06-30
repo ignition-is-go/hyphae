@@ -61,6 +61,4 @@ mod signal;
 mod store;
 
 pub use signal::ToLeptosSignal;
-pub use store::{
-    CellMapStore, CellMapStoreExt, MapGroup, NestedMapStore, NestedMapStoreExt,
-};
+pub use store::{CellMapStore, CellMapStoreExt, MapGroup, NestedMapStore, NestedMapStoreExt};

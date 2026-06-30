@@ -121,12 +121,11 @@ where
                 for (k, v) in entries {
                     self.upsert(k, v);
                 }
-                self.keys.set(entries.iter().map(|(k, _)| k.clone()).collect());
+                self.keys
+                    .set(entries.iter().map(|(k, _)| k.clone()).collect());
             }
             MapDiff::Insert { key, value } => self.upsert(key, value),
-            MapDiff::Update {
-                key, new_value, ..
-            } => self.upsert(key, new_value),
+            MapDiff::Update { key, new_value, .. } => self.upsert(key, new_value),
             MapDiff::Remove { key, .. } => {
                 self.keys.update(|ks| ks.retain(|k| k != key));
                 // Keep the signal (set to `None`) rather than disposing it: a
