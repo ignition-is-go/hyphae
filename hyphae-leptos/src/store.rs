@@ -1,17 +1,22 @@
 //! Bridge hyphae `CellMap`/`NestedMap` into fine-grained Leptos reactive state.
 //!
 //! Rather than one coarse `RwSignal<HashMap<..>>` (where any change wakes every
-//! reader), each key owns its own `RwSignal<V>`. A `MapDiff::Update` to one key
-//! re-runs only the views reading that key — the same fine-grained behaviour
-//! Leptos `reactive_stores` give a static struct, applied to a dynamic,
-//! diff-driven collection.
+//! reader), each key owns its own `RwSignal<Option<V>>`. A `MapDiff::Update` to
+//! one key re-runs only the views reading that key — the same fine-grained
+//! behaviour Leptos `reactive_stores` give a static struct, applied to a
+//! dynamic, diff-driven collection.
+//!
+//! Per-key signals are `Option`-wrapped to support *subscribe-before-data*:
+//! [`MapGroup::value`] always hands back a signal — `None` until the key's first
+//! diff lands — mirroring hyphae's own [`hyphae::CellMap::get`], which returns a
+//! `Cell<Option<V>>` for a key that may not exist yet.
 
 use std::{collections::HashMap, hash::Hash, ops::Deref};
 
 use hyphae::{CellMap, CellValue, MapDiff, NestedMap, SubscriptionGuard};
 use leptos::prelude::{
-    Dispose, GetUntracked, RwSignal, Set, Signal, StoredValue, Update, UpdateValue, WithValue,
-    on_cleanup,
+    Dispose, GetUntracked, ReadSignal, RwSignal, Set, Signal, StoredValue, Update, UpdateValue,
+    WithUntracked, WithValue, on_cleanup,
 };
 
 /// A keyed collection of per-key reactive value signals plus a reactive key
@@ -25,9 +30,10 @@ where
     /// Reactive key list — changes on structural edits (insert/remove). Drive a
     /// Leptos `<For>` from this.
     keys: RwSignal<Vec<K>>,
-    /// Per-key value signals. Held in a `StoredValue` so the map is owned by the
-    /// reactive arena and `Copy`/`Send`/`Sync` for use in subscription closures.
-    values: StoredValue<HashMap<K, RwSignal<V>>>,
+    /// Per-key value signals, `Option`-wrapped for subscribe-before-data. Held
+    /// in a `StoredValue` so the map is owned by the reactive arena and
+    /// `Copy`/`Send`/`Sync` for use in subscription closures.
+    values: StoredValue<HashMap<K, RwSignal<Option<V>>>>,
 }
 
 impl<K, V> Clone for MapGroup<K, V>
@@ -65,26 +71,39 @@ where
         self.keys.into()
     }
 
-    /// The reactive value signal for `key`, if present. Reading it tracks only
-    /// this key, so a change to another key won't re-run this view.
-    pub fn value(&self, key: &K) -> Option<RwSignal<V>> {
-        self.values.with_value(|m| m.get(key).copied())
+    /// The reactive value signal for `key` — `None` until the key's first diff
+    /// lands (*subscribe-before-data*), then `Some(v)` and tracking every later
+    /// change to just this key. Always returns a signal, so a view can bind to a
+    /// not-yet-present entity and light up when it arrives.
+    pub fn value(&self, key: &K) -> ReadSignal<Option<V>> {
+        let existing = self.values.with_value(|m| m.get(key).copied());
+        let sig = existing.unwrap_or_else(|| {
+            // Create a `None` placeholder so callers can subscribe before data.
+            // A later `Insert`/`Update` diff fills it in via `upsert`.
+            let sig = RwSignal::new(None);
+            self.values.update_value(|m| {
+                m.insert(key.clone(), sig);
+            });
+            sig
+        });
+        sig.read_only()
     }
 
-    /// Non-reactive snapshot of a key's current value.
+    /// Non-reactive snapshot of a key's current value (`None` if absent).
     pub fn get(&self, key: &K) -> Option<V> {
         self.values
-            .with_value(|m| m.get(key).map(|s| s.get_untracked()))
+            .with_value(|m| m.get(key).and_then(|s| s.get_untracked()))
     }
 
-    /// Whether `key` currently exists.
+    /// Whether `key` currently exists. Reflects live entries (the key list), not
+    /// placeholder signals created by [`value`](Self::value) ahead of data.
     pub fn contains_key(&self, key: &K) -> bool {
-        self.values.with_value(|m| m.contains_key(key))
+        self.keys.with_untracked(|ks| ks.contains(key))
     }
 
-    /// Number of entries (non-reactive).
+    /// Number of live entries (non-reactive).
     pub fn len(&self) -> usize {
-        self.values.with_value(HashMap::len)
+        self.keys.with_untracked(Vec::len)
     }
 
     /// Whether the group is empty (non-reactive).
@@ -97,14 +116,11 @@ where
     fn apply(&self, diff: &MapDiff<K, V>) {
         match diff {
             MapDiff::Initial { entries } => {
-                self.values.update_value(|m| {
-                    for (_, sig) in m.drain() {
-                        sig.dispose();
-                    }
-                    for (k, v) in entries {
-                        m.insert(k.clone(), RwSignal::new(v.clone()));
-                    }
-                });
+                // Seed each entry into its (possibly pre-existing placeholder)
+                // signal so subscribe-before-data holders light up.
+                for (k, v) in entries {
+                    self.upsert(k, v);
+                }
                 self.keys.set(entries.iter().map(|(k, _)| k.clone()).collect());
             }
             MapDiff::Insert { key, value } => self.upsert(key, value),
@@ -112,16 +128,15 @@ where
                 key, new_value, ..
             } => self.upsert(key, new_value),
             MapDiff::Remove { key, .. } => {
-                let mut removed = false;
+                self.keys.update(|ks| ks.retain(|k| k != key));
+                // Keep the signal (set to `None`) rather than disposing it: a
+                // view may still hold it (subscribe-before-data), and a later
+                // re-insert of the same key must refill the *same* signal.
                 self.values.update_value(|m| {
-                    if let Some(sig) = m.remove(key) {
-                        sig.dispose();
-                        removed = true;
+                    if let Some(sig) = m.get(key) {
+                        sig.set(None);
                     }
                 });
-                if removed {
-                    self.keys.update(|ks| ks.retain(|k| k != key));
-                }
             }
             MapDiff::Batch { changes } => {
                 for change in changes {
@@ -131,18 +146,20 @@ where
         }
     }
 
-    /// Set an existing key's value (fine-grained), or create its signal and
-    /// extend the key list if it's new.
+    /// Set a key's value (fine-grained), creating its signal if absent and
+    /// extending the key list if the key isn't already live.
     fn upsert(&self, key: &K, value: &V) {
-        let mut is_new = false;
         self.values.update_value(|m| match m.get(key) {
-            Some(sig) => sig.set(value.clone()),
+            Some(sig) => sig.set(Some(value.clone())),
             None => {
-                m.insert(key.clone(), RwSignal::new(value.clone()));
-                is_new = true;
+                m.insert(key.clone(), RwSignal::new(Some(value.clone())));
             }
         });
-        if is_new {
+        // Newness is tracked against the live key list, not the signal map: a
+        // placeholder (from `value`) or a tombstone (from `Remove`) may already
+        // hold a signal for this key without it being a live entry.
+        let absent = self.keys.with_untracked(|ks| !ks.contains(key));
+        if absent {
             self.keys.update(|ks| ks.push(key.clone()));
         }
     }
@@ -381,9 +398,10 @@ mod tests {
             assert_eq!(store.keys().get_untracked(), vec![1]);
 
             // Per-key signal updates in place on an Update diff.
-            let sig = store.value(&1).expect("key 1 present");
+            let sig = store.value(&1);
+            assert_eq!(sig.get_untracked(), Some("a".to_string()));
             map.insert(1, "z".into());
-            assert_eq!(sig.get_untracked(), "z".to_string());
+            assert_eq!(sig.get_untracked(), Some("z".to_string()));
 
             // Insert extends the key list.
             map.insert(2, "b".into());
@@ -392,10 +410,31 @@ mod tests {
             keys.sort_unstable();
             assert_eq!(keys, vec![1, 2]);
 
-            // Remove drops the key and disposes its signal.
+            // Remove drops the key from the live list and clears its signal,
+            // but keeps the (now `None`) signal for subscribe-before-data.
             map.remove(&1);
             assert!(!store.contains_key(&1));
             assert_eq!(store.keys().get_untracked(), vec![2]);
+            assert_eq!(sig.get_untracked(), None);
+        });
+    }
+
+    #[test]
+    fn value_subscribes_before_data() {
+        let owner = Owner::new();
+        owner.with(|| {
+            let map: CellMap<u32, String> = CellMap::new();
+            let store = map.into_leptos_store();
+
+            // Bind to a key that doesn't exist yet — `None` for now.
+            let sig = store.value(&7);
+            assert_eq!(sig.get_untracked(), None);
+            assert!(!store.contains_key(&7));
+
+            // When the key arrives, the same signal lights up.
+            map.insert(7, "hello".into());
+            assert_eq!(sig.get_untracked(), Some("hello".to_string()));
+            assert!(store.contains_key(&7));
         });
     }
 

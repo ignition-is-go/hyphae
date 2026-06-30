@@ -40,8 +40,10 @@
 //! let store = users.into_leptos_store();
 //!
 //! view! {
+//!     // `value` returns a `ReadSignal<Option<V>>` — present once the key's
+//!     // first diff lands (subscribe-before-data), `None` until then.
 //!     <For each=move || store.keys().get() key=|k| *k let:id>
-//!         {move || store.value(&id).map(|sig| view! { <li>{move || sig.get()}</li> })}
+//!         <li>{move || store.value(&id).get()}</li>
 //!     </For>
 //! }
 //! ```
