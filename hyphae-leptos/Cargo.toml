@@ -1,0 +1,19 @@
+[package]
+name = "hyphae-leptos"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Bridge hyphae reactive cells and cell-maps into Leptos signals and stores"
+repository = "https://github.com/ignition-is-go/hyphae"
+
+[lints]
+workspace = true
+
+[dependencies]
+hyphae = { path = "../hyphae" }
+# Depend on `leptos` itself (not `reactive_graph` directly — its crate version
+# is independent of the Leptos release line) so the reactive types here are the
+# exact ones a Leptos 0.8 app uses. No renderer feature (csr/hydrate/ssr) is
+# enabled: only the reactive primitives from `leptos::prelude` are used.
+leptos = { version = "0.8", default-features = false }
