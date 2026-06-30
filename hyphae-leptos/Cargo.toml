@@ -1,6 +1,6 @@
 [package]
 name = "hyphae-leptos"
-version = "0.1.0"
+version = "1.0.6"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -11,9 +11,14 @@ repository = "https://github.com/ignition-is-go/hyphae"
 workspace = true
 
 [dependencies]
-hyphae = { path = "../hyphae" }
+# `version` is required for `cargo publish` (it strips the path and resolves
+# the dependency from crates.io); the path is used for local/workspace builds.
+hyphae = { path = "../hyphae", version = "1.0.6" }
 # Depend on `leptos` itself (not `reactive_graph` directly — its crate version
 # is independent of the Leptos release line) so the reactive types here are the
 # exact ones a Leptos 0.8 app uses. No renderer feature (csr/hydrate/ssr) is
 # enabled: only the reactive primitives from `leptos::prelude` are used.
 leptos = { version = "0.8", default-features = false }
+
+[package.metadata.flux]
+tasks = ["build", "test", "lint", "publish"]
