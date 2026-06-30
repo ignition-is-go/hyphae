@@ -3,13 +3,13 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    thread,
     time::Duration,
 };
 
 use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
+    platform,
     signal::Signal,
 };
 
@@ -37,8 +37,7 @@ pub trait ThrottleExt<T>: Watchable<T> {
                             c.notify(signal.clone());
 
                             let can_emit = can_emit.clone();
-                            thread::spawn(move || {
-                                thread::sleep(duration);
+                            platform::spawn_delayed(duration, move || {
                                 can_emit.store(true, Ordering::SeqCst);
                             });
                         }
@@ -59,6 +58,8 @@ impl<T, W: Watchable<T>> ThrottleExt<T> for W {}
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::AtomicU64;
+
+    use std::thread;
 
     use super::*;
     use crate::Mutable;

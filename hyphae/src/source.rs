@@ -122,7 +122,7 @@ impl<T: CellValue> Source<T> {
             completed: AtomicBool::new(false),
             caller: Location::caller(),
         });
-        #[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
+        #[cfg(feature = "inspector")]
         crate::registry::registry().register(inner.id, Arc::downgrade(&inner) as Weak<dyn DepNode>);
         #[cfg(feature = "trace")]
         crate::tracing::register_cell(inner.id, Some(Location::caller().to_string()));
@@ -142,7 +142,7 @@ impl<T: CellValue> Source<T> {
 
     /// Take ownership of a subscription guard, dropping it when this source is dropped.
     pub fn own(&self, guard: SubscriptionGuard) {
-        #[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
+        #[cfg(feature = "inspector")]
         crate::registry::registry().mark_owned(guard.source().id(), self.inner.id);
         self.inner.owned.insert(Uuid::new_v4(), guard);
     }
@@ -324,7 +324,7 @@ impl<T: Send + Sync> DepNode for Source<T> {
     }
 }
 
-#[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
+#[cfg(feature = "inspector")]
 impl<T: Send + Sync> DepNode for SourceInner<T> {
     fn id(&self) -> Uuid {
         self.id
@@ -351,7 +351,7 @@ impl<T> Drop for SourceInner<T> {
     fn drop(&mut self) {
         #[cfg(feature = "trace")]
         crate::tracing::deregister_cell(&self.id);
-        #[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
+        #[cfg(feature = "inspector")]
         crate::registry::registry().deregister(&self.id);
     }
 }

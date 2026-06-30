@@ -3,13 +3,13 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    thread,
     time::Duration,
 };
 
 use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
+    platform,
     signal::Signal,
 };
 
@@ -37,8 +37,7 @@ pub trait DebounceExt<T>: Watchable<T> {
                     let weak = weak.clone();
                     let generation = generation.clone();
 
-                    thread::spawn(move || {
-                        thread::sleep(duration);
+                    platform::spawn_delayed(duration, move || {
                         if generation.load(Ordering::SeqCst) == my_gen
                             && let Some(c) = weak.upgrade()
                         {
@@ -69,6 +68,8 @@ impl<T, W: Watchable<T>> DebounceExt<T> for W {}
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::AtomicU64;
+
+    use std::thread;
 
     use super::*;
     use crate::Mutable;

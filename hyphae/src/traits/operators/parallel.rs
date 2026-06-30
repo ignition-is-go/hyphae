@@ -1,13 +1,15 @@
-use rayon::prelude::*;
-
 use super::{CellValue, Gettable, Watchable};
 use crate::{
     cell::{Cell, CellMutable},
+    platform,
     signal::Signal,
     subscription::SubscriptionGuard,
 };
 
-/// A cell that notifies subscribers in parallel using Rayon.
+/// A cell that notifies subscribers in parallel.
+///
+/// On native targets the fan-out uses rayon; on wasm (single-threaded) it
+/// falls back to sequential notification, preserving the same API.
 pub struct ParallelCell<T> {
     inner: Cell<T, CellMutable>,
 }
@@ -43,7 +45,7 @@ impl<T: CellValue> ParallelCell<T> {
         // Brief mutex acquire to clone the subscriber-list Arc, then drop the
         // lock and fan out in parallel — callbacks run lock-free.
         let subs = std::sync::Arc::clone(&*self.inner.inner.subscribers.lock());
-        subs.par_iter().for_each(|(_, sub)| {
+        platform::par_for_each(&subs, |(_, sub)| {
             (sub.callback)(&signal);
         });
     }
@@ -68,7 +70,7 @@ pub trait ParallelExt<T>: Watchable<T> {
 
                         // Brief mutex acquire + Arc::clone snapshot.
                         let subs = std::sync::Arc::clone(&*inner.inner.subscribers.lock());
-                        subs.par_iter().for_each(|(_, sub)| {
+                        platform::par_for_each(&subs, |(_, sub)| {
                             (sub.callback)(signal);
                         });
                     }

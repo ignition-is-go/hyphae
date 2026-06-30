@@ -3,13 +3,13 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    thread,
     time::Duration,
 };
 
 use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
+    platform,
     signal::Signal,
 };
 
@@ -66,8 +66,7 @@ pub trait AuditExt<T>: Watchable<T> {
                             let gen_ref = generation.clone();
                             let in_win = in_window.clone();
 
-                            thread::spawn(move || {
-                                thread::sleep(duration);
+                            platform::spawn_delayed(duration, move || {
                                 // Only emit if this is still the current window
                                 if gen_ref.load(Ordering::SeqCst) == current_gen {
                                     if let Some(d2) = weak2.upgrade() {
@@ -97,6 +96,8 @@ impl<T, W: Watchable<T>> AuditExt<T> for W {}
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::AtomicU32;
+
+    use std::thread;
 
     use super::*;
     use crate::{Gettable, Mutable};

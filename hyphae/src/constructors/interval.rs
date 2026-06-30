@@ -1,19 +1,18 @@
-use std::{
-    thread,
-    time::{Duration, Instant},
-};
+use std::time::Duration;
 
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
+    platform::{self, Instant},
     signal::Signal,
     source::Source,
 };
 
 /// Creates a cell that emits 0, 1, 2, ... on the given interval.
 ///
-/// The thread automatically stops when the cell is dropped.
+/// The timer automatically stops when the cell is dropped.
 ///
-/// For intervals under 10ms, consider using [`interval_precise`] for better accuracy.
+/// For intervals under 10ms, consider using [`interval_precise`] for better
+/// accuracy (native only — on wasm both map to `setInterval`).
 ///
 /// **Performance note:** if you only need notification (not the current tick
 /// count via `.get()`), prefer [`interval_source`] — it skips the per-tick
@@ -21,17 +20,15 @@ use crate::{
 pub fn interval(duration: Duration) -> Cell<u64, CellImmutable> {
     let cell = Cell::<u64, CellMutable>::new(0);
 
-    // Use weak ref so thread doesn't keep cell alive
+    // Use weak ref so the timer doesn't keep cell alive
     let weak = cell.downgrade();
-    thread::spawn(move || {
-        let mut count: u64 = 0;
-        loop {
-            thread::sleep(duration);
-            count += 1;
-            // Exit when cell is dropped
-            let Some(c) = weak.upgrade() else { break };
-            c.notify(Signal::value(count));
-        }
+    platform::spawn_interval(duration, false, move |count| {
+        // Exit when cell is dropped
+        let Some(c) = weak.upgrade() else {
+            return false;
+        };
+        c.notify(Signal::value(count));
+        true
     });
 
     cell.lock()
@@ -48,14 +45,12 @@ pub fn interval_source(duration: Duration) -> Source<u64> {
     let source = Source::<u64>::new();
 
     let weak = source.downgrade();
-    thread::spawn(move || {
-        let mut count: u64 = 0;
-        loop {
-            thread::sleep(duration);
-            count += 1;
-            let Some(s) = weak.upgrade() else { break };
-            s.emit(count);
-        }
+    platform::spawn_interval(duration, false, move |count| {
+        let Some(s) = weak.upgrade() else {
+            return false;
+        };
+        s.emit(count);
+        true
     });
 
     source
@@ -63,8 +58,9 @@ pub fn interval_source(duration: Duration) -> Source<u64> {
 
 /// Creates a high-precision interval cell that emits 0, 1, 2, ... at the given frequency.
 ///
-/// Uses spin-sleeping for sub-millisecond precision, suitable for high-frequency
-/// applications like 240Hz sync clocks.
+/// On native targets this uses spin-sleeping for sub-millisecond precision,
+/// suitable for high-frequency applications like 240Hz sync clocks. On wasm
+/// there is no sub-millisecond timer, so this behaves like [`interval`].
 ///
 /// **Performance note:** prefer [`interval_precise_source`] when consumers
 /// only need notification.
@@ -92,35 +88,12 @@ pub fn interval_precise(duration: Duration) -> Cell<u64, CellImmutable> {
     let cell = Cell::<u64, CellMutable>::new(0);
 
     let weak = cell.downgrade();
-    thread::spawn(move || {
-        let mut count: u64 = 0;
-        let mut next_tick = Instant::now() + duration;
-
-        loop {
-            // High-precision sleep using spin_sleep
-            let now = Instant::now();
-            if next_tick > now {
-                spin_sleep::sleep(next_tick - now);
-            }
-
-            count += 1;
-
-            // Exit when cell is dropped
-            let Some(c) = weak.upgrade() else { break };
-            c.notify(Signal::value(count));
-
-            // Schedule next tick
-            next_tick += duration;
-
-            // If we've fallen behind, catch up (avoid drift accumulation)
-            let now = Instant::now();
-            if next_tick < now {
-                // Skip missed ticks, reset to next future tick
-                let missed = ((now - next_tick).as_nanos() / duration.as_nanos()) as u64;
-                count += missed;
-                next_tick = now + duration;
-            }
-        }
+    platform::spawn_interval(duration, true, move |count| {
+        let Some(c) = weak.upgrade() else {
+            return false;
+        };
+        c.notify(Signal::value(count));
+        true
     });
 
     cell.lock()
@@ -131,30 +104,12 @@ pub fn interval_precise_source(duration: Duration) -> Source<u64> {
     let source = Source::<u64>::new();
 
     let weak = source.downgrade();
-    thread::spawn(move || {
-        let mut count: u64 = 0;
-        let mut next_tick = Instant::now() + duration;
-
-        loop {
-            let now = Instant::now();
-            if next_tick > now {
-                spin_sleep::sleep(next_tick - now);
-            }
-
-            count += 1;
-
-            let Some(s) = weak.upgrade() else { break };
-            s.emit(count);
-
-            next_tick += duration;
-
-            let now = Instant::now();
-            if next_tick < now {
-                let missed = ((now - next_tick).as_nanos() / duration.as_nanos()) as u64;
-                count += missed;
-                next_tick = now + duration;
-            }
-        }
+    platform::spawn_interval(duration, true, move |count| {
+        let Some(s) = weak.upgrade() else {
+            return false;
+        };
+        s.emit(count);
+        true
     });
 
     source
@@ -189,38 +144,16 @@ pub fn interval_precise_with_elapsed(duration: Duration) -> Cell<IntervalTick, C
     let cell = Cell::<IntervalTick, CellMutable>::new(IntervalTick::default());
 
     let weak = cell.downgrade();
-    thread::spawn(move || {
-        let start = Instant::now();
-        let mut count: u64 = 0;
-        let mut next_tick = Instant::now() + duration;
-
-        loop {
-            // High-precision sleep
-            let now = Instant::now();
-            if next_tick > now {
-                spin_sleep::sleep(next_tick - now);
-            }
-
-            count += 1;
-
-            // Exit when cell is dropped
-            let Some(c) = weak.upgrade() else { break };
-            c.notify(Signal::value(IntervalTick {
-                tick: count,
-                elapsed: start.elapsed(),
-            }));
-
-            // Schedule next tick
-            next_tick += duration;
-
-            // Catch up if behind
-            let now = Instant::now();
-            if next_tick < now {
-                let missed = ((now - next_tick).as_nanos() / duration.as_nanos()) as u64;
-                count += missed;
-                next_tick = now + duration;
-            }
-        }
+    let start = Instant::now();
+    platform::spawn_interval(duration, true, move |count| {
+        let Some(c) = weak.upgrade() else {
+            return false;
+        };
+        c.notify(Signal::value(IntervalTick {
+            tick: count,
+            elapsed: start.elapsed(),
+        }));
+        true
     });
 
     cell.lock()
@@ -231,34 +164,16 @@ pub fn interval_precise_with_elapsed_source(duration: Duration) -> Source<Interv
     let source = Source::<IntervalTick>::new();
 
     let weak = source.downgrade();
-    thread::spawn(move || {
-        let start = Instant::now();
-        let mut count: u64 = 0;
-        let mut next_tick = Instant::now() + duration;
-
-        loop {
-            let now = Instant::now();
-            if next_tick > now {
-                spin_sleep::sleep(next_tick - now);
-            }
-
-            count += 1;
-
-            let Some(s) = weak.upgrade() else { break };
-            s.emit(IntervalTick {
-                tick: count,
-                elapsed: start.elapsed(),
-            });
-
-            next_tick += duration;
-
-            let now = Instant::now();
-            if next_tick < now {
-                let missed = ((now - next_tick).as_nanos() / duration.as_nanos()) as u64;
-                count += missed;
-                next_tick = now + duration;
-            }
-        }
+    let start = Instant::now();
+    platform::spawn_interval(duration, true, move |count| {
+        let Some(s) = weak.upgrade() else {
+            return false;
+        };
+        s.emit(IntervalTick {
+            tick: count,
+            elapsed: start.elapsed(),
+        });
+        true
     });
 
     source

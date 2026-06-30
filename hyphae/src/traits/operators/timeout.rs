@@ -3,13 +3,13 @@ use std::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    thread,
     time::Duration,
 };
 
 use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
+    platform,
     signal::Signal,
 };
 
@@ -64,9 +64,8 @@ pub trait TimeoutExt<T>: Watchable<T> {
         let gen_clone = generation.clone();
         let weak2 = derived.downgrade();
         let comp = completed.clone();
-        thread::spawn(move || {
-            let start_gen = gen_clone.load(Ordering::SeqCst);
-            thread::sleep(duration);
+        let start_gen = gen_clone.load(Ordering::SeqCst);
+        platform::spawn_delayed(duration, move || {
             if !comp.load(Ordering::SeqCst)
                 && gen_clone.load(Ordering::SeqCst) == start_gen
                 && let Some(d) = weak2.upgrade()
@@ -90,8 +89,7 @@ pub trait TimeoutExt<T>: Watchable<T> {
                         let gen2 = generation.clone();
                         let weak3 = d.downgrade();
                         let comp = completed.clone();
-                        thread::spawn(move || {
-                            thread::sleep(duration);
+                        platform::spawn_delayed(duration, move || {
                             if !comp.load(Ordering::SeqCst)
                                 && gen2.load(Ordering::SeqCst) == new_gen
                                 && let Some(d2) = weak3.upgrade()
@@ -122,6 +120,8 @@ impl<T, W: Watchable<T>> TimeoutExt<T> for W {}
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::AtomicU32;
+
+    use std::thread;
 
     use super::*;
     use crate::Mutable;

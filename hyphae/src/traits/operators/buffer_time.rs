@@ -3,7 +3,6 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    thread,
     time::Duration,
 };
 
@@ -12,6 +11,7 @@ use crossbeam::queue::SegQueue;
 use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
+    platform,
     signal::Signal,
 };
 
@@ -56,21 +56,19 @@ pub trait BufferTimeExt<T>: Watchable<T> {
         let buffer2 = buffer.clone();
         let weak2 = derived.downgrade();
         let comp = completed.clone();
-        thread::spawn(move || {
-            while !comp.load(Ordering::SeqCst) {
-                thread::sleep(duration);
-                if comp.load(Ordering::SeqCst) {
-                    break;
+        platform::spawn_interval(duration, false, move |_count| {
+            if comp.load(Ordering::SeqCst) {
+                return false;
+            }
+            if let Some(d) = weak2.upgrade() {
+                let mut chunk = Vec::new();
+                while let Some(v) = buffer2.pop() {
+                    chunk.push(v);
                 }
-                if let Some(d) = weak2.upgrade() {
-                    let mut chunk = Vec::new();
-                    while let Some(v) = buffer2.pop() {
-                        chunk.push(v);
-                    }
-                    d.notify(Signal::value(chunk));
-                } else {
-                    break;
-                }
+                d.notify(Signal::value(chunk));
+                true
+            } else {
+                false
             }
         });
 
