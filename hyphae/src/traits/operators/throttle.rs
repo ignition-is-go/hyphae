@@ -59,8 +59,6 @@ impl<T, W: Watchable<T>> ThrottleExt<T> for W {}
 mod tests {
     use std::sync::atomic::AtomicU64;
 
-    use std::thread;
-
     use super::*;
     use crate::Mutable;
 
