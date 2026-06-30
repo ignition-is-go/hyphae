@@ -2,25 +2,35 @@
 //!
 //! Streams incremental cell updates to connected clients over JSON-lines.
 //! First frame is a full snapshot; subsequent frames contain only diffs.
+//!
+//! The TCP transport (tokio/mio) is native-only — a browser can't host a
+//! listener. On wasm the public API is preserved but [`start_server`] returns an
+//! inert handle; drive a browser-side inspector from the in-memory
+//! [`crate::registry`] directly.
 
-use std::{
-    collections::HashMap,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
 };
 
+#[cfg(not(target_arch = "wasm32"))]
+use std::{collections::HashMap, time::Duration};
+
+#[cfg(not(target_arch = "wasm32"))]
 use serde::Serialize;
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::{io::AsyncWriteExt, net::TcpListener};
+#[cfg(not(target_arch = "wasm32"))]
 use uuid::Uuid;
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::registry::{CellSnapshot, registry};
 
+#[cfg(not(target_arch = "wasm32"))]
 const DEFAULT_INTERVAL: Duration = Duration::from_millis(16); // ~60Hz
 
 /// A frame sent over the wire as JSON-lines.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Serialize)]
 struct Frame {
     #[serde(rename = "type")]
@@ -69,6 +79,7 @@ impl Drop for InspectorServer {
 /// println!("Inspector on port {}", server.port());
 /// // Server runs until dropped or shutdown() called
 /// ```
+#[cfg(not(target_arch = "wasm32"))]
 pub fn start_server(_name: impl Into<String>) -> InspectorServer {
     let port = std::env::var("HYPHA_INSPECTOR_PORT")
         .ok()
@@ -98,6 +109,21 @@ pub fn start_server(_name: impl Into<String>) -> InspectorServer {
     InspectorServer { port, shutdown }
 }
 
+/// Start a new inspector server (wasm stub).
+///
+/// There is no TCP listener on `wasm32-unknown-unknown`, so this returns an
+/// inert handle (`port() == 0`) and streams nothing. The public API matches the
+/// native build so callers compile unchanged; read the in-memory
+/// [`crate::registry`] directly to drive a browser-side inspector.
+#[cfg(target_arch = "wasm32")]
+pub fn start_server(_name: impl Into<String>) -> InspectorServer {
+    InspectorServer {
+        port: 0,
+        shutdown: Arc::new(AtomicBool::new(false)),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 async fn accept_loop(listener: TcpListener, shutdown: Arc<AtomicBool>) {
     loop {
         if shutdown.load(Ordering::SeqCst) {
@@ -126,6 +152,7 @@ async fn accept_loop(listener: TcpListener, shutdown: Arc<AtomicBool>) {
 }
 
 /// Compute a fingerprint for diffing. Includes all fields that the client cares about.
+#[cfg(not(target_arch = "wasm32"))]
 fn fingerprint(cell: &CellSnapshot) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -139,6 +166,7 @@ fn fingerprint(cell: &CellSnapshot) -> u64 {
     hasher.finish()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 async fn handle_client(mut stream: tokio::net::TcpStream, shutdown: Arc<AtomicBool>) {
     let mut prev: HashMap<Uuid, u64> = HashMap::new();
     let mut interval = tokio::time::interval(DEFAULT_INTERVAL);
