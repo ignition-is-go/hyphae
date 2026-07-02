@@ -114,6 +114,15 @@ impl<T, M> WeakCell<T, M> {
             _marker: PhantomData,
         })
     }
+
+    /// Whether the referenced Cell is still alive (has live strong references).
+    ///
+    /// Cheaper than `upgrade().is_some()` — it only reads the strong count and
+    /// never materializes (or transiently reference-counts) a `Cell`, so it is
+    /// safe to call in a hot sweep over many weaks.
+    pub fn is_alive(&self) -> bool {
+        self.inner.strong_count() > 0
+    }
 }
 
 impl<T, M> Clone for WeakCell<T, M> {

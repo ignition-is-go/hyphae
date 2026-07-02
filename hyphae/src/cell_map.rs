@@ -7,7 +7,10 @@ use std::{
     collections::HashMap,
     hash::Hash,
     marker::PhantomData,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use dashmap::DashMap;
@@ -44,7 +47,15 @@ where
     /// The actual data storage.
     pub(crate) data: DashMap<K, V>,
     /// Cached per-key observation cells.
+    ///
+    /// Entries are `WeakCell`s: once every strong handle a caller holds from
+    /// `get(k)` drops, the weak dangles but its slot lingers here. Left
+    /// unchecked this is an unbounded leak on maps with high key churn (every
+    /// distinct key ever observed keeps a slot forever). [`maybe_prune_key_cells`]
+    /// amortizes a sweep of dead weaks across mutations to keep it bounded.
     key_cells: DashMap<K, WeakCell<Option<V>, CellMutable>>,
+    /// Mutation counter driving amortized pruning of dead `key_cells` weaks.
+    prune_ops: AtomicUsize,
     /// Cell for diff notifications.
     pub(crate) diffs_cell: Cell<MapDiff<K, V>, CellMutable>,
     /// Cell for length.
@@ -271,6 +282,7 @@ where
             inner: Arc::new(CellMapInner {
                 data: DashMap::new(),
                 key_cells: DashMap::new(),
+                prune_ops: AtomicUsize::new(0),
                 diffs_cell,
                 len_cell,
                 owned: DashMap::new(),
@@ -298,8 +310,42 @@ where
         self.own(guard);
     }
 
+    /// Amortized sweep of dead `key_cells` weaks.
+    ///
+    /// Every distinct key ever passed to [`get`](Self::get) leaves a
+    /// `WeakCell` slot behind; once the observing `Cell` drops, that slot
+    /// dangles. On a map with high key churn those dead slots accumulate
+    /// without bound (the production OOM this guards against). This runs
+    /// `key_cells.retain(|_, w| w.is_alive())` roughly once every
+    /// `key_cells.len()` mutations, so the sweep cost amortizes to O(1) per
+    /// mutation while bounding `key_cells` to the live observed-key set.
+    ///
+    /// Pruning only ever drops weaks whose `Cell` has no strong handles, so it
+    /// cannot change observable behavior: a dead weak would upgrade to `None`
+    /// and notify nobody anyway. Live weaks — including a re-observed key whose
+    /// cell is still held — are always retained, preserving reinsert re-notify.
+    ///
+    /// MUST be called before this method takes any `key_cells` shard `Ref`:
+    /// `retain` locks every shard, so holding a `Ref` across it would deadlock.
+    fn maybe_prune_key_cells(&self) {
+        let key_cells = &self.inner.key_cells;
+        let len = key_cells.len();
+        if len == 0 {
+            return;
+        }
+        // Sweep about once per `len` mutations, with a floor so tiny maps don't
+        // sweep on nearly every op.
+        let threshold = len.max(32);
+        if self.inner.prune_ops.fetch_add(1, Ordering::Relaxed) + 1 < threshold {
+            return;
+        }
+        self.inner.prune_ops.store(0, Ordering::Relaxed);
+        key_cells.retain(|_, weak| weak.is_alive());
+    }
+
     /// Insert a key-value pair, returning the old value if present.
     pub fn insert(&self, key: K, value: V) -> Option<V> {
+        self.maybe_prune_key_cells();
         let old = self.inner.data.insert(key.clone(), value.clone());
 
         // No-op update: same key/value should not emit a diff or notify observers.
@@ -339,6 +385,7 @@ where
         if entries.is_empty() {
             return;
         }
+        self.maybe_prune_key_cells();
 
         let mut changes = Vec::with_capacity(entries.len());
         for (key, value) in entries {
@@ -376,6 +423,7 @@ where
 
     /// Remove a key, returning the old value if present.
     pub fn remove(&self, key: &K) -> Option<V> {
+        self.maybe_prune_key_cells();
         let removed = self.inner.data.remove(key);
 
         if let Some((k, old_value)) = removed {
@@ -406,6 +454,7 @@ where
         if keys.is_empty() {
             return;
         }
+        self.maybe_prune_key_cells();
 
         let original_len = self.inner.data.len();
         let mut changes = Vec::new();
@@ -446,6 +495,7 @@ where
     /// Emits `MapDiff::Batch` with the actual changes so downstream
     /// subscribers see one atomic replacement instead of N individual diffs.
     pub fn replace_all(&self, entries: Vec<(K, V)>) {
+        self.maybe_prune_key_cells();
         let new_keys: std::collections::HashSet<&K> = entries.iter().map(|(k, _)| k).collect();
         let mut changes = Vec::new();
 
@@ -509,6 +559,7 @@ where
     /// diff through `apply_batch`. Caller must own the diff (one upstream
     /// clone is unavoidable since `subscribe_diffs_reactive` passes `&diff`).
     pub(crate) fn apply_diff_owned(&self, diff: MapDiff<K, V>) {
+        self.maybe_prune_key_cells();
         match &diff {
             MapDiff::Initial { entries } => {
                 let stale_keys: Vec<K> = self.inner.data.iter().map(|r| r.key().clone()).collect();
@@ -581,6 +632,7 @@ where
         if changes.is_empty() {
             return;
         }
+        self.maybe_prune_key_cells();
 
         fn apply_one<K, V>(
             map: &CellMap<K, V, CellMutable>,
@@ -1506,5 +1558,65 @@ mod tests {
         assert_eq!(map.len().get(), 0);
         assert_eq!(map.get_value(&"a".to_string()), None);
         assert_eq!(map.get_value(&"b".to_string()), None);
+    }
+
+    // Regression: `key_cells` must not grow without bound as distinct keys are
+    // observed via `get` and then their cells are dropped. Before the amortized
+    // sweep, every distinct key ever passed to `get` left a dangling `WeakCell`
+    // slot behind forever — the production OOM in rship.
+    #[test]
+    fn test_key_cells_pruned_under_churn() {
+        let map = CellMap::<u64, u64>::new();
+
+        // Churn a large number of distinct keys: observe each (creating a
+        // key_cells slot), drop the observer, then drive mutations.
+        const CHURN: u64 = 2_000;
+        for i in 0..CHURN {
+            let cell = map.get(&i);
+            assert_eq!(cell.get(), None);
+            drop(cell); // observer gone → this key's weak now dangles
+            map.insert(i, i);
+            map.remove(&i);
+        }
+
+        // Amortized pruning must have kept key_cells bounded far below the
+        // number of distinct keys churned (it would otherwise be ~CHURN).
+        let live = map.inner.key_cells.len();
+        assert!(
+            live < 256,
+            "key_cells should stay bounded under churn, got {live} slots after {CHURN} keys",
+        );
+    }
+
+    // Pruning must never evict a still-observed key: a live cell held across a
+    // churn storm must keep receiving updates (reinsert re-notify preserved).
+    #[test]
+    fn test_key_cells_prune_keeps_live_observer() {
+        let map = CellMap::<u64, u64>::new();
+
+        // A long-lived observer on a stable key.
+        let watched = map.get(&0);
+        let hits = Arc::new(AtomicUsize::new(0));
+        let h = hits.clone();
+        let _guard = watched.subscribe(move |_| {
+            h.fetch_add(1, Ordering::SeqCst);
+        });
+        let initial = hits.load(Ordering::SeqCst);
+
+        // Churn many other keys to trigger repeated sweeps.
+        for i in 1..2_000u64 {
+            let cell = map.get(&i);
+            drop(cell);
+            map.insert(i, i);
+            map.remove(&i);
+        }
+
+        // The watched key's live cell survived every sweep and still updates.
+        map.insert(0, 99);
+        assert_eq!(watched.get(), Some(99));
+        assert!(
+            hits.load(Ordering::SeqCst) > initial,
+            "live observer must still be notified after pruning sweeps",
+        );
     }
 }
