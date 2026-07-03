@@ -104,29 +104,57 @@ or test depends on subscriber notification order (verified).
 
 ---
 
-## Phase 2 — Stop drop/rebuild-per-fire (DESIGNED)
+## Phase 2 — Reduce per-hop propagation cost (REFRAMED)
 
-**Target:** the `drop<CellInner<Vec>>` + `atomic_sub` cascade (cost #2).
+**Target:** the `drop<CellInner<…>>` + `atomic_sub` cascade (cost #2).
 
-For `switch_map`, rebuild is *semantically inherent* — each outer emission maps
-to a fresh inner observable, and the old inner must be torn down. The
-addressable churn is where a tower is rebuilt when it could be **updated in
-place**:
+**Original framing (rejected by the code).** The plan assumed value cells were
+rebuilt per animation frame and the fix was to hold a stable cell and update it
+in place. Scoping against rship disproved this — the animation hot path is
+*already* stable-cell + in-place:
 
-- **`switch_map` where the inner is keyed/stable.** When `f(outer)` would
-  produce the *same* inner cell identity as the previous fire (common when the
-  mapping is `key → cell-for-key`), switching should be a no-op rather than a
-  teardown+resubscribe. Add a variant that dedupes by inner cell id (skip the
-  generation bump + `own_keyed` swap when the new inner is pointer-equal to the
-  current one).
-- **Value-carrying inner cells.** rship's binding-node `Cell<Vec<…>>` is
-  rebuilt per animation frame. Where the *shape* is stable and only values
-  change, expose an update-in-place path so the `CellInner` (and its subscriber
-  registry) is reused and only its `value` swaps — no `Arc<CellInner>` teardown.
+- `execute_pure_node` (binding_node.rs) is
+  `ctx.report(BindingNodeResolvedInputs).map(evaluate).materialize()` — one
+  output cell per key, created once; per-frame input changes flow as in-place
+  value updates + notify, never a rebuild.
+- `value_track_sampler` `switch_map`s on **instance/lane topology** (deduped,
+  0 re-fires per frame per rship's counters); the inner
+  `join(keyframes, t).map(sample).materialize()` is built once per topology and
+  only recomputes in place as `t` advances.
 
-This phase is partly a hyphae-primitive gap and partly an rship usage pattern;
-sequence it **after** re-profiling Phase 1, since Phase 1 removes the fused
-`eq<Uuid>` cost from these same stacks and will reshape what remains.
+So there is no per-frame rebuild to eliminate. The per-frame
+`drop<CellInner>`/`atomic_sub` is therefore **not teardown** — it's the
+intrinsic cost of push propagation through the graph each frame:
+
+1. Every operator/materialize callback does `weak.upgrade()` → `notify` →
+   drop, i.e. an `Arc<CellInner>` refcount inc/dec **per hop per fire** (the
+   `atomic_sub`). The `Weak` is load-bearing — it breaks the cell↔guard
+   ownership cycle — so the upgrade can't simply be removed.
+2. Each hop clones the value `Arc` (`signal.clone()`) and drops the previous
+   one.
+
+Multiplied by graph depth × node count × frame rate, that is the residual ~97%
+after rship's own restructuring (which correctly hit diminishing returns — the
+cost *moves* between cells but doesn't drop, because it's the primitive, not a
+graph-shape bug).
+
+**Addressable levers (in headroom order):**
+
+- **Fewer hops per frame** — this is really Phase 3 (fusion), especially across
+  *report boundaries*, each of which is a materialized cell. Fewer intermediate
+  cells ⇒ fewer per-frame `weak.upgrade`/notify/value-clone cycles. Largest
+  structural win, largest surface.
+- **A cheaper per-hop propagation path** — restructure notify so a hop doesn't
+  pay a full `Weak::upgrade` (atomic inc/dec) every fire, e.g. a
+  dirty-mark/scheduler (pull) hybrid or a notify path that borrows the
+  downstream cell without a transient strong `Arc`. Deep architectural change;
+  spike only if Phase 1 + fusion leave propagation dominant.
+
+**Gate:** land Phase 1 and take the fresh HRLV capture first. If the `eq<Uuid>`
+bucket collapses under Phase 1, the dominant remaining cost was subscribe churn
+(in the report/fanout layer, not the value operators — those don't re-subscribe
+per frame), and this phase's priority drops. If it barely moves, propagation is
+the floor and the levers above become primary.
 
 ---
 
