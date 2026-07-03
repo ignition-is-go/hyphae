@@ -1,6 +1,16 @@
 # Reactive hot-path redesign
 
-**Status:** Phase 1 implemented; Phases 2–3 designed, staged.
+**Status:** investigation complete. **Outcome: the HRLV bottleneck is not a
+hyphae-primitive problem — it is rship's reactive-graph architecture
+(value/structural bundling causing needless whole-session re-solves per frame).
+No hyphae-side rewrite is warranted.** See "Outcome (measured)" below. The phase
+designs are retained as a record and for any future workload that *is*
+primitive-bound.
+
+**Status (per phase):** Phase 1 implemented (measured no-op for this workload,
+kept on branch as a standalone O(1) scalability win); Phases 2–3 and the
+scheduler designed but **not built** — measurement showed they don't move this
+workload.
 **Motivation:** live CPU profile of `rship-server` on the HRLV prod project
 (linux `perf`, 999 Hz, frame pointers on) shows **83.3 % of on-CPU samples
 (17,636 / 21,165)** in the hyphae reactive notify + `Cell`/`Arc` drop cascade.
@@ -187,3 +197,60 @@ invariant — so it lands first and independently. Phases 2 and 3 change operato
 semantics and want a fresh profile against HRLV (via nimble-walrus/rship) to
 confirm how much of the 83 % remains once the `eq<Uuid>` scan is gone, before
 committing to their larger surface area.
+
+---
+
+## Outcome (measured)
+
+The redesign was driven to ground truth against HRLV with nimble-walrus (rship).
+Each hypothesis was tested before building. The result: **no hyphae-side rewrite
+is warranted for this workload.**
+
+1. **The `eq<Uuid>` at ~97% is not subscribe/unsubscribe — it's the notify
+   fanout.** Co-occurrence analysis: of the 96.8% of samples containing
+   `eq<(Uuid, Arc<Subscriber>)>`, only 0.2% also contain a `SubscriptionGuard`
+   frame. With `-Z share-generics` + ICF, the monomorphized `notify`/`next`/`eq`
+   over the subscriber tuple fold to one address; the symbol lit up on the
+   notify-iterate loop, not the COW filter. Post-1.1.0 subscribe/unsubscribe is
+   already cheap.
+
+2. **Phase 1 (indexed registry) is a measured no-op here.** A/B with only Phase 1
+   added: notify 96.8→96.9%, teardown 96.6→96.7% — within noise. It optimizes
+   subscribe/unsubscribe (0.2% of samples). It is a real O(1) scalability win
+   for churn-heavy workloads with no regression, so it is kept on branch
+   `perf/indexed-subscriber-registry`, but it is not this workload's lever.
+
+3. **Phase 2 (in-place value cells) has little headroom.** The animation hot
+   path (`execute_pure_node`, `value_track_sampler`) is *already* stable-cell +
+   in-place — `map`/`join`/`materialize` built once per key/topology, `switch_map`s
+   keyed on topology (deduped, 0 re-fires/frame). The per-frame
+   `drop<CellInner>`/`atomic_sub` is intrinsic per-hop propagation churn
+   (`weak.upgrade` + value-`Arc` drop), not a rebuild to convert.
+
+4. **Phase 3 (fusion) can't collapse the cost.** Scalar-operator fusion is
+   already maxed in the `Pipeline` layer; fold-built deep join trees are already
+   `join_vec`'d in rship; the residual depth is *cross-node* cascade through
+   cached, multi-consumer report cells, which fusion cannot merge without
+   breaking the report-cache sharing model.
+
+5. **The glitch-free scheduler: real glitch, but mooted by an rship fix.**
+   Ground-truth single-discrete-change test: one cap-value change → `solve()`
+   fires exactly **2×** (a genuine shared-source diamond — `solve`'s join firing
+   on both paths). A scheduler would reclaim it. **But `solve()` should fire 0×
+   on a value change:** `ContributorIntent` bundles cap *values* with the
+   *structural* fields, so any value change re-triggers the whole topology solve.
+   rship's value/structural-plane split takes that path 2×→0× — reclaiming both
+   fires, not just the redundant one. A scheduler reclaiming 1-of-2 is moot once
+   the split lands, so it is **deferred** to a documented nice-to-have for the
+   rare residual structural-change diamond, not a hyphae-core rewrite.
+
+**Root cause & real lever:** the per-frame cost is rship re-running an expensive
+whole-session `solve()` on cap-value changes that shouldn't touch topology at
+all. The fix is the **value/structural-plane split** (rship-side): `solve`
+depends only on the structural plane; cap values stream to
+`desired_world → dispatch` without re-solving. hyphae's primitives are not the
+bottleneck.
+
+**What this investigation is worth:** it prevented a large, pointless rewrite of
+hyphae's core (a glitch-free scheduler) to reclaim a 2× on a path that the
+rship-side split makes 0×. Measure to ground truth before rewriting a primitive.
