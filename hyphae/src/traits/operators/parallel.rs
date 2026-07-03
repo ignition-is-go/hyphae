@@ -42,9 +42,14 @@ impl<T: CellValue> ParallelCell<T> {
         *self.inner.inner.value.lock().expect("cell value poisoned") =
             signal.arc().unwrap().clone();
 
-        // Brief mutex acquire to clone the subscriber-list Arc, then drop the
-        // lock and fan out in parallel — callbacks run lock-free.
-        let subs = std::sync::Arc::clone(&*self.inner.inner.subscribers.lock());
+        // Brief mutex acquire to grab the notify snapshot, then drop the lock
+        // and fan out in parallel — callbacks run lock-free. The displaced old
+        // snapshot drops outside the lock (see SubscriberRegistry).
+        let subs = {
+            let (subs, old) = self.inner.inner.subscribers.lock().snapshot();
+            drop(old);
+            subs
+        };
         platform::par_for_each(&subs, |(_, sub)| {
             (sub.callback)(&signal);
         });
@@ -68,8 +73,13 @@ pub trait ParallelExt<T>: Watchable<T> {
                     Signal::Value(value) => {
                         *inner.inner.value.lock().expect("cell value poisoned") = value.clone();
 
-                        // Brief mutex acquire + Arc::clone snapshot.
-                        let subs = std::sync::Arc::clone(&*inner.inner.subscribers.lock());
+                        // Brief mutex acquire to grab the notify snapshot; the
+                        // displaced old snapshot drops outside the lock.
+                        let subs = {
+                            let (subs, old) = inner.inner.subscribers.lock().snapshot();
+                            drop(old);
+                            subs
+                        };
                         platform::par_for_each(&subs, |(_, sub)| {
                             (sub.callback)(signal);
                         });

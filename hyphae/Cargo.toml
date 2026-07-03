@@ -76,3 +76,7 @@ harness = false
 [[bench]]
 name = "view_chains"
 harness = false
+
+[[bench]]
+name = "subscriber_registry"
+harness = false
