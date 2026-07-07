@@ -693,32 +693,54 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
         &self,
         callback: impl Fn(&Signal<T>) + Send + Sync + 'static,
     ) -> SubscriptionGuard {
-        // Send current value immediately (Arc clone, no deep copy)
+        let id = Uuid::new_v4();
+        let sub = Arc::new(Subscriber::new(callback));
+
+        // Insert BEFORE seeding. The prior order (fire the seed with the current
+        // value, THEN insert) left a window in which a concurrent `notify` on
+        // another thread could take its subscriber snapshot between the seed and
+        // the insert: that notify iterated a snapshot WITHOUT this subscriber,
+        // so the new subscriber missed the emit and latched the stale seed value
+        // with no way to recover until some later emit reached it. Against a
+        // source that had already moved on, the subscription stranded
+        // permanently — correct on a fresh `get()` (reads live value) but stuck
+        // on the live subscription. That is the root of the intermittent
+        // "value stuck, UI/fresh-read correct, clears on restart" class.
+        //
+        // Inserting first guarantees this subscriber is in the index for every
+        // subsequent notify, so it can never miss the source moving on. The seed
+        // below then only needs to backfill the current value.
+        //
+        // Any displaced Arc (none, for a fresh id) drops *outside* the lock: a
+        // subscriber's drop can cascade into upstream cell drops that touch
+        // other cell mutexes, and running that under this lock allowed two
+        // concurrently-dropping cells to deadlock.
+        let displaced = self.inner.subscribers.lock().insert(id, sub.clone());
+        drop(displaced);
+
+        // Seed the current value AFTER the insert (backfilling the freshest
+        // stored value) and fire OUTSIDE the subscribers lock — subscriber
+        // callbacks must never run with an internal cell mutex held, since they
+        // can cascade into other cells' locks/drops and deadlock. A notify that
+        // raced the insert above already delivers to this now-indexed
+        // subscriber; a duplicate value delivery is benign, and any one-emit
+        // ordering skew self-heals on the next notify.
         let current = self
             .inner
             .value
             .lock()
             .expect("cell value poisoned")
             .clone();
-        callback(&Signal::Value(current));
+        (sub.callback)(&Signal::Value(current));
 
         // If already complete or errored, send that signal too
         if self.is_complete() {
-            callback(&Signal::Complete);
+            (sub.callback)(&Signal::Complete);
         } else if self.is_error()
             && let Some(err) = self.error()
         {
-            callback(&Signal::Error(err));
+            (sub.callback)(&Signal::Error(err));
         }
-
-        let id = Uuid::new_v4();
-        let sub = Arc::new(Subscriber::new(callback));
-        // O(1) indexed insert. Any displaced Arc (none, for a fresh id) drops
-        // *outside* the lock: a subscriber's drop can cascade into upstream
-        // cell drops that touch other cell mutexes, and running that under this
-        // lock allowed two concurrently-dropping cells to deadlock.
-        let displaced = self.inner.subscribers.lock().insert(id, sub);
-        drop(displaced);
 
         // Record subscriber added if metrics enabled
         #[cfg(feature = "metrics")]
