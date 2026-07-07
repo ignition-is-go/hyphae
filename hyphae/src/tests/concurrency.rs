@@ -282,7 +282,11 @@ fn subscribe_racing_set_never_strands() {
         sub.join().unwrap();
         setter.join().unwrap();
 
-        assert_eq!(cell.get(), R, "round {round}: get() must read the set value");
+        assert_eq!(
+            cell.get(),
+            R,
+            "round {round}: get() must read the set value"
+        );
         assert!(
             saw_target.load(Ordering::SeqCst),
             "round {round}: live subscription MISSED the update entirely — a \
