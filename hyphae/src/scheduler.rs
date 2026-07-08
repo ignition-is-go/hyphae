@@ -48,6 +48,9 @@ use crate::traits::DepNode;
 
 thread_local! {
     static TICK: RefCell<Tick> = RefCell::new(Tick::new());
+    /// Reentrancy depth of the active [`no_coalesce`] construction scope. `> 0`
+    /// means cells born now are stamped [`Cell::no_coalesce`] at birth.
+    static NO_COALESCE_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
 /// Global topology epoch. Bumped on every edge change (`Cell::own`,
@@ -75,12 +78,20 @@ struct Tick {
     /// Reentrancy depth. `> 0` means a batch is active on this thread and
     /// `notify` should defer. Nested `batch` calls join the outermost tick.
     depth: u32,
-    /// Height-ordered frontier: `(height, id) -> deferred op`. `BTreeMap`
-    /// pops the minimum `(height, id)` first, giving the height ordering.
-    order: BTreeMap<(u64, Uuid), Box<dyn FnOnce()>>,
-    /// `id -> its current height key in `order``, so a re-notify can find and
-    /// drop the cell's previously-queued op (coalescing) before re-inserting.
-    scheduled: FxHashMap<Uuid, u64>,
+    /// Height-ordered frontier: `(height, id, seq) -> deferred op`. `BTreeMap`
+    /// pops the minimum key first, giving height ordering; the `seq` tiebreaker
+    /// keeps a `no_coalesce` cell's multiple ops distinct **and** in arrival
+    /// order (a cell's keys share `(height, id)`, so they sort contiguously by
+    /// `seq`). Coalescing cells keep exactly one live key at a time.
+    order: BTreeMap<(u64, Uuid, u64), Box<dyn FnOnce()>>,
+    /// For coalescing cells only: `id -> (height, seq)` of its single live entry
+    /// in `order`, so a re-notify can find and drop the superseded op
+    /// (last-write-wins) before re-inserting. `no_coalesce` cells are never
+    /// tracked here — each of their ops survives to the drain.
+    scheduled: FxHashMap<Uuid, (u64, u64)>,
+    /// Monotonic per-tick sequence stamp, ordering ops enqueued at the same
+    /// `(height, id)` by arrival. Reset when the tick clears.
+    seq: u64,
 }
 
 impl Tick {
@@ -89,25 +100,40 @@ impl Tick {
             depth: 0,
             order: BTreeMap::new(),
             scheduled: FxHashMap::default(),
+            seq: 0,
         }
     }
 
-    /// Enqueue (or coalesce) `run` for cell `id` at `height`. If the cell is
-    /// already queued this tick, its previous op is dropped (last-write-wins).
-    fn enqueue(&mut self, id: Uuid, height: u64, run: Box<dyn FnOnce()>) {
-        if let Some(prev_height) = self.scheduled.insert(id, height) {
-            // Drop the superseded op (and the value/cell it captured). We hold
-            // no cell lock here, so a cascading Arc drop is safe.
-            self.order.remove(&(prev_height, id));
+    /// Enqueue `run` for cell `id` at `height`. When `coalesce` is true and the
+    /// cell is already queued this tick, its previous op is dropped
+    /// (last-write-wins). When false (a `no_coalesce` cell), every op is kept as
+    /// a distinct arrival-ordered key so event semantics survive.
+    fn enqueue(&mut self, id: Uuid, height: u64, coalesce: bool, run: Box<dyn FnOnce()>) {
+        let seq = self.seq;
+        self.seq += 1;
+        if coalesce {
+            if let Some((prev_height, prev_seq)) = self.scheduled.insert(id, (height, seq)) {
+                // Drop the superseded op (and the value/cell it captured). We
+                // hold no cell lock here, so a cascading Arc drop is safe.
+                self.order.remove(&(prev_height, id, prev_seq));
+            }
         }
-        self.order.insert((height, id), run);
+        self.order.insert((height, id, seq), run);
     }
 
     /// Remove and return the minimum-height op, or `None` when the frontier is
     /// empty.
     fn pop_min(&mut self) -> Option<Box<dyn FnOnce()>> {
-        let ((_, id), run) = self.order.pop_first()?;
-        self.scheduled.remove(&id);
+        let ((_, id, seq), run) = self.order.pop_first()?;
+        // Clear the coalescing back-pointer only if it still names the op we
+        // popped: a coalescing cell has exactly one entry (this one); a
+        // `no_coalesce` cell has none; a cell re-coalesced at a new seq keeps its
+        // newer entry.
+        if let Some(&(_, live_seq)) = self.scheduled.get(&id) {
+            if live_seq == seq {
+                self.scheduled.remove(&id);
+            }
+        }
         Some(run)
     }
 
@@ -116,6 +142,7 @@ impl Tick {
     fn clear(&mut self) {
         self.order.clear();
         self.scheduled.clear();
+        self.seq = 0;
     }
 }
 
@@ -165,7 +192,8 @@ pub(crate) fn tick_active() -> bool {
 /// `node`. Called by `notify` only when [`tick_active`] is already true.
 pub(crate) fn enqueue(id: Uuid, node: &dyn DepNode, run: impl FnOnce() + 'static) {
     let height = compute_height(node);
-    TICK.with(|t| t.borrow_mut().enqueue(id, height, Box::new(run)));
+    let coalesce = !node.no_coalesce();
+    TICK.with(|t| t.borrow_mut().enqueue(id, height, coalesce, Box::new(run)));
 }
 
 /// Drain the frontier to fixpoint in height order. Runs each op *outside* the
@@ -192,6 +220,42 @@ impl Drop for DepthGuard {
             }
         });
     }
+}
+
+/// Construct cells that opt out of the scheduler's last-write-wins coalescing.
+///
+/// Every cell created while this scope is on the stack — via [`Cell::new`], and
+/// so via operator `materialize` too — is stamped
+/// [`Cell::no_coalesce`](crate::Cell::no_coalesce) at birth. Use it to exempt an
+/// *event-semantic subgraph* as a unit: the stateful operator (a `scan`,
+/// `pairwise`, or a hand-rolled edge-detector `map`) **and the sources feeding
+/// it**, because coalescing a source upstream of the operator would drop the
+/// intermediates before they ever reach it — tagging only the operator's own
+/// cell would still starve it.
+///
+/// The stamp rides each cell for its lifetime, so it holds when the cell later
+/// fires under [`batch`], regardless of where the batch is opened. Nestable;
+/// composes with `batch` (you may open a batch inside or outside this scope).
+///
+/// Only cells *born inside* the closure are affected — a factory registered
+/// here but invoked later builds its cells outside the scope and is **not**
+/// stamped. Wrap the actual construction, not a deferred builder.
+pub fn no_coalesce<R>(f: impl FnOnce() -> R) -> R {
+    NO_COALESCE_DEPTH.with(|d| d.set(d.get() + 1));
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            NO_COALESCE_DEPTH.with(|d| d.set(d.get() - 1));
+        }
+    }
+    let _guard = Guard;
+    f()
+}
+
+/// Whether a [`no_coalesce`] construction scope is active on this thread. Read
+/// by `Cell::new`/`with_metrics` to stamp a cell's coalescing policy at birth.
+pub(crate) fn birth_no_coalesce() -> bool {
+    NO_COALESCE_DEPTH.with(|d| d.get() > 0)
 }
 
 /// Run `f` as a single propagation batch.

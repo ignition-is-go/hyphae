@@ -21,6 +21,15 @@ pub trait DepNode: Send + Sync {
         None
     }
 
+    /// Whether the scheduler should skip last-write-wins coalescing for this
+    /// node — enqueuing every notify as a distinct height-ordered op so event
+    /// semantics (scan/pairwise/merge and hand-rolled stateful maps) survive a
+    /// batch. Cells expose their per-cell flag; other nodes default to `false`.
+    #[cfg(feature = "scheduler")]
+    fn no_coalesce(&self) -> bool {
+        false
+    }
+
     /// Returns the number of active subscribers to this node.
     fn subscriber_count(&self) -> usize {
         0

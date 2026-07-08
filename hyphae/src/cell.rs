@@ -84,6 +84,16 @@ pub(crate) struct CellInner<T> {
     /// bumping the global topology epoch on any edge change.
     #[cfg(feature = "scheduler")]
     pub(crate) height_cache: std::sync::atomic::AtomicU64,
+    /// Scheduler coalescing policy. When `true`, the scheduler enqueues every
+    /// notify from this cell as a distinct height-ordered op instead of
+    /// last-write-wins coalescing them — preserving the event semantics
+    /// (scan/pairwise/merge, or a hand-rolled stateful `map`) that a dropped
+    /// intermediate would corrupt. Stamped at birth inside a
+    /// [`scheduler::no_coalesce`](crate::scheduler::no_coalesce) scope, or after
+    /// the fact via [`Cell::no_coalesce`]. Default `false` (coalesce), so the
+    /// behavior-cell majority gets the glitch-free win.
+    #[cfg(feature = "scheduler")]
+    pub(crate) no_coalesce: AtomicBool,
     /// Optional metrics for observability.
     #[cfg(feature = "metrics")]
     pub(crate) metrics: Option<Arc<CellMetrics>>,
@@ -401,6 +411,8 @@ impl<T: CellValue> Cell<T, CellMutable> {
             error: Mutex::new(None),
             #[cfg(feature = "scheduler")]
             height_cache: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(feature = "scheduler")]
+            no_coalesce: AtomicBool::new(crate::scheduler::birth_no_coalesce()),
             #[cfg(feature = "metrics")]
             metrics: default_metrics(),
             #[cfg(feature = "metrics")]
@@ -433,6 +445,10 @@ impl<T: CellValue> Cell<T, CellMutable> {
             completed: AtomicBool::new(false),
             errored: AtomicBool::new(false),
             error: Mutex::new(None),
+            #[cfg(feature = "scheduler")]
+            height_cache: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(feature = "scheduler")]
+            no_coalesce: AtomicBool::new(crate::scheduler::birth_no_coalesce()),
             metrics: Some(Arc::new(CellMetrics::new())),
             slow_subscriber_threshold_ns: ArcSwap::from_pointee(None),
             slow_subscriber_callback: ArcSwap::from_pointee(None),
@@ -619,6 +635,32 @@ impl<T, M> Cell<T, M> {
 // DepNode implementation for Cell - enables type-erased dependency traversal
 // ============================================================================
 
+#[cfg(feature = "scheduler")]
+impl<T, M> Cell<T, M> {
+    /// Opt this cell out of the scheduler's last-write-wins coalescing.
+    ///
+    /// Under [`batch`](crate::batch), a coalescing cell keeps only its final
+    /// value per tick — correct for behavior operators (map/filter/join/
+    /// switch_map), but it silently drops intermediates for event operators
+    /// (scan/pairwise/merge/buffer/zip) and hand-rolled stateful maps, whose
+    /// result depends on seeing every emission. Marking such a cell
+    /// `no_coalesce` makes the scheduler enqueue each of its notifies as a
+    /// distinct height-ordered op — every intermediate preserved, still drained
+    /// in height order (so it reads settled inputs; deferral is glitch-free, only
+    /// the last-write-wins *drop* is unsafe for these).
+    ///
+    /// For an event-semantic *subgraph*, prefer
+    /// [`scheduler::no_coalesce`](crate::scheduler::no_coalesce), which stamps
+    /// every cell born inside it — including the sources upstream of the
+    /// operator, where coalescing would otherwise starve it before its inputs
+    /// ever reach it. This builder is the single-cell escape hatch for sites
+    /// where wrapping construction is awkward.
+    pub fn no_coalesce(self) -> Self {
+        self.inner.no_coalesce.store(true, Ordering::Relaxed);
+        self
+    }
+}
+
 impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
     fn id(&self) -> Uuid {
         self.inner.id
@@ -654,6 +696,11 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
     #[cfg(feature = "scheduler")]
     fn height_cache(&self) -> Option<&std::sync::atomic::AtomicU64> {
         Some(&self.inner.height_cache)
+    }
+
+    #[cfg(feature = "scheduler")]
+    fn no_coalesce(&self) -> bool {
+        self.inner.no_coalesce.load(Ordering::Relaxed)
     }
 
     fn subscriber_count(&self) -> usize {
