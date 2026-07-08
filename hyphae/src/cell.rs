@@ -799,6 +799,13 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
     /// settled by [`write_value`]; callbacks run with no internal lock held.
     #[cfg_attr(feature = "profiling", inline(never))]
     fn fanout(&self, signal: &Signal<T>) {
+        // Tally this emit against the active measurement pass (if any). One per
+        // fanout: synchronously this counts every re-fire; under `batch` the
+        // coalesced cell fanouts once, so the same counter shows the collapse.
+        // Pure measurement — compiles to nothing without `profiling`.
+        #[cfg(feature = "profiling")]
+        crate::profiling::record_fire(self.inner.id);
+
         // A `tracing` span per fanout so span-based profilers (`tracing-flame`,
         // `tracing-tracy`) get one entry per cell emit, tagged with the cell's
         // id and (if set) its name. The consumer attaches the subscriber; when

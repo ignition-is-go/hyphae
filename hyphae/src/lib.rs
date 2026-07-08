@@ -141,6 +141,8 @@ pub mod metrics;
 pub mod nested_map;
 pub mod pipeline;
 pub(crate) mod platform;
+#[cfg(feature = "profiling")]
+pub mod profiling;
 #[cfg(feature = "scheduler")]
 pub mod scheduler;
 pub mod signal;
