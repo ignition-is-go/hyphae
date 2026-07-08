@@ -15,8 +15,25 @@ use std::sync::{Arc, Mutex};
 
 use hyphae::{
     batch, Cell, FilterExt, JoinExt, MapExt, MaterializeDefinite, MaterializeEmpty, Mutable, Signal,
-    Watchable,
+    SwitchMapExt, Watchable,
 };
+
+/// Subscribe to `cell`, counting Value emits and recording the last one.
+fn count_and_record<M: Send + Sync + 'static>(
+    cell: &Cell<i64, M>,
+) -> (Arc<AtomicUsize>, Arc<Mutex<i64>>) {
+    let fires = Arc::new(AtomicUsize::new(0));
+    let last = Arc::new(Mutex::new(0i64));
+    let (f, l) = (fires.clone(), last.clone());
+    let guard = cell.subscribe(move |sig| {
+        if let Signal::Value(v) = sig {
+            f.fetch_add(1, Ordering::SeqCst);
+            *l.lock().unwrap() = **v;
+        }
+    });
+    std::mem::forget(guard);
+    (fires, last)
+}
 
 /// Record the last value emitted by `cell` into a shared slot.
 fn record_last<M: Send + Sync + 'static>(cell: &Cell<i64, M>) -> Arc<Mutex<i64>> {
@@ -203,6 +220,72 @@ fn filtered_diamond_does_not_wait_for_a_suppressed_branch() {
         "both branches live, still one settled solve"
     );
     assert_eq!(*last.lock().unwrap(), (4 + 1) + (4 * 10));
+}
+
+#[test]
+fn switch_map_rewire_and_taller_inner_update_in_one_batch() {
+    // Inner 0 is a bare source (height 0); inner 1 is two maps deep (height 2).
+    // In one batch we switch to inner 1 AND drive its source. The result must
+    // end at inner 1's *settled* value, even though the rewire bumps the
+    // topology epoch and lifts the result's own height mid-drain.
+    let in0 = Cell::new(0i64).map(|x| *x).materialize(); // immutable inner, h1
+    let in1_src = Cell::new(0i64);
+    let in1 = in1_src.clone().map(|x| x + 1).map(|x| x * 2).materialize(); // h2
+
+    let sel = Cell::new(0i64);
+    let (in0c, in1c) = (in0.clone(), in1.clone());
+    let result = sel.switch_map(move |&i| if i == 0 { in0c.clone() } else { in1c.clone() });
+    let (_fires, last) = count_and_record(&result);
+
+    batch(|| {
+        sel.set(1);
+        in1_src.set(5);
+    });
+    assert_eq!(*last.lock().unwrap(), (5 + 1) * 2, "settled to inner 1's value");
+}
+
+#[test]
+fn switch_map_old_inner_firing_during_switch_is_glitch_free() {
+    // The hazard: in one batch the OLD inner fires *and* we switch to a taller
+    // new inner. Naively the result is enqueued at the old (short) height, fires
+    // early with the stale old value, then fires again at the new height — a
+    // double fire with an observable wrong intermediate. Run many trials because
+    // the drain's same-height tie-break is id-ordered (nondeterministic), so the
+    // bad interleaving only occurs on some runs.
+    for trial in 0..200 {
+        let in0_src = Cell::new(0i64);
+        let in0 = in0_src.clone().map(|x| *x).materialize(); // immutable inner, h1
+        let in1_src = Cell::new(0i64);
+        let in1 = in1_src
+            .clone()
+            .map(|x| x + 1)
+            .map(|x| x * 2)
+            .map(|x| x + 100)
+            .materialize(); // taller inner, h3
+
+        let sel = Cell::new(0i64);
+        let (in0c, in1c) = (in0.clone(), in1.clone());
+        let result = sel.switch_map(move |&i| if i == 0 { in0c.clone() } else { in1c.clone() });
+        let (fires, last) = count_and_record(&result);
+
+        fires.store(0, Ordering::SeqCst);
+        batch(|| {
+            in0_src.set(7); // old inner fires
+            sel.set(1); // switch away to the taller inner
+            in1_src.set(5); // new inner settles to (5+1)*2 + 100 = 112
+        });
+
+        assert_eq!(
+            *last.lock().unwrap(),
+            112,
+            "trial {trial}: result settled to the switched-in inner"
+        );
+        assert_eq!(
+            fires.load(Ordering::SeqCst),
+            1,
+            "trial {trial}: exactly one settled fire, no stale old-inner glitch"
+        );
+    }
 }
 
 #[test]
