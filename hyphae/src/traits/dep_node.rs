@@ -12,6 +12,15 @@ pub trait DepNode: Send + Sync {
     /// Returns the dependencies of this node.
     fn deps(&self) -> Vec<Arc<dyn DepNode>>;
 
+    /// The scheduler's per-node height cache slot, if any. Cells expose their
+    /// `CellInner::height_cache`; other nodes default to `None` and are
+    /// recomputed each time. Lets the scheduler memoize propagation height
+    /// (`1 + max(dep.height)`) across ticks, invalidated by the topology epoch.
+    #[cfg(feature = "scheduler")]
+    fn height_cache(&self) -> Option<&std::sync::atomic::AtomicU64> {
+        None
+    }
+
     /// Returns the number of active subscribers to this node.
     fn subscriber_count(&self) -> usize {
         0

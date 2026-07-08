@@ -76,6 +76,14 @@ pub(crate) struct CellInner<T> {
     /// The error, if any. Cold path — only written when the cell errors,
     /// read by error/subscribe paths.
     pub(crate) error: Mutex<Option<Arc<anyhow::Error>>>,
+    /// Scheduler height cache: packed `(epoch << 32) | height`. The scheduler
+    /// computes a cell's propagation height (`1 + max(dep.height)`) once per
+    /// topology epoch and caches it here, so a steady-state batch reads height
+    /// as a single atomic load instead of walking `deps()` every notify. `0`
+    /// means "never computed" (epoch 0 is never current). Invalidated lazily by
+    /// bumping the global topology epoch on any edge change.
+    #[cfg(feature = "scheduler")]
+    pub(crate) height_cache: std::sync::atomic::AtomicU64,
     /// Optional metrics for observability.
     #[cfg(feature = "metrics")]
     pub(crate) metrics: Option<Arc<CellMetrics>>,
@@ -391,6 +399,8 @@ impl<T: CellValue> Cell<T, CellMutable> {
             completed: AtomicBool::new(false),
             errored: AtomicBool::new(false),
             error: Mutex::new(None),
+            #[cfg(feature = "scheduler")]
+            height_cache: std::sync::atomic::AtomicU64::new(0),
             #[cfg(feature = "metrics")]
             metrics: default_metrics(),
             #[cfg(feature = "metrics")]
@@ -575,6 +585,9 @@ impl<T, M> Cell<T, M> {
         #[cfg(feature = "inspector")]
         crate::registry::registry().mark_owned(guard.source().id(), self.inner.id);
         self.inner.owned.insert(Uuid::new_v4(), guard);
+        // An added dependency edge invalidates cached scheduler heights.
+        #[cfg(feature = "scheduler")]
+        crate::scheduler::bump_topology_epoch();
         #[cfg(feature = "trace")]
         crate::tracing::update_owned_count(self.inner.id, self.inner.owned.len());
     }
@@ -594,6 +607,9 @@ impl<T, M> Cell<T, M> {
             crate::registry::registry().mark_owned(guard.source().id(), self.inner.id);
         }
         self.inner.owned.insert(key, guard);
+        // switch_map rewiring changes edges (and heights); invalidate the cache.
+        #[cfg(feature = "scheduler")]
+        crate::scheduler::bump_topology_epoch();
         #[cfg(feature = "trace")]
         crate::tracing::update_owned_count(self.inner.id, self.inner.owned.len());
     }
@@ -635,6 +651,11 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
             .collect()
     }
 
+    #[cfg(feature = "scheduler")]
+    fn height_cache(&self) -> Option<&std::sync::atomic::AtomicU64> {
+        Some(&self.inner.height_cache)
+    }
+
     fn subscriber_count(&self) -> usize {
         self.inner.subscribers.lock().len() + self.inner.result_subscribers.lock().len()
     }
@@ -670,6 +691,26 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         // Don't emit anything after completion or error
         if self.inner.completed.load(Ordering::SeqCst) || self.inner.errored.load(Ordering::SeqCst)
         {
+            return;
+        }
+
+        // Opt-in scheduler interception. Inside a `batch` (never in the
+        // default build, never on the synchronous path) this defers the
+        // value-settle + fanout into the height-ordered tick queue and returns;
+        // the drain runs them in order at the batch boundary. One thread-local
+        // bool load when the feature is on but no batch is open.
+        #[cfg(feature = "scheduler")]
+        if crate::scheduler::tick_active() {
+            let cell = self.clone();
+            let signal = signal.clone();
+            crate::scheduler::enqueue(
+                self.inner.id,
+                self as &dyn crate::traits::DepNode,
+                move || {
+                    cell.write_value(&signal);
+                    cell.fanout(&signal);
+                },
+            );
             return;
         }
 
