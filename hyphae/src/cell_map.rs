@@ -269,6 +269,16 @@ where
         let diffs_cell = Cell::new(MapDiff::Initial {
             entries: Vec::new(),
         });
+        // A diffs stream is events, not a level: each MapDiff is a distinct
+        // add/remove/change an accumulating subscriber must see in order. Under
+        // `batch`, coalescing would drop intermediate diffs (an add+remove of the
+        // same key in one batch collapses to just the remove), silently — and
+        // invisibly to fanout-count metrics. Exempt it from coalescing by default
+        // so no `batch` caller can trip that; the cost is at most an extra
+        // fanout pass for snapshot-rebuild subscribers under `batch`, never a
+        // wrong result.
+        #[cfg(feature = "scheduler")]
+        let diffs_cell = diffs_cell.no_coalesce();
         let len_cell = Cell::new(0);
 
         // Mark len_cell as owned by diffs_cell so it doesn't appear as an orphan root

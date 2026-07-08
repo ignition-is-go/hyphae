@@ -176,3 +176,32 @@ fn no_coalesce_scope_preserves_multiplicity_but_settles_glitch_free() {
         "final value is glitch-free despite preserved multiplicity"
     );
 }
+
+#[test]
+fn cellmap_diffs_survive_a_batched_add_then_remove() {
+    use hyphae::CellMap;
+
+    let map: CellMap<u32, u32> = CellMap::new();
+    let seen = std::sync::Arc::new(Mutex::new(0usize));
+    let sink = seen.clone();
+    let guard = map.subscribe_diffs(move |_diff| {
+        *sink.lock().unwrap() += 1;
+    });
+    std::mem::forget(guard);
+    *seen.lock().unwrap() = 0; // discard the Initial replay
+
+    // Add then remove the same key inside one batch: two diffs_cell.set calls.
+    // The diffs_cell is no_coalesce by default, so BOTH the Insert and Remove
+    // survive; a plain (coalescing) cell would drop the Insert (LWW keeps the
+    // Remove) and an accumulating subscriber would corrupt.
+    batch(|| {
+        map.insert(1, 100);
+        map.remove(&1);
+    });
+
+    assert!(
+        *seen.lock().unwrap() >= 2,
+        "both the add and the remove diff must survive the batch, saw {}",
+        *seen.lock().unwrap()
+    );
+}
