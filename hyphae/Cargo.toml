@@ -20,6 +20,10 @@ async = ["flume", "futures-core"]
 inspector = ["serde", "serde_json", "tokio", "uuid/serde"]
 metrics = []
 trace = ["metrics"]
+# Opt-in deferred/ordered/glitch-free propagation under an explicit `batch()`
+# boundary, plus the `clock`/`TickSource` seam for frame-locked ticking. Off by
+# default: the synchronous eager-push path is unchanged when this is disabled.
+scheduler = []
 
 [dependencies]
 anyhow = "1"

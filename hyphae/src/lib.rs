@@ -132,6 +132,8 @@ pub mod bounded_output;
 pub mod cell;
 pub mod cell_map;
 pub mod cell_set;
+#[cfg(feature = "scheduler")]
+pub mod clock;
 pub mod constructors;
 pub mod map_query;
 #[cfg(feature = "metrics")]
@@ -139,6 +141,8 @@ pub mod metrics;
 pub mod nested_map;
 pub mod pipeline;
 pub(crate) mod platform;
+#[cfg(feature = "scheduler")]
+pub mod scheduler;
 pub mod signal;
 pub mod source;
 pub mod subscription;
@@ -179,6 +183,10 @@ pub use pipeline::{
     Definite, Empty, MaterializeDefinite, MaterializeEmpty, Pipeline, PipelineShareExt, Seedness,
     SharedPipeline,
 };
+#[cfg(feature = "scheduler")]
+pub use clock::{Clock, IntervalTickSource, MonotonicClock, Tick, TickGuard, TickSource};
+#[cfg(feature = "scheduler")]
+pub use scheduler::batch;
 pub use signal::Signal;
 pub use source::{SampleOnSourceExt, Source, WeakSource};
 pub use subscription::SubscriptionGuard;

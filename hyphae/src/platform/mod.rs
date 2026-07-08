@@ -27,3 +27,15 @@ pub(crate) use native::{Instant, par_for_each, spawn_delayed, spawn_interval};
 mod wasm;
 #[cfg(target_arch = "wasm32")]
 pub(crate) use wasm::{Instant, par_for_each, spawn_delayed, spawn_interval};
+
+/// Monotonic nanoseconds since a fixed, process-wide base captured on first
+/// call. This is the default timebase for [`crate::clock::MonotonicClock`] and
+/// the single seam through which time can later be routed to an injected
+/// (e.g. PTP-disciplined) clock. Monotonic and non-decreasing; the absolute
+/// value is meaningless — only differences are.
+#[cfg(feature = "scheduler")]
+pub(crate) fn now_nanos() -> u64 {
+    use std::sync::OnceLock;
+    static BASE: OnceLock<Instant> = OnceLock::new();
+    BASE.get_or_init(Instant::now).elapsed().as_nanos() as u64
+}
