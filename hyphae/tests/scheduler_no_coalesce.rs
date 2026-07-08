@@ -178,6 +178,62 @@ fn no_coalesce_scope_preserves_multiplicity_but_settles_glitch_free() {
 }
 
 #[test]
+fn batched_source_coalesces_a_same_rate_diamond_that_per_subscriber_batch_cannot() {
+    use hyphae::{JoinExt, MapExt, MaterializeDefinite, Source};
+
+    // rship's shape: two cells sample the SAME source, each via its OWN
+    // subscriber callback that opens its OWN batch around the set. A node
+    // joining the two same-rate values then re-fires once per subscriber,
+    // because the two arrivals land in two separate propagation passes —
+    // per-call-site batching cannot coalesce across subscribers.
+    fn wire(src: &Source<u64>) -> (Cell<i64, hyphae::CellImmutable>, std::sync::Arc<AtomicUsize>) {
+        let a = Cell::new(0i64);
+        let b = Cell::new(0i64);
+        let (a2, b2) = (a.clone(), b.clone());
+        std::mem::forget(src.subscribe(move |s| {
+            if let Signal::Value(v) = s {
+                batch(|| a2.set(**v as i64));
+            }
+        }));
+        std::mem::forget(src.subscribe(move |s| {
+            if let Signal::Value(v) = s {
+                batch(|| b2.set(**v as i64 * 10));
+            }
+        }));
+        // k is fed by both legs; it owns the subscriptions to a and b, keeping
+        // them alive after the locals drop.
+        let k = a.join(&b).map(|(x, y)| x + y).materialize();
+        let fires = fire_counter(&k);
+        (k, fires)
+    }
+
+    // Unbatched source → two separate batch windows → the join fires twice.
+    let plain = Source::new();
+    let (k1, f1) = wire(&plain);
+    f1.store(0, Ordering::SeqCst);
+    plain.emit(5);
+    assert_eq!(
+        f1.load(Ordering::SeqCst),
+        2,
+        "per-subscriber batch can't coalesce arrivals from different subscribers"
+    );
+    let _ = k1;
+
+    // Batched source → the whole fan-out is one pass; the per-subscriber batches
+    // nest into it, so the join settles once for the emit.
+    let batched = Source::new().batched();
+    let (k2, f2) = wire(&batched);
+    f2.store(0, Ordering::SeqCst);
+    batched.emit(5);
+    assert_eq!(
+        f2.load(Ordering::SeqCst),
+        1,
+        "batched fan-out coalesces the same-rate diamond to a single fire"
+    );
+    let _ = k2;
+}
+
+#[test]
 fn cellmap_diffs_survive_a_batched_add_then_remove() {
     use hyphae::CellMap;
 
