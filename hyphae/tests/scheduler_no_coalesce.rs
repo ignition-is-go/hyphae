@@ -261,3 +261,145 @@ fn cellmap_diffs_survive_a_batched_add_then_remove() {
         *seen.lock().unwrap()
     );
 }
+
+#[test]
+fn no_coalesce_preserves_arrival_order() {
+    // Stronger than the sum test: the exact arrival SEQUENCE survives, in order
+    // (the seq tiebreaker in the height frontier), not merely the count.
+    let s = Cell::new(0i64).no_coalesce();
+    let seq = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let sink = seq.clone();
+    std::mem::forget(s.subscribe(move |sig| {
+        if let Signal::Value(v) = sig {
+            sink.lock().unwrap().push(**v);
+        }
+    }));
+    seq.lock().unwrap().clear(); // discard seed replay
+    batch(|| {
+        s.set(1);
+        s.set(2);
+        s.set(3);
+    });
+    assert_eq!(
+        *seq.lock().unwrap(),
+        vec![1, 2, 3],
+        "every set survives in arrival order"
+    );
+}
+
+#[test]
+fn coalescing_cell_downstream_of_no_coalesce_settles_once() {
+    // The composition guarantee: a no_coalesce SOURCE emits every arrival, but a
+    // plain (coalescing) behavior cell downstream still settles ONCE to the final
+    // value — so tagging a shared source no_coalesce never hurts its behavior
+    // consumers, it only costs the source extra fanouts.
+    use hyphae::{MapExt, MaterializeDefinite};
+
+    let s = Cell::new(0i64).no_coalesce();
+    let derived = s.clone().map(|x| x * 2).materialize(); // born outside any scope → coalescing
+    let fires = fire_counter(&derived);
+    let last = {
+        let slot = std::sync::Arc::new(Mutex::new(0i64));
+        let sink = slot.clone();
+        std::mem::forget(derived.subscribe(move |sig| {
+            if let Signal::Value(v) = sig {
+                *sink.lock().unwrap() = **v;
+            }
+        }));
+        slot
+    };
+
+    fires.store(0, Ordering::SeqCst);
+    batch(|| {
+        s.set(1);
+        s.set(2);
+        s.set(3);
+    });
+    assert_eq!(
+        fires.load(Ordering::SeqCst),
+        1,
+        "coalescing subscriber settles once despite three no_coalesce arrivals"
+    );
+    assert_eq!(*last.lock().unwrap(), 6, "and settles to the final value");
+}
+
+#[test]
+fn batch_tick_is_clean_after_a_panicking_body() {
+    // The scheduler's DepthGuard clears the tick on unwind, so a panic mid-batch
+    // leaves a clean slate for the next batch. Without that, the enqueued-but-
+    // never-drained op would linger and corrupt the following batch.
+    let s = Cell::new(0i64);
+    let acc = sum_sink(&s);
+
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        batch(|| {
+            s.set(1); // enqueued, never drained
+            panic!("boom in batch body");
+        });
+    }));
+    assert!(r.is_err(), "the panic propagates out of batch");
+
+    // Next batch drains on a clean tick: sees 2 only, not a lingering 1.
+    *acc.lock().unwrap() = 0;
+    batch(|| s.set(2));
+    assert_eq!(
+        *acc.lock().unwrap(),
+        2,
+        "the next batch drains cleanly after a panicking batch body"
+    );
+}
+
+#[test]
+fn no_coalesce_scope_depth_restored_after_panic() {
+    // The scope Guard decrements depth on unwind, so a panic inside
+    // no_coalesce(|| ..) does not leave later cells wrongly stamped.
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        no_coalesce(|| panic!("boom in scope"));
+    }));
+    assert!(r.is_err());
+
+    // A cell born now is NOT stamped, so it coalesces (a batched double-set
+    // collapses to the last) — proving depth returned to zero.
+    let s = Cell::new(0i64);
+    let acc = sum_sink(&s);
+    *acc.lock().unwrap() = 0;
+    batch(|| {
+        s.set(1);
+        s.set(2);
+    });
+    assert_eq!(
+        *acc.lock().unwrap(),
+        2,
+        "a cell born after a panicking scope coalesces (depth restored)"
+    );
+}
+
+#[test]
+fn cellset_diffs_survive_a_batched_add_then_remove() {
+    // CellSet mirror of the CellMap diffs test — its diffs_cell is no_coalesce by
+    // default too, so a batched add+remove of one value keeps both diffs.
+    use hyphae::CellSet;
+
+    let set: CellSet<u32> = CellSet::new();
+    let seen = std::sync::Arc::new(Mutex::new(0usize));
+    let sink = seen.clone();
+    std::mem::forget(set.diffs().subscribe(move |sig| {
+        if let Signal::Value(d) = sig {
+            if d.is_some() {
+                *sink.lock().unwrap() += 1;
+            }
+        }
+    }));
+    *seen.lock().unwrap() = 0; // discard the initial None
+
+    batch(|| {
+        set.insert(1);
+        set.remove(&1);
+    });
+
+    assert!(
+        *seen.lock().unwrap() >= 2,
+        "both the add and remove SetDiff survive the batch, saw {}",
+        *seen.lock().unwrap()
+    );
+}
