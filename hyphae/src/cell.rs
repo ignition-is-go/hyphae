@@ -521,7 +521,14 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
     /// Emit a signal to all subscribers.
     ///
     /// This is the unified notification mechanism for values, completion, and errors.
+    ///
+    /// Under the `profiling` feature the propagation boundaries
+    /// ([`notify`](Self::notify)/[`write_value`](Self::write_value)/[`fanout`](Self::fanout))
+    /// are `#[inline(never)]` so sampling profilers resolve them as distinct
+    /// frames instead of folding the whole cascade into one `eq`/`notify`
+    /// symbol. This costs a call on the hot path, so it is opt-in.
     #[doc(hidden)]
+    #[cfg_attr(feature = "profiling", inline(never))]
     pub fn notify(&self, signal: Signal<T>) {
         // Don't emit anything after completion or error
         if self.inner.completed.load(Ordering::SeqCst) || self.inner.errored.load(Ordering::SeqCst)
@@ -529,15 +536,21 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
             return;
         }
 
-        // Start timing if metrics enabled
-        #[cfg(feature = "metrics")]
-        let notify_start = self
-            .inner
-            .metrics
-            .as_ref()
-            .map(|_| crate::platform::Instant::now());
+        // Two phases, split so the (opt-in) scheduler can settle a cell's value
+        // in height order *before* running its fanout — glitch-free coalescing —
+        // and so sampling profilers resolve the value-write and the fanout as
+        // distinct symbols instead of one folded `notify`. Outside a scheduler
+        // batch (the default, and always on wasm) they run back-to-back: the
+        // exact synchronous eager-push path, with no behavioral change.
+        self.write_value(&signal);
+        self.fanout(&signal);
+    }
 
-        match &signal {
+    /// Settle this cell's current value — or its terminal completed/errored
+    /// state — from `signal`. Brief mutex work only; runs no subscriber fanout.
+    #[cfg_attr(feature = "profiling", inline(never))]
+    fn write_value(&self, signal: &Signal<T>) {
+        match signal {
             Signal::Value(arc_value) => {
                 // `Mutex<Arc<T>>` write: brief lock, swap the Arc, drop lock.
                 // The previous Arc drops inline at the end of this scope —
@@ -555,6 +568,35 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
                 *self.inner.error.lock().expect("cell error poisoned") = Some(err.clone());
             }
         }
+    }
+
+    /// Fan `signal` out to this cell's subscribers. The value is assumed already
+    /// settled by [`write_value`]; callbacks run with no internal lock held.
+    #[cfg_attr(feature = "profiling", inline(never))]
+    fn fanout(&self, signal: &Signal<T>) {
+        // A `tracing` span per fanout so span-based profilers (`tracing-flame`,
+        // `tracing-tracy`) get one entry per cell emit, tagged with the cell's
+        // id and (if set) its name. The consumer attaches the subscriber; when
+        // `profiling` is off this compiles to nothing. Later phases nest this
+        // under a per-frame span.
+        #[cfg(feature = "profiling")]
+        let _fanout_span = {
+            let name = self.inner.name.lock().expect("cell name poisoned").clone();
+            ::tracing::trace_span!(
+                "hyphae.fanout",
+                cell.id = %self.inner.id,
+                cell.name = name.as_deref().unwrap_or(""),
+            )
+            .entered()
+        };
+
+        // Start timing if metrics enabled
+        #[cfg(feature = "metrics")]
+        let notify_start = self
+            .inner
+            .metrics
+            .as_ref()
+            .map(|_| crate::platform::Instant::now());
 
         // Hot path: take the subscribers mutex briefly to grab the notify
         // snapshot (rebuilt from the id-index only if it changed since the last
@@ -594,7 +636,7 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
             #[cfg(feature = "metrics")]
             let sub_start = metrics.as_ref().map(|_| crate::platform::Instant::now());
 
-            (sub.callback)(&signal);
+            (sub.callback)(signal);
 
             #[cfg(feature = "metrics")]
             if let (Some(m), Some(start)) = (metrics, sub_start) {
@@ -630,7 +672,7 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
             #[cfg(feature = "metrics")]
             let sub_start = metrics.as_ref().map(|_| crate::platform::Instant::now());
 
-            if let Err(err) = (sub.callback)(&signal) {
+            if let Err(err) = (sub.callback)(signal) {
                 log::error!(
                     "hyphae: fallible subscriber {} on cell {} returned error: {}",
                     subscriber_id,

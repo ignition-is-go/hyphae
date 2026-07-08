@@ -94,6 +94,13 @@ pub trait SwitchMapExt<T>: Watchable<T> {
                         return;
                     }
 
+                    // Per-outer-fire re-knit: rebuild the inner cell + re-subscribe
+                    // + drop the prior inner guard. This span isolates switch_map's
+                    // un-fusable teardown/rebuild cost from the anonymous
+                    // `hyphae.fanout` aggregate. Compiles to nothing without `profiling`.
+                    #[cfg(feature = "profiling")]
+                    let _reknit_span = ::tracing::trace_span!("hyphae.switch_map").entered();
+
                     let Some(c) = weak.upgrade() else { return };
 
                     // Increment generation, clear inner_complete, preserve outer_complete

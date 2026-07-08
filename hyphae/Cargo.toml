@@ -24,6 +24,11 @@ trace = ["metrics"]
 # boundary, plus the `clock`/`TickSource` seam for frame-locked ticking. Off by
 # default: the synchronous eager-push path is unchanged when this is disabled.
 scheduler = []
+# First-class observability for the scheduler: `#[inline(never)]` propagation
+# boundaries so sampling profilers stop folding `notify`/`fanout` symbols, plus
+# per-cell `tracing` spans. Builds on `trace`; consumers attach their own
+# `tracing` subscriber (Tracy, `tracing-flame`, etc.).
+profiling = ["trace", "dep:tracing"]
 
 [dependencies]
 anyhow = "1"
@@ -37,6 +42,9 @@ flume = { workspace = true, optional = true }
 futures-core = { workspace = true, optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
+# Optional: only pulled in by the `profiling` feature. hyphae emits spans; the
+# consumer chooses the subscriber (`tracing-flame`, `tracing-tracy`, …).
+tracing = { version = "0.1", optional = true }
 uuid.workspace = true
 
 # Native-only deps (thread pool, precise sleep, inspector TCP server).
