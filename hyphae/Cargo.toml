@@ -92,3 +92,8 @@ harness = false
 [[bench]]
 name = "subscriber_registry"
 harness = false
+
+[[bench]]
+name = "scheduler"
+harness = false
+required-features = ["scheduler"]
