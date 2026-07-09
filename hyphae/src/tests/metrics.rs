@@ -6,6 +6,11 @@ use std::{
 
 use crate::{Cell, Gettable, Mutable, Watchable};
 
+// Only meaningful without `trace`: under `trace`, `default_metrics()`
+// intentionally attaches metrics to every cell (so tracing has data), so a
+// plain `Cell::new` is *not* metrics-free. Gating this keeps `--all-features`
+// (which enables `trace`) green while still asserting the no-trace default.
+#[cfg(not(feature = "trace"))]
 #[test]
 fn test_metrics_disabled_by_default() {
     let cell = Cell::new(0);

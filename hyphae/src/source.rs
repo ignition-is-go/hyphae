@@ -60,6 +60,13 @@ pub(crate) struct SourceInner<T> {
     pub(crate) owned: DashMap<Uuid, SubscriptionGuard>,
     /// Whether this source has completed (no more values will be emitted).
     pub(crate) completed: AtomicBool,
+    /// Whether [`emit`](Source::emit)/[`complete`](Source::complete) wrap their
+    /// fan-out in a scheduler [`batch`](crate::batch), so one emit is one
+    /// coalesced propagation pass across all subscribers. Set via
+    /// [`Source::batched`]; default `false` (eager per-subscriber fan-out, the
+    /// documented hot path). Only meaningful under the `scheduler` feature.
+    #[cfg(feature = "scheduler")]
+    pub(crate) batched: AtomicBool,
     /// Source location where this source was created (`#[track_caller]`).
     #[allow(dead_code)]
     pub(crate) caller: &'static Location<'static>,
@@ -120,6 +127,8 @@ impl<T: CellValue> Source<T> {
             subscribers: parking_lot::Mutex::new(Arc::new(Vec::new())),
             owned: DashMap::new(),
             completed: AtomicBool::new(false),
+            #[cfg(feature = "scheduler")]
+            batched: AtomicBool::new(false),
             caller: Location::caller(),
         });
         #[cfg(feature = "inspector")]
@@ -158,6 +167,32 @@ impl<T: CellValue> Source<T> {
     pub fn with_name(self, name: impl Into<std::sync::Arc<str>>) -> Self {
         #[cfg(feature = "trace")]
         crate::tracing::update_name(self.inner.id, name.into().to_string());
+        self
+    }
+
+    /// Batch this source's fan-out: every [`emit`](Self::emit)/[`complete`](Self::complete)
+    /// wraps its subscriber-notification loop in a scheduler [`batch`](crate::batch),
+    /// so one emit is **one** coalesced propagation pass across all subscribers.
+    ///
+    /// Without this, each subscriber's callback cascades on its own, and a
+    /// downstream node fed by two of this source's subscribers at the same rate
+    /// re-fires once per subscriber (the arrivals land in separate propagation
+    /// passes, so nothing coalesces them). Batching the fan-out puts them in one
+    /// tick, so such a node settles once per emit, glitch-free. This is the
+    /// fan-out analogue of wrapping the emit call site in `batch` — but it works
+    /// even when subscribers each open their own `batch` (nested batches join the
+    /// outermost tick), which per-call-site batching cannot fix.
+    ///
+    /// Opt-in because `emit` is the documented high-rate hot path: a
+    /// single-subscriber source with no diamond gains nothing and would pay a
+    /// tick depth inc/dec + drain per emit. Turn it on for many-subscriber
+    /// fan-out sources (interval/clock timers feeding a wide reactive graph);
+    /// leave it off for point-to-point sources.
+    ///
+    /// Requires the `scheduler` feature (batching is meaningless without it).
+    #[cfg(feature = "scheduler")]
+    pub fn batched(self) -> Self {
+        self.inner.batched.store(true, Ordering::Relaxed);
         self
     }
 
@@ -221,6 +256,17 @@ impl<T: CellValue> Source<T> {
         // Brief mutex acquire + Arc::clone snapshot, then iterate callbacks lock-free.
         let subs = Arc::clone(&*self.inner.subscribers.lock());
         // Subscriber callbacks must not panic — same contract as Cell::notify.
+        // When batched, the whole fan-out is one propagation pass so downstream
+        // diamonds coalesce; otherwise each subscriber cascades eagerly (default).
+        #[cfg(feature = "scheduler")]
+        if self.inner.batched.load(Ordering::Relaxed) {
+            crate::scheduler::batch(|| {
+                for (_id, sub) in subs.iter() {
+                    (sub.callback)(&signal);
+                }
+            });
+            return;
+        }
         for (_id, sub) in subs.iter() {
             (sub.callback)(&signal);
         }
@@ -234,6 +280,15 @@ impl<T: CellValue> Source<T> {
         }
         let signal: Signal<T> = Signal::Complete;
         let subs = Arc::clone(&*self.inner.subscribers.lock());
+        #[cfg(feature = "scheduler")]
+        if self.inner.batched.load(Ordering::Relaxed) {
+            crate::scheduler::batch(|| {
+                for (_id, sub) in subs.iter() {
+                    (sub.callback)(&signal);
+                }
+            });
+            return;
+        }
         for (_id, sub) in subs.iter() {
             (sub.callback)(&signal);
         }

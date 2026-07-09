@@ -75,11 +75,19 @@ where
     /// Create a new empty CellSet.
     #[track_caller]
     pub fn new() -> Self {
+        // A diffs stream is events, not a level — each SetDiff is a distinct
+        // add/remove an accumulating subscriber must see in order. Exempt it from
+        // the scheduler's coalescing by default so a `batch` can't silently drop
+        // an add+remove pair of the same value; see CellMap::new for the full
+        // rationale.
+        let diffs_cell = Cell::new(None);
+        #[cfg(feature = "scheduler")]
+        let diffs_cell = diffs_cell.no_coalesce();
         Self {
             inner: Arc::new(CellSetInner {
                 data: DashSet::new(),
                 membership_cells: dashmap::DashMap::new(),
-                diffs_cell: Cell::new(None),
+                diffs_cell,
                 len_cell: Cell::new(0),
                 owned: dashmap::DashMap::new(),
             }),

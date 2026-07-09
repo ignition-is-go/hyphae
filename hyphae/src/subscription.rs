@@ -83,6 +83,9 @@ impl Drop for SubscriptionGuard {
         if let Some(mut f) = self.unsubscribe_fn.take() {
             log::trace!("SubscriptionGuard dropped id={} — running cleanup", self.id);
             f();
+            // A removed dependency edge invalidates cached scheduler heights.
+            #[cfg(feature = "scheduler")]
+            crate::scheduler::bump_topology_epoch();
         }
     }
 }

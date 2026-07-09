@@ -16,16 +16,14 @@ use std::{
 };
 
 use clap::Parser;
-
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use dashmap::DashMap;
-use hyphae::registry::CellSnapshot;
-use hyphae::server::start_server;
 use hyphae::{
     Cell, CellMap, CellMutable, Gettable, MapExt, MaterializeDefinite, Mutable, Signal, Watchable,
+    registry::CellSnapshot, server::start_server,
 };
 use ratatui::{
     Terminal,

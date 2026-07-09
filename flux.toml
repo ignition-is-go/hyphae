@@ -1,16 +1,49 @@
 [channels]
 main = "production"
 
+# `--all-features` so the feature-gated modules (scheduler, profiling, metrics,
+# inspector, async) are actually compiled/linted/tested — with `default = []` a
+# bare cargo invocation skips most of the crate. No `--all-targets`: that pulls
+# in the benches, which are slow to build and are not a correctness gate. Target
+# flags are kept implicit (`check`) or `--tests` (`lint`) rather than explicit
+# `--lib`/`--bins` so the tasks work across both the library crates and the
+# bin-only `hyphae-inspector` without a "no library targets" error.
+
+[tasks.check]
+cargo = ["cargo", "check", "--all-features"]
+workspace_batchable = true
+
+# Wasm compile guard for the crates that ship into wasm apps (rship's Tauri UI):
+# the core `hyphae` crate (portable registry, inert `start_server`, the scheduler
+# clock/platform seam) and the `hyphae-leptos` bridge. Default features only —
+# `--all-features` would pull `inspector`'s tokio server, which is native-only.
+# Opted into per-crate via `[package.metadata.flux]`, so it never runs against
+# `demo`/`inspector`.
+[tasks.check-wasm]
+cargo = ["cargo", "check", "--target", "wasm32-unknown-unknown"]
+workspace_batchable = true
+
 [tasks.build]
 cargo = ["cargo", "build"]
 workspace_batchable = true
 
-[tasks.test]
-cargo = ["cargo", "test"]
+# Formatting is the only task that needs nightly: `group_imports` /
+# `imports_granularity` in rustfmt.toml are still nightly-only. Per-crate
+# batchable like the rest — each package formats itself in parallel. Every other
+# task stays on stable; CI installs a nightly toolchain solely for this check.
+[tasks.fmt]
+cargo = ["cargo", "+nightly", "fmt", "--check"]
 workspace_batchable = true
 
+[tasks.test]
+cargo = ["cargo", "test", "--all-features"]
+workspace_batchable = true
+
+# `--tests` (the test targets recompile the lib/bin under cfg(test), so this
+# lints both the library code and the test code) — no benches, and robust on the
+# bin-only crate.
 [tasks.lint]
-cargo = ["cargo", "clippy", "--all-targets", "--", "-D", "warnings"]
+cargo = ["cargo", "clippy", "--tests", "--all-features", "--", "-D", "warnings"]
 
 [tasks.publish]
 cargo = ["cargo", "publish"]

@@ -1,0 +1,7 @@
+edition = "2024"
+
+# Unstable features (requires `cargo +nightly fmt`)
+unstable_features = true
+group_imports = "StdExternalCrate"  # Groups: std → external → crate (blank lines between groups)
+imports_granularity = "Crate"       # Merge imports from same crate
+reorder_imports = true

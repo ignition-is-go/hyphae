@@ -1,6 +1,9 @@
 //! Integration tests for MapQuery type.
 
-use crate::{CellMap, MapQuery, MaterializeDefinite, traits::CellValue, traits::InnerJoinExt};
+use crate::{
+    CellMap, MapQuery, MaterializeDefinite,
+    traits::{CellValue, InnerJoinExt},
+};
 
 #[test]
 fn cell_map_is_map_query() {
@@ -329,8 +332,7 @@ fn select_cell_plan_reacts_to_gate() {
 
 // ─── SharedMapQuery / share() tests ─────────────────────────────────────
 
-use crate::MapQueryShareExt;
-use crate::traits::DepNode;
+use crate::{MapQueryShareExt, traits::DepNode};
 
 #[test]
 fn shared_map_query_subscribes_upstream_once() {

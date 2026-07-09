@@ -273,11 +273,12 @@ fn shared_pipeline_drops_upstream_when_all_subscribers_drop() {
 
 #[test]
 fn shared_pipeline_fans_out_to_many_consumers() {
-    use crate::Watchable;
     use std::sync::{
         Arc as StdArc,
         atomic::{AtomicU64, Ordering},
     };
+
+    use crate::Watchable;
 
     let src = Cell::new(1u64);
     let shared = src.clone().map(|x| x * 10).share();

@@ -50,7 +50,7 @@ impl<T: CellValue> ParallelCell<T> {
             drop(old);
             subs
         };
-        platform::par_for_each(&subs, |(_, sub)| {
+        platform::par_for_each(subs.as_slice(), |(_, sub)| {
             (sub.callback)(&signal);
         });
     }
@@ -80,7 +80,7 @@ pub trait ParallelExt<T>: Watchable<T> {
                             drop(old);
                             subs
                         };
-                        platform::par_for_each(&subs, |(_, sub)| {
+                        platform::par_for_each(subs.as_slice(), |(_, sub)| {
                             (sub.callback)(signal);
                         });
                     }

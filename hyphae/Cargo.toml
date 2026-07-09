@@ -20,6 +20,15 @@ async = ["flume", "futures-core"]
 inspector = ["serde", "serde_json", "tokio", "uuid/serde"]
 metrics = []
 trace = ["metrics"]
+# Opt-in deferred/ordered/glitch-free propagation under an explicit `batch()`
+# boundary, plus the `clock`/`TickSource` seam for frame-locked ticking. Off by
+# default: the synchronous eager-push path is unchanged when this is disabled.
+scheduler = []
+# First-class observability for the scheduler: `#[inline(never)]` propagation
+# boundaries so sampling profilers stop folding `notify`/`fanout` symbols, plus
+# per-cell `tracing` spans. Builds on `trace`; consumers attach their own
+# `tracing` subscriber (Tracy, `tracing-flame`, etc.).
+profiling = ["trace", "dep:tracing"]
 
 [dependencies]
 anyhow = "1"
@@ -33,6 +42,9 @@ flume = { workspace = true, optional = true }
 futures-core = { workspace = true, optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
+# Optional: only pulled in by the `profiling` feature. hyphae emits spans; the
+# consumer chooses the subscriber (`tracing-flame`, `tracing-tracy`, …).
+tracing = { version = "0.1", optional = true }
 uuid.workspace = true
 
 # Native-only deps (thread pool, precise sleep, inspector TCP server).
@@ -55,7 +67,7 @@ wasm-bindgen-futures = "0.4"
 web-time = "1"
 
 [package.metadata.flux]
-tasks = ["build", "test", "lint", "publish"]
+tasks = ["fmt", "check", "check-wasm", "build", "test", "lint", "publish"]
 
 [dev-dependencies]
 criterion = "0.5"
@@ -80,3 +92,8 @@ harness = false
 [[bench]]
 name = "subscriber_registry"
 harness = false
+
+[[bench]]
+name = "scheduler"
+harness = false
+required-features = ["scheduler"]

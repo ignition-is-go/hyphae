@@ -132,6 +132,8 @@ pub mod bounded_output;
 pub mod cell;
 pub mod cell_map;
 pub mod cell_set;
+#[cfg(feature = "scheduler")]
+pub mod clock;
 pub mod constructors;
 pub mod map_query;
 #[cfg(feature = "metrics")]
@@ -139,6 +141,10 @@ pub mod metrics;
 pub mod nested_map;
 pub mod pipeline;
 pub(crate) mod platform;
+#[cfg(feature = "profiling")]
+pub mod profiling;
+#[cfg(feature = "scheduler")]
+pub mod scheduler;
 pub mod signal;
 pub mod source;
 pub mod subscription;
@@ -166,9 +172,10 @@ pub use cell::SlowSubscriberAlert;
 pub use cell::{Cell, CellImmutable, CellMutable};
 pub use cell_map::{CellMap, MapDiff, WeakCellMap};
 pub use cell_set::{CellSet, SetDiff};
-pub use constructors::from_iter_with_delay;
+#[cfg(feature = "scheduler")]
+pub use clock::{Clock, IntervalTickSource, MonotonicClock, Tick, TickGuard, TickSource};
 pub use constructors::{
-    IntervalTick, interval, interval_precise, interval_precise_source,
+    IntervalTick, from_iter_with_delay, interval, interval_precise, interval_precise_source,
     interval_precise_with_elapsed, interval_precise_with_elapsed_source, interval_source,
 };
 pub use map_query::{MapQuery, MapQueryShareExt, SharedMapQuery};
@@ -179,6 +186,8 @@ pub use pipeline::{
     Definite, Empty, MaterializeDefinite, MaterializeEmpty, Pipeline, PipelineShareExt, Seedness,
     SharedPipeline,
 };
+#[cfg(feature = "scheduler")]
+pub use scheduler::batch;
 pub use signal::Signal;
 pub use source::{SampleOnSourceExt, Source, WeakSource};
 pub use subscription::SubscriptionGuard;
@@ -191,12 +200,11 @@ pub use traits::{
     GroupByExt, GroupByPlan, HasForeignKey, IdFor, IdType, InnerJoinByKeyPlan, InnerJoinByPairPlan,
     InnerJoinExt, JoinExt, JoinKeyFrom, KeyChange, LastExt, LeftJoinExt, LeftJoinPlan,
     LeftSemiJoinExt, LeftSemiJoinPlan, MapErrExt, MapExt, MapOkExt, MapPipeline, MergeExt,
-    MergeMapExt, MultiLeftJoinExt, MultiLeftJoinPlan, Mutable, PairwiseExt, ProjectCellExt,
-    ProjectCellPlan, ProjectManyExt, ProjectManyPlan, ProjectMapExt, ProjectPlan, ReactiveKeys,
-    ReactiveMap, RetryExt, SampleExt, ScanExt, SelectCellExt, SelectCellPlan, SelectExt,
-    SelectPlan, SkipExt, SkipWhileExt, StateMachineBuilder, StateTransitionExt, SwitchMapExt,
-    TakeExt, TakeUntilExt, TakeWhileExt, TapExt, TapPipeline, ThrottleExt, TimeoutExt, TryMapExt,
-    TryMapPipeline, UnwrapOrExt, Watchable, WatchableResult, WindowExt, WithLatestFromExt, ZipExt,
-    join_vec,
+    MergeMapExt, MultiLeftJoinExt, MultiLeftJoinPlan, Mutable, PairwiseExt, ParallelCell,
+    ParallelExt, ProjectCellExt, ProjectCellPlan, ProjectManyExt, ProjectManyPlan, ProjectMapExt,
+    ProjectPlan, ReactiveKeys, ReactiveMap, RetryExt, SampleExt, ScanExt, SelectCellExt,
+    SelectCellPlan, SelectExt, SelectPlan, SkipExt, SkipWhileExt, StateMachineBuilder,
+    StateTransitionExt, SwitchMapExt, TakeExt, TakeUntilExt, TakeWhileExt, TapExt, TapPipeline,
+    ThrottleExt, TimeoutExt, TryMapExt, TryMapPipeline, UnwrapOrExt, Watchable, WatchableResult,
+    WindowExt, WithLatestFromExt, ZipExt, join_vec,
 };
-pub use traits::{ParallelCell, ParallelExt};

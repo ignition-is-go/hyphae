@@ -76,6 +76,24 @@ pub(crate) struct CellInner<T> {
     /// The error, if any. Cold path — only written when the cell errors,
     /// read by error/subscribe paths.
     pub(crate) error: Mutex<Option<Arc<anyhow::Error>>>,
+    /// Scheduler height cache: packed `(epoch << 32) | height`. The scheduler
+    /// computes a cell's propagation height (`1 + max(dep.height)`) once per
+    /// topology epoch and caches it here, so a steady-state batch reads height
+    /// as a single atomic load instead of walking `deps()` every notify. `0`
+    /// means "never computed" (epoch 0 is never current). Invalidated lazily by
+    /// bumping the global topology epoch on any edge change.
+    #[cfg(feature = "scheduler")]
+    pub(crate) height_cache: std::sync::atomic::AtomicU64,
+    /// Scheduler coalescing policy. When `true`, the scheduler enqueues every
+    /// notify from this cell as a distinct height-ordered op instead of
+    /// last-write-wins coalescing them — preserving the event semantics
+    /// (scan/pairwise/merge, or a hand-rolled stateful `map`) that a dropped
+    /// intermediate would corrupt. Stamped at birth inside a
+    /// [`scheduler::no_coalesce`](crate::scheduler::no_coalesce) scope, or after
+    /// the fact via [`Cell::no_coalesce`]. Default `false` (coalesce), so the
+    /// behavior-cell majority gets the glitch-free win.
+    #[cfg(feature = "scheduler")]
+    pub(crate) no_coalesce: AtomicBool,
     /// Optional metrics for observability.
     #[cfg(feature = "metrics")]
     pub(crate) metrics: Option<Arc<CellMetrics>>,
@@ -132,10 +150,11 @@ impl<T, M> Clone for WeakCell<T, M> {
 }
 
 /// Indexed subscriber registry: O(1) subscribe/unsubscribe by subscription id,
-/// with a lazily-rebuilt `Arc<Vec>` snapshot for lock-free notify iteration.
+/// with a lazily-rebuilt [`SubSnapshot`] for lock-free notify iteration.
 ///
 /// `index` is authoritative. `snapshot` is a cached view of it that `notify`
-/// clones (an `Arc` bump) and iterates *without* the lock held. Mutations touch
+/// clones (an `Arc` bump, or nothing for the 0/1-subscriber cases) and iterates
+/// *without* the lock held. Mutations touch
 /// only `index` and set `dirty`; they never rebuild the snapshot, so subscribe
 /// and unsubscribe are O(1) instead of the old copy-on-write O(n) `Vec` rebuild
 /// (the `eq<Uuid>` linear scan that dominated the profile). The snapshot is
@@ -147,17 +166,149 @@ impl<T, M> Clone for WeakCell<T, M> {
 /// must drop them **after** releasing the mutex, because a subscriber's drop
 /// can cascade into upstream `CellInner` drops that acquire other cell mutexes,
 /// and running that under our lock can deadlock two concurrently-dropping cells.
+/// A notify snapshot, sized to the subscriber count so the common cases don't
+/// pay for the general one. Profiling rship's HRLV playback showed the *vast
+/// majority* of cells carry exactly one subscriber, yet churn-heavy sources
+/// (switch_map rewiring its input every fire) re-`dirty` the registry each
+/// notify — so the old always-`Arc<Vec>` snapshot heap-allocated a `Vec` *and*
+/// an `Arc` per fire just to hold a single element.
+///
+/// - `Zero` — no subscribers; an empty slice, no allocation.
+/// - `One` — the single subscriber inline; cloning is one `Arc` bump, no heap.
+/// - `Many` — today's path: an `Arc<Vec>` cloned by ref-count bump.
+///
+/// [`as_slice`](SubSnapshot::as_slice) unifies the three for the consumer
+/// (sequential fanout and `par_for_each` alike): `One` yields a length-1 slice
+/// via [`std::slice::from_ref`] over its inline tuple, so no variant needs a
+/// backing `Vec`.
+pub(crate) enum SubSnapshot<S> {
+    Zero,
+    One((Uuid, Arc<S>)),
+    Many(Arc<Vec<(Uuid, Arc<S>)>>),
+}
+
+// Manual `Clone` (not derived) so the bound is `Arc<S>: Clone` — always true —
+// rather than `S: Clone`, which the subscriber payloads don't satisfy.
+impl<S> Clone for SubSnapshot<S> {
+    fn clone(&self) -> Self {
+        match self {
+            SubSnapshot::Zero => SubSnapshot::Zero,
+            SubSnapshot::One(pair) => SubSnapshot::One(pair.clone()),
+            SubSnapshot::Many(subs) => SubSnapshot::Many(subs.clone()),
+        }
+    }
+}
+
+impl<S> SubSnapshot<S> {
+    /// View the snapshot as a slice for iteration — the same shape for all three
+    /// variants, so callers fan out identically whether there are zero, one, or
+    /// many subscribers. Borrows from `self`; the caller keeps `self` alive (and
+    /// drops it outside the lock) for the duration of the fanout.
+    pub(crate) fn as_slice(&self) -> &[(Uuid, Arc<S>)] {
+        match self {
+            SubSnapshot::Zero => &[],
+            SubSnapshot::One(pair) => std::slice::from_ref(pair),
+            SubSnapshot::Many(subs) => subs.as_slice(),
+        }
+    }
+}
+
+/// The authoritative subscriber store, sized to the subscriber count so the
+/// 0/1-subscriber majority never allocates a hash table. Most cells in a large
+/// reactive graph carry at most one subscriber for their whole life (a `map`
+/// feeding one downstream, a leaf sink); for those, `FxHashMap`'s first-insert
+/// bucket allocation was pure per-cell overhead — paid once per cell, but
+/// across millions of cells.
+///
+/// - `Zero` / `One` — inline, no heap.
+/// - `Many` — the `FxHashMap` path, entered on the 1 → 2 transition.
+///
+/// **No demotion.** Once a registry reaches `Many` it stays there even if it
+/// shrinks back to one subscriber. Demoting would thrash the hash table's
+/// allocation for cells that oscillate across the 1/2 boundary (switch_map
+/// re-knitting subscribe-before-unsubscribe transiently holds two); keeping the
+/// map matches the previous always-`FxHashMap` behaviour for exactly those
+/// cells, while cells that never exceed one subscriber pay nothing. All
+/// operations stay O(1); iteration order is unspecified (it always was).
+enum SubIndex<S> {
+    Zero,
+    One(Uuid, Arc<S>),
+    Many(FxHashMap<Uuid, Arc<S>>),
+}
+
+impl<S> SubIndex<S> {
+    fn len(&self) -> usize {
+        match self {
+            SubIndex::Zero => 0,
+            SubIndex::One(..) => 1,
+            SubIndex::Many(map) => map.len(),
+        }
+    }
+
+    /// Insert a subscriber, returning any Arc displaced by a same-id overwrite
+    /// (normally `None`, since ids are fresh) for the caller to drop outside the
+    /// lock.
+    fn insert(&mut self, id: Uuid, sub: Arc<S>) -> Option<Arc<S>> {
+        match self {
+            SubIndex::Zero => {
+                *self = SubIndex::One(id, sub);
+                return None;
+            }
+            SubIndex::One(existing_id, existing_sub) => {
+                if *existing_id == id {
+                    return Some(std::mem::replace(existing_sub, sub));
+                }
+                // Different id: fall out of the match to promote (the borrow of
+                // `existing_sub` must end before we reassign `*self`).
+            }
+            SubIndex::Many(map) => {
+                return map.insert(id, sub);
+            }
+        }
+
+        // Reached only from `One` with a different id: promote to `Many`,
+        // carrying the existing single subscriber plus the new one.
+        let (old_id, old_sub) = match std::mem::replace(self, SubIndex::Zero) {
+            SubIndex::One(old_id, old_sub) => (old_id, old_sub),
+            _ => unreachable!("promotion is entered only from the One arm"),
+        };
+        let mut map = FxHashMap::default();
+        map.insert(old_id, old_sub);
+        map.insert(id, sub);
+        *self = SubIndex::Many(map);
+        None
+    }
+
+    /// Remove a subscriber by id, returning the removed Arc (if present) for the
+    /// caller to drop outside the lock. Never demotes `Many` (see the type doc).
+    fn remove(&mut self, id: &Uuid) -> Option<Arc<S>> {
+        match self {
+            SubIndex::Zero => None,
+            SubIndex::One(existing_id, _) => {
+                if *existing_id != *id {
+                    return None;
+                }
+                match std::mem::replace(self, SubIndex::Zero) {
+                    SubIndex::One(_, sub) => Some(sub),
+                    _ => unreachable!("just matched One"),
+                }
+            }
+            SubIndex::Many(map) => map.remove(id),
+        }
+    }
+}
+
 pub(crate) struct SubscriberRegistry<S> {
-    index: FxHashMap<Uuid, Arc<S>>,
-    snapshot: Arc<Vec<(Uuid, Arc<S>)>>,
+    index: SubIndex<S>,
+    snapshot: SubSnapshot<S>,
     dirty: bool,
 }
 
 impl<S> SubscriberRegistry<S> {
     fn new() -> Self {
         Self {
-            index: FxHashMap::default(),
-            snapshot: Arc::new(Vec::new()),
+            index: SubIndex::Zero,
+            snapshot: SubSnapshot::Zero,
             dirty: false,
         }
     }
@@ -190,16 +341,20 @@ impl<S> SubscriberRegistry<S> {
     /// the caller must drop the displaced snapshot outside the lock — it may
     /// hold the last ref to an unsubscribed subscriber whose drop cascades.
     #[must_use = "displaced snapshot must be dropped outside the lock"]
-    pub(crate) fn snapshot(
-        &mut self,
-    ) -> (Arc<Vec<(Uuid, Arc<S>)>>, Option<Arc<Vec<(Uuid, Arc<S>)>>>) {
+    pub(crate) fn snapshot(&mut self) -> (SubSnapshot<S>, Option<SubSnapshot<S>>) {
         if self.dirty {
-            let next: Vec<(Uuid, Arc<S>)> = self
-                .index
-                .iter()
-                .map(|(id, sub)| (*id, sub.clone()))
-                .collect();
-            let old = std::mem::replace(&mut self.snapshot, Arc::new(next));
+            // Size the rebuilt snapshot to the subscriber count, mirroring the
+            // index's own shape: the 0/1 cases (1 being the overwhelming
+            // majority) avoid the `Vec` + `Arc` heap allocation the general
+            // path pays.
+            let next = match &self.index {
+                SubIndex::Zero => SubSnapshot::Zero,
+                SubIndex::One(id, sub) => SubSnapshot::One((*id, sub.clone())),
+                SubIndex::Many(map) => SubSnapshot::Many(Arc::new(
+                    map.iter().map(|(id, sub)| (*id, sub.clone())).collect(),
+                )),
+            };
+            let old = std::mem::replace(&mut self.snapshot, next);
             self.dirty = false;
             (self.snapshot.clone(), Some(old))
         } else {
@@ -254,6 +409,10 @@ impl<T: CellValue> Cell<T, CellMutable> {
             completed: AtomicBool::new(false),
             errored: AtomicBool::new(false),
             error: Mutex::new(None),
+            #[cfg(feature = "scheduler")]
+            height_cache: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(feature = "scheduler")]
+            no_coalesce: AtomicBool::new(crate::scheduler::birth_no_coalesce()),
             #[cfg(feature = "metrics")]
             metrics: default_metrics(),
             #[cfg(feature = "metrics")]
@@ -286,6 +445,10 @@ impl<T: CellValue> Cell<T, CellMutable> {
             completed: AtomicBool::new(false),
             errored: AtomicBool::new(false),
             error: Mutex::new(None),
+            #[cfg(feature = "scheduler")]
+            height_cache: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(feature = "scheduler")]
+            no_coalesce: AtomicBool::new(crate::scheduler::birth_no_coalesce()),
             metrics: Some(Arc::new(CellMetrics::new())),
             slow_subscriber_threshold_ns: ArcSwap::from_pointee(None),
             slow_subscriber_callback: ArcSwap::from_pointee(None),
@@ -438,6 +601,9 @@ impl<T, M> Cell<T, M> {
         #[cfg(feature = "inspector")]
         crate::registry::registry().mark_owned(guard.source().id(), self.inner.id);
         self.inner.owned.insert(Uuid::new_v4(), guard);
+        // An added dependency edge invalidates cached scheduler heights.
+        #[cfg(feature = "scheduler")]
+        crate::scheduler::bump_topology_epoch();
         #[cfg(feature = "trace")]
         crate::tracing::update_owned_count(self.inner.id, self.inner.owned.len());
     }
@@ -457,6 +623,9 @@ impl<T, M> Cell<T, M> {
             crate::registry::registry().mark_owned(guard.source().id(), self.inner.id);
         }
         self.inner.owned.insert(key, guard);
+        // switch_map rewiring changes edges (and heights); invalidate the cache.
+        #[cfg(feature = "scheduler")]
+        crate::scheduler::bump_topology_epoch();
         #[cfg(feature = "trace")]
         crate::tracing::update_owned_count(self.inner.id, self.inner.owned.len());
     }
@@ -465,6 +634,32 @@ impl<T, M> Cell<T, M> {
 // ============================================================================
 // DepNode implementation for Cell - enables type-erased dependency traversal
 // ============================================================================
+
+#[cfg(feature = "scheduler")]
+impl<T, M> Cell<T, M> {
+    /// Opt this cell out of the scheduler's last-write-wins coalescing.
+    ///
+    /// Under [`batch`](crate::batch), a coalescing cell keeps only its final
+    /// value per tick — correct for behavior operators (map/filter/join/
+    /// switch_map), but it silently drops intermediates for event operators
+    /// (scan/pairwise/merge/buffer/zip) and hand-rolled stateful maps, whose
+    /// result depends on seeing every emission. Marking such a cell
+    /// `no_coalesce` makes the scheduler enqueue each of its notifies as a
+    /// distinct height-ordered op — every intermediate preserved, still drained
+    /// in height order (so it reads settled inputs; deferral is glitch-free, only
+    /// the last-write-wins *drop* is unsafe for these).
+    ///
+    /// For an event-semantic *subgraph*, prefer
+    /// [`scheduler::no_coalesce`](crate::scheduler::no_coalesce), which stamps
+    /// every cell born inside it — including the sources upstream of the
+    /// operator, where coalescing would otherwise starve it before its inputs
+    /// ever reach it. This builder is the single-cell escape hatch for sites
+    /// where wrapping construction is awkward.
+    pub fn no_coalesce(self) -> Self {
+        self.inner.no_coalesce.store(true, Ordering::Relaxed);
+        self
+    }
+}
 
 impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
     fn id(&self) -> Uuid {
@@ -498,6 +693,16 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
             .collect()
     }
 
+    #[cfg(feature = "scheduler")]
+    fn height_cache(&self) -> Option<&std::sync::atomic::AtomicU64> {
+        Some(&self.inner.height_cache)
+    }
+
+    #[cfg(feature = "scheduler")]
+    fn no_coalesce(&self) -> bool {
+        self.inner.no_coalesce.load(Ordering::Relaxed)
+    }
+
     fn subscriber_count(&self) -> usize {
         self.inner.subscribers.lock().len() + self.inner.result_subscribers.lock().len()
     }
@@ -521,7 +726,14 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
     /// Emit a signal to all subscribers.
     ///
     /// This is the unified notification mechanism for values, completion, and errors.
+    ///
+    /// Under the `profiling` feature the propagation boundaries
+    /// ([`notify`](Self::notify)/[`write_value`](Self::write_value)/[`fanout`](Self::fanout))
+    /// are `#[inline(never)]` so sampling profilers resolve them as distinct
+    /// frames instead of folding the whole cascade into one `eq`/`notify`
+    /// symbol. This costs a call on the hot path, so it is opt-in.
     #[doc(hidden)]
+    #[cfg_attr(feature = "profiling", inline(never))]
     pub fn notify(&self, signal: Signal<T>) {
         // Don't emit anything after completion or error
         if self.inner.completed.load(Ordering::SeqCst) || self.inner.errored.load(Ordering::SeqCst)
@@ -529,15 +741,41 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
             return;
         }
 
-        // Start timing if metrics enabled
-        #[cfg(feature = "metrics")]
-        let notify_start = self
-            .inner
-            .metrics
-            .as_ref()
-            .map(|_| crate::platform::Instant::now());
+        // Opt-in scheduler interception. Inside a `batch` (never in the
+        // default build, never on the synchronous path) this defers the
+        // value-settle + fanout into the height-ordered tick queue and returns;
+        // the drain runs them in order at the batch boundary. One thread-local
+        // bool load when the feature is on but no batch is open.
+        #[cfg(feature = "scheduler")]
+        if crate::scheduler::tick_active() {
+            let cell = self.clone();
+            let signal = signal.clone();
+            crate::scheduler::enqueue(
+                self.inner.id,
+                self as &dyn crate::traits::DepNode,
+                move || {
+                    cell.write_value(&signal);
+                    cell.fanout(&signal);
+                },
+            );
+            return;
+        }
 
-        match &signal {
+        // Two phases, split so the (opt-in) scheduler can settle a cell's value
+        // in height order *before* running its fanout — glitch-free coalescing —
+        // and so sampling profilers resolve the value-write and the fanout as
+        // distinct symbols instead of one folded `notify`. Outside a scheduler
+        // batch (the default, and always on wasm) they run back-to-back: the
+        // exact synchronous eager-push path, with no behavioral change.
+        self.write_value(&signal);
+        self.fanout(&signal);
+    }
+
+    /// Settle this cell's current value — or its terminal completed/errored
+    /// state — from `signal`. Brief mutex work only; runs no subscriber fanout.
+    #[cfg_attr(feature = "profiling", inline(never))]
+    fn write_value(&self, signal: &Signal<T>) {
+        match signal {
             Signal::Value(arc_value) => {
                 // `Mutex<Arc<T>>` write: brief lock, swap the Arc, drop lock.
                 // The previous Arc drops inline at the end of this scope —
@@ -555,6 +793,42 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
                 *self.inner.error.lock().expect("cell error poisoned") = Some(err.clone());
             }
         }
+    }
+
+    /// Fan `signal` out to this cell's subscribers. The value is assumed already
+    /// settled by [`write_value`]; callbacks run with no internal lock held.
+    #[cfg_attr(feature = "profiling", inline(never))]
+    fn fanout(&self, signal: &Signal<T>) {
+        // Tally this emit against the active measurement pass (if any). One per
+        // fanout: synchronously this counts every re-fire; under `batch` the
+        // coalesced cell fanouts once, so the same counter shows the collapse.
+        // Pure measurement — compiles to nothing without `profiling`.
+        #[cfg(feature = "profiling")]
+        crate::profiling::record_fire(self.inner.id);
+
+        // A `tracing` span per fanout so span-based profilers (`tracing-flame`,
+        // `tracing-tracy`) get one entry per cell emit, tagged with the cell's
+        // id and (if set) its name. The consumer attaches the subscriber; when
+        // `profiling` is off this compiles to nothing. Later phases nest this
+        // under a per-frame span.
+        #[cfg(feature = "profiling")]
+        let _fanout_span = {
+            let name = self.inner.name.lock().expect("cell name poisoned").clone();
+            ::tracing::trace_span!(
+                "hyphae.fanout",
+                cell.id = %self.inner.id,
+                cell.name = name.as_deref().unwrap_or(""),
+            )
+            .entered()
+        };
+
+        // Start timing if metrics enabled
+        #[cfg(feature = "metrics")]
+        let notify_start = self
+            .inner
+            .metrics
+            .as_ref()
+            .map(|_| crate::platform::Instant::now());
 
         // Hot path: take the subscribers mutex briefly to grab the notify
         // snapshot (rebuilt from the id-index only if it changed since the last
@@ -590,11 +864,11 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         // A panic here propagates out of the caller's `set`/`send` and halts the
         // rest of this fanout, which is a bug in the subscriber that should surface
         // loudly rather than be silently swallowed.
-        for (_subscriber_id, sub) in subs.iter() {
+        for (_subscriber_id, sub) in subs.as_slice() {
             #[cfg(feature = "metrics")]
             let sub_start = metrics.as_ref().map(|_| crate::platform::Instant::now());
 
-            (sub.callback)(&signal);
+            (sub.callback)(signal);
 
             #[cfg(feature = "metrics")]
             if let (Some(m), Some(start)) = (metrics, sub_start) {
@@ -626,11 +900,11 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
             result_subs
         };
 
-        for (subscriber_id, sub) in result_subs.iter() {
+        for (subscriber_id, sub) in result_subs.as_slice() {
             #[cfg(feature = "metrics")]
             let sub_start = metrics.as_ref().map(|_| crate::platform::Instant::now());
 
-            if let Err(err) = (sub.callback)(&signal) {
+            if let Err(err) = (sub.callback)(signal) {
                 log::error!(
                     "hyphae: fallible subscriber {} on cell {} returned error: {}",
                     subscriber_id,
@@ -666,7 +940,7 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
             crate::tracing::record_notify(
                 self.inner.id,
                 duration_ns,
-                subs.len() + result_subs.len(),
+                subs.as_slice().len() + result_subs.as_slice().len(),
                 self.inner.owned.len(),
                 metrics.slowest_subscriber_ns(),
             );
@@ -998,4 +1272,114 @@ fn default_metrics() -> Option<Arc<CellMetrics>> {
 #[cfg(all(feature = "metrics", not(feature = "trace")))]
 fn default_metrics() -> Option<Arc<CellMetrics>> {
     None
+}
+
+#[cfg(test)]
+mod sub_index_tests {
+    use std::sync::Arc;
+
+    use uuid::Uuid;
+
+    use super::{SubIndex, SubSnapshot};
+
+    // The `Arc<S>` payload stands in for a real subscriber; only identity and
+    // ref-count matter here, so `i32` is enough.
+    fn sub(v: i32) -> Arc<i32> {
+        Arc::new(v)
+    }
+
+    #[test]
+    fn zero_and_one_stay_inline() {
+        let mut idx: SubIndex<i32> = SubIndex::Zero;
+        assert!(matches!(idx, SubIndex::Zero));
+        assert_eq!(idx.len(), 0);
+
+        // First insert → One, no hash table.
+        assert!(idx.insert(Uuid::new_v4(), sub(1)).is_none());
+        assert!(matches!(idx, SubIndex::One(..)));
+        assert_eq!(idx.len(), 1);
+    }
+
+    #[test]
+    fn same_id_insert_overwrites_and_returns_old() {
+        let id = Uuid::new_v4();
+        let mut idx: SubIndex<i32> = SubIndex::Zero;
+        let first = sub(1);
+        assert!(idx.insert(id, first.clone()).is_none());
+
+        // Re-inserting the same id swaps the Arc and returns the displaced one,
+        // without promoting to Many.
+        let displaced = idx.insert(id, sub(2)).expect("old sub returned");
+        assert!(Arc::ptr_eq(&displaced, &first));
+        assert!(matches!(idx, SubIndex::One(..)));
+        assert_eq!(idx.len(), 1);
+    }
+
+    #[test]
+    fn second_distinct_id_promotes_to_many_keeping_both() {
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut idx: SubIndex<i32> = SubIndex::Zero;
+        assert!(idx.insert(a, sub(1)).is_none());
+        // 1 → 2 promotes; no displacement.
+        assert!(idx.insert(b, sub(2)).is_none());
+        assert!(matches!(idx, SubIndex::Many(_)));
+        assert_eq!(idx.len(), 2);
+
+        // Both survive the promotion.
+        let snap = build_snapshot(&idx);
+        let ids: Vec<Uuid> = snap.as_slice().iter().map(|(id, _)| *id).collect();
+        assert!(ids.contains(&a) && ids.contains(&b));
+    }
+
+    #[test]
+    fn remove_from_one_returns_to_zero() {
+        let id = Uuid::new_v4();
+        let mut idx: SubIndex<i32> = SubIndex::Zero;
+        let s = sub(7);
+        let _ = idx.insert(id, s.clone());
+
+        let removed = idx.remove(&id).expect("present");
+        assert!(Arc::ptr_eq(&removed, &s));
+        assert!(matches!(idx, SubIndex::Zero));
+        assert_eq!(idx.len(), 0);
+
+        // Removing a missing id from Zero is a no-op.
+        assert!(idx.remove(&Uuid::new_v4()).is_none());
+    }
+
+    #[test]
+    fn remove_wrong_id_from_one_is_noop() {
+        let mut idx: SubIndex<i32> = SubIndex::Zero;
+        let _ = idx.insert(Uuid::new_v4(), sub(1));
+        assert!(idx.remove(&Uuid::new_v4()).is_none());
+        assert!(matches!(idx, SubIndex::One(..)));
+        assert_eq!(idx.len(), 1);
+    }
+
+    #[test]
+    fn many_does_not_demote_when_shrinking() {
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut idx: SubIndex<i32> = SubIndex::Zero;
+        let _ = idx.insert(a, sub(1));
+        let _ = idx.insert(b, sub(2));
+        assert!(matches!(idx, SubIndex::Many(_)));
+
+        // Shrinking back to one subscriber keeps the hash table (no demotion),
+        // so cells oscillating across the 1/2 boundary don't thrash the alloc.
+        let _ = idx.remove(&a);
+        assert_eq!(idx.len(), 1);
+        assert!(matches!(idx, SubIndex::Many(_)));
+    }
+
+    // Mirror `SubscriberRegistry::snapshot`'s index→snapshot mapping so tests can
+    // read the contents back out without a full registry.
+    fn build_snapshot(idx: &SubIndex<i32>) -> SubSnapshot<i32> {
+        match idx {
+            SubIndex::Zero => SubSnapshot::Zero,
+            SubIndex::One(id, s) => SubSnapshot::One((*id, s.clone())),
+            SubIndex::Many(map) => SubSnapshot::Many(Arc::new(
+                map.iter().map(|(id, s)| (*id, s.clone())).collect(),
+            )),
+        }
+    }
 }
