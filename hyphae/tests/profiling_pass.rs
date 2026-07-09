@@ -6,8 +6,10 @@
 //! collapses — the same metric, measured the same way, before and after.
 #![cfg(feature = "profiling")]
 
-use hyphae::profiling::{pass, take_report};
-use hyphae::{Cell, JoinExt, MapExt, MaterializeDefinite, Mutable, Watchable};
+use hyphae::{
+    Cell, JoinExt, MapExt, MaterializeDefinite, Mutable, Watchable,
+    profiling::{pass, take_report},
+};
 
 #[test]
 fn pass_reports_a_synchronous_diamond_refire() {
@@ -45,7 +47,10 @@ fn pass_reports_a_synchronous_diamond_refire() {
 #[test]
 fn take_report_is_consumed_by_the_read() {
     pass(|| {});
-    assert!(take_report().is_some(), "the completed pass sealed a report");
+    assert!(
+        take_report().is_some(),
+        "the completed pass sealed a report"
+    );
     assert!(
         take_report().is_none(),
         "the report is cleared by the first take"

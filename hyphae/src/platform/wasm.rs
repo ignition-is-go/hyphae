@@ -16,7 +16,6 @@ use std::time::Duration;
 
 use gloo_timers::future::sleep;
 use wasm_bindgen_futures::spawn_local;
-
 pub use web_time::Instant;
 
 /// Run `f` once after `delay`, as a task on the browser event loop.

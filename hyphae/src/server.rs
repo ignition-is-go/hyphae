@@ -12,7 +12,6 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-
 #[cfg(not(target_arch = "wasm32"))]
 use std::{collections::HashMap, time::Duration};
 

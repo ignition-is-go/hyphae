@@ -1276,9 +1276,11 @@ fn default_metrics() -> Option<Arc<CellMetrics>> {
 
 #[cfg(test)]
 mod sub_index_tests {
-    use super::{SubIndex, SubSnapshot};
     use std::sync::Arc;
+
     use uuid::Uuid;
+
+    use super::{SubIndex, SubSnapshot};
 
     // The `Arc<S>` payload stands in for a real subscriber; only identity and
     // ref-count matter here, so `i32` is enough.

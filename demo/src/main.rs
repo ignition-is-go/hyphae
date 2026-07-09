@@ -4,8 +4,7 @@
 //! driven by interval timers at various rates. Connect the hyphae-inspector
 //! TUI to the printed port to visualize the live cell graph.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use hyphae::{
     Cell, CellImmutable, CellMap, FilterExt, JoinExt, MapExt, MaterializeDefinite,

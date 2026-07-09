@@ -1,10 +1,9 @@
 //! Native (threaded) implementation of the platform primitives.
 
+pub use std::time::Instant;
 use std::{thread, time::Duration};
 
 use rayon::prelude::*;
-
-pub use std::time::Instant;
 
 /// Run `f` once after `delay`, on a detached background thread.
 ///

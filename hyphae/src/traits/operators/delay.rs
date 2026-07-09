@@ -40,12 +40,13 @@ impl<T, W: Watchable<T>> DelayExt<T> for W {}
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        },
+        thread,
     };
-
-    use std::thread;
 
     use super::*;
     use crate::{Mutable, Signal};

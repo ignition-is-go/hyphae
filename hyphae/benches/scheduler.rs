@@ -8,11 +8,15 @@
 //!   twice per source change synchronously but once under `batch`. Shows the
 //!   coalescing win net of batch overhead.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use hyphae::{batch, Cell, JoinExt, MapExt, MaterializeDefinite, Mutable, SubscriptionGuard, Watchable};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use hyphae::{
+    Cell, JoinExt, MapExt, MaterializeDefinite, Mutable, SubscriptionGuard, Watchable, batch,
+};
 
 /// A diamond `s ─> {a, b} ─> j ─> k(solve)` plus the guards keeping it alive.
 struct Diamond {

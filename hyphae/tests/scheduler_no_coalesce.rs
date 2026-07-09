@@ -13,11 +13,12 @@
 //! dropped intermediate corrupts a fold.
 #![cfg(feature = "scheduler")]
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
+};
 
-use hyphae::scheduler::no_coalesce;
-use hyphae::{batch, Cell, CellMutable, Mutable, Signal, Watchable};
+use hyphae::{Cell, CellMutable, Mutable, Signal, Watchable, batch, scheduler::no_coalesce};
 
 /// A hand-rolled accumulator: sum every value the cell emits. Returns the live
 /// accumulator slot. Reset it to 0 after wiring to discard the subscribe-time
@@ -93,7 +94,11 @@ fn no_coalesce_scope_stamps_cells_born_inside() {
         inside.set(1);
         inside.set(2);
     });
-    assert_eq!(*acc_in.lock().unwrap(), 3, "cell born in scope is no_coalesce");
+    assert_eq!(
+        *acc_in.lock().unwrap(),
+        3,
+        "cell born in scope is no_coalesce"
+    );
 
     // ...while a cell born outside it coalesces as usual.
     let outside = Cell::new(0i64);
@@ -186,7 +191,12 @@ fn batched_source_coalesces_a_same_rate_diamond_that_per_subscriber_batch_cannot
     // joining the two same-rate values then re-fires once per subscriber,
     // because the two arrivals land in two separate propagation passes —
     // per-call-site batching cannot coalesce across subscribers.
-    fn wire(src: &Source<u64>) -> (Cell<i64, hyphae::CellImmutable>, std::sync::Arc<AtomicUsize>) {
+    fn wire(
+        src: &Source<u64>,
+    ) -> (
+        Cell<i64, hyphae::CellImmutable>,
+        std::sync::Arc<AtomicUsize>,
+    ) {
         let a = Cell::new(0i64);
         let b = Cell::new(0i64);
         let (a2, b2) = (a.clone(), b.clone());

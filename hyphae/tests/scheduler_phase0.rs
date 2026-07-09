@@ -10,12 +10,14 @@
 //! The whole file compiles to nothing unless the feature is on.
 #![cfg(feature = "scheduler")]
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use hyphae::{
-    batch, Cell, FilterExt, JoinExt, MapExt, MaterializeDefinite, MaterializeEmpty, Mutable, Signal,
-    SwitchMapExt, Watchable,
+    Cell, FilterExt, JoinExt, MapExt, MaterializeDefinite, MaterializeEmpty, Mutable, Signal,
+    SwitchMapExt, Watchable, batch,
 };
 
 /// Subscribe to `cell`, counting Value emits and recording the last one.
@@ -241,7 +243,11 @@ fn switch_map_rewire_and_taller_inner_update_in_one_batch() {
         sel.set(1);
         in1_src.set(5);
     });
-    assert_eq!(*last.lock().unwrap(), (5 + 1) * 2, "settled to inner 1's value");
+    assert_eq!(
+        *last.lock().unwrap(),
+        (5 + 1) * 2,
+        "settled to inner 1's value"
+    );
 }
 
 #[test]

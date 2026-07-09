@@ -95,9 +95,7 @@ impl<T, W: Watchable<T>> AuditExt<T> for W {}
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicU32;
-
-    use std::thread;
+    use std::{sync::atomic::AtomicU32, thread};
 
     use super::*;
     use crate::{Gettable, Mutable};

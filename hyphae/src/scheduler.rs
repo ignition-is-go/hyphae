@@ -37,9 +37,11 @@
 //! the batch (before the closing brace) still sees its pre-batch value — the
 //! glitch-free trade-off, and the reason this is opt-in.
 
-use std::cell::RefCell;
-use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{
+    cell::RefCell,
+    collections::BTreeMap,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use uuid::Uuid;

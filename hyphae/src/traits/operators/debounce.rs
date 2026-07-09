@@ -67,9 +67,7 @@ impl<T, W: Watchable<T>> DebounceExt<T> for W {}
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicU64;
-
-    use std::thread;
+    use std::{sync::atomic::AtomicU64, thread};
 
     use super::*;
     use crate::Mutable;
