@@ -67,7 +67,7 @@ wasm-bindgen-futures = "0.4"
 web-time = "1"
 
 [package.metadata.flux]
-tasks = ["build", "test", "lint", "publish"]
+tasks = ["fmt", "check", "check-wasm", "build", "test", "lint", "publish"]
 
 [dev-dependencies]
 criterion = "0.5"

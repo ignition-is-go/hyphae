@@ -21,4 +21,4 @@ hyphae = { path = "../hyphae", version = "1.1.2" }
 leptos = { version = "0.8", default-features = false }
 
 [package.metadata.flux]
-tasks = ["build", "test", "lint", "publish"]
+tasks = ["fmt", "check", "check-wasm", "build", "test", "lint", "publish"]
