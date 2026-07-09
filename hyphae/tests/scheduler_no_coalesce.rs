@@ -384,10 +384,10 @@ fn cellset_diffs_survive_a_batched_add_then_remove() {
     let seen = std::sync::Arc::new(Mutex::new(0usize));
     let sink = seen.clone();
     std::mem::forget(set.diffs().subscribe(move |sig| {
-        if let Signal::Value(d) = sig {
-            if d.is_some() {
-                *sink.lock().unwrap() += 1;
-            }
+        if let Signal::Value(d) = sig
+            && d.is_some()
+        {
+            *sink.lock().unwrap() += 1;
         }
     }));
     *seen.lock().unwrap() = 0; // discard the initial None

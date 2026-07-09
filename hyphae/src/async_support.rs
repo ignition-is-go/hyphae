@@ -109,16 +109,10 @@ mod tests {
     use super::*;
     use crate::{Cell, Mutable};
 
-    // Simple test waker that does nothing
+    // A do-nothing waker for the poll-based tests — the std no-op waker, cloned
+    // to an owned `Waker` so call sites stay unchanged.
     fn noop_waker() -> Waker {
-        use std::{sync::Arc, task::Wake};
-
-        struct NoopWaker;
-        impl Wake for NoopWaker {
-            fn wake(self: Arc<Self>) {}
-        }
-
-        Arc::new(NoopWaker).into()
+        Waker::noop().clone()
     }
 
     #[test]

@@ -208,7 +208,7 @@ fn filtered_diamond_does_not_wait_for_a_suppressed_branch() {
         1,
         "join settles from the one live branch"
     );
-    assert_eq!(*last.lock().unwrap(), (3 + 1) + 0, "a updated, b held at 0");
+    assert_eq!(*last.lock().unwrap(), 3 + 1, "a updated, b held at 0");
 
     // Even source: both branches emit — synchronous would solve twice, batch
     // coalesces to a single settled solve.

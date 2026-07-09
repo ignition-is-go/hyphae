@@ -111,12 +111,13 @@ impl Tick {
     fn enqueue(&mut self, id: Uuid, height: u64, coalesce: bool, run: Box<dyn FnOnce()>) {
         let seq = self.seq;
         self.seq += 1;
-        if coalesce {
-            if let Some((prev_height, prev_seq)) = self.scheduled.insert(id, (height, seq)) {
-                // Drop the superseded op (and the value/cell it captured). We
-                // hold no cell lock here, so a cascading Arc drop is safe.
-                self.order.remove(&(prev_height, id, prev_seq));
-            }
+        if coalesce && let Some((prev_height, prev_seq)) = self.scheduled.insert(id, (height, seq))
+        {
+            // Drop the superseded op (and the value/cell it captured). We hold
+            // no cell lock here, so a cascading Arc drop is safe. (The insert
+            // short-circuits away for `no_coalesce` cells — they're never
+            // tracked in `scheduled`.)
+            self.order.remove(&(prev_height, id, prev_seq));
         }
         self.order.insert((height, id, seq), run);
     }
@@ -129,10 +130,10 @@ impl Tick {
         // popped: a coalescing cell has exactly one entry (this one); a
         // `no_coalesce` cell has none; a cell re-coalesced at a new seq keeps its
         // newer entry.
-        if let Some(&(_, live_seq)) = self.scheduled.get(&id) {
-            if live_seq == seq {
-                self.scheduled.remove(&id);
-            }
+        if let Some(&(_, live_seq)) = self.scheduled.get(&id)
+            && live_seq == seq
+        {
+            self.scheduled.remove(&id);
         }
         Some(run)
     }
