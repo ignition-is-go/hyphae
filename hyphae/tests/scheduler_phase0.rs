@@ -20,6 +20,16 @@ use hyphae::{
     SwitchMapExt, Watchable, batch,
 };
 
+/// The scheduler's tick queue is a single process-wide structure (see
+/// `hyphae::scheduler`'s cross-thread docs) — correct for one real server
+/// process, but it means `cargo test`'s default of running every `#[test]`
+/// fn in this binary as a concurrent thread would let these tests interfere
+/// with each other's batches. Serialize them.
+fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Subscribe to `cell`, counting Value emits and recording the last one.
 fn count_and_record<M: Send + Sync + 'static>(
     cell: &Cell<i64, M>,
@@ -53,6 +63,7 @@ fn record_last<M: Send + Sync + 'static>(cell: &Cell<i64, M>) -> Arc<Mutex<i64>>
 
 #[test]
 fn diamond_synchronous_solves_twice_batched_once() {
+    let _serial = scheduler_test_serial();
     // s ─┬─> a = s + 1 ─┐
     //    └─> b = s * 10 ┴─> j = (a, b) ─> k = a + b  (the "solve")
     let s = Cell::new(0i64);
@@ -95,6 +106,7 @@ fn diamond_synchronous_solves_twice_batched_once() {
 
 #[test]
 fn unequal_diamond_settles_in_height_order() {
+    let _serial = scheduler_test_serial();
     // Long leg:  s ─> a = s + 1 ─> c = a * 2      (height 2)
     // Short leg: s ─────────────────────────────  (height 0)
     //            j = (c, s)   height 3 ; without height ordering the short leg
@@ -135,6 +147,7 @@ fn unequal_diamond_settles_in_height_order() {
 
 #[test]
 fn diamond_with_unequal_branch_heights_solves_once() {
+    let _serial = scheduler_test_serial();
     // short: s ─> a                     (a at height 1)
     // long:  s ─> b ─> c ─> d           (d at height 3)
     // j = (a, d)                        (height 4)
@@ -174,6 +187,7 @@ fn diamond_with_unequal_branch_heights_solves_once() {
 
 #[test]
 fn filtered_diamond_does_not_wait_for_a_suppressed_branch() {
+    let _serial = scheduler_test_serial();
     // s ─> a = s + 1                 (always emits)
     //   └─> b = (s if even) * 10     (branch suppressed when s is odd)
     // j = (a, b) ─> k = a + b
@@ -226,6 +240,7 @@ fn filtered_diamond_does_not_wait_for_a_suppressed_branch() {
 
 #[test]
 fn switch_map_rewire_and_taller_inner_update_in_one_batch() {
+    let _serial = scheduler_test_serial();
     // Inner 0 is a bare source (height 0); inner 1 is two maps deep (height 2).
     // In one batch we switch to inner 1 AND drive its source. The result must
     // end at inner 1's *settled* value, even though the rewire bumps the
@@ -252,6 +267,7 @@ fn switch_map_rewire_and_taller_inner_update_in_one_batch() {
 
 #[test]
 fn switch_map_old_inner_firing_during_switch_is_glitch_free() {
+    let _serial = scheduler_test_serial();
     // The hazard: in one batch the OLD inner fires *and* we switch to a taller
     // new inner. Naively the result is enqueued at the old (short) height, fires
     // early with the stale old value, then fires again at the new height — a
@@ -296,6 +312,7 @@ fn switch_map_old_inner_firing_during_switch_is_glitch_free() {
 
 #[test]
 fn batch_returns_closure_value_and_nests() {
+    let _serial = scheduler_test_serial();
     let s = Cell::new(0i64);
     let doubled = s.clone().map(|x| x * 2).materialize();
     let last = record_last(&doubled);
