@@ -23,8 +23,7 @@ use std::{
 
 use hyphae::{
     CellImmutable, CellMap, Gettable, MapExt, MaterializeDefinite, Signal, SwitchMapExt, Watchable,
-    batch,
-    cell_map::WeakCellMap,
+    batch, cell_map::WeakCellMap,
 };
 
 fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
@@ -39,7 +38,9 @@ struct QueryCache {
 
 impl QueryCache {
     fn new() -> Self {
-        Self { cache: Mutex::new(HashMap::new()) }
+        Self {
+            cache: Mutex::new(HashMap::new()),
+        }
     }
 
     fn get_or_build(
@@ -59,7 +60,12 @@ impl QueryCache {
     }
 
     fn live_count(&self) -> usize {
-        self.cache.lock().unwrap().values().filter(|w| w.upgrade().is_some()).count()
+        self.cache
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|w| w.upgrade().is_some())
+            .count()
     }
 }
 
@@ -129,8 +135,9 @@ fn stacked_cellmap_query_cache_reclaims_under_batch() {
 
     // switch_map builds a fresh 2-layer cached query per outer emission.
     let switched = outer_items.switch_map(move |items| {
-        let ids: Vec<Arc<str>> =
-            (0..items.len() as i64).map(|i| format!("id-{i}").into()).collect();
+        let ids: Vec<Arc<str>> = (0..items.len() as i64)
+            .map(|i| format!("id-{i}").into())
+            .collect();
         let cache_key = format!("{ids:?}");
         let typed = query_cache_for_closure.get_or_build(&cache_key, || {
             typed_wrap(build_ids_source_map(&store_for_closure, &ids))
