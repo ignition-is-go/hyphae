@@ -321,15 +321,30 @@ impl<S> SubscriberRegistry<S> {
         self.index.insert(id, sub)
     }
 
-    /// Remove a subscriber by id. O(1). Returns the removed Arc (if present) for
-    /// the caller to drop outside the lock.
-    #[must_use = "removed subscriber must be dropped outside the lock"]
-    fn remove(&mut self, id: &Uuid) -> Option<Arc<S>> {
+    /// Remove a subscriber by id. O(1). Returns `(removed_arc, stale_snapshot)`;
+    /// the caller must drop **both** outside the lock (each may hold the last
+    /// ref to an unsubscribed subscriber whose drop cascades into upstream cell
+    /// drops that take other cell mutexes).
+    ///
+    /// The stale-snapshot release is load-bearing, not bookkeeping: `remove`
+    /// only marks the registry `dirty`, and the cached `snapshot` is otherwise
+    /// rebuilt lazily on the *next* notify. A cell that is never notified again
+    /// — e.g. a superseded `switch_map` inner's `CellMap` `diffs_cell` — would
+    /// then keep the just-removed subscriber pinned in `snapshot` forever, and
+    /// a subscriber whose closure holds a `map_keepalive` `Arc<CellMapInner>`
+    /// (`CellMap::items`/`subscribe_diffs`) leaks the entire map. Clearing the
+    /// snapshot here costs no extra rebuild — `dirty` already forces the next
+    /// notify to rebuild from `index` — it just stops the idle pin.
+    #[must_use = "removed subscriber and stale snapshot must be dropped outside the lock"]
+    fn remove(&mut self, id: &Uuid) -> (Option<Arc<S>>, Option<SubSnapshot<S>>) {
         let removed = self.index.remove(id);
         if removed.is_some() {
             self.dirty = true;
+            let stale = std::mem::replace(&mut self.snapshot, SubSnapshot::Zero);
+            (removed, Some(stale))
+        } else {
+            (removed, None)
         }
-        removed
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -1038,11 +1053,12 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
         #[cfg(feature = "metrics")]
         let metrics = self.inner.metrics.clone();
         SubscriptionGuard::new(id, source, move || {
-            // O(1) indexed remove; the removed subscriber drops outside the lock
-            // (see insert above).
-            let removed_sub = cell.inner.subscribers.lock().remove(&id);
+            // O(1) indexed remove; the removed subscriber and displaced stale
+            // snapshot both drop outside the lock (see insert above).
+            let (removed_sub, stale_snap) = cell.inner.subscribers.lock().remove(&id);
             let removed = removed_sub.is_some();
             drop(removed_sub);
+            drop(stale_snap);
             #[cfg(feature = "metrics")]
             if removed && let Some(m) = &metrics {
                 m.record_subscriber_removed();
@@ -1063,15 +1079,17 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
         // released so cascading Subscriber/Cell Drops never run with an internal
         // cell mutex held (two concurrently-dropping cells could otherwise
         // acquire each other's mutex and deadlock).
-        let removed_sub = self.inner.subscribers.lock().remove(&id);
+        let (removed_sub, stale_snap) = self.inner.subscribers.lock().remove(&id);
         let removed_from_subs = removed_sub.is_some();
         drop(removed_sub);
+        drop(stale_snap);
         let removed_from_result = if removed_from_subs {
             false
         } else {
-            let removed = self.inner.result_subscribers.lock().remove(&id);
+            let (removed, stale_result_snap) = self.inner.result_subscribers.lock().remove(&id);
             let did = removed.is_some();
             drop(removed);
+            drop(stale_result_snap);
             did
         };
         if removed_from_subs || removed_from_result {
@@ -1173,11 +1191,12 @@ impl<T: CellValue, U: Send + Sync + 'static> WatchableResult<T> for Cell<T, U> {
         #[cfg(feature = "metrics")]
         let metrics = self.inner.metrics.clone();
         SubscriptionGuard::new(id, source, move || {
-            // O(1) indexed remove; removed subscriber drops outside the lock.
-            // See Watchable::subscribe above.
-            let removed_sub = cell.inner.result_subscribers.lock().remove(&id);
+            // O(1) indexed remove; removed subscriber and stale snapshot drop
+            // outside the lock. See Watchable::subscribe above.
+            let (removed_sub, stale_snap) = cell.inner.result_subscribers.lock().remove(&id);
             let removed = removed_sub.is_some();
             drop(removed_sub);
+            drop(stale_snap);
             #[cfg(feature = "metrics")]
             if removed && let Some(m) = &metrics {
                 m.record_subscriber_removed();
