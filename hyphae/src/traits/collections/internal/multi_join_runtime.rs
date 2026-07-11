@@ -493,8 +493,14 @@ where
             let mut impacted: HashSet<LK> = HashSet::new();
             apply_left_diff(&mut state, diff, left_join_keys_fn.as_ref(), &mut impacted);
             let changes = recompute_impacted(&mut state, impacted, compute_rows.as_ref());
-            drop(state);
+            // Emit while STILL holding `state` (see join_runtime.rs for the full
+            // rationale): under wave-parallel draining the left and right sinks
+            // can run concurrently, each reading the sibling side under this lock
+            // to build `changes`, so the emit must land under the same lock or two
+            // concurrent sibling emits on one output key can reorder and strand a
+            // stale row. Holding it across the emit makes emit order == lock order.
             emit_changes(&sink, changes);
+            drop(state);
         })
     };
 
@@ -508,8 +514,14 @@ where
             let mut impacted: HashSet<LK> = HashSet::new();
             apply_right_diff(&mut state, diff, right_join_key.as_ref(), &mut impacted);
             let changes = recompute_impacted(&mut state, impacted, compute_rows.as_ref());
-            drop(state);
+            // Emit while STILL holding `state` (see join_runtime.rs for the full
+            // rationale): under wave-parallel draining the left and right sinks
+            // can run concurrently, each reading the sibling side under this lock
+            // to build `changes`, so the emit must land under the same lock or two
+            // concurrent sibling emits on one output key can reorder and strand a
+            // stale row. Holding it across the emit makes emit order == lock order.
             emit_changes(&sink, changes);
+            drop(state);
         })
     };
 

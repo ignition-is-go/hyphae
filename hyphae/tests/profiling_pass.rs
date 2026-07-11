@@ -11,8 +11,20 @@ use hyphae::{
     profiling::{pass, take_report},
 };
 
+/// `tick_active()` (whether a `batch()` is open) is a process-wide flag under
+/// the `scheduler` feature (see `hyphae::scheduler`'s cross-thread docs), so
+/// the synchronous-path test below needs no OTHER test's `batch()` call open
+/// concurrently on another thread — otherwise this test's diamond would take
+/// the deferred/coalesced path instead of the synchronous one it's measuring.
+/// Serialize this file's tests instead of relying on run order.
+fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[test]
 fn pass_reports_a_synchronous_diamond_refire() {
+    let _serial = scheduler_test_serial();
     // s ─┬─> a = s + 1 ─┐
     //    └─> b = s * 10 ┴─> sink = a + b
     let s = Cell::new(0i64);
@@ -46,6 +58,7 @@ fn pass_reports_a_synchronous_diamond_refire() {
 
 #[test]
 fn take_report_is_consumed_by_the_read() {
+    let _serial = scheduler_test_serial();
     pass(|| {});
     assert!(
         take_report().is_some(),
@@ -59,6 +72,7 @@ fn take_report_is_consumed_by_the_read() {
 
 #[test]
 fn no_pass_no_report() {
+    let _serial = scheduler_test_serial();
     // Fanouts outside any pass are not tallied.
     let s = Cell::new(0i64);
     let guard = s.clone().map(|x| x + 1).materialize().subscribe(|_| {});
@@ -73,6 +87,7 @@ fn no_pass_no_report() {
 fn batch_collapses_the_refire_the_pass_measures() {
     use hyphae::batch;
 
+    let _serial = scheduler_test_serial();
     let s = Cell::new(0i64);
     let a = s.clone().map(|x| x + 1).materialize();
     let b = s.clone().map(|x| x * 10).materialize();

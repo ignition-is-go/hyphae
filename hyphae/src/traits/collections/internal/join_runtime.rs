@@ -464,8 +464,17 @@ where
             let mut impacted: HashSet<LK> = HashSet::new();
             apply_left_diff(&mut state, diff, left_join_key.as_ref(), &mut impacted);
             let changes = recompute_impacted(&mut state, impacted, compute_rows.as_ref());
-            drop(state);
+            // Emit while STILL holding `state`, not after dropping it. Under the
+            // scheduler's wave-parallel drain the left and right sinks can run on
+            // two threads at once; each reads the sibling's rows under this lock
+            // to build `changes`, so the emit must land under the same lock too.
+            // Otherwise two concurrent sibling emits touching one output key can
+            // reorder vs their lock order and last-write-wins a stale combined
+            // row into the output map — the CellMap analogue of the join.rs
+            // torn-value bug. Holding it across the emit makes emit order == lock
+            // order, so whichever side observed the freshest sibling emits last.
             emit_changes(&sink, changes);
+            drop(state);
         })
     };
 
@@ -479,8 +488,17 @@ where
             let mut impacted: HashSet<LK> = HashSet::new();
             apply_right_diff(&mut state, diff, right_join_key.as_ref(), &mut impacted);
             let changes = recompute_impacted(&mut state, impacted, compute_rows.as_ref());
-            drop(state);
+            // Emit while STILL holding `state`, not after dropping it. Under the
+            // scheduler's wave-parallel drain the left and right sinks can run on
+            // two threads at once; each reads the sibling's rows under this lock
+            // to build `changes`, so the emit must land under the same lock too.
+            // Otherwise two concurrent sibling emits touching one output key can
+            // reorder vs their lock order and last-write-wins a stale combined
+            // row into the output map — the CellMap analogue of the join.rs
+            // torn-value bug. Holding it across the emit makes emit order == lock
+            // order, so whichever side observed the freshest sibling emits last.
             emit_changes(&sink, changes);
+            drop(state);
         })
     };
 

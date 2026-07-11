@@ -20,6 +20,18 @@ use std::sync::{
 
 use hyphae::{Cell, CellMutable, Mutable, Signal, Watchable, batch, scheduler::no_coalesce};
 
+/// The scheduler's tick queue is a single process-wide structure (see
+/// `hyphae::scheduler`'s cross-thread docs) — correct for one real server
+/// process, but it means `cargo test`'s default of running every `#[test]`
+/// fn in this binary as a concurrent thread would let these tests interfere
+/// with each other's batches. Serialize them. Recovers from poisoning so one
+/// test's intentional panic (e.g. the panic-cleanup regression test) can't
+/// cascade-fail the rest of the file.
+fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// A hand-rolled accumulator: sum every value the cell emits. Returns the live
 /// accumulator slot. Reset it to 0 after wiring to discard the subscribe-time
 /// seed replay.
@@ -50,6 +62,7 @@ fn fire_counter<M: Send + Sync + 'static>(cell: &Cell<i64, M>) -> Arc<AtomicUsiz
 
 #[test]
 fn coalescing_source_drops_an_intermediate_set_in_a_batch() {
+    let _serial = scheduler_test_serial();
     // Default (coalescing): two sets in one batch collapse last-write-wins, so
     // the accumulator never sees the intermediate `1` — it settles once at `2`.
     let s = Cell::new(0i64);
@@ -68,6 +81,7 @@ fn coalescing_source_drops_an_intermediate_set_in_a_batch() {
 
 #[test]
 fn no_coalesce_source_preserves_every_set_in_a_batch() {
+    let _serial = scheduler_test_serial();
     // Marked no_coalesce: both sets survive as distinct height-ordered ops, so
     // the accumulator folds every emission — 0 + 1 + 2.
     let s = Cell::new(0i64).no_coalesce();
@@ -86,6 +100,7 @@ fn no_coalesce_source_preserves_every_set_in_a_batch() {
 
 #[test]
 fn no_coalesce_scope_stamps_cells_born_inside() {
+    let _serial = scheduler_test_serial();
     // A cell constructed inside the scope is stamped at birth...
     let inside = no_coalesce(|| Cell::new(0i64));
     let acc_in = sum_sink(&inside);
@@ -117,6 +132,7 @@ fn no_coalesce_scope_stamps_cells_born_inside() {
 
 #[test]
 fn no_coalesce_is_inert_outside_a_batch() {
+    let _serial = scheduler_test_serial();
     // Synchronous propagation already sees every emission; the tag changes
     // nothing off the batch path.
     let tagged = Cell::new(0i64).no_coalesce();
@@ -133,6 +149,7 @@ fn no_coalesce_is_inert_outside_a_batch() {
 
 #[test]
 fn no_coalesce_scope_preserves_multiplicity_but_settles_glitch_free() {
+    let _serial = scheduler_test_serial();
     // A no_coalesce cell fed by a diamond re-fires per input arrival (multiplicity
     // preserved), but each fire reads *settled* inputs — it is deferred and
     // height-ordered like everything else; only the last-write-wins drop is
@@ -184,6 +201,7 @@ fn no_coalesce_scope_preserves_multiplicity_but_settles_glitch_free() {
 
 #[test]
 fn batched_source_coalesces_a_same_rate_diamond_that_per_subscriber_batch_cannot() {
+    let _serial = scheduler_test_serial();
     use hyphae::{JoinExt, MapExt, MaterializeDefinite, Source};
 
     // rship's shape: two cells sample the SAME source, each via its OWN
@@ -245,6 +263,7 @@ fn batched_source_coalesces_a_same_rate_diamond_that_per_subscriber_batch_cannot
 
 #[test]
 fn cellmap_diffs_survive_a_batched_add_then_remove() {
+    let _serial = scheduler_test_serial();
     use hyphae::CellMap;
 
     let map: CellMap<u32, u32> = CellMap::new();
@@ -274,6 +293,7 @@ fn cellmap_diffs_survive_a_batched_add_then_remove() {
 
 #[test]
 fn no_coalesce_preserves_arrival_order() {
+    let _serial = scheduler_test_serial();
     // Stronger than the sum test: the exact arrival SEQUENCE survives, in order
     // (the seq tiebreaker in the height frontier), not merely the count.
     let s = Cell::new(0i64).no_coalesce();
@@ -299,6 +319,7 @@ fn no_coalesce_preserves_arrival_order() {
 
 #[test]
 fn coalescing_cell_downstream_of_no_coalesce_settles_once() {
+    let _serial = scheduler_test_serial();
     // The composition guarantee: a no_coalesce SOURCE emits every arrival, but a
     // plain (coalescing) behavior cell downstream still settles ONCE to the final
     // value — so tagging a shared source no_coalesce never hurts its behavior
@@ -335,6 +356,7 @@ fn coalescing_cell_downstream_of_no_coalesce_settles_once() {
 
 #[test]
 fn batch_tick_is_clean_after_a_panicking_body() {
+    let _serial = scheduler_test_serial();
     // The scheduler's DepthGuard clears the tick on unwind, so a panic mid-batch
     // leaves a clean slate for the next batch. Without that, the enqueued-but-
     // never-drained op would linger and corrupt the following batch.
@@ -361,6 +383,7 @@ fn batch_tick_is_clean_after_a_panicking_body() {
 
 #[test]
 fn no_coalesce_scope_depth_restored_after_panic() {
+    let _serial = scheduler_test_serial();
     // The scope Guard decrements depth on unwind, so a panic inside
     // no_coalesce(|| ..) does not leave later cells wrongly stamped.
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -386,6 +409,7 @@ fn no_coalesce_scope_depth_restored_after_panic() {
 
 #[test]
 fn cellset_diffs_survive_a_batched_add_then_remove() {
+    let _serial = scheduler_test_serial();
     // CellSet mirror of the CellMap diffs test — its diffs_cell is no_coalesce by
     // default too, so a batched add+remove of one value keeps both diffs.
     use hyphae::CellSet;

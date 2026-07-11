@@ -1,9 +1,12 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    collections::VecDeque,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
-use crossbeam::queue::SegQueue;
+use parking_lot::Mutex;
 
 use super::{CellValue, Gettable, Watchable};
 use crate::{
@@ -30,15 +33,24 @@ pub trait ZipExt<T>: Watchable<T> {
             derived
         };
 
-        // Lock-free queues to buffer values
-        let left_queue: Arc<SegQueue<T>> = Arc::new(SegQueue::new());
-        let right_queue: Arc<SegQueue<U>> = Arc::new(SegQueue::new());
+        // Both side-buffers under ONE lock. Zip pairs by arrival index: each
+        // sink checks the *opposite* buffer and, on a miss, buffers its own
+        // side. Under the `scheduler` feature's wave-parallel draining the two
+        // input cells are distinct same-height ids that can notify at the literal
+        // same instant on different threads; two independent lock-free queues let
+        // both sinks observe the other empty in the same window and buffer both
+        // sides, which permanently mis-pairs the two streams from that point on
+        // (confirmed by repro). Holding one lock across the whole check-opposite/
+        // pop-or-push transition — and across the `notify`, so push order == lock
+        // order == emit order, matching `join` — makes the pairing linearizable:
+        // the two sinks can no longer each observe the other empty.
+        let buffers: Arc<Mutex<(VecDeque<T>, VecDeque<U>)>> =
+            Arc::new(Mutex::new((VecDeque::new(), VecDeque::new())));
 
         // Subscribe to self
         let weak1 = derived.downgrade();
         let first1 = Arc::new(AtomicBool::new(true));
-        let lq1 = left_queue.clone();
-        let rq1 = right_queue.clone();
+        let buffers1 = buffers.clone();
         let guard1 = self.subscribe(move |signal| {
             if let Some(d) = weak1.upgrade() {
                 match signal {
@@ -46,10 +58,11 @@ pub trait ZipExt<T>: Watchable<T> {
                         if first1.swap(false, Ordering::SeqCst) {
                             return;
                         }
-                        if let Some(right) = rq1.pop() {
+                        let mut bufs = buffers1.lock();
+                        if let Some(right) = bufs.1.pop_front() {
                             d.notify(Signal::value((value.as_ref().clone(), right)));
                         } else {
-                            lq1.push(value.as_ref().clone());
+                            bufs.0.push_back(value.as_ref().clone());
                         }
                     }
                     // Complete when EITHER source completes (no more pairs possible)
@@ -63,8 +76,7 @@ pub trait ZipExt<T>: Watchable<T> {
         // Subscribe to other
         let weak2 = derived.downgrade();
         let first2 = Arc::new(AtomicBool::new(true));
-        let lq2 = left_queue;
-        let rq2 = right_queue;
+        let buffers2 = buffers;
         let guard2 = other.subscribe(move |signal| {
             if let Some(d) = weak2.upgrade() {
                 match signal {
@@ -72,10 +84,11 @@ pub trait ZipExt<T>: Watchable<T> {
                         if first2.swap(false, Ordering::SeqCst) {
                             return;
                         }
-                        if let Some(left) = lq2.pop() {
+                        let mut bufs = buffers2.lock();
+                        if let Some(left) = bufs.0.pop_front() {
                             d.notify(Signal::value((left, value.as_ref().clone())));
                         } else {
-                            rq2.push(value.as_ref().clone());
+                            bufs.1.push_back(value.as_ref().clone());
                         }
                     }
                     Signal::Complete => d.notify(Signal::Complete),

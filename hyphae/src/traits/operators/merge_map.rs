@@ -30,18 +30,31 @@ pub trait MergeMapExt<T>: Watchable<T> {
         // Track: outer_complete flag + count of active (non-complete) inner cells
         let outer_complete = Arc::new(AtomicBool::new(false));
         let active_inners = Arc::new(AtomicUsize::new(1)); // Start with 1 for first_inner
+        // One-shot guard so the terminal `Complete` fires exactly once. The
+        // outer's completion and the final inner's completion are distinct
+        // same-height cells that can run concurrently under the scheduler's
+        // wave-parallel drain, and both can observe the "outer done AND no active
+        // inners" condition — a non-atomic check-then-notify that would emit
+        // `Complete` twice (confirmed by repro). Whoever wins this swap emits;
+        // the other skips. (A lost completion is impossible — at least one side
+        // observes the final state — so exactly-once holds.)
+        let completed_emitted = Arc::new(AtomicBool::new(false));
 
         // Subscribe to first inner
         let weak = cell.downgrade();
         let oc = outer_complete.clone();
         let ai = active_inners.clone();
+        let ce = completed_emitted.clone();
         let first_inner_guard = first_inner.subscribe(move |signal| {
             if let Some(c) = weak.upgrade() {
                 match signal {
                     Signal::Value(_) => c.notify(signal.clone()),
                     Signal::Complete => {
                         let remaining = ai.fetch_sub(1, Ordering::SeqCst) - 1;
-                        if remaining == 0 && oc.load(Ordering::SeqCst) {
+                        if remaining == 0
+                            && oc.load(Ordering::SeqCst)
+                            && !ce.swap(true, Ordering::SeqCst)
+                        {
                             c.notify(Signal::Complete);
                         }
                     }
@@ -58,6 +71,7 @@ pub trait MergeMapExt<T>: Watchable<T> {
         let first = Arc::new(AtomicBool::new(true));
         let oc2 = outer_complete.clone();
         let ai2 = active_inners.clone();
+        let ce2 = completed_emitted.clone();
         let outer_guard = self.subscribe(move |signal| {
             match signal {
                 Signal::Value(outer_value) => {
@@ -78,13 +92,17 @@ pub trait MergeMapExt<T>: Watchable<T> {
                     let weak_inner = weak_outer.clone();
                     let oc_inner = oc2.clone();
                     let ai_inner = ai2.clone();
+                    let ce_inner = ce2.clone();
                     let inner_guard = inner.subscribe(move |signal| {
                         if let Some(c) = weak_inner.upgrade() {
                             match signal {
                                 Signal::Value(_) => c.notify(signal.clone()),
                                 Signal::Complete => {
                                     let remaining = ai_inner.fetch_sub(1, Ordering::SeqCst) - 1;
-                                    if remaining == 0 && oc_inner.load(Ordering::SeqCst) {
+                                    if remaining == 0
+                                        && oc_inner.load(Ordering::SeqCst)
+                                        && !ce_inner.swap(true, Ordering::SeqCst)
+                                    {
                                         c.notify(Signal::Complete);
                                     }
                                 }
@@ -98,6 +116,7 @@ pub trait MergeMapExt<T>: Watchable<T> {
                     outer_complete.store(true, Ordering::SeqCst);
                     if active_inners.load(Ordering::SeqCst) == 0
                         && let Some(c) = weak_outer.upgrade()
+                        && !ce2.swap(true, Ordering::SeqCst)
                     {
                         c.notify(Signal::Complete);
                     }

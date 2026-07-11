@@ -17,13 +17,10 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
-      # Nightly is installed only for the `fmt` check (rustfmt.toml uses
-      # nightly-only import grouping). It is not made the default toolchain, so
-      # every other task runs on stable via `cargo`; `fmt` reaches it explicitly
-      # with `cargo +nightly fmt`.
-      - uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rustfmt
+      # `fmt` is intentionally not a CI gate: it is auto-fixable, would only fail
+      # after a merge if run on main-push, and requires a nightly toolchain just
+      # for rustfmt.toml's nightly-only import grouping. Run it locally with
+      # `cargo flux run fmt`. Everything below runs on stable.
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -31,7 +28,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - run: cargo install cargo-flux
-      - run: cargo flux run fmt
       - run: cargo flux run check
       - run: cargo flux run check-wasm
       - run: cargo flux run lint

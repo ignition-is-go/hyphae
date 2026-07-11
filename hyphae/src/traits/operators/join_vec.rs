@@ -3,6 +3,8 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
+use parking_lot::Mutex;
+
 use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
@@ -52,6 +54,21 @@ where
 
     // Get initial values
     let initial: Vec<T> = cells.iter().map(|c| c.get()).collect();
+    // Shared "last known values", one slot per cell, held through the ENTIRE
+    // update-then-notify sequence below (not just the read that builds the
+    // combined vec). This matters only under the `scheduler` feature's
+    // wave-parallel draining, where multiple same-height cells can now
+    // notify at the literal same instant on different threads: each cell's
+    // callback used to re-read every cell's `.get()` independently, so
+    // whichever notify's *push* into the scheduler's coalescing slot landed
+    // last could carry a stale peek at a sibling that hadn't updated yet,
+    // leaving a torn combined vec as the survivor (same class of bug
+    // confirmed on `join`'s two-cell version by repro). Holding this lock
+    // across the notify call, not just the read, guarantees whichever
+    // cell's push actually lands last also reflects the freshest state of
+    // every cell — no sibling update can land in the gap between "I read
+    // the combined vec" and "I pushed it".
+    let latest: Arc<Mutex<Vec<T>>> = Arc::new(Mutex::new(initial.clone()));
     let derived = Cell::<Vec<T>, CellMutable>::new(initial);
     let join_name = if let Some(name) = cells.first().and_then(|c| c.name()) {
         format!(
@@ -75,27 +92,26 @@ where
 
     let num_cells = cells.len();
     let complete_count = Arc::new(AtomicUsize::new(0));
-    let cells = Arc::new(cells);
 
     // Subscribe to each cell
-    for i in 0..num_cells {
+    for (i, cell) in cells.iter().enumerate() {
         let weak = derived.downgrade();
-        let cells_clone = cells.clone();
         let first = Arc::new(AtomicBool::new(true));
         let cc = complete_count.clone();
         let nc = num_cells;
+        let latest = latest.clone();
 
-        let guard = cells[i].subscribe(move |signal| {
+        let guard = cell.subscribe(move |signal| {
             if let Some(d) = weak.upgrade() {
                 match signal {
-                    Signal::Value(_) => {
+                    Signal::Value(v) => {
                         // Skip first emission (initial value already set)
                         if first.swap(false, Ordering::SeqCst) {
                             return;
                         }
-                        // Collect current values from all cells
-                        let values: Vec<T> = cells_clone.iter().map(|c| c.get()).collect();
-                        d.notify(Signal::value(values));
+                        let mut guard = latest.lock();
+                        guard[i] = v.as_ref().clone();
+                        d.notify(Signal::value(guard.clone()));
                     }
                     Signal::Complete => {
                         let prev = cc.fetch_add(1, Ordering::SeqCst);
