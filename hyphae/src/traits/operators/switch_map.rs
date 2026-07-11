@@ -3,6 +3,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
+use parking_lot::Mutex;
 use uuid::Uuid;
 
 use super::{CellValue, Gettable, Watchable};
@@ -43,10 +44,28 @@ pub trait SwitchMapExt<T>: Watchable<T> {
         // All completion logic uses CAS loops on this single atomic for lock-free operation
         let state = Arc::new(AtomicU64::new(0)); // gen 0, both incomplete
 
+        // Serializes a switch (generation bump, in the outer handler) against a
+        // still-live old inner's guard-check-then-emit. Under the scheduler's
+        // wave-parallel drain the selector and an old inner are distinct
+        // same-height cells that can run concurrently; without this an old inner
+        // can read the current generation, pass its staleness guard, then have
+        // its now-stale value win the output's last-write-wins coalescing slot
+        // over the just-switched-in inner's value (a lost switch, confirmed by
+        // repro). Holding this lock across {gen-check + emit} in an inner and
+        // across the {gen-bump} in the selector makes the two mutually exclusive:
+        // an old inner either emits fully before the switch (its value precedes
+        // the new inner's seed, so the new one still wins the slot) or observes
+        // the bumped generation and is rejected. The new inner is subscribed
+        // *after* the lock is released, so its synchronous seed can't re-enter
+        // (and deadlock on) this same lock.
+        let switch_lock = Arc::new(Mutex::new(()));
+
         // Subscribe to first inner (generation 0)
         let weak = cell.downgrade();
         let state_for_first = state.clone();
+        let switch_lock_first = switch_lock.clone();
         let first_guard = first_inner.subscribe(move |signal| {
+            let _switch = switch_lock_first.lock();
             let current = state_for_first.load(Ordering::SeqCst);
             if current & GEN_MASK != 0 {
                 return; // Generation changed, not current
@@ -86,6 +105,7 @@ pub trait SwitchMapExt<T>: Watchable<T> {
         let weak = cell.downgrade();
         let f = Arc::new(f);
         let state_for_outer = state.clone();
+        let switch_lock_outer = switch_lock;
         let first = Arc::new(AtomicBool::new(true));
         let outer_guard = self.subscribe(move |signal| {
             match signal {
@@ -103,18 +123,25 @@ pub trait SwitchMapExt<T>: Watchable<T> {
 
                     let Some(c) = weak.upgrade() else { return };
 
-                    // Increment generation, clear inner_complete, preserve outer_complete
-                    let my_gen = loop {
-                        let old = state_for_outer.load(Ordering::SeqCst);
-                        let outer_bit = old & OUTER_COMPLETE_BIT;
-                        let old_gen = old & GEN_MASK;
-                        let new_gen = old_gen + 1;
-                        let new = new_gen | outer_bit; // new gen, outer preserved, inner cleared
-                        if state_for_outer
-                            .compare_exchange(old, new, Ordering::SeqCst, Ordering::SeqCst)
-                            .is_ok()
-                        {
-                            break new_gen;
+                    // Increment generation, clear inner_complete, preserve
+                    // outer_complete — under `switch_lock` so it's atomic against
+                    // an old inner's guard-check-then-emit. Released before the
+                    // new inner is subscribed below, so the synchronous seed can't
+                    // re-enter this lock.
+                    let my_gen = {
+                        let _switch = switch_lock_outer.lock();
+                        loop {
+                            let old = state_for_outer.load(Ordering::SeqCst);
+                            let outer_bit = old & OUTER_COMPLETE_BIT;
+                            let old_gen = old & GEN_MASK;
+                            let new_gen = old_gen + 1;
+                            let new = new_gen | outer_bit; // new gen, outer preserved, inner cleared
+                            if state_for_outer
+                                .compare_exchange(old, new, Ordering::SeqCst, Ordering::SeqCst)
+                                .is_ok()
+                            {
+                                break new_gen;
+                            }
                         }
                     };
 
@@ -123,7 +150,9 @@ pub trait SwitchMapExt<T>: Watchable<T> {
                     // Subscribe to new inner for values and completion
                     let weak_inner = weak.clone();
                     let state_for_inner = state_for_outer.clone();
+                    let switch_lock_inner = switch_lock_outer.clone();
                     let value_guard = inner.subscribe(move |signal| {
+                        let _switch = switch_lock_inner.lock();
                         let current = state_for_inner.load(Ordering::SeqCst);
                         if current & GEN_MASK != my_gen {
                             return; // Generation changed, not current
