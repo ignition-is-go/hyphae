@@ -1252,7 +1252,7 @@ impl<T: CellValue> DepNode for CellInner<T> {
 
     fn value_debug(&self) -> Option<String> {
         let arc = self.value.lock().expect("cell value poisoned").clone();
-        Some(format!("{:?}", &*arc))
+        Some(format!("{:?}", *arc))
     }
 
     fn caller(&self) -> Option<&'static Location<'static>> {
