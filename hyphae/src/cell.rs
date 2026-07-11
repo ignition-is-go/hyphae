@@ -749,14 +749,19 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         #[cfg(feature = "scheduler")]
         if crate::scheduler::tick_active() {
             let cell = self.clone();
+            // A terminal signal must not coalesce over a value it follows (an
+            // emit-then-complete operator would otherwise lose its final value
+            // under `batch`) — see [`crate::scheduler::enqueue`].
+            let terminal = !matches!(signal, Signal::Value(_));
             let signal = signal.clone();
             crate::scheduler::enqueue(
                 self.inner.id,
                 self as &dyn crate::traits::DepNode,
-                move || {
+                terminal,
+                Box::new(move || {
                     cell.write_value(&signal);
                     cell.fanout(&signal);
-                },
+                }),
             );
             return;
         }
