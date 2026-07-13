@@ -21,6 +21,26 @@ pub trait DepNode: Send + Sync {
         None
     }
 
+    /// The node's per-node **height epoch** — bumped whenever an edge change in
+    /// this node's transitive-dependency cone could alter its height (see
+    /// [`crate::cell::invalidate_height_cone`]). The scheduler tags each cached
+    /// height with the epoch it was computed under and recomputes when they
+    /// differ, so invalidation is localized to the affected subgraph instead of
+    /// flushing every cached height in the process on any edge change. Cells
+    /// expose `CellInner::height_epoch`; other nodes default to `None` and are
+    /// recomputed each read.
+    #[cfg(feature = "scheduler")]
+    fn height_epoch(&self) -> Option<&std::sync::atomic::AtomicU64> {
+        None
+    }
+
+    /// Register `dep` as a node whose height depends (transitively) on this one,
+    /// so a later edge change here invalidates its cached height. Called when a
+    /// cell takes ownership of a subscription guard whose source is this node.
+    /// Cells push into `CellInner::height_dependents`; other nodes ignore it.
+    #[cfg(feature = "scheduler")]
+    fn add_height_dependent(&self, _dep: std::sync::Weak<dyn crate::cell::HeightInvalidate>) {}
+
     /// Whether the scheduler should skip last-write-wins coalescing for this
     /// node — enqueuing every notify as a distinct height-ordered op so event
     /// semantics (scan/pairwise/merge and hand-rolled stateful maps) survive a

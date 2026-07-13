@@ -83,9 +83,14 @@ impl Drop for SubscriptionGuard {
         if let Some(mut f) = self.unsubscribe_fn.take() {
             log::trace!("SubscriptionGuard dropped id={} — running cleanup", self.id);
             f();
-            // A removed dependency edge invalidates cached scheduler heights.
-            #[cfg(feature = "scheduler")]
-            crate::scheduler::bump_topology_epoch();
+            // No scheduler height invalidation here: the only edge removal that
+            // changes a *living* cell's height is an `own_keyed` replacement, and
+            // that path re-invalidates the owner's height cone itself. A guard
+            // dropping because its owner cell is being torn down needs no
+            // invalidation (a cell with live height-dependents is kept alive by
+            // their guards' source `Arc`s, so it can't drop out from under them),
+            // and a loosely-held (non-cell-owned) guard has no dependent height to
+            // invalidate. See `Cell::own`/`own_keyed` for the localized bump.
         }
     }
 }
