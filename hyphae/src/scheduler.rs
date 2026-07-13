@@ -423,6 +423,7 @@ const DEFAULT_WAVE_THRESHOLD: usize = 64;
 /// Default wave-pool size cap. Kept small because the workload is deep, not
 /// wide; overridable via `HYPHAE_WAVE_THREADS` (`0` disables the parallel path
 /// entirely — every wave runs sequentially).
+#[cfg(not(target_arch = "wasm32"))]
 const DEFAULT_WAVE_THREADS_CAP: usize = 4;
 
 fn env_usize(key: &str) -> Option<usize> {
@@ -437,6 +438,7 @@ static WAVE_THRESHOLD: LazyLock<AtomicUsize> = LazyLock::new(|| {
     AtomicUsize::new(env_usize("HYPHAE_WAVE_THRESHOLD").unwrap_or(DEFAULT_WAVE_THRESHOLD))
 });
 
+#[cfg(not(target_arch = "wasm32"))]
 fn wave_threshold() -> usize {
     WAVE_THRESHOLD.load(Ordering::Relaxed)
 }
@@ -453,6 +455,7 @@ pub fn set_wave_threshold_for_test(groups: usize) {
 /// Configured wave-pool thread count, resolved once. `0` means "no
 /// parallelism" — [`run_wave`] then always runs sequentially and [`WAVE_POOL`]
 /// is never built.
+#[cfg(not(target_arch = "wasm32"))]
 static WAVE_THREADS: LazyLock<usize> = LazyLock::new(|| {
     env_usize("HYPHAE_WAVE_THREADS").unwrap_or_else(|| {
         std::thread::available_parallelism()
@@ -472,6 +475,7 @@ static WAVE_THREADS: LazyLock<usize> = LazyLock::new(|| {
 /// *named* (`hyphae-wave-N`) — global-pool workers inherit the name of whichever
 /// thread first touches the pool (they showed up as `hyphae-timer-re`), which
 /// poisons every profile taken of a process that uses hyphae timers.
+#[cfg(not(target_arch = "wasm32"))]
 static WAVE_POOL: LazyLock<Option<rayon::ThreadPool>> = LazyLock::new(|| {
     let threads = *WAVE_THREADS;
     if threads == 0 {
