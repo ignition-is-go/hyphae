@@ -54,7 +54,7 @@ use std::{
         atomic::{AtomicI64, Ordering},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use hyphae::{
@@ -80,6 +80,31 @@ fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
 /// each wave genuinely dispatches across rayon rather than taking the
 /// small-wave sequential fallback.
 const WIDE: usize = 16;
+
+/// Poll `settled` until it holds or `deadline` elapses; returns whether it
+/// settled. Timer-driven operators emit their output from the shared reactor
+/// thread, which a saturated host (e.g. a wave-parallel CI runner) can starve
+/// for hundreds of ms — so a single fixed `sleep` then races that starvation
+/// and flakes. Polling to a generous deadline keeps the correctness check
+/// intact (a genuinely wrong or crossed value never satisfies the predicate and
+/// still fails the follow-up assert) while tolerating a merely-late delivery.
+fn wait_until(deadline: Duration, mut settled: impl FnMut() -> bool) -> bool {
+    let start = Instant::now();
+    loop {
+        if settled() {
+            return true;
+        }
+        if start.elapsed() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Generous deadline for a timer-driven output to settle under a saturated
+/// host. Far larger than any operator window used below (≤30 ms), so it only
+/// ever absorbs reactor starvation, never masks a missing emit.
+const SETTLE_DEADLINE: Duration = Duration::from_secs(5);
 
 // ---------------------------------------------------------------------------
 // Time-based operators
@@ -108,7 +133,11 @@ fn debounce_wide_parallel_input_wave_all_fire() {
     });
 
     // Output settles from the timer reactor after the debounce quiet period.
-    thread::sleep(Duration::from_millis(200));
+    wait_until(SETTLE_DEADLINE, || {
+        outs.iter()
+            .enumerate()
+            .all(|(i, o)| o.get() == 1000 + i as i64)
+    });
     for (i, out) in outs.iter().enumerate() {
         assert_eq!(
             out.get(),
@@ -169,7 +198,11 @@ fn delay_wide_parallel_input_wave_all_fire() {
         }
     });
 
-    thread::sleep(Duration::from_millis(200));
+    wait_until(SETTLE_DEADLINE, || {
+        outs.iter()
+            .enumerate()
+            .all(|(i, o)| o.get() == 2000 + i as i64)
+    });
     for (i, out) in outs.iter().enumerate() {
         assert_eq!(
             out.get(),
@@ -244,7 +277,11 @@ fn buffer_time_wide_parallel_input_wave_all_collect() {
     });
 
     // Let a couple of windows elapse so the pushed value is flushed.
-    thread::sleep(Duration::from_millis(200));
+    wait_until(SETTLE_DEADLINE, || {
+        seen.iter()
+            .enumerate()
+            .all(|(i, s)| *s.lock().unwrap() == vec![3000 + i as i64])
+    });
     for (i, s) in seen.iter().enumerate() {
         assert_eq!(
             *s.lock().unwrap(),
@@ -275,7 +312,11 @@ fn audit_wide_parallel_input_wave_all_fire() {
         }
     });
 
-    thread::sleep(Duration::from_millis(200));
+    wait_until(SETTLE_DEADLINE, || {
+        outs.iter()
+            .enumerate()
+            .all(|(i, o)| o.get() == 4000 + i as i64)
+    });
     for (i, out) in outs.iter().enumerate() {
         assert_eq!(
             out.get(),
