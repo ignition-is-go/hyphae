@@ -130,16 +130,7 @@ fn wait_for_due(reactor: &'static Reactor) -> Vec<TimerEntry> {
 
         if next_deadline <= now {
             let now = Instant::now();
-            let mut due = Vec::new();
-            let mut idx = 0;
-            while idx < guard.len() {
-                if guard[idx].next_fire <= now {
-                    due.push(guard.swap_remove(idx));
-                } else {
-                    idx += 1;
-                }
-            }
-            return due;
+            return drain_due(&mut guard, now);
         }
 
         let wait_for = next_deadline - now;
@@ -161,6 +152,35 @@ fn wait_for_due(reactor: &'static Reactor) -> Vec<TimerEntry> {
         spin_sleep::sleep(wait_for);
         guard = reactor.entries.lock().unwrap();
     }
+}
+
+/// Remove every entry due at `now` from `entries` and return them **in
+/// ascending `next_fire` order**.
+///
+/// The ordering is load-bearing, not cosmetic. `swap_remove` collects a co-due
+/// batch in an arbitrary order, but two timers targeting the *same* cell carry
+/// an intended delivery order — the canonical case being a [`delay`] that
+/// replays its initial value and then delivers a later `set`: the earlier-armed
+/// timer has the earlier `next_fire` and must fire first. When the reactor falls
+/// behind (a slow tick callback, or heavy CPU load) both deadlines pass before
+/// it wakes, so both land in one batch; firing them unsorted lets the stale
+/// earlier value clobber the newer one — a silent glitch that drops values from
+/// wide timer-driven waves. Sorting by `next_fire` restores the per-cell
+/// "deliver in input order" guarantee.
+///
+/// [`delay`]: crate::traits::operators::delay
+fn drain_due(entries: &mut Vec<TimerEntry>, now: Instant) -> Vec<TimerEntry> {
+    let mut due = Vec::new();
+    let mut idx = 0;
+    while idx < entries.len() {
+        if entries[idx].next_fire <= now {
+            due.push(entries.swap_remove(idx));
+        } else {
+            idx += 1;
+        }
+    }
+    due.sort_by_key(|e| e.next_fire);
+    due
 }
 
 /// Run `f` once after `delay`, on the shared timer reactor thread.
@@ -207,4 +227,72 @@ pub fn spawn_interval(
 /// Fan out `f` across `items` in parallel using rayon.
 pub fn par_for_each<T: Sync>(items: &[T], f: impl Fn(&T) + Send + Sync) {
     items.par_iter().for_each(f);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(next_fire: Instant) -> TimerEntry {
+        TimerEntry {
+            next_fire,
+            period: Duration::from_secs(1),
+            count: 1,
+            tick: Box::new(|_| false),
+        }
+    }
+
+    /// Regression: a co-due batch must be returned in ascending `next_fire`
+    /// order regardless of the order `swap_remove` happens to collect it in.
+    /// Before the sort, a lagging reactor firing a same-cell pair out of order
+    /// let a stale earlier value clobber the newer one, silently dropping values
+    /// from wide `delay`/timer waves under load. Entries are pushed
+    /// latest-deadline first so the raw `swap_remove` collection order is the
+    /// exact reverse of the intended firing order — this test goes red without
+    /// the `drain_due` sort.
+    #[test]
+    fn drain_due_returns_ascending_deadline_order() {
+        let base = Instant::now();
+        let mut entries = vec![
+            entry(base + Duration::from_millis(30)),
+            entry(base + Duration::from_millis(10)),
+            entry(base + Duration::from_millis(20)),
+        ];
+
+        // A `now` past every deadline: the whole batch is due at once, exactly
+        // as it is when the reactor wakes after falling behind.
+        let due = drain_due(&mut entries, base + Duration::from_millis(100));
+
+        let order: Vec<Instant> = due.iter().map(|e| e.next_fire).collect();
+        assert!(
+            order.windows(2).all(|w| w[0] <= w[1]),
+            "due batch not in ascending next_fire order: reactor would fire a same-cell pair stale-last"
+        );
+        assert_eq!(due.len(), 3, "every due entry should be drained");
+        assert!(
+            entries.is_empty(),
+            "drained entries must be removed from the queue"
+        );
+    }
+
+    /// Entries not yet due stay queued; only the due prefix is drained, still
+    /// sorted.
+    #[test]
+    fn drain_due_leaves_future_entries_queued() {
+        let base = Instant::now();
+        let mut entries = vec![
+            entry(base + Duration::from_millis(50)),
+            entry(base + Duration::from_millis(10)),
+            entry(base + Duration::from_secs(10)),
+        ];
+
+        let due = drain_due(&mut entries, base + Duration::from_millis(100));
+
+        assert_eq!(due.len(), 2, "only the two past-deadline entries are due");
+        assert!(
+            due[0].next_fire <= due[1].next_fire,
+            "due batch must be sorted"
+        );
+        assert_eq!(entries.len(), 1, "the far-future entry stays queued");
+    }
 }
