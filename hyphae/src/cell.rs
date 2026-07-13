@@ -94,6 +94,23 @@ pub(crate) struct CellInner<T> {
     /// behavior-cell majority gets the glitch-free win.
     #[cfg(feature = "scheduler")]
     pub(crate) no_coalesce: AtomicBool,
+    /// Per-node height epoch for localized cache invalidation. Bumped whenever
+    /// an edge change in this cell's transitive-dependency cone could change its
+    /// height; `height_cache` is tagged with the epoch it was computed under and
+    /// recomputed only when they differ. Starts at 1 so a zero-initialized
+    /// `height_cache` reads as stale. Replaces the old process-global topology
+    /// epoch (which flushed *every* cached height on any edge change — pathologically
+    /// costly during a topology-churning knit).
+    #[cfg(feature = "scheduler")]
+    pub(crate) height_epoch: std::sync::atomic::AtomicU64,
+    /// Weak back-edges to the cells whose height depends (transitively) on this
+    /// one — the invalidation cone walked when this cell's deps change (see
+    /// [`invalidate_height_cone`]). Weak so a dependent's death doesn't pin it
+    /// here; the walk prunes dead entries. May over-approximate (a stale entry
+    /// only causes a harmless extra recompute) but must never miss a live
+    /// dependent, or that dependent would keep a stale height (a glitch).
+    #[cfg(feature = "scheduler")]
+    pub(crate) height_dependents: Mutex<Vec<std::sync::Weak<dyn HeightInvalidate>>>,
     /// Optional metrics for observability.
     #[cfg(feature = "metrics")]
     pub(crate) metrics: Option<Arc<CellMetrics>>,
@@ -428,6 +445,10 @@ impl<T: CellValue> Cell<T, CellMutable> {
             height_cache: std::sync::atomic::AtomicU64::new(0),
             #[cfg(feature = "scheduler")]
             no_coalesce: AtomicBool::new(crate::scheduler::birth_no_coalesce()),
+            #[cfg(feature = "scheduler")]
+            height_epoch: std::sync::atomic::AtomicU64::new(1),
+            #[cfg(feature = "scheduler")]
+            height_dependents: Mutex::new(Vec::new()),
             #[cfg(feature = "metrics")]
             metrics: default_metrics(),
             #[cfg(feature = "metrics")]
@@ -464,6 +485,10 @@ impl<T: CellValue> Cell<T, CellMutable> {
             height_cache: std::sync::atomic::AtomicU64::new(0),
             #[cfg(feature = "scheduler")]
             no_coalesce: AtomicBool::new(crate::scheduler::birth_no_coalesce()),
+            #[cfg(feature = "scheduler")]
+            height_epoch: std::sync::atomic::AtomicU64::new(1),
+            #[cfg(feature = "scheduler")]
+            height_dependents: Mutex::new(Vec::new()),
             metrics: Some(Arc::new(CellMetrics::new())),
             slow_subscriber_threshold_ns: ArcSwap::from_pointee(None),
             slow_subscriber_callback: ArcSwap::from_pointee(None),
@@ -612,13 +637,25 @@ impl<T, M> Cell<T, M> {
     }
 
     /// Take ownership of a subscription guard, dropping it when this cell is dropped.
-    pub fn own(&self, guard: SubscriptionGuard) {
+    pub fn own(&self, guard: SubscriptionGuard)
+    where
+        T: Send + Sync + 'static,
+    {
         #[cfg(feature = "inspector")]
         crate::registry::registry().mark_owned(guard.source().id(), self.inner.id);
-        self.inner.owned.insert(Uuid::new_v4(), guard);
-        // An added dependency edge invalidates cached scheduler heights.
+        // Register this cell as a height-dependent of the guard's source (so a
+        // later edge change there invalidates our cached height), then invalidate
+        // our own height cone — our dependency set just changed. Localized: only
+        // this cell and its transitive dependents recompute, not the whole graph.
         #[cfg(feature = "scheduler")]
-        crate::scheduler::bump_topology_epoch();
+        {
+            let dep: std::sync::Weak<dyn HeightInvalidate> =
+                Arc::downgrade(&(self.inner.clone() as Arc<dyn HeightInvalidate>));
+            guard.source().add_height_dependent(dep);
+        }
+        self.inner.owned.insert(Uuid::new_v4(), guard);
+        #[cfg(feature = "scheduler")]
+        invalidate_height_cone(self.inner.as_ref());
         #[cfg(feature = "trace")]
         crate::tracing::update_owned_count(self.inner.id, self.inner.owned.len());
     }
@@ -628,7 +665,10 @@ impl<T, M> Cell<T, M> {
     /// If a guard with the same key already exists, it is replaced (and dropped).
     /// This is used by `switch_map` to ensure the old inner subscription is cleaned up
     /// when switching to a new inner cell.
-    pub fn own_keyed(&self, key: Uuid, guard: SubscriptionGuard) {
+    pub fn own_keyed(&self, key: Uuid, guard: SubscriptionGuard)
+    where
+        T: Send + Sync + 'static,
+    {
         #[cfg(feature = "inspector")]
         {
             // Unmark old owned cell if being replaced
@@ -637,10 +677,21 @@ impl<T, M> Cell<T, M> {
             }
             crate::registry::registry().mark_owned(guard.source().id(), self.inner.id);
         }
-        self.inner.owned.insert(key, guard);
-        // switch_map rewiring changes edges (and heights); invalidate the cache.
+        // Register as a height-dependent of the new source before it moves into
+        // `owned`. The replaced guard's stale back-edge on the *old* source is
+        // left to be pruned lazily — a stale dependent only over-invalidates (a
+        // harmless extra recompute), never under-invalidates.
         #[cfg(feature = "scheduler")]
-        crate::scheduler::bump_topology_epoch();
+        {
+            let dep: std::sync::Weak<dyn HeightInvalidate> =
+                Arc::downgrade(&(self.inner.clone() as Arc<dyn HeightInvalidate>));
+            guard.source().add_height_dependent(dep);
+        }
+        self.inner.owned.insert(key, guard);
+        // switch_map rewiring changed our dep set: invalidate our height cone
+        // (this cell + its transitive dependents), not the whole process.
+        #[cfg(feature = "scheduler")]
+        invalidate_height_cone(self.inner.as_ref());
         #[cfg(feature = "trace")]
         crate::tracing::update_owned_count(self.inner.id, self.inner.owned.len());
     }
@@ -673,6 +724,70 @@ impl<T, M> Cell<T, M> {
     pub fn no_coalesce(self) -> Self {
         self.inner.no_coalesce.store(true, Ordering::Relaxed);
         self
+    }
+}
+
+/// Type-erased handle to a node participating in localized height-cache
+/// invalidation. Implemented on the stable `Arc<CellInner<T>>` (not the ephemeral
+/// `Cell` handle that `DepNode` rides), so a `Weak<dyn HeightInvalidate>` can name
+/// a specific cell for its lifetime — the identity the dependency back-edges need
+/// and `DepNode` can't provide.
+///
+/// `pub` only because it appears in the (public) `DepNode::add_height_dependent`
+/// signature; it is an internal scheduler detail, not stable API.
+#[doc(hidden)]
+#[cfg(feature = "scheduler")]
+pub trait HeightInvalidate: Send + Sync {
+    fn hi_id(&self) -> Uuid;
+    /// Advance this node's height epoch, marking its cached height stale.
+    fn hi_bump_epoch(&self);
+    /// Snapshot the live dependents (pruning dead weaks) for the cone walk.
+    fn hi_dependents(&self) -> Vec<std::sync::Weak<dyn HeightInvalidate>>;
+}
+
+#[cfg(feature = "scheduler")]
+impl<T: Send + Sync> HeightInvalidate for CellInner<T> {
+    fn hi_id(&self) -> Uuid {
+        self.id
+    }
+    fn hi_bump_epoch(&self) {
+        self.height_epoch.fetch_add(1, Ordering::Relaxed);
+    }
+    fn hi_dependents(&self) -> Vec<std::sync::Weak<dyn HeightInvalidate>> {
+        let mut g = self
+            .height_dependents
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        // Amortized prune: a dropped dependent leaves a dead weak; sweep them on
+        // read so the set stays bounded to the live dependent set.
+        g.retain(|w| w.strong_count() > 0);
+        g.clone()
+    }
+}
+
+/// Invalidate the height cache of `start` and every node whose height depends
+/// (transitively) on it — the downstream cone. Called when `start`'s dependency
+/// set changes (`own`/`own_keyed`), so exactly the heights that could have moved
+/// are recomputed on their next read, leaving unrelated (and already-settled)
+/// subgraphs cached.
+///
+/// Bounds/safety: the visited set breaks cycles and de-dups diamonds; dead weaks
+/// (a dependent dropped concurrently — e.g. a `switch_map` inner being torn down
+/// in the same wave that invalidates it) upgrade to `None` and are skipped. The
+/// walk may over-invalidate (a stale weak still upgrades until pruned → one extra
+/// recompute) but never under-invalidates a live dependent.
+#[cfg(feature = "scheduler")]
+pub(crate) fn invalidate_height_cone(start: &dyn HeightInvalidate) {
+    start.hi_bump_epoch();
+    let mut visited = std::collections::HashSet::new();
+    visited.insert(start.hi_id());
+    let mut stack = start.hi_dependents();
+    while let Some(weak) = stack.pop() {
+        let Some(node) = weak.upgrade() else { continue };
+        if visited.insert(node.hi_id()) {
+            node.hi_bump_epoch();
+            stack.extend(node.hi_dependents());
+        }
     }
 }
 
@@ -711,6 +826,20 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
     #[cfg(feature = "scheduler")]
     fn height_cache(&self) -> Option<&std::sync::atomic::AtomicU64> {
         Some(&self.inner.height_cache)
+    }
+
+    #[cfg(feature = "scheduler")]
+    fn height_epoch(&self) -> Option<&std::sync::atomic::AtomicU64> {
+        Some(&self.inner.height_epoch)
+    }
+
+    #[cfg(feature = "scheduler")]
+    fn add_height_dependent(&self, dep: std::sync::Weak<dyn HeightInvalidate>) {
+        self.inner
+            .height_dependents
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(dep);
     }
 
     #[cfg(feature = "scheduler")]

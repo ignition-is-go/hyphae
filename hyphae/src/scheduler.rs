@@ -147,7 +147,7 @@ use std::{
     collections::BTreeMap,
     sync::{
         LazyLock,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 
@@ -174,24 +174,13 @@ thread_local! {
     static BATCH_NEST: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
-/// Global topology epoch. Bumped on every edge change (`Cell::own`,
-/// `Cell::own_keyed`, `SubscriptionGuard::drop`) so cached cell heights, tagged
-/// with the epoch they were computed under, are invalidated lazily on the next
-/// read. Starts at 1 so a zero-initialized `height_cache` reads as stale.
-static TOPOLOGY_EPOCH: AtomicU64 = AtomicU64::new(1);
-
-/// Invalidate all cached heights by advancing the topology epoch. Cheap enough
-/// to call unconditionally on any edge change.
-pub(crate) fn bump_topology_epoch() {
-    TOPOLOGY_EPOCH.fetch_add(1, Ordering::Relaxed);
-}
-
-/// The current epoch, truncated to the 32 bits packed into a height cache. Wraps
-/// only after ~4 billion topology changes, which cannot alias a live cache entry
-/// in practice.
-fn current_epoch() -> u32 {
-    TOPOLOGY_EPOCH.load(Ordering::Relaxed) as u32
-}
+// Height-cache invalidation is **per-node**, not global. Each cell carries its
+// own `height_epoch` (see `CellInner::height_epoch`); an edge change bumps only
+// the changed cell and its transitive dependents' epochs
+// (`crate::cell::invalidate_height_cone`), so a topology-churning knit no longer
+// flushes every cached height in the process. There is deliberately no global
+// epoch counter here anymore — a cached height is validated against its own
+// node's epoch in `height_dfs`.
 
 /// The process-wide propagation tick queue: height-ordered and
 /// last-write-wins-coalesced per cell (see module docs). Every thread's
@@ -337,16 +326,22 @@ fn refresh_tick_active(t: &SharedTick) {
 /// load; `deps()` is walked only on the first read after an edge change.
 fn compute_height(node: &dyn DepNode) -> u64 {
     let mut stack = FxHashSet::default();
-    height_dfs(node, current_epoch(), &mut stack)
+    height_dfs(node, &mut stack)
 }
 
-/// Height DFS backing [`compute_height`]. Uses each node's [`DepNode::height_cache`]
-/// as an epoch-tagged memo (so results persist across ticks and across the
-/// recursion, and across threads — the cache is a plain atomic on the node).
-/// `stack` breaks dependency cycles — a back-edge to a node already on the
-/// current path contributes height 0 rather than recursing forever.
-fn height_dfs(node: &dyn DepNode, epoch: u32, stack: &mut FxHashSet<Uuid>) -> u64 {
-    if let Some(cache) = node.height_cache() {
+/// Height DFS backing [`compute_height`]. Each node's [`DepNode::height_cache`]
+/// packs `(height_epoch << 32) | height` and is validated against that node's
+/// *own* [`DepNode::height_epoch`] — so a settled subgraph stays cached even
+/// while an unrelated (or downstream) part of the graph is churning, and only
+/// nodes whose cone was invalidated recompute. `stack` breaks dependency cycles
+/// — a back-edge to a node already on the current path contributes height 0
+/// rather than recursing forever. Nodes without an epoch (non-cell `DepNode`s)
+/// have no stable cache slot and are recomputed each read.
+fn height_dfs(node: &dyn DepNode, stack: &mut FxHashSet<Uuid>) -> u64 {
+    let epoch = node
+        .height_epoch()
+        .map(|e| e.load(Ordering::Relaxed) as u32);
+    if let (Some(cache), Some(epoch)) = (node.height_cache(), epoch) {
         let packed = cache.load(Ordering::Relaxed);
         if (packed >> 32) as u32 == epoch {
             return packed & 0xFFFF_FFFF;
@@ -358,10 +353,10 @@ fn height_dfs(node: &dyn DepNode, epoch: u32, stack: &mut FxHashSet<Uuid>) -> u6
     }
     let mut height = 0u64;
     for dep in node.deps() {
-        height = height.max(height_dfs(dep.as_ref(), epoch, stack) + 1);
+        height = height.max(height_dfs(dep.as_ref(), stack) + 1);
     }
     stack.remove(&id);
-    if let Some(cache) = node.height_cache() {
+    if let (Some(cache), Some(epoch)) = (node.height_cache(), epoch) {
         cache.store(((epoch as u64) << 32) | height, Ordering::Relaxed);
     }
     height
