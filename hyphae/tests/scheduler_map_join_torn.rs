@@ -25,6 +25,8 @@ const ITERATIONS: i64 = 3_000;
 
 #[test]
 fn concurrent_inner_joins_never_settle_on_a_torn_value() {
+    // Force the parallel drain path: production defaults the wave threshold high.
+    hyphae::scheduler::set_wave_threshold_for_test(4);
     let mut lefts = Vec::new();
     let mut rights = Vec::new();
     let mut outputs = Vec::new();

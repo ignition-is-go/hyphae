@@ -99,11 +99,15 @@
 //! height per tick instead of once per push: [`SharedTick::pop_min_height_groups`]
 //! pulls every op at the current minimum height out in one locked pass, grouped
 //! by cell, and [`run_wave`] runs those groups — sequentially if there are few
-//! (the common case: a join has 2 inputs, most fan-out is a handful of
-//! subscribers, and `rayon`'s per-call dispatch overhead alone would dwarf
-//! that), or across `rayon`'s pool if it crosses [`PARALLEL_WAVE_THRESHOLD`]
-//! (genuinely wide fan-out — many independent cells settling at once, the
-//! shape a `.batched()` interval source feeding a wide graph produces).
+//! (the common/resting case: a join has 2 inputs, most fan-out is a handful of
+//! subscribers, and a pool dispatch's overhead alone would dwarf that), or
+//! across the scheduler's own dedicated [`WAVE_POOL`] if the wave crosses
+//! [`WAVE_THRESHOLD`] (genuinely wide fan-out — many independent cells settling
+//! at once). That threshold defaults high and the pool is built lazily and
+//! sized small on purpose: real graphs are overwhelmingly deep rather than
+//! wide, and dispatching resting `.batched()` timer waves through a big shared
+//! pool was measured burning most of a process's CPU at idle for no gain (see
+//! [`DEFAULT_WAVE_THRESHOLD`]).
 //!
 //! Sharding by connected component (so genuinely unrelated graphs never share
 //! a lock at all, instead of sharding by a graph-agnostic height number that
@@ -143,7 +147,7 @@ use std::{
     collections::BTreeMap,
     sync::{
         LazyLock,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 
@@ -170,24 +174,13 @@ thread_local! {
     static BATCH_NEST: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
-/// Global topology epoch. Bumped on every edge change (`Cell::own`,
-/// `Cell::own_keyed`, `SubscriptionGuard::drop`) so cached cell heights, tagged
-/// with the epoch they were computed under, are invalidated lazily on the next
-/// read. Starts at 1 so a zero-initialized `height_cache` reads as stale.
-static TOPOLOGY_EPOCH: AtomicU64 = AtomicU64::new(1);
-
-/// Invalidate all cached heights by advancing the topology epoch. Cheap enough
-/// to call unconditionally on any edge change.
-pub(crate) fn bump_topology_epoch() {
-    TOPOLOGY_EPOCH.fetch_add(1, Ordering::Relaxed);
-}
-
-/// The current epoch, truncated to the 32 bits packed into a height cache. Wraps
-/// only after ~4 billion topology changes, which cannot alias a live cache entry
-/// in practice.
-fn current_epoch() -> u32 {
-    TOPOLOGY_EPOCH.load(Ordering::Relaxed) as u32
-}
+// Height-cache invalidation is **per-node**, not global. Each cell carries its
+// own `height_epoch` (see `CellInner::height_epoch`); an edge change bumps only
+// the changed cell and its transitive dependents' epochs
+// (`crate::cell::invalidate_height_cone`), so a topology-churning knit no longer
+// flushes every cached height in the process. There is deliberately no global
+// epoch counter here anymore — a cached height is validated against its own
+// node's epoch in `height_dfs`.
 
 /// The process-wide propagation tick queue: height-ordered and
 /// last-write-wins-coalesced per cell (see module docs). Every thread's
@@ -333,16 +326,22 @@ fn refresh_tick_active(t: &SharedTick) {
 /// load; `deps()` is walked only on the first read after an edge change.
 fn compute_height(node: &dyn DepNode) -> u64 {
     let mut stack = FxHashSet::default();
-    height_dfs(node, current_epoch(), &mut stack)
+    height_dfs(node, &mut stack)
 }
 
-/// Height DFS backing [`compute_height`]. Uses each node's [`DepNode::height_cache`]
-/// as an epoch-tagged memo (so results persist across ticks and across the
-/// recursion, and across threads — the cache is a plain atomic on the node).
-/// `stack` breaks dependency cycles — a back-edge to a node already on the
-/// current path contributes height 0 rather than recursing forever.
-fn height_dfs(node: &dyn DepNode, epoch: u32, stack: &mut FxHashSet<Uuid>) -> u64 {
-    if let Some(cache) = node.height_cache() {
+/// Height DFS backing [`compute_height`]. Each node's [`DepNode::height_cache`]
+/// packs `(height_epoch << 32) | height` and is validated against that node's
+/// *own* [`DepNode::height_epoch`] — so a settled subgraph stays cached even
+/// while an unrelated (or downstream) part of the graph is churning, and only
+/// nodes whose cone was invalidated recompute. `stack` breaks dependency cycles
+/// — a back-edge to a node already on the current path contributes height 0
+/// rather than recursing forever. Nodes without an epoch (non-cell `DepNode`s)
+/// have no stable cache slot and are recomputed each read.
+fn height_dfs(node: &dyn DepNode, stack: &mut FxHashSet<Uuid>) -> u64 {
+    let epoch = node
+        .height_epoch()
+        .map(|e| e.load(Ordering::Relaxed) as u32);
+    if let (Some(cache), Some(epoch)) = (node.height_cache(), epoch) {
         let packed = cache.load(Ordering::Relaxed);
         if (packed >> 32) as u32 == epoch {
             return packed & 0xFFFF_FFFF;
@@ -354,10 +353,10 @@ fn height_dfs(node: &dyn DepNode, epoch: u32, stack: &mut FxHashSet<Uuid>) -> u6
     }
     let mut height = 0u64;
     for dep in node.deps() {
-        height = height.max(height_dfs(dep.as_ref(), epoch, stack) + 1);
+        height = height.max(height_dfs(dep.as_ref(), stack) + 1);
     }
     stack.remove(&id);
-    if let Some(cache) = node.height_cache() {
+    if let (Some(cache), Some(epoch)) = (node.height_cache(), epoch) {
         cache.store(((epoch as u64) << 32) | height, Ordering::Relaxed);
     }
     height
@@ -404,17 +403,86 @@ pub(crate) fn enqueue(id: Uuid, node: &dyn DepNode, terminal: bool, run: Box<dyn
     guard.enqueue_locked(id, height, coalesce, run);
 }
 
-/// Below this many ops in one height's batch, running them through `rayon`'s
-/// work-stealing pool costs more than it could possibly save — dispatch
-/// overhead runs to low-single-digit microseconds, easily dwarfing a handful
-/// of ops that would otherwise run in tens to hundreds of nanoseconds
-/// sequentially. Most waves in a typical reactive graph are exactly this
-/// small (a join has 2 inputs; most fan-out is a handful of subscribers), so
-/// they take the plain sequential path; only genuinely wide fan-out — many
-/// independent cells settling at the same height, the shape a `.batched()`
-/// interval source feeding a wide graph produces — crosses this threshold
-/// and gets real parallelism.
-const PARALLEL_WAVE_THRESHOLD: usize = 8;
+/// Default minimum number of distinct-cell *groups* in one height-wave before
+/// dispatching it across the wave pool is worth the cost. Overridable at
+/// startup via `HYPHAE_WAVE_THRESHOLD`.
+///
+/// This is deliberately high. An earlier version used `8`, which made resting
+/// `Source::batched()` timer ticks — which produce wide same-height waves
+/// continuously — dispatch through rayon's *global* pool nonstop, burning >50%
+/// of cycles in crossbeam-epoch pinning + work-steal loops (~750% CPU at idle
+/// on a 24-core box) to parallelize waves whose per-group work is a trivial
+/// `Cell::fanout`. Real reactive graphs are overwhelmingly deep, not wide: even
+/// a heavy 1s+ rebuild wave was measured using only 1–2 cores, so parallel
+/// dispatch buys little and its fixed per-wave cost is pure loss at rest. A high
+/// threshold keeps the common/resting case sequential — and because
+/// [`WAVE_POOL`] is built lazily, a process whose waves never cross it spawns
+/// zero wave threads and pays zero idle cost.
+const DEFAULT_WAVE_THRESHOLD: usize = 64;
+
+/// Default wave-pool size cap. Kept small because the workload is deep, not
+/// wide; overridable via `HYPHAE_WAVE_THREADS` (`0` disables the parallel path
+/// entirely — every wave runs sequentially).
+const DEFAULT_WAVE_THREADS_CAP: usize = 4;
+
+fn env_usize(key: &str) -> Option<usize> {
+    std::env::var(key).ok().and_then(|v| v.trim().parse().ok())
+}
+
+/// Group threshold, seeded once from `HYPHAE_WAVE_THRESHOLD` or the default.
+/// Atomic (not a plain `usize`) only so tests can force the parallel path at a
+/// small width via [`set_wave_threshold_for_test`]; the steady-state read is a
+/// single relaxed load.
+static WAVE_THRESHOLD: LazyLock<AtomicUsize> = LazyLock::new(|| {
+    AtomicUsize::new(env_usize("HYPHAE_WAVE_THRESHOLD").unwrap_or(DEFAULT_WAVE_THRESHOLD))
+});
+
+fn wave_threshold() -> usize {
+    WAVE_THRESHOLD.load(Ordering::Relaxed)
+}
+
+/// Test-only knob: override the wave-parallelism group threshold at runtime so
+/// the parallelism/torn-value tests can exercise the real parallel drain path at
+/// a small width instead of the high production default. Not part of the stable
+/// API — do not rely on it outside tests.
+#[doc(hidden)]
+pub fn set_wave_threshold_for_test(groups: usize) {
+    WAVE_THRESHOLD.store(groups, Ordering::Relaxed);
+}
+
+/// Configured wave-pool thread count, resolved once. `0` means "no
+/// parallelism" — [`run_wave`] then always runs sequentially and [`WAVE_POOL`]
+/// is never built.
+static WAVE_THREADS: LazyLock<usize> = LazyLock::new(|| {
+    env_usize("HYPHAE_WAVE_THREADS").unwrap_or_else(|| {
+        std::thread::available_parallelism()
+            .map(|n| n.get().min(DEFAULT_WAVE_THREADS_CAP))
+            .unwrap_or(1)
+    })
+});
+
+/// The scheduler's **dedicated**, named wave-parallelism pool — `None` when
+/// disabled (`HYPHAE_WAVE_THREADS=0`). Built lazily on the first wave that
+/// genuinely crosses [`WAVE_THRESHOLD`], so a process that never has a wide wave
+/// never constructs it (and never spawns its threads).
+///
+/// Dedicated rather than rayon's global pool for two reasons the field data
+/// surfaced: (1) sizing is decoupled from the ambient core count, so a 24-core
+/// host doesn't wake 24 workers for a wave that needs 2; (2) the workers are
+/// *named* (`hyphae-wave-N`) — global-pool workers inherit the name of whichever
+/// thread first touches the pool (they showed up as `hyphae-timer-re`), which
+/// poisons every profile taken of a process that uses hyphae timers.
+static WAVE_POOL: LazyLock<Option<rayon::ThreadPool>> = LazyLock::new(|| {
+    let threads = *WAVE_THREADS;
+    if threads == 0 {
+        return None;
+    }
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .thread_name(|i| format!("hyphae-wave-{i}"))
+        .build()
+        .ok()
+});
 
 /// Run one height's worth of ops, grouped by cell (see
 /// [`SharedTick::pop_min_height_groups`]). Distinct groups are distinct cells at
@@ -429,10 +497,11 @@ const PARALLEL_WAVE_THRESHOLD: usize = 8;
 ///
 /// The threshold compares the number of *groups* (distinct cells), not raw ops:
 /// a single event cell fired 32× is one group and stays sequential (as it must
-/// to preserve order), while eight independent cells settling at one height
-/// cross the threshold and get real parallelism. Panics are caught per-op so one
-/// buggy callback can't strand or corrupt unrelated work; every payload seen is
-/// returned for the caller to pick one to re-raise.
+/// to preserve order), while a genuinely wide wave that crosses
+/// [`WAVE_THRESHOLD`] gets real parallelism on the dedicated [`WAVE_POOL`].
+/// Panics are caught per-op so one buggy callback can't strand or corrupt
+/// unrelated work; every payload seen is returned for the caller to pick one to
+/// re-raise.
 #[cfg(not(target_arch = "wasm32"))]
 fn run_wave(groups: Vec<Vec<Box<dyn FnOnce() + Send>>>) -> Vec<Box<dyn std::any::Any + Send>> {
     fn run_group(group: Vec<Box<dyn FnOnce() + Send>>) -> Vec<Box<dyn std::any::Any + Send>> {
@@ -441,11 +510,23 @@ fn run_wave(groups: Vec<Vec<Box<dyn FnOnce() + Send>>>) -> Vec<Box<dyn std::any:
             .filter_map(|run| std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).err())
             .collect()
     }
-    if groups.len() < PARALLEL_WAVE_THRESHOLD {
-        return groups.into_iter().flat_map(run_group).collect();
+    fn run_sequential(
+        groups: Vec<Vec<Box<dyn FnOnce() + Send>>>,
+    ) -> Vec<Box<dyn std::any::Any + Send>> {
+        groups.into_iter().flat_map(run_group).collect()
     }
-    use rayon::prelude::*;
-    groups.into_par_iter().flat_map_iter(run_group).collect()
+    // Common/resting case: below the threshold, or parallelism disabled — run
+    // sequentially and never touch the pool (so it stays unbuilt).
+    if groups.len() < wave_threshold() {
+        return run_sequential(groups);
+    }
+    match WAVE_POOL.as_ref() {
+        Some(pool) => {
+            use rayon::prelude::*;
+            pool.install(|| groups.into_par_iter().flat_map_iter(run_group).collect())
+        }
+        None => run_sequential(groups),
+    }
 }
 
 /// wasm is single-threaded — no real parallelism to exploit, and no
