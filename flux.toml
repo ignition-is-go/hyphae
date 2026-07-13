@@ -23,6 +23,23 @@ workspace_batchable = true
 cargo = ["cargo", "check", "--target", "wasm32-unknown-unknown"]
 workspace_batchable = true
 
+# Wasm compile guard for the *feature-gated* modules. `check-wasm` alone
+# compiles `default = []` and skips them — that gap shipped 1.3.2 with an
+# ungated `rayon` reference in the scheduler that broke every downstream wasm
+# build with `scheduler` enabled. Every feature except `inspector` (whose tokio
+# TCP server is native-only) must stay wasm-clean; only `hyphae` opts in —
+# `hyphae-leptos` doesn't define these features.
+[tasks.check-wasm-features]
+cargo = [
+    "cargo",
+    "check",
+    "--target",
+    "wasm32-unknown-unknown",
+    "--features",
+    "scheduler,async,metrics,trace,profiling",
+]
+workspace_batchable = true
+
 [tasks.build]
 cargo = ["cargo", "build"]
 workspace_batchable = true
