@@ -26,6 +26,10 @@ use hyphae::{
 /// fn in this binary as a concurrent thread would let these tests interfere
 /// with each other's batches. Serialize them.
 fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
+    // Force the wave-parallel drain path at test width: production defaults
+    // the group threshold high (waves stay sequential at rest), so parallelism
+    // tests must lower it to actually exercise concurrent same-height groups.
+    hyphae::scheduler::set_wave_threshold_for_test(4);
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }

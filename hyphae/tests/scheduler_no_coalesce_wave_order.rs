@@ -25,6 +25,8 @@ const ITERS: usize = 2_000;
 
 #[test]
 fn no_coalesce_burst_in_one_batch_keeps_events_ordered_and_serial() {
+    // Force the parallel drain path: production defaults the wave threshold high.
+    hyphae::scheduler::set_wave_threshold_for_test(4);
     let src = no_coalesce(|| Cell::<i64, CellMutable>::new(0));
 
     let received: Arc<Mutex<Vec<i64>>> = Arc::new(Mutex::new(Vec::new()));
