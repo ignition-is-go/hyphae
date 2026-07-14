@@ -956,7 +956,30 @@ where
     /// This is the preferred reactive count operator because it reuses the
     /// internally maintained length cell instead of materializing entries.
     pub fn size(&self) -> Cell<usize, CellImmutable> {
-        self.inner.len_cell.clone().lock()
+        // A derived size Cell that RETAINS its parent map, mirroring
+        // entries()/items()/subscribe_diffs. Returning a bare
+        // `len_cell.clone().lock()` captured no keepalive, so a `.size()` cloned
+        // out of a temporary CellMap (e.g. `query.materialize().size()`, or
+        // myko's `query_map_by_str(q).size()`) let the CellMapInner — and the
+        // source subscription that keeps len_cell updating — drop at the end of
+        // the statement, silently freezing the count. A fresh cell subscribing
+        // to len_cell (rather than owning a keepalive on len_cell itself, which
+        // would form a self-cycle through CellMapInner and leak) holds the map
+        // alive exactly as long as the returned size Cell is held.
+        let cell = Cell::new(self.inner.data.len());
+        let weak_cell = cell.downgrade();
+        let map_keepalive = self.inner.clone();
+        let guard = self.inner.len_cell.subscribe(move |signal| {
+            let _ = &map_keepalive; // hold the parent map alive while size Cell lives
+            let Some(cell) = weak_cell.upgrade() else {
+                return; // size Cell was dropped
+            };
+            if let Signal::Value(n) = signal {
+                cell.set(**n);
+            }
+        });
+        cell.own(guard);
+        cell.lock()
     }
 
     /// Get an observable Cell of the map length.
