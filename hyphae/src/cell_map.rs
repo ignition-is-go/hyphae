@@ -564,11 +564,14 @@ where
 
     /// Apply a single owned diff to this map and emit it directly (no Batch wrap).
     ///
-    /// Used by the `MapQuery` materialize sink. Avoids the per-diff `Vec`
-    /// allocation and double-clone that would result from routing every
-    /// diff through `apply_batch`. Caller must own the diff (one upstream
-    /// clone is unavoidable since `subscribe_diffs_reactive` passes `&diff`).
-    pub(crate) fn apply_diff_owned(&self, diff: MapDiff<K, V>) {
+    /// The single-diff counterpart to [`apply_batch`](Self::apply_batch):
+    /// routing one diff through `apply_batch(vec![diff])` allocates a
+    /// 1-element `Vec` and wraps the emission in `MapDiff::Batch` for
+    /// nothing. Used by the `MapQuery` materialize sink and by downstream
+    /// per-diff routers (e.g. myko's belongs_to bucket index). Caller must
+    /// own the diff (one upstream clone is unavoidable when the source
+    /// hands out `&diff`).
+    pub fn apply_diff_owned(&self, diff: MapDiff<K, V>) {
         self.maybe_prune_key_cells();
         match &diff {
             MapDiff::Initial { entries } => {
@@ -999,6 +1002,23 @@ where
     /// Emits `MapDiff` updates. Starts with `MapDiff::Initial { entries: vec![] }`.
     pub fn diffs(&self) -> Cell<MapDiff<K, V>, CellImmutable> {
         self.inner.diffs_cell.clone().lock()
+    }
+
+    /// Visit every entry by reference, without allocating (non-reactive).
+    ///
+    /// The borrowing counterpart to [`snapshot`](Self::snapshot), for
+    /// one-shot reads that only need to LOOK at entries — `snapshot()`
+    /// allocates a `Vec` and clones every key/value even when the caller
+    /// immediately discards it.
+    ///
+    /// IMPORTANT: iteration holds the underlying shard locks — `f` must
+    /// not call any mutating method on THIS map (insert/remove/apply_*),
+    /// or it may deadlock. Mutate after `for_each` returns, or use
+    /// `snapshot()` when the loop body must write back.
+    pub fn for_each(&self, mut f: impl FnMut(&K, &V)) {
+        for entry in self.inner.data.iter() {
+            f(entry.key(), entry.value());
+        }
     }
 
     /// Get a point-in-time snapshot of all entries (non-reactive).
