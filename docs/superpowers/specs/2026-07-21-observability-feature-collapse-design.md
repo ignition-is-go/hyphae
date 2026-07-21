@@ -108,14 +108,22 @@ Removing feature names and public items (`hot_traced_cells`, `log_hot_cells`,
 
 ## Open questions
 
-1. **`inspector` moves out.** Decided on merit, not on who currently wires it:
-   a tokio + serde_json websocket server does not belong inside a crate of
-   reactive primitives. It is independent of trace/metrics and costs nothing on
-   the hot path, and dependency-graph inspection is genuinely useful — so the
-   capability is worth keeping, just not here. Extract to a `hyphae-inspector`
-   crate that depends on hyphae's public `DepNode` surface. Folding it into the
-   single feature is the one option to reject outright: it would drag tokio into
-   every production build. That leaves hyphae with exactly one feature.
+1. ~~`inspector` moves out.~~ **`inspector` is deleted.** Settled 2026-07-21:
+   myko is removing its inspector-server integration, and rship never had one,
+   so after that lands nothing consumes it. Extraction was the right call only
+   while there was a consumer to serve; with none, a `hyphae-inspector` crate
+   would be a maintained artifact with no users — the same burden this exercise
+   is removing, relocated rather than retired.
+
+   Deletion removes `src/registry.rs` (154 lines), `src/server.rs` (227 lines),
+   15 gated sites across 4 files, the `serde` / `serde_json` / `tokio` /
+   `uuid/serde` optional dependencies (hyphae stops depending on tokio at all),
+   and the two `DepNode` methods that exist solely to feed the registry —
+   `value_debug` (dep_node.rs:64) and `caller` (dep_node.rs:69) — which
+   simplifies a public trait every operator implements.
+
+   **Final feature set: `async`, `scheduler`, `profiling`.** One observability
+   feature, and it is the one that only wires up external tooling.
 
 2. ~~`#[inline(never)]` in production (constraint 2).~~ **Settled — measured, see
    below.** The two constraints turn out not to collide at all.
