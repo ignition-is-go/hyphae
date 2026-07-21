@@ -104,7 +104,22 @@ Removing feature names and public items (`hot_traced_cells`, `log_hot_cells`,
 | myko-server | `inspector = ["hyphae/inspector"]` | **already removed** (myko `afc8c6fc`): the feature, the `_inspector: InspectorServer` field on `CellServer`, the `start_server("myko")` call and its port log are gone, and `tokio`/`serde`/`serde_json` dropped out of myko's lockfile. Nothing to migrate |
 | rship | no inspector usage at all | nothing |
 | myko source | `hyphae::profiling::pass` / `take_report` in `core/src/server/context.rs` | unchanged (already behind myko's own feature with an `emit()` fallback) |
-| rship | `--features profiling,hyphae/profiling` | unchanged |
+| rship | `--features profiling,hyphae/profiling` | unchanged (`tracy` forwards `hyphae/profiling`, which survives) |
+| rship-server | `trace = ["dep:hyphae", "hyphae/trace"]` (apps/server/Cargo.toml:20) | **hard resolve error** on bump — drop it. Nothing consumes it (zero `cfg(feature = "trace")` in `apps/server/src`). Also strip the now-inert `RSHIP_HYPHA_TRACE_*` env from `Makefile.toml`'s `dev-profile` and its "profiling ⇒ trace ⇒ metrics" comment |
+
+**Verification method — note the gap.** The check "zero downstream uses of any
+removed API" was run with a *source* grep, which cannot see a removed **feature
+name** referenced from a manifest. rship-server's `trace` feature was caught only
+by a human reading the PR. The correct check is both:
+
+```sh
+grep -rn 'value_debug\|hyphae::registry\|hyphae::server\|with_metrics' --include='*.rs'   # APIs
+grep -rn 'hyphae/\(trace\|inspector\|metrics\)' --include='*.toml'                        # feature names
+```
+
+Run against myko and rship, the manifest grep returns exactly two hits: myko
+`libs/myko/server/Cargo.toml:70` and rship `apps/server/Cargo.toml:20`. Both are
+in the migration table above; hyphae's own workspace is clean.
 
 ## Open questions
 
