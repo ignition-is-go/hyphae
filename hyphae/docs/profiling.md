@@ -84,8 +84,15 @@ export RUSTFLAGS="-Cforce-frame-pointers=yes -Csymbol-mangling-version=v0"
   **Test that your collector demangles `v0`, don't assume it:**
 
   ```sh
-  grep -c '_RNv' <your-capture-output>    # 0 = working
+  grep -q '_RNv' <your-capture-output> && echo "collector did NOT demangle v0"
   ```
+
+  Use `grep -q` in a conditional, **not** `n=$(grep -c … || echo 0)`. `grep -c`
+  prints `0` *and exits 1* when there are no matches, so that fallback
+  concatenates into `"0\n0"`, and under `set -e` the script aborts on the
+  **healthy** case — clean output looks like a failed capture. (Same shape as any
+  `cmd || default` where `cmd` both prints and exits non-zero: `wc -l` on a
+  missing file, `curl -s` on an HTTP error.)
 
   This is the one place the recipe can half-work, and the failure is designed to
   be misread as success: you still get **correct frames** — `notify` and `fanout`
@@ -102,9 +109,8 @@ export RUSTFLAGS="-Cforce-frame-pointers=yes -Csymbol-mangling-version=v0"
 
   A version number is deliberately not given here: distro backports make
   `perf --version` a poor predictor, and the grep is self-evident on the artifact
-  in front of you. (For reference, `perf` 7.1.3 produced zero lines containing
-  `_RNv` across a 117,450-line capture. Note `-c` counts *lines*, not
-  occurrences — `grep -c -o` does not do what it looks like it does.)
+  in front of you. (For reference, `perf` 7.1.3 produced no lines containing
+  `_RNv` across a 117,450-line capture.)
 
   Better still, put that assertion in whatever script wraps your capture, so it
   runs on every profile instead of when someone remembers. A check you have to
@@ -151,7 +157,7 @@ cells attributable by type parameter
    118  hyphae::cell::Cell<rship_entities_foundation::BindingDatagram…
 
 raw v0 symbol leakage
-     0  occurrences of _RNv…
+     no lines containing _RNv…
 ```
 
 Two things to check in your own capture, because they are what the feature
