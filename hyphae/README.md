@@ -122,18 +122,23 @@ while let Some(value) = stream.next().await {
 
 Requires the `async` feature flag.
 
-## Performance Monitoring
+## Profiling
 
-```rust
-use std::time::Duration;
-use hyphae::Cell;
+The `profiling` feature is hyphae's single observability switch. It costs
+nothing per cell and ~1% on the hot path:
 
-let cell = Cell::with_metrics(0);
+- `Cell::notify` / `write_value` / `fanout` become `#[inline(never)]`, so
+  sampling profilers resolve them as distinct frames instead of one folded
+  symbol.
+- Each fanout emits a `tracing` span (`hyphae.fanout`) tagged with the cell's
+  `id` and `name` (set names with `Cell::with_name`). hyphae only emits spans;
+  the application attaches the subscriber (`tracing-flame`, `tracing-tracy`, …).
+- `hyphae::profiling::pass` / `take_report` tally per-cell re-fires inside a
+  measured propagation pass.
 
-cell.on_slow_subscriber(Duration::from_millis(10), |alert| {
-    eprintln!("Slow subscriber: {}ns", alert.duration_ns);
-});
-```
+For live-cell counts and memory attribution, use a heap profiler
+(jemalloc/`jeprof`, or `pprof`) rather than an in-process registry. See
+[`docs/profiling.md`](docs/profiling.md).
 
 ## License
 

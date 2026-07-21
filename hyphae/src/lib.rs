@@ -136,8 +136,6 @@ pub mod cell_set;
 pub mod clock;
 pub mod constructors;
 pub mod map_query;
-#[cfg(feature = "metrics")]
-pub mod metrics;
 pub mod nested_map;
 pub mod pipeline;
 pub(crate) mod platform;
@@ -148,17 +146,11 @@ pub mod scheduler;
 pub mod signal;
 pub mod source;
 pub mod subscription;
-#[cfg(feature = "trace")]
-pub mod tracing;
 pub mod traits;
 
 // Both are available on wasm: the registry is fully portable; the `server`
 // module keeps a uniform public API but its TCP transport (tokio/mio) is
 // native-only, so on wasm `start_server` returns an inert handle.
-#[cfg(feature = "inspector")]
-pub mod registry;
-#[cfg(feature = "inspector")]
-pub mod server;
 
 #[cfg(test)]
 mod tests;
@@ -167,8 +159,6 @@ mod tests;
 pub use async_support::{AsyncWatchableExt, CellStream};
 pub use bounded_input::{BoundedInput, BoundedInputMetrics, OverflowPolicy};
 pub use bounded_output::BoundedOutput;
-#[cfg(feature = "metrics")]
-pub use cell::SlowSubscriberAlert;
 pub use cell::{Cell, CellImmutable, CellMutable};
 pub use cell_map::{CellMap, MapDiff, WeakCellMap};
 pub use cell_set::{CellSet, SetDiff};
@@ -179,8 +169,6 @@ pub use constructors::{
     interval_precise_with_elapsed, interval_precise_with_elapsed_source, interval_source,
 };
 pub use map_query::{MapQuery, MapQueryShareExt, SharedMapQuery};
-#[cfg(feature = "metrics")]
-pub use metrics::CellMetrics;
 pub use nested_map::NestedMap;
 pub use pipeline::{
     Definite, Empty, MaterializeDefinite, MaterializeEmpty, Pipeline, PipelineShareExt, Seedness,
@@ -191,8 +179,6 @@ pub use scheduler::batch;
 pub use signal::Signal;
 pub use source::{SampleOnSourceExt, Source, WeakSource};
 pub use subscription::SubscriptionGuard;
-#[cfg(feature = "trace")]
-pub use tracing::{CellTraceSnapshot, hot_cells as hot_traced_cells, log_hot_cells};
 pub use traits::{
     AuditExt, BackpressureExt, BufferCountExt, BufferTimeExt, CatchErrorExt, CellValue, ColdExt,
     ConcatExt, CountByExt, CountByPlan, DebounceExt, DedupedExt, DelayExt, DepNode, DistinctExt,

@@ -1,24 +1,18 @@
 [channels]
 main = "production"
 
-# `--all-features` so the feature-gated modules (scheduler, profiling, metrics,
-# inspector, async) are actually compiled/linted/tested — with `default = []` a
-# bare cargo invocation skips most of the crate. No `--all-targets`: that pulls
-# in the benches, which are slow to build and are not a correctness gate. Target
-# flags are kept implicit (`check`) or `--tests` (`lint`) rather than explicit
-# `--lib`/`--bins` so the tasks work across both the library crates and the
-# bin-only `hyphae-inspector` without a "no library targets" error.
+# `--all-features` so the feature-gated modules (scheduler, profiling, async)
+# are actually compiled/linted/tested — with `default = []` a bare cargo
+# invocation skips most of the crate. No `--all-targets`: that pulls in the
+# benches, which are slow to build and are not a correctness gate.
 
 [tasks.check]
 cargo = ["cargo", "check", "--all-features"]
 workspace_batchable = true
 
 # Wasm compile guard for the crates that ship into wasm apps (rship's Tauri UI):
-# the core `hyphae` crate (portable registry, inert `start_server`, the scheduler
-# clock/platform seam) and the `hyphae-leptos` bridge. Default features only —
-# `--all-features` would pull `inspector`'s tokio server, which is native-only.
-# Opted into per-crate via `[package.metadata.flux]`, so it never runs against
-# `demo`/`inspector`.
+# the core `hyphae` crate (the scheduler clock/platform seam) and the
+# `hyphae-leptos` bridge. Opted into per-crate via `[package.metadata.flux]`.
 [tasks.check-wasm]
 cargo = ["cargo", "check", "--target", "wasm32-unknown-unknown"]
 workspace_batchable = true
@@ -26,9 +20,8 @@ workspace_batchable = true
 # Wasm compile guard for the *feature-gated* modules. `check-wasm` alone
 # compiles `default = []` and skips them — that gap shipped 1.3.2 with an
 # ungated `rayon` reference in the scheduler that broke every downstream wasm
-# build with `scheduler` enabled. Every feature except `inspector` (whose tokio
-# TCP server is native-only) must stay wasm-clean; only `hyphae` opts in —
-# `hyphae-leptos` doesn't define these features.
+# build with `scheduler` enabled. Every feature must stay wasm-clean; only
+# `hyphae` opts in — `hyphae-leptos` doesn't define these features.
 [tasks.check-wasm-features]
 cargo = [
     "cargo",
@@ -36,7 +29,7 @@ cargo = [
     "--target",
     "wasm32-unknown-unknown",
     "--features",
-    "scheduler,async,metrics,trace,profiling",
+    "scheduler,async,profiling",
 ]
 workspace_batchable = true
 

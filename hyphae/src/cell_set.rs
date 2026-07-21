@@ -5,12 +5,10 @@
 use std::{hash::Hash, marker::PhantomData, sync::Arc};
 
 use dashmap::DashSet;
-use uuid::Uuid;
 
 use crate::{
     cell::{Cell, CellImmutable, CellMutable, WeakCell},
     signal::Signal,
-    subscription::SubscriptionGuard,
     traits::{CellValue, Gettable, Mutable, Watchable},
 };
 
@@ -35,8 +33,6 @@ where
     diffs_cell: Cell<Option<SetDiff<T>>, CellMutable>,
     /// Cell for length.
     len_cell: Cell<usize, CellMutable>,
-    /// Subscription guards owned by this set (dropped when set drops).
-    owned: dashmap::DashMap<Uuid, SubscriptionGuard>,
 }
 
 /// A reactive HashSet with membership observability.
@@ -89,7 +85,6 @@ where
                 membership_cells: dashmap::DashMap::new(),
                 diffs_cell,
                 len_cell: Cell::new(0),
-                owned: dashmap::DashMap::new(),
             }),
             _marker: PhantomData,
         }
@@ -200,19 +195,32 @@ where
         let initial: Vec<T> = self.inner.data.iter().map(|r| r.clone()).collect();
 
         let cell = Cell::new(initial);
-        let cell_clone = cell.clone();
+        // Weak cell + strong parent keepalive, with the CELL owning the guard —
+        // the same shape every `CellMap` observable uses. The previous form had
+        // the *set* own the guard (keyed by a fresh `Uuid` that nothing ever
+        // removed) while the closure held a strong clone of the returned cell,
+        // so each `values()` call pinned its cell and its subscription for the
+        // entire life of the set and went on rebuilding a `Vec` that no longer
+        // had a reader.
+        let weak_cell = cell.downgrade();
+        // Keepalive: an observable must retain its parent map/set, or dropping
+        // the set out from under this cell leaves it subscribed to a dead diffs
+        // source and silently frozen.
+        let set_keepalive = self.inner.clone();
 
         // Subscribe to diffs and apply incrementally (O(1) per update)
         let first = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let guard = self.inner.diffs_cell.subscribe(move |signal| {
+            let _ = &set_keepalive; // hold the parent set alive while this cell lives
             // Skip the initial subscription callback
             if first.swap(false, std::sync::atomic::Ordering::SeqCst) {
                 return;
             }
             if let Signal::Value(arc_opt) = signal
                 && let Some(diff) = arc_opt.as_ref()
+                && let Some(cell) = weak_cell.upgrade()
             {
-                let mut values = cell_clone.get();
+                let mut values = cell.get();
                 match diff {
                     SetDiff::Insert(value) => {
                         values.push(value.clone());
@@ -221,12 +229,11 @@ where
                         values.retain(|v| v != value);
                     }
                 }
-                cell_clone.set(values);
+                cell.set(values);
             }
         });
 
-        // Store the guard so it lives as long as the set
-        self.inner.owned.insert(Uuid::new_v4(), guard);
+        cell.own(guard);
 
         cell.lock()
     }
@@ -338,6 +345,61 @@ mod tests {
         assert_eq!(values.get().len(), 2);
 
         set.remove(&"a".to_string());
+        assert_eq!(values.get().len(), 1);
+    }
+
+    /// Dropping a `values()` cell must actually free it. Previously the set
+    /// stored the subscription guard itself, keyed by a fresh `Uuid` nothing
+    /// ever removed, and the guard's closure held a strong clone of the cell —
+    /// so every call leaked a cell plus a live subscription that kept rebuilding
+    /// a `Vec` with no reader.
+    #[test]
+    fn values_cell_is_freed_when_dropped() {
+        let set = CellSet::<String>::new();
+        let values = set.values();
+        let weak = values.downgrade();
+        assert!(weak.upgrade().is_some());
+
+        drop(values);
+        assert!(
+            weak.upgrade().is_none(),
+            "values() cell outlived its last owner — the set is still pinning it"
+        );
+
+        // The set itself must remain usable after the observable is gone.
+        set.insert("a".to_string());
+        assert_eq!(set.len().get(), 1);
+    }
+
+    /// Repeated `values()` calls must not accumulate anything in the set.
+    #[test]
+    fn repeated_values_calls_do_not_accumulate() {
+        let set = CellSet::<String>::new();
+        let mut weaks = Vec::new();
+        for _ in 0..100 {
+            let v = set.values();
+            weaks.push(v.downgrade());
+        }
+        let live = weaks.iter().filter(|w| w.upgrade().is_some()).count();
+        assert_eq!(
+            live, 0,
+            "{live}/100 values() cells were still pinned after being dropped"
+        );
+    }
+
+    /// The keepalive half of the invariant: a `values()` cell holds its parent
+    /// set alive, so it keeps tracking after the caller's `CellSet` handle is
+    /// dropped rather than silently freezing.
+    #[test]
+    fn values_cell_keeps_parent_set_alive() {
+        let values = {
+            let set = CellSet::<String>::new();
+            set.insert("a".to_string());
+            let values = set.values();
+            assert_eq!(values.get().len(), 1);
+            values
+        };
+        // `set` is gone; the observable must still hold a coherent snapshot.
         assert_eq!(values.get().len(), 1);
     }
 

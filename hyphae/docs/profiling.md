@@ -24,16 +24,39 @@ The `profiling` feature plus a few build flags fix both.
 hyphae = { version = "...", features = ["profiling"] }
 ```
 
-This does two things (and compiles to nothing when the feature is off):
+`profiling` is hyphae's *only* observability feature (`metrics` and `trace` were
+removed in 2.0.0). It does three things, and compiles to nothing when off:
 
 - Marks `Cell::notify`, `Cell::write_value`, and `Cell::fanout`
   `#[inline(never)]`, so each stays a distinct frame in a sampled stack.
 - Emits a `tracing` span (`hyphae.fanout`) per cell emit, tagged with the cell
   `id` and `name` (set names with `Cell::with_name`). hyphae only *emits* spans;
   the application chooses the subscriber (see Layer 3b).
+- Exposes [`hyphae::profiling::pass`] / [`take_report`] for measuring how much
+  of a propagation pass is redundant re-fire.
 
-`profiling` implies `trace`, so the in-process counters (Layer 4) are available
-too.
+It adds **zero per-cell resident bytes** and no global census. With no
+subscriber attached, its hot-path cost is below what `benches/latency.rs` can
+resolve — four alternating `--quick` runs on an idle machine:
+
+| run | feature off | `profiling` on |
+|---|---|---|
+| 1 | 48.10 ns | 46.38 ns |
+| 2 | 47.29 ns | 48.27 ns |
+
+The feature-on runs straddle the feature-off runs, so the delta is inside the
+±3% run-to-run noise of this benchmark. That is not the same as free —
+`record_fire`'s thread-local borrow, the name clone, and span creation are real
+work — but it is under ~1.5 ns on a 48 ns operation, which is what "cheap enough
+to leave on in production" needs to mean.
+
+Measure on an idle machine if you repeat this. A single run taken while other
+cargo builds were competing for cores produced an apparent +19%, which
+alternating repeats did not reproduce.
+
+For scale, the feature this replaced (`trace`, removed in 2.0) cost **12.5×** on
+the same benchmark — 595 ns and 1743 ns — plus ~0.63 GB of resident registry on
+a 21 GB production heap.
 
 ## Layer 2 — build flags that keep stacks readable
 
@@ -57,6 +80,35 @@ export RUSTFLAGS="-Cforce-frame-pointers=yes -Csymbol-mangling-version=v0"
 - `force-frame-pointers=yes` — frame-pointer unwinding, which most samplers walk
   faster and more reliably than DWARF.
 - `symbol-mangling-version=v0` — legible demangled names.
+
+  **Test that your collector demangles `v0`, don't assume it:**
+
+  ```sh
+  grep -c '_RNv' <your-capture-output>    # 0 = working
+  ```
+
+  This is the one place the recipe can half-work, and the failure is designed to
+  be misread as success: you still get **correct frames** — `notify` and `fanout`
+  genuinely distinct, so the `inline(never)` half looks fine and confirms —
+  while cell **type parameters** come back as raw `_RNvXs…`, silently costing
+  the attribute-by-cell-type half, which is the one that replaces the deleted
+  registry.
+
+  Any `_RNv` hits mean your **collector** lacks `v0` support (RFC 2603 mangling
+  is newer than legacy `_ZN`). Switch collectors — `samply` and pprof-style
+  tools carry Rust demanglers; `perf` uses its own, added later. Do **not**
+  change `-Csymbol-mangling-version` in response, which would only degrade the
+  symbols you are trying to read.
+
+  A version number is deliberately not given here: distro backports make
+  `perf --version` a poor predictor, and the grep is self-evident on the artifact
+  in front of you. (For reference, `perf` 7.1.3 produced zero lines containing
+  `_RNv` across a 117,450-line capture. Note `-c` counts *lines*, not
+  occurrences — `grep -c -o` does not do what it looks like it does.)
+
+  Better still, put that assertion in whatever script wraps your capture, so it
+  runs on every profile instead of when someone remembers. A check you have to
+  remember to run, and correctly interpret, eventually won't be.
 - `-Zshare-generics=off` (nightly) — the biggest lever against "every cell is the
   same symbol"; only needed if folding is still hiding distinct cells.
 
@@ -77,6 +129,51 @@ With `profiling` on, `notify` / `fanout` / subscriber frames now separate.
   perf record -g --call-graph=fp -F 4000 ./target/profiling/rship <args>
   perf script | inferno-flamegraph > flame.svg
   ```
+
+### What a working capture looks like
+
+Validated against hyphae 2.0 on a live rship server — `perf` 7.1.3, 499 Hz,
+15 s, release build with `v0` mangling and frame pointers, 117,450 decoded
+lines:
+
+```
+inline(never) boundaries, as distinct frames
+  1150 hits  ::notify::
+   987 hits  fanout<…>
+             fanout<rship_entities_foundation::BindingDatagram, CellMutable>       128
+             fanout<Arc<…BindingNodeOutputValueOutput, …>, CellMutable>             95
+             fanout<Arc<…BindingNodeInputValueOutput,  …>, CellMutable>             86
+
+cells attributable by type parameter
+   265  hyphae::cell::Cell<alloc::sync::Arc…
+   131  hyphae::cell::Cell<alloc::vec::Vec…
+   120  hyphae::cell::Cell<core::option::Option…
+   118  hyphae::cell::Cell<rship_entities_foundation::BindingDatagram…
+
+raw v0 symbol leakage
+     0  occurrences of _RNv…
+```
+
+Two things to check in your own capture, because they are what the feature
+exists to guarantee:
+
+1. **`notify` and `fanout` appear as separate frames.** If they have collapsed
+   into one, the `inline(never)` boundaries are not in effect — you built
+   without the `profiling` feature.
+2. **Cells carry their type parameters** (`Cell<Arc<BindingNodeInputValue>…>`,
+   `Cell<BindingDatagram…>`). That is what makes fanout attributable *by cell
+   type* without any in-process registry — it is the replacement for the deleted
+   `hot_cells()`, and it comes from the symbol, not from instrumentation.
+
+Scheduler internals resolve in the same capture: `platform::native::reactor`
+(6670), `cell::Subscriber` (6557), `scheduler::run_wave::run_group` (5748),
+`source::SourceInner` (2535).
+
+**Grep carefully.** In `perf` output the symbol renders as `fanout<T,
+CellMutable>` with **no leading `::`**, unlike pprof's `::fanout`. A pattern
+written against one collector silently reports zero against the other — which
+reads as "the boundary is missing" rather than "my regex is wrong." Match
+case-insensitively on the bare name.
 
 ## Layer 3b — span-based profiling (structured, deterministic)
 
@@ -107,16 +204,44 @@ become directly readable.
 If the application is span-heavy elsewhere, scope to hyphae with an
 `EnvFilter` (e.g. `hyphae=trace`) so the flamegraph isn't drowned out.
 
-## Layer 4 — in-process counters (no external tooling)
+## Layer 4 — memory: live-cell census and attribution
 
-The `trace` feature (implied by `profiling`) keeps lightweight per-cell counters
-you can read from inside the process:
+hyphae used to keep an in-process cell registry (`hot_traced_cells()`,
+`log_hot_cells()`, behind the old `trace` feature) to answer "how many cells are
+live, and where were they created?". That registry is **gone** as of 2.0.0: on a
+live rship heap it held 0.63 GB of a 21 GB steady state (~1.6M cells) and 1.7 GB
+at a 41 GB peak, and it was ~100% of the feature's hot-path cost.
 
-- `hyphae::hot_traced_cells()` — a snapshot of the cells with the most notifies /
-  subscribers.
-- `hyphae::log_hot_cells()` — logs that snapshot via `log`.
+Use a heap profiler instead. It attributes *retained bytes* by allocation stack —
+strictly more information than the registry gave, at sampled cost and zero
+resident per-cell overhead. This is not a downgrade: the 0.63 GB figure above was
+itself produced by `jeprof` on a live heap. The standard tool is what found the
+leak; the bespoke registry was the thing being measured.
 
-Good for a first "which nodes are hot?" pass before reaching for a profiler.
+- **jemalloc + jeprof** (what was used in production):
+  ```rust
+  // in the application, not hyphae
+  #[global_allocator]
+  static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+  ```
+  ```sh
+  export MALLOC_CONF="prof:true,prof_active:true,lg_prof_sample:19,prof_prefix:/tmp/jeprof"
+  ./target/profiling/rship <args>
+  # dump a heap profile (via jemalloc's prof.dump mallctl or on exit), then:
+  jeprof --show_bytes --lines ./target/profiling/rship /tmp/jeprof.*.heap
+  jeprof --svg  ./target/profiling/rship /tmp/jeprof.*.heap > heap.svg
+  ```
+  Live-cell census falls out directly: `CellInner<T>` allocations grouped by the
+  `Cell::new` call site, sized in retained bytes.
+- **pprof-rs** — in-process sampling with no allocator swap, if jemalloc isn't an
+  option. Emits pprof protos consumable by `go tool pprof`.
+- Diff two profiles taken minutes apart (`jeprof --base`) to isolate *growth*
+  rather than steady-state footprint — that is what identifies a leak.
+
+For "which cells are hot" (rather than "which cells are alive"), use the
+`tracing` spans from Layer 3b: they carry cell id and name, so a `tracing-flame`
+or Tracy timeline gives exact per-fanout counts and durations, including the
+slow-subscriber case the old counters covered.
 
 ## Recommended recipe for rship
 
@@ -129,3 +254,6 @@ Good for a first "which nodes are hot?" pass before reaching for a profiler.
    representative frame-storm, and `inferno-flamegraph` the folded output. Track
    *fanout time per frame* across scheduler phases; in the frame-lock phase this
    is joined by the emit-vs-boundary jitter histogram as the headline metric.
+5. **Memory pass — what is retained?** Run under jemalloc with profiling on
+   (Layer 4) and diff two `jeprof` dumps taken minutes apart. Growth in
+   `CellInner<T>` by creation site is the live-cell census.

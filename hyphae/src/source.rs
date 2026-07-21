@@ -131,10 +131,6 @@ impl<T: CellValue> Source<T> {
             batched: AtomicBool::new(false),
             caller: Location::caller(),
         });
-        #[cfg(feature = "inspector")]
-        crate::registry::registry().register(inner.id, Arc::downgrade(&inner) as Weak<dyn DepNode>);
-        #[cfg(feature = "trace")]
-        crate::tracing::register_cell(inner.id, Some(Location::caller().to_string()));
         Self {
             inner,
             _marker: PhantomData,
@@ -151,8 +147,6 @@ impl<T: CellValue> Source<T> {
 
     /// Take ownership of a subscription guard, dropping it when this source is dropped.
     pub fn own(&self, guard: SubscriptionGuard) {
-        #[cfg(feature = "inspector")]
-        crate::registry::registry().mark_owned(guard.source().id(), self.inner.id);
         self.inner.owned.insert(Uuid::new_v4(), guard);
     }
 
@@ -161,12 +155,11 @@ impl<T: CellValue> Source<T> {
         self.inner.completed.load(Ordering::SeqCst)
     }
 
-    /// Builder-style name attachment for tracing/inspector. No-op when the
-    /// inspector / trace features are off.
+    /// Builder-style name attachment, kept for API compatibility with
+    /// [`Cell::with_name`](crate::Cell::with_name). `Source` carries no name
+    /// field, so this is a no-op.
     #[allow(unused_variables)]
     pub fn with_name(self, name: impl Into<std::sync::Arc<str>>) -> Self {
-        #[cfg(feature = "trace")]
-        crate::tracing::update_name(self.inner.id, name.into().to_string());
         self
     }
 
@@ -344,10 +337,20 @@ pub trait SampleOnSourceExt<T: CellValue>: Watchable<T> + Gettable<T> {
     {
         let source = self.clone();
         let cell = Cell::<T, CellMutable>::new(source.get());
-        let cell_for_cb = cell.clone();
+        // Weak, not a strong clone: `cell.own(guard)` below hands the cell
+        // ownership of the subscription, and a `SubscriptionGuard` holds a
+        // *strong* `Arc<dyn DepNode>` to whatever it subscribed to
+        // (`subscription.rs`). A strong capture here would close the loop
+        // cell -> owned guard -> notifier -> subscribers -> closure -> cell, so
+        // the cell could never reach zero: it would never drop, never
+        // unsubscribe, never deregister, and would keep sampling `source`
+        // forever — a CPU leak as well as a memory one (rship lv-df48).
+        let weak_cell = cell.downgrade();
         let guard = notifier.subscribe(move |signal| {
-            if let Signal::Value(_) = signal {
-                cell_for_cb.set(source.get());
+            if let Signal::Value(_) = signal
+                && let Some(cell) = weak_cell.upgrade()
+            {
+                cell.set(source.get());
             }
         });
         cell.own(guard);
@@ -379,36 +382,8 @@ impl<T: Send + Sync> DepNode for Source<T> {
     }
 }
 
-#[cfg(feature = "inspector")]
-impl<T: Send + Sync> DepNode for SourceInner<T> {
-    fn id(&self) -> Uuid {
-        self.id
-    }
-
-    fn name(&self) -> Option<String> {
-        None
-    }
-
-    fn deps(&self) -> Vec<Arc<dyn DepNode>> {
-        Vec::new()
-    }
-
-    fn subscriber_count(&self) -> usize {
-        Arc::clone(&*self.subscribers.lock()).len()
-    }
-
-    fn owned_count(&self) -> usize {
-        self.owned.len()
-    }
-}
-
 impl<T> Drop for SourceInner<T> {
-    fn drop(&mut self) {
-        #[cfg(feature = "trace")]
-        crate::tracing::deregister_cell(&self.id);
-        #[cfg(feature = "inspector")]
-        crate::registry::registry().deregister(&self.id);
-    }
+    fn drop(&mut self) {}
 }
 
 #[cfg(test)]
@@ -416,6 +391,46 @@ mod tests {
     use std::sync::{Arc, atomic::Ordering};
 
     use super::*;
+
+    /// `sample_on` used to capture a strong clone of its own output cell in the
+    /// notifier's subscriber closure while also owning the guard, forming an
+    /// unbreakable cycle: the cell could never drop (rship lv-df48).
+    #[test]
+    fn sample_on_cell_is_freed_when_dropped() {
+        let value = Cell::new(7i32);
+        let notifier: Source<()> = Source::new();
+
+        let sampled = value.sample_on(&notifier);
+        let weak = sampled.downgrade();
+
+        value.set(8);
+        notifier.emit(());
+        assert_eq!(sampled.get(), 8, "sampling must still work");
+
+        drop(sampled);
+        assert!(
+            weak.upgrade().is_none(),
+            "sample_on output cell outlived its last owner — Arc cycle is back"
+        );
+    }
+
+    /// The CPU-leak half of the same bug: once the sampled cell is gone the
+    /// subscription must be torn down, not left sampling forever.
+    #[test]
+    fn sample_on_unsubscribes_when_cell_dropped() {
+        let value = Cell::new(0i32);
+        let notifier: Source<()> = Source::new();
+
+        let sampled = value.sample_on(&notifier);
+        assert_eq!(notifier.subscriber_count(), 1);
+
+        drop(sampled);
+        assert_eq!(
+            notifier.subscriber_count(),
+            0,
+            "dropped sample_on cell left its subscription live on the notifier"
+        );
+    }
 
     #[test]
     fn emit_fires_subscribers() {
