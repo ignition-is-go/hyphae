@@ -82,9 +82,11 @@ export RUSTFLAGS="-Cforce-frame-pointers=yes -Csymbol-mangling-version=v0"
 - `symbol-mangling-version=v0` — legible demangled names. **Check your
   collector demangles `v0`.** This is the one place the recipe can half-work:
   `v0` (RFC 2603, symbols starting `_RNvXs…`) is newer than legacy `_ZN`, and
-  support differs by tool. `samply` and pprof-style collectors carry Rust
-  demanglers with `v0` support; `perf` resolves from `.symtab` with its own
-  implementation, and older builds of it do not. The failure is partial and
+  support differs by tool *version*. `samply` and pprof-style collectors carry
+  Rust demanglers with `v0` support; `perf` resolves from `.symtab` with its own
+  implementation, which gained `v0` later — **perf 7.1.3 is verified clean here
+  (zero `_RNv…` leakage in a 117k-line capture)**, but an older one may not be.
+  The failure is partial and
   therefore easy to misread: you still get **correct frames** — `notify` and
   `fanout` genuinely distinct, so the `inline(never)` half is fine — while cell
   **type parameters** come back as raw `_RNvXs…`, which silently costs you the
@@ -114,17 +116,26 @@ With `profiling` on, `notify` / `fanout` / subscriber frames now separate.
 
 ### What a working capture looks like
 
-Validated on a live rship server (pprof, 499 Hz, 20 s, 126 warmed scenes)
-against hyphae 2.0:
+Validated against hyphae 2.0 on a live rship server — `perf` 7.1.3, 499 Hz,
+15 s, release build with `v0` mangling and frame pointers, 117,450 decoded
+lines:
 
 ```
- 234 samples  hyphae::cell::…<CellMutable>>::notify::
- 171 samples  hyphae::cell::…<CellMutable>>::fanout
-              write_value present
-3015 samples  hyphae::platform::native::reactor::
-1132 samples  hyphae::scheduler::run_wave::run_group
- 587 samples  hyphae::scheduler::batch
- 593 samples  hyphae::source::Source<IntervalTick>>::emit
+inline(never) boundaries, as distinct frames
+  1150 hits  ::notify::
+   987 hits  fanout<…>
+             fanout<rship_entities_foundation::BindingDatagram, CellMutable>       128
+             fanout<Arc<…BindingNodeOutputValueOutput, …>, CellMutable>             95
+             fanout<Arc<…BindingNodeInputValueOutput,  …>, CellMutable>             86
+
+cells attributable by type parameter
+   265  hyphae::cell::Cell<alloc::sync::Arc…
+   131  hyphae::cell::Cell<alloc::vec::Vec…
+   120  hyphae::cell::Cell<core::option::Option…
+   118  hyphae::cell::Cell<rship_entities_foundation::BindingDatagram…
+
+raw v0 symbol leakage
+     0  occurrences of _RNv…
 ```
 
 Two things to check in your own capture, because they are what the feature
@@ -138,8 +149,15 @@ exists to guarantee:
    type* without any in-process registry — it is the replacement for the deleted
    `hot_cells()`, and it comes from the symbol, not from instrumentation.
 
-Scheduler internals (`run_wave`, `run_group`, `batch`, `Source::emit`) resolve
-in the same capture.
+Scheduler internals resolve in the same capture: `platform::native::reactor`
+(6670), `cell::Subscriber` (6557), `scheduler::run_wave::run_group` (5748),
+`source::SourceInner` (2535).
+
+**Grep carefully.** In `perf` output the symbol renders as `fanout<T,
+CellMutable>` with **no leading `::`**, unlike pprof's `::fanout`. A pattern
+written against one collector silently reports zero against the other — which
+reads as "the boundary is missing" rather than "my regex is wrong." Match
+case-insensitively on the bare name.
 
 ## Layer 3b — span-based profiling (structured, deterministic)
 

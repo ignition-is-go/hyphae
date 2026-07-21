@@ -236,6 +236,18 @@ Both load-bearing guarantees hold in the field:
 Scheduler internals resolve too. No missing boundary, no unattributable span, no
 change requested by the consumer. The surviving feature is sufficient as shipped.
 
+**Re-validated through an external sampler (post-hoc).** The capture above came
+from myko's in-process pprof, which myko then deleted. The claim never rested on
+that collector — `#[inline(never)]` is a codegen property, forcing real symbols
+into `.symtab` rather than folding bodies into callers, and no collector can
+un-inline what was inlined — but the documented workflow (`perf`/`samply`) had
+not been exercised end to end. It now has: `perf` 7.1.3, 499 Hz, 15 s, live
+server, 117,450 decoded lines. 1150 `notify` hits and 987 `fanout` hits as
+distinct frames, cells resolving by type parameter (`Cell<Arc…>` 265,
+`Cell<BindingDatagram…>` 118), and **zero `_RNv…` leakage** — so `v0`
+demangling is clean on that perf. Both halves confirmed by the tool the docs
+actually recommend.
+
 ## Re-decision: `profiling::pass` / `take_report` stays (2026-07-21, pre-merge)
 
 myko removed its `pass`/`take_report` A/B block (myko `19c2fef6`), so this API
