@@ -759,7 +759,9 @@ impl<T: Send + Sync> HeightInvalidate for CellInner<T> {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         // Amortized prune: a dropped dependent leaves a dead weak; sweep them on
-        // read so the set stays bounded to the live dependent set.
+        // read. NOTE: this bounds the vec to the live dependent set only because
+        // `add_height_dependent` also rejects duplicates — retain alone cannot
+        // remove a repeat registration of a still-live dependent (rship lv-c065).
         g.retain(|w| w.strong_count() > 0);
         g.clone()
     }
@@ -835,11 +837,30 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
 
     #[cfg(feature = "scheduler")]
     fn add_height_dependent(&self, dep: std::sync::Weak<dyn HeightInvalidate>) {
-        self.inner
+        let mut deps = self
+            .inner
             .height_dependents
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .push(dep);
+            .unwrap_or_else(|p| p.into_inner());
+        // Prune dead entries, then register only if this dependent isn't already
+        // here. Both steps are load-bearing: `own`/`own_keyed` re-register the
+        // SAME (source, dependent) pair on every `switch_map` re-knit whose
+        // closure returns a CACHED cell (myko memoizes report/query cells, so
+        // the "new" inner cell is usually the same live one). An unguarded push
+        // therefore grew this Vec without bound at 16 bytes per re-knit —
+        // measured at ~7.5k re-knits/s in the rship server, and quadratic in
+        // allocator churn on top, because `hi_dependents` clones the whole Vec
+        // on every invalidation. `retain(strong_count > 0)` alone did NOT bound
+        // it: it only drops dependents that have DIED, never duplicates of a
+        // live one. (rship lv-c065)
+        deps.retain(|w| w.strong_count() > 0);
+        // Compare data addresses, not `Weak::ptr_eq`: these are trait-object
+        // weaks and vtable identity is not guaranteed across coercion sites.
+        let new_addr = dep.as_ptr() as *const ();
+        if deps.iter().any(|w| w.as_ptr() as *const () == new_addr) {
+            return;
+        }
+        deps.push(dep);
     }
 
     #[cfg(feature = "scheduler")]
@@ -1534,5 +1555,108 @@ mod sub_index_tests {
                 map.iter().map(|(id, s)| (*id, s.clone())).collect(),
             )),
         }
+    }
+}
+
+#[cfg(all(test, feature = "scheduler"))]
+mod height_dependents_tests {
+    use crate::{Cell, Mutable, SwitchMapExt, Watchable};
+
+    /// Re-owning the SAME live source must not grow the source's
+    /// height-dependent set. This is the `switch_map`-onto-a-cached-cell shape:
+    /// the closure returns a memoized inner cell, so every re-knit calls
+    /// `own_keyed` with an identical (source, dependent) pair. Before the dedup
+    /// in `add_height_dependent`, each call pushed another 16-byte `Weak` that
+    /// nothing could ever reclaim while both cells were alive — an unbounded
+    /// leak proportional to re-knit rate (rship lv-c065).
+    #[test]
+    fn repeated_own_of_same_live_source_does_not_grow_dependents() {
+        let source = Cell::new(0i32);
+        let owner = Cell::new(0i32);
+        let key = uuid::Uuid::new_v4();
+
+        for _ in 0..1000 {
+            let guard = source.subscribe(|_| {});
+            owner.own_keyed(key, guard);
+        }
+
+        let len = source
+            .inner
+            .height_dependents
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .len();
+        assert_eq!(
+            len, 1,
+            "same (source, dependent) pair re-owned 1000x should register once, got {len}"
+        );
+    }
+
+    /// Distinct dependents must still all be registered — the dedup must not
+    /// under-approximate, or a dependent would keep a stale height (a glitch).
+    #[test]
+    fn distinct_dependents_are_all_registered() {
+        let source = Cell::new(0i32);
+        let owners: Vec<_> = (0..5).map(|_| Cell::new(0i32)).collect();
+        for owner in &owners {
+            owner.own(source.subscribe(|_| {}));
+        }
+
+        let len = source
+            .inner
+            .height_dependents
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .len();
+        assert_eq!(len, 5, "each distinct dependent must register exactly once");
+    }
+
+    /// A dead dependent's entry is still reclaimed (the pre-existing retain
+    /// behavior must survive the dedup change).
+    #[test]
+    fn dead_dependents_are_pruned() {
+        let source = Cell::new(0i32);
+        {
+            let owner = Cell::new(0i32);
+            owner.own(source.subscribe(|_| {}));
+        }
+        // Force a read, which runs the amortized prune.
+        let owner2 = Cell::new(0i32);
+        owner2.own(source.subscribe(|_| {}));
+
+        let len = source
+            .inner
+            .height_dependents
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .len();
+        assert_eq!(len, 1, "dropped dependent should not linger, got {len}");
+    }
+
+    /// End-to-end: a real `switch_map` re-knitting onto a shared long-lived
+    /// inner cell (the myko report-cache shape) must not grow the inner cell's
+    /// dependent set as the outer fires.
+    #[test]
+    fn switch_map_onto_shared_inner_does_not_grow() {
+        let outer = Cell::new(0i32);
+        let shared_inner = Cell::new(100i32);
+        let inner_for_closure = shared_inner.clone();
+        let switched = outer.switch_map(move |_| inner_for_closure.clone().lock());
+        let _guard = switched.subscribe(|_| {});
+
+        for i in 1..500 {
+            outer.set(i);
+        }
+
+        let len = shared_inner
+            .inner
+            .height_dependents
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .len();
+        assert!(
+            len <= 2,
+            "switch_map re-knit onto a cached inner cell grew dependents to {len}"
+        );
     }
 }
