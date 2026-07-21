@@ -1,0 +1,5 @@
+¦ditem©dbodyyÖadd_height_dependent pushed without dedup; hi_dependents' retain only drops DEAD dependents, never duplicates of a live one. switch_map calls own_keyed on every outer fire, so any re-knit onto a cached/shared inner cell (the myko report-cache case) re-registered the same (source, dependent) pair forever.
+
+Measured: 16.001 B/call, linear over 51.6M calls (+747MB); switch_map-onto-shared +4MB/s with throughput collapsing 2500->500 notifies/s from the quadratic hi_dependents clone. After fix: 0.000 B/call, flat RSS, sustained throughput.
+
+Root cause of rship lv-c065 (~0.43GB/h production leak OOMing a 48G cgroup every ~3 days). Fixed in PR #20 (branch fix/height-dependents-dedup, commit 4a816b6) with 4 regression tests.gcreatedx2026-07-21T18:45:08.541397ZlcreatedByDevxtrevor.a.sargent@gmail.compcreatedByMachinegmalcolmbidx ddfe1d09fa3f457c85172b1055439e27flabels€hprioritybP0iprojectIdx b84f94e9884549c8a7503abf702905d2etitlexCheight_dependents grew unboundedly on repeated own of a live sourcejchangeTypecSEThitemTypedTaskicreatedAtx2026-07-21T18:45:08.541405Zbtxx$3ad065a4-9f74-45d3-9b76-0bb46227cd2ehsourceIdgmalcolm
