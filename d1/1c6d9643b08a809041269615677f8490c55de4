@@ -1,0 +1,13 @@
+¦ditem©dbodyyEVERIFIED IN SOURCE (hyphae 1.4.0), found during the rship lv-c065 production leak hunt.
+
+SubscriptionGuard.source is a STRONG Arc<dyn DepNode> (subscription.rs:12). sample_on (source.rs:341-355) captures a STRONG cell clone in the notifier closure, then does cell.own(guard):
+
+  CellInner -> owned(guard) -> Arc<Source> -> subscribers -> closure -> Arc<CellInner>
+
+Neither side is ever freed. CellInner::drop never runs, so (a) the cell leaks, (b) it never deregisters from the trace registry, inflating any live-cell census, and (c) the closure KEEPS SAMPLING on every notifier tick forever - a CPU leak as well as a memory one. Per-orphaned-cell, so it accumulates with cell churn rather than with time.
+
+FIX SHAPE (design call is hyphae's): capture a Weak/downgraded handle in the subscriber closure and upgrade inside (dropping the tick if upgrade fails), or make the guard hold a Weak source. Note the guard's strong source is load-bearing for own()/add_height_dependent, so weakening it needs care.
+
+Consumers reproduce the same shape by hand (rship lv-df48): rship libs/sync/src/clock.rs:64-76 and libs/sync/src/value_runner.rs:279-289 - a destroyed sync value's sampled cell + its ValueRunner stay alive and keep ticking.
+
+Distinct from the height_dependents leak (hyphae/lv-ddfe, PR #20): that one is per-re-knit, this is per-orphaned-cell.gcreatedx2026-07-21T19:04:51.779245ZlcreatedByDevxtrevor.a.sargent@gmail.compcreatedByMachinegmalcolmbidx ccac4b6ad7984a589eafd89c16b996f4flabels€hprioritybP1iprojectIdx b84f94e9884549c8a7503abf702905d2etitlexYsample_on forms an Arc cycle via the guard's strong source â€” CellInner::drop never runsjchangeTypecSEThitemTypedTaskicreatedAtx2026-07-21T19:04:51.779256Zbtxx$9dc3ce51-3e1e-4b9f-8df3-72df561bdfc2hsourceIdgmalcolm
