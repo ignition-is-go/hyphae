@@ -126,18 +126,36 @@ the graph now hands you 2.0.0's. Two types with the same path are distinct
 types. A reader would reasonably conclude that hyphae 2.0 dropped the leptos
 extension traits and go looking in the wrong repository.
 
-**Check for it positively, not per-crate.** A per-crate assertion ("is hyphae
-resolved from crates.io at 2.0.0?") passes in this state, because the correct
-version *is* present — alongside the wrong one. Assert a single resolved version
-per crate name instead:
+**Check for it positively, and note what the positive check actually claims.**
+Asserting "is hyphae resolved from crates.io at 2.0.0?" passes in this state,
+because the correct version *is* present — alongside the wrong one. That
+assertion is existential ("there exists a resolution matching this") while the
+thing you meant is universal ("this is the resolution"), and nothing in its
+passing output distinguishes the two. Check the useful negative instead:
 
 ```sh
-cargo tree -i hyphae@1.4.0     # must error: "did not match any packages"
-cargo tree -i hyphae | head    # exactly one version
+cargo tree -i hyphae@1.4.0        # must error: "did not match any packages"
+cargo tree -i hyphae-leptos@1.1.0 # likewise
 ```
 
-This will hit every consumer depending on both crates. (Found by stormy-mole
-during myko's step-2 bump; myko `687dabf8`.)
+**Do not generalize this to "no duplicate majors anywhere."** Multi-major
+resolution is normal and overwhelmingly benign — myko's graph carries 22 of
+them (`syn` 1/2, `thiserror` 1/2, `rand` 0.8/0.9/0.10, `hashbrown` ×3, …), and a
+check that flags all of them fires 22 times on a healthy tree, which trains
+people to stop reading it. A disabled check is worse than no check.
+
+Duplication is dangerous only when **the duplicated crate's types cross an API
+boundary between two other crates in your graph**. `syn` 1 and 2 coexist
+harmlessly because nobody hands a `syn::Type` to a crate built against the other
+major. hyphae broke precisely because `Cell` flows from myko-core into
+hyphae-leptos. So scope the check to the family whose types you pass between
+your dependencies — for this ecosystem, `hyphae`, `hyphae-leptos`, and the
+myko-family crates — and enumerate them deliberately rather than scanning
+everything.
+
+(Constraint found by stormy-mole during myko's step-2 bump, myko `687dabf8`; it
+then caught a live duplicate in rship within minutes. Scoping rationale also
+stormy-mole's, from running the naive form against myko's lockfile.)
 
 **Verification method — note the gap.** The check "zero downstream uses of any
 removed API" was run with a *source* grep, which cannot see a removed **feature
