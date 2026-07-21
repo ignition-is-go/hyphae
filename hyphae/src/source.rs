@@ -344,10 +344,20 @@ pub trait SampleOnSourceExt<T: CellValue>: Watchable<T> + Gettable<T> {
     {
         let source = self.clone();
         let cell = Cell::<T, CellMutable>::new(source.get());
-        let cell_for_cb = cell.clone();
+        // Weak, not a strong clone: `cell.own(guard)` below hands the cell
+        // ownership of the subscription, and a `SubscriptionGuard` holds a
+        // *strong* `Arc<dyn DepNode>` to whatever it subscribed to
+        // (`subscription.rs`). A strong capture here would close the loop
+        // cell -> owned guard -> notifier -> subscribers -> closure -> cell, so
+        // the cell could never reach zero: it would never drop, never
+        // unsubscribe, never deregister, and would keep sampling `source`
+        // forever — a CPU leak as well as a memory one (rship lv-df48).
+        let weak_cell = cell.downgrade();
         let guard = notifier.subscribe(move |signal| {
-            if let Signal::Value(_) = signal {
-                cell_for_cb.set(source.get());
+            if let Signal::Value(_) = signal
+                && let Some(cell) = weak_cell.upgrade()
+            {
+                cell.set(source.get());
             }
         });
         cell.own(guard);
@@ -416,6 +426,46 @@ mod tests {
     use std::sync::{Arc, atomic::Ordering};
 
     use super::*;
+
+    /// `sample_on` used to capture a strong clone of its own output cell in the
+    /// notifier's subscriber closure while also owning the guard, forming an
+    /// unbreakable cycle: the cell could never drop (rship lv-df48).
+    #[test]
+    fn sample_on_cell_is_freed_when_dropped() {
+        let value = Cell::new(7i32);
+        let notifier: Source<()> = Source::new();
+
+        let sampled = value.sample_on(&notifier);
+        let weak = sampled.downgrade();
+
+        value.set(8);
+        notifier.emit(());
+        assert_eq!(sampled.get(), 8, "sampling must still work");
+
+        drop(sampled);
+        assert!(
+            weak.upgrade().is_none(),
+            "sample_on output cell outlived its last owner — Arc cycle is back"
+        );
+    }
+
+    /// The CPU-leak half of the same bug: once the sampled cell is gone the
+    /// subscription must be torn down, not left sampling forever.
+    #[test]
+    fn sample_on_unsubscribes_when_cell_dropped() {
+        let value = Cell::new(0i32);
+        let notifier: Source<()> = Source::new();
+
+        let sampled = value.sample_on(&notifier);
+        assert_eq!(notifier.subscriber_count(), 1);
+
+        drop(sampled);
+        assert_eq!(
+            notifier.subscriber_count(),
+            0,
+            "dropped sample_on cell left its subscription live on the notifier"
+        );
+    }
 
     #[test]
     fn emit_fires_subscribers() {
