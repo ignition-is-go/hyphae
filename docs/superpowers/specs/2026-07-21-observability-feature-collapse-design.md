@@ -126,6 +126,20 @@ the graph now hands you 2.0.0's. Two types with the same path are distinct
 types. A reader would reasonably conclude that hyphae 2.0 dropped the leptos
 extension traits and go looking in the wrong repository.
 
+**The same cause produces two error shapes, and only one of them tells you.**
+When the mismatch surfaces as a *type* error, rustc diagnoses it outright:
+
+```
+expected `hyphae::SubscriptionGuard`, found `myko::hyphae::SubscriptionGuard`
+note: there are multiple different versions of crate `hyphae` in the dependency graph
+```
+
+When it surfaces as *trait method resolution* (`E0599`, above), there is **no
+such note** — a method simply isn't found, because the impl exists for the other
+major's type. So the diagnosable form is the lucky one. If you hit `no method
+named …` on a type you can see the impl for, suspect duplication before you
+suspect the upstream dropped the API.
+
 **Check for it positively, and note what the positive check actually claims.**
 Asserting "is hyphae resolved from crates.io at 2.0.0?" passes in this state,
 because the correct version *is* present — alongside the wrong one. That
