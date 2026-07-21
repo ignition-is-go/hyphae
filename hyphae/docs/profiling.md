@@ -79,7 +79,18 @@ export RUSTFLAGS="-Cforce-frame-pointers=yes -Csymbol-mangling-version=v0"
 
 - `force-frame-pointers=yes` — frame-pointer unwinding, which most samplers walk
   faster and more reliably than DWARF.
-- `symbol-mangling-version=v0` — legible demangled names.
+- `symbol-mangling-version=v0` — legible demangled names. **Check your
+  collector demangles `v0`.** This is the one place the recipe can half-work:
+  `v0` (RFC 2603, symbols starting `_RNvXs…`) is newer than legacy `_ZN`, and
+  support differs by tool. `samply` and pprof-style collectors carry Rust
+  demanglers with `v0` support; `perf` resolves from `.symtab` with its own
+  implementation, and older builds of it do not. The failure is partial and
+  therefore easy to misread: you still get **correct frames** — `notify` and
+  `fanout` genuinely distinct, so the `inline(never)` half is fine — while cell
+  **type parameters** come back as raw `_RNvXs…`, which silently costs you the
+  attribute-by-cell-type half. If you see mangled symbols, that is the
+  demangler, not your build; switch to `samply` or a newer `perf` rather than
+  changing flags.
 - `-Zshare-generics=off` (nightly) — the biggest lever against "every cell is the
   same symbol"; only needed if folding is still hiding distinct cells.
 
