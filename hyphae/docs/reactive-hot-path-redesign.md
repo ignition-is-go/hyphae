@@ -108,6 +108,10 @@ kills the named O(n) scan with zero new deps and zero steady-state overhead.
   in the already-cloned snapshot). Identical to the previous COW behavior.
 - **Reentrancy, metrics, trace, `result_subscribers`** all preserved; the two
   registries share the same `SubscriberRegistry<S>` type.
+  <br>*(Historical: `metrics` and `trace` were deleted in 2.0 — see
+  `docs/superpowers/specs/2026-07-21-observability-feature-collapse-design.md`.
+  This document records the state at the time of that redesign and is not
+  current guidance.)*
 
 Iteration order changes from insertion order to `FxHashMap` order. No operator
 or test depends on subscriber notification order (verified).
