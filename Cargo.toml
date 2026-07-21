@@ -3,8 +3,6 @@ resolver = "2"
 members = [
     "hyphae",
     "hyphae-leptos",
-    "demo",
-    "inspector",
 ]
 
 [workspace.package]

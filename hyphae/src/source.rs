@@ -131,8 +131,6 @@ impl<T: CellValue> Source<T> {
             batched: AtomicBool::new(false),
             caller: Location::caller(),
         });
-        #[cfg(feature = "inspector")]
-        crate::registry::registry().register(inner.id, Arc::downgrade(&inner) as Weak<dyn DepNode>);
         Self {
             inner,
             _marker: PhantomData,
@@ -149,8 +147,6 @@ impl<T: CellValue> Source<T> {
 
     /// Take ownership of a subscription guard, dropping it when this source is dropped.
     pub fn own(&self, guard: SubscriptionGuard) {
-        #[cfg(feature = "inspector")]
-        crate::registry::registry().mark_owned(guard.source().id(), self.inner.id);
         self.inner.owned.insert(Uuid::new_v4(), guard);
     }
 
@@ -386,34 +382,8 @@ impl<T: Send + Sync> DepNode for Source<T> {
     }
 }
 
-#[cfg(feature = "inspector")]
-impl<T: Send + Sync> DepNode for SourceInner<T> {
-    fn id(&self) -> Uuid {
-        self.id
-    }
-
-    fn name(&self) -> Option<String> {
-        None
-    }
-
-    fn deps(&self) -> Vec<Arc<dyn DepNode>> {
-        Vec::new()
-    }
-
-    fn subscriber_count(&self) -> usize {
-        Arc::clone(&*self.subscribers.lock()).len()
-    }
-
-    fn owned_count(&self) -> usize {
-        self.owned.len()
-    }
-}
-
 impl<T> Drop for SourceInner<T> {
-    fn drop(&mut self) {
-        #[cfg(feature = "inspector")]
-        crate::registry::registry().deregister(&self.id);
-    }
+    fn drop(&mut self) {}
 }
 
 #[cfg(test)]

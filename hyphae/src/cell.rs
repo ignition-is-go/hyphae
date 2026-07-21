@@ -421,8 +421,6 @@ impl<T: CellValue> Cell<T, CellMutable> {
             height_dependents: Mutex::new(Vec::new()),
             caller: Location::caller(),
         });
-        #[cfg(feature = "inspector")]
-        crate::registry::registry().register(inner.id, Arc::downgrade(&inner) as Weak<dyn DepNode>);
         Self {
             inner,
             _marker: PhantomData,
@@ -443,7 +441,6 @@ impl<T: CellValue> Cell<T, CellMutable> {
         *self.inner.name.lock().expect("cell name poisoned") = Some(name.clone());
         self
     }
-
 }
 
 impl<T, M> Clone for Cell<T, M> {
@@ -466,12 +463,53 @@ impl<T, M> Cell<T, M> {
     }
 
     /// Take ownership of a subscription guard, dropping it when this cell is dropped.
+    ///
+    /// # Do not capture this cell strongly in the subscription's closure
+    ///
+    /// A [`SubscriptionGuard`] holds a **strong** `Arc` to the source it
+    /// subscribed to. So if the closure you subscribed with also holds a strong
+    /// clone of the cell you then `own` the guard on, you have built a cycle:
+    ///
+    /// ```text
+    /// CellInner -> owned guard -> Arc<source> -> subscribers -> closure -> CellInner
+    /// ```
+    ///
+    /// Nothing breaks that cycle. The cell never drops, so it never
+    /// unsubscribes; the closure keeps firing forever, recomputing a value no
+    /// one can observe. It is a CPU leak as well as a memory one, and it is
+    /// invisible in tests that only assert on values.
+    ///
+    /// Measured: ~17 KB retained per created-and-dropped cell, versus ~0 with
+    /// the weak form below.
+    ///
+    /// Capture a [`WeakCell`] and upgrade inside the closure instead:
+    ///
+    /// ```rust
+    /// # use hyphae::{Cell, Gettable, Mutable, Watchable, Signal};
+    /// let source = Cell::new(1i32);
+    /// let out = Cell::new(0i32);
+    ///
+    /// let weak = out.downgrade();            // <- weak, not `out.clone()`
+    /// let guard = source.subscribe(move |signal| {
+    ///     if let Signal::Value(v) = signal
+    ///         && let Some(out) = weak.upgrade()
+    ///     {
+    ///         out.set(**v * 2);
+    ///     }
+    /// });
+    /// out.own(guard);
+    /// # source.set(21);
+    /// # assert_eq!(out.get(), 42);
+    /// ```
+    ///
+    /// If the cell genuinely must outlive its own scope, keep it alive by
+    /// holding it somewhere real — not by making its own subscription pin it.
+    /// A self-pinning cell is indistinguishable from a leak, because that is
+    /// what it is.
     pub fn own(&self, guard: SubscriptionGuard)
     where
         T: Send + Sync + 'static,
     {
-        #[cfg(feature = "inspector")]
-        crate::registry::registry().mark_owned(guard.source().id(), self.inner.id);
         // Register this cell as a height-dependent of the guard's source (so a
         // later edge change there invalidates our cached height), then invalidate
         // our own height cone — our dependency set just changed. Localized: only
@@ -496,14 +534,6 @@ impl<T, M> Cell<T, M> {
     where
         T: Send + Sync + 'static,
     {
-        #[cfg(feature = "inspector")]
-        {
-            // Unmark old owned cell if being replaced
-            if let Some((_, old_guard)) = self.inner.owned.remove(&key) {
-                crate::registry::registry().unmark_owned(old_guard.source().id());
-            }
-            crate::registry::registry().mark_owned(guard.source().id(), self.inner.id);
-        }
         // Register as a height-dependent of the new source before it moves into
         // `owned`. The replaced guard's stale back-edge on the *old* source is
         // left to be pruned lazily — a stale dependent only over-invalidates (a
@@ -1056,59 +1086,8 @@ impl<T: CellValue> Mutable<T> for Cell<T, CellMutable> {
 // Inspector feature: DepNode for CellInner + Drop to deregister
 // ============================================================================
 
-#[cfg(feature = "inspector")]
-impl<T: CellValue> DepNode for CellInner<T> {
-    fn id(&self) -> Uuid {
-        self.id
-    }
-
-    fn name(&self) -> Option<String> {
-        self.name
-            .lock()
-            .expect("cell name poisoned")
-            .as_ref()
-            .map(|s| s.to_string())
-    }
-
-    fn deps(&self) -> Vec<Arc<dyn DepNode>> {
-        let mut seen = std::collections::HashSet::new();
-        self.owned
-            .iter()
-            .filter_map(|entry| {
-                let source = entry.value().source();
-                let id = source.id();
-                if seen.insert(id) {
-                    Some(Arc::clone(source))
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
-    fn subscriber_count(&self) -> usize {
-        self.subscribers.lock().len() + self.result_subscribers.lock().len()
-    }
-
-    fn owned_count(&self) -> usize {
-        self.owned.len()
-    }
-
-    fn value_debug(&self) -> Option<String> {
-        let arc = self.value.lock().expect("cell value poisoned").clone();
-        Some(format!("{:?}", *arc))
-    }
-
-    fn caller(&self) -> Option<&'static Location<'static>> {
-        Some(self.caller)
-    }
-}
-
 impl<T> Drop for CellInner<T> {
-    fn drop(&mut self) {
-        #[cfg(feature = "inspector")]
-        crate::registry::registry().deregister(&self.id);
-    }
+    fn drop(&mut self) {}
 }
 
 #[cfg(test)]

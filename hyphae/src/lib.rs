@@ -151,10 +151,6 @@ pub mod traits;
 // Both are available on wasm: the registry is fully portable; the `server`
 // module keeps a uniform public API but its TCP transport (tokio/mio) is
 // native-only, so on wasm `start_server` returns an inert handle.
-#[cfg(feature = "inspector")]
-pub mod registry;
-#[cfg(feature = "inspector")]
-pub mod server;
 
 #[cfg(test)]
 mod tests;

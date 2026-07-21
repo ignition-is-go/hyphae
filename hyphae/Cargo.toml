@@ -17,7 +17,6 @@ path = "src/lib.rs"
 [features]
 default = []
 async = ["flume", "futures-core"]
-inspector = ["serde", "serde_json", "tokio", "uuid/serde"]
 # Opt-in deferred/ordered/glitch-free propagation under an explicit `batch()`
 # boundary, plus the `clock`/`TickSource` seam for frame-locked ticking. Off by
 # default: the synchronous eager-push path is unchanged when this is disabled.
@@ -40,21 +39,15 @@ parking_lot.workspace = true
 rustc-hash.workspace = true
 flume = { workspace = true, optional = true }
 futures-core = { workspace = true, optional = true }
-serde = { version = "1", features = ["derive"], optional = true }
-serde_json = { version = "1", optional = true }
 # Optional: only pulled in by the `profiling` feature. hyphae emits spans; the
 # consumer chooses the subscriber (`tracing-flame`, `tracing-tracy`, …).
 tracing = { version = "0.1", optional = true }
 uuid.workspace = true
 
-# Native-only deps (thread pool, precise sleep, inspector TCP server).
-# `tokio` is native-only: its `net` feature pulls in `mio`, which does not
-# build for wasm. The inspector TCP `server` module is correspondingly gated to
-# native; on wasm the inspector exposes only the in-memory `registry`.
+# Native-only deps (thread pool, precise sleep).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rayon = "1.10"
 spin_sleep = "1"
-tokio = { workspace = true, optional = true }
 
 # WASM deps: uuid/getrandom need js RNG; gloo-timers (futures) + the
 # wasm-bindgen-futures executor drive leak-free setTimeout-backed timers;

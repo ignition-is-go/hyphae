@@ -282,11 +282,6 @@ where
         let len_cell = Cell::new(0);
 
         // Mark len_cell as owned by diffs_cell so it doesn't appear as an orphan root
-        #[cfg(feature = "inspector")]
-        {
-            use crate::traits::DepNode;
-            crate::registry::registry().mark_owned(len_cell.id(), diffs_cell.id());
-        }
 
         Self {
             inner: Arc::new(CellMapInner {
@@ -304,12 +299,6 @@ where
 
     /// Own a subscription guard, keeping it alive as long as this CellMap exists.
     pub fn own(&self, guard: SubscriptionGuard) {
-        #[cfg(feature = "inspector")]
-        {
-            use crate::traits::DepNode;
-            // Use diffs_cell as the CellMap's representative identity in the inspector
-            crate::registry::registry().mark_owned(guard.source().id(), self.inner.diffs_cell.id());
-        }
         self.inner.owned.insert(Uuid::new_v4(), guard);
     }
 
@@ -820,11 +809,6 @@ where
         }
 
         // Mark per-key cell as owned by diffs_cell so it doesn't appear as an orphan root
-        #[cfg(feature = "inspector")]
-        {
-            use crate::traits::DepNode;
-            crate::registry::registry().mark_owned(cell.id(), self.inner.diffs_cell.id());
-        }
 
         let weak = cell.downgrade();
 

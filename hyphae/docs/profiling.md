@@ -35,9 +35,25 @@ removed in 2.0.0). It does three things, and compiles to nothing when off:
 - Exposes [`hyphae::profiling::pass`] / [`take_report`] for measuring how much
   of a propagation pass is redundant re-fire.
 
-It adds **zero per-cell resident bytes** and no global census, and measures ~1%
-on the hot path with no subscriber attached — cheap enough to leave on in
-production, which is the point.
+It adds **zero per-cell resident bytes** and no global census. With no
+subscriber attached it costs, measured against a feature-off build
+(`benches/latency.rs`, `--quick`):
+
+| | feature off | `profiling` on | delta |
+|---|---|---|---|
+| single cell set + watch | 45.8 ns | 54.6 ns | +19% (+8.8 ns) |
+| chain depth / map chain 20 | 286 ns | 321 ns | +12% (+35 ns) |
+
+That is the honest number: ~19% relative on the cheapest possible operation,
+which is single-digit nanoseconds absolute, from `record_fire`'s thread-local
+borrow, the name clone, and span creation. Cheap enough to leave on in
+production — which is the point — but it is not free, and it is not the "~1%"
+you get if you mistakenly compare against the old `trace` build instead of
+against baseline.
+
+For scale, the feature this replaced (`trace`, removed in 2.0) cost **12.5×** on
+the same benchmark — 595 ns and 1743 ns — plus ~0.63 GB of resident registry on
+a 21 GB production heap.
 
 ## Layer 2 — build flags that keep stacks readable
 

@@ -1,4 +1,4 @@
-use std::{collections::HashSet, panic::Location, sync::Arc};
+use std::{collections::HashSet, sync::Arc};
 
 use uuid::Uuid;
 
@@ -58,16 +58,6 @@ pub trait DepNode: Send + Sync {
     /// Returns the number of subscription guards owned by this node.
     fn owned_count(&self) -> usize {
         0
-    }
-
-    /// Returns the Debug-formatted current value, if available.
-    fn value_debug(&self) -> Option<String> {
-        None
-    }
-
-    /// Returns the source location where this cell was created.
-    fn caller(&self) -> Option<&'static Location<'static>> {
-        None
     }
 
     fn display_name(&self) -> String {
