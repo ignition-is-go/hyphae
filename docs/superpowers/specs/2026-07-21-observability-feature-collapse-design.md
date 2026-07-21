@@ -235,3 +235,35 @@ Both load-bearing guarantees hold in the field:
 
 Scheduler internals resolve too. No missing boundary, no unattributable span, no
 change requested by the consumer. The surviving feature is sufficient as shipped.
+
+## Re-decision: `profiling::pass` / `take_report` stays (2026-07-21, pre-merge)
+
+myko removed its `pass`/`take_report` A/B block (myko `19c2fef6`), so this API
+now has **zero consumers**. It survived the collapse partly on the evidence that
+myko called it; that evidence expired before merge, so the decision was re-made
+rather than inherited.
+
+**Kept.** Not from inertia — it is a different category from everything else
+this document deletes:
+
+- **It measures something external tools structurally cannot.** A pass is one
+  logical propagation boundary; the report is per-cell *fanout counts within
+  that boundary*, i.e. the redundant-re-fire (coalesceable) fraction. A sampling
+  profiler sees aggregate CPU, never "cell X fanned out 5 times in one pass."
+  Contrast `hot_cells()`, deleted precisely because a heap profiler already
+  answered its question better.
+- **It is not a service.** The registry was: unconditional per-cell
+  registration, a global census, a background reporting loop, env-var-tuned
+  logging, resident per-cell memory. This is a scoped opt-in function — one
+  thread-local, no global state, no reporting loop, and no allocation at all
+  outside an explicit `pass()` scope.
+- **It costs nothing when unused.** `record_fire` is one thread-local borrow and
+  a depth check outside a pass — consistent with `profiling` measuring
+  indistinguishable from baseline.
+- **It is decision-support for live work** — sizing the coalesceable fraction is
+  how you decide whether to adopt `batch`/`scheduler`, which is ongoing.
+
+**Condition on that decision:** it now ships unused, which is how code rots. If
+it still has no consumer by the next breaking release, delete it then — removing
+it at 3.0 costs the same as removing it here, and an API with no user and no
+advocate has failed to earn its place.
