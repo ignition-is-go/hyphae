@@ -18,17 +18,17 @@ path = "src/lib.rs"
 default = []
 async = ["flume", "futures-core"]
 inspector = ["serde", "serde_json", "tokio", "uuid/serde"]
-metrics = []
-trace = ["metrics"]
 # Opt-in deferred/ordered/glitch-free propagation under an explicit `batch()`
 # boundary, plus the `clock`/`TickSource` seam for frame-locked ticking. Off by
 # default: the synchronous eager-push path is unchanged when this is disabled.
 scheduler = []
-# First-class observability for the scheduler: `#[inline(never)]` propagation
-# boundaries so sampling profilers stop folding `notify`/`fanout` symbols, plus
-# per-cell `tracing` spans. Builds on `trace`; consumers attach their own
-# `tracing` subscriber (Tracy, `tracing-flame`, etc.).
-profiling = ["trace", "dep:tracing"]
+# The one observability feature: `#[inline(never)]` propagation boundaries so
+# sampling profilers stop folding `notify`/`write_value`/`fanout` into one
+# symbol, per-fanout `tracing` spans tagged with cell id/name, and the
+# `profiling::pass` re-fire report. Zero per-cell resident overhead and no
+# global census — consumers attach their own `tracing` subscriber (Tracy,
+# `tracing-flame`, …), and use a heap profiler for memory attribution.
+profiling = ["dep:tracing"]
 
 [dependencies]
 anyhow = "1"

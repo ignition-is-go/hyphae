@@ -1,5 +1,3 @@
-#[cfg(feature = "metrics")]
-use std::time::Duration;
 use std::{
     fmt::Debug,
     marker::PhantomData,
@@ -10,34 +8,15 @@ use std::{
     },
 };
 
-#[cfg(feature = "metrics")]
-use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use rustc_hash::FxHashMap;
 use uuid::Uuid;
 
-#[cfg(feature = "metrics")]
-use crate::metrics::CellMetrics;
 use crate::{
     signal::Signal,
     subscription::SubscriptionGuard,
     traits::{CellValue, DepNode, Gettable, Mutable, Watchable, WatchableResult},
 };
-
-/// Information about a slow subscriber callback.
-#[cfg(feature = "metrics")]
-#[derive(Debug, Clone)]
-pub struct SlowSubscriberAlert {
-    /// The subscriber ID.
-    pub subscriber_id: Uuid,
-    /// How long the subscriber took (nanoseconds).
-    pub duration_ns: u64,
-    /// The configured threshold (nanoseconds).
-    pub threshold_ns: u64,
-}
-
-#[cfg(feature = "metrics")]
-type SlowSubscriberCallback = Arc<dyn Fn(SlowSubscriberAlert) + Send + Sync>;
 
 #[derive(Debug, Clone)]
 pub struct CellMutable;
@@ -111,15 +90,6 @@ pub(crate) struct CellInner<T> {
     /// dependent, or that dependent would keep a stale height (a glitch).
     #[cfg(feature = "scheduler")]
     pub(crate) height_dependents: Mutex<Vec<std::sync::Weak<dyn HeightInvalidate>>>,
-    /// Optional metrics for observability.
-    #[cfg(feature = "metrics")]
-    pub(crate) metrics: Option<Arc<CellMetrics>>,
-    /// Slow subscriber threshold (nanoseconds). None = disabled.
-    #[cfg(feature = "metrics")]
-    pub(crate) slow_subscriber_threshold_ns: ArcSwap<Option<u64>>,
-    /// Callback for slow subscriber alerts.
-    #[cfg(feature = "metrics")]
-    pub(crate) slow_subscriber_callback: ArcSwap<Option<SlowSubscriberCallback>>,
     /// Source location where this cell was created (via #[track_caller]).
     #[allow(dead_code)]
     pub(crate) caller: &'static Location<'static>,
@@ -449,92 +419,14 @@ impl<T: CellValue> Cell<T, CellMutable> {
             height_epoch: std::sync::atomic::AtomicU64::new(1),
             #[cfg(feature = "scheduler")]
             height_dependents: Mutex::new(Vec::new()),
-            #[cfg(feature = "metrics")]
-            metrics: default_metrics(),
-            #[cfg(feature = "metrics")]
-            slow_subscriber_threshold_ns: ArcSwap::from_pointee(None),
-            #[cfg(feature = "metrics")]
-            slow_subscriber_callback: ArcSwap::from_pointee(None),
             caller: Location::caller(),
         });
         #[cfg(feature = "inspector")]
         crate::registry::registry().register(inner.id, Arc::downgrade(&inner) as Weak<dyn DepNode>);
-        #[cfg(feature = "trace")]
-        crate::tracing::register_cell(inner.id, Some(Location::caller().to_string()));
         Self {
             inner,
             _marker: PhantomData,
         }
-    }
-
-    /// Create a new mutable cell with metrics collection enabled.
-    #[cfg(feature = "metrics")]
-    #[track_caller]
-    pub fn with_metrics(initial_value: T) -> Self {
-        let inner = Arc::new(CellInner {
-            id: Uuid::new_v4(),
-            subscribers: parking_lot::Mutex::new(SubscriberRegistry::new()),
-            result_subscribers: parking_lot::Mutex::new(SubscriberRegistry::new()),
-            value: Mutex::new(Arc::new(initial_value)),
-            name: Mutex::new(None),
-            owned: DashMap::new(),
-            completed: AtomicBool::new(false),
-            errored: AtomicBool::new(false),
-            error: Mutex::new(None),
-            #[cfg(feature = "scheduler")]
-            height_cache: std::sync::atomic::AtomicU64::new(0),
-            #[cfg(feature = "scheduler")]
-            no_coalesce: AtomicBool::new(crate::scheduler::birth_no_coalesce()),
-            #[cfg(feature = "scheduler")]
-            height_epoch: std::sync::atomic::AtomicU64::new(1),
-            #[cfg(feature = "scheduler")]
-            height_dependents: Mutex::new(Vec::new()),
-            metrics: Some(Arc::new(CellMetrics::new())),
-            slow_subscriber_threshold_ns: ArcSwap::from_pointee(None),
-            slow_subscriber_callback: ArcSwap::from_pointee(None),
-            caller: Location::caller(),
-        });
-        #[cfg(feature = "inspector")]
-        crate::registry::registry().register(inner.id, Arc::downgrade(&inner) as Weak<dyn DepNode>);
-        #[cfg(feature = "trace")]
-        crate::tracing::register_cell(inner.id, Some(Location::caller().to_string()));
-        Self {
-            inner,
-            _marker: PhantomData,
-        }
-    }
-    /// Configure slow subscriber detection.
-    ///
-    /// When any subscriber callback takes longer than `threshold`, the `callback`
-    /// is invoked with details about the slow subscriber.
-    ///
-    /// Note: This requires metrics to be enabled. If metrics are not enabled,
-    /// subscriber timing is not tracked and slow subscriber detection will not work.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use hyphae::{Cell, Mutable};
-    /// use std::time::Duration;
-    ///
-    /// let cell = Cell::with_metrics(0);
-    /// cell.on_slow_subscriber(Duration::from_millis(10), |alert| {
-    ///     eprintln!("Slow subscriber {:?} took {}ms",
-    ///         alert.subscriber_id,
-    ///         alert.duration_ns / 1_000_000);
-    /// });
-    /// ```
-    #[cfg(feature = "metrics")]
-    pub fn on_slow_subscriber<F>(&self, threshold: Duration, callback: F)
-    where
-        F: Fn(SlowSubscriberAlert) + Send + Sync + 'static,
-    {
-        self.inner
-            .slow_subscriber_threshold_ns
-            .store(Arc::new(Some(threshold.as_nanos() as u64)));
-        self.inner
-            .slow_subscriber_callback
-            .store(Arc::new(Some(Arc::new(callback))));
     }
 
     /// Lock this mutable cell, converting it to an immutable cell.
@@ -549,63 +441,9 @@ impl<T: CellValue> Cell<T, CellMutable> {
     pub fn with_name(self, name: impl Into<Arc<str>>) -> Self {
         let name = name.into();
         *self.inner.name.lock().expect("cell name poisoned") = Some(name.clone());
-        #[cfg(feature = "trace")]
-        crate::tracing::update_name(self.inner.id, name.to_string());
         self
     }
 
-    /// Check if the cell appears backed up based on last notify time.
-    ///
-    /// Returns true if metrics are enabled and the last notify took longer
-    /// than 1ms (the default threshold). Use `is_backed_up_threshold()` for
-    /// a custom threshold.
-    ///
-    /// Returns false if metrics are not enabled.
-    #[cfg(feature = "metrics")]
-    pub fn is_backed_up(&self) -> bool {
-        self.is_backed_up_threshold(std::time::Duration::from_millis(1))
-    }
-
-    /// Check if the cell is backed up with a custom threshold.
-    ///
-    /// Returns true if metrics are enabled and the last notify duration
-    /// exceeded the given threshold.
-    #[cfg(feature = "metrics")]
-    pub fn is_backed_up_threshold(&self, threshold: std::time::Duration) -> bool {
-        self.inner
-            .metrics
-            .as_ref()
-            .map(|m| m.last_notify_time_ns() > threshold.as_nanos() as u64)
-            .unwrap_or(false)
-    }
-
-    /// Try to set a value, rejecting if the cell appears backed up.
-    ///
-    /// Uses the default 1ms threshold. Returns `Err(value)` if the cell
-    /// is backed up (last notify took > 1ms), allowing the caller to
-    /// handle backpressure.
-    #[cfg(feature = "metrics")]
-    pub fn try_set(&self, value: T) -> Result<(), T> {
-        if self.is_backed_up() {
-            Err(value)
-        } else {
-            self.set(value);
-            Ok(())
-        }
-    }
-
-    /// Try to set a value with a custom backpressure threshold.
-    ///
-    /// Returns `Err(value)` if the last notify duration exceeded the threshold.
-    #[cfg(feature = "metrics")]
-    pub fn try_set_threshold(&self, value: T, threshold: std::time::Duration) -> Result<(), T> {
-        if self.is_backed_up_threshold(threshold) {
-            Err(value)
-        } else {
-            self.set(value);
-            Ok(())
-        }
-    }
 }
 
 impl<T, M> Clone for Cell<T, M> {
@@ -625,15 +463,6 @@ impl<T, M> Cell<T, M> {
             inner: Arc::downgrade(&self.inner),
             _marker: PhantomData,
         }
-    }
-
-    /// Get metrics if enabled for this cell.
-    ///
-    /// Returns `None` if the cell was created without metrics.
-    /// Use `Cell::with_metrics()` to create a cell with metrics enabled.
-    #[cfg(feature = "metrics")]
-    pub fn metrics(&self) -> Option<&CellMetrics> {
-        self.inner.metrics.as_ref().map(|m| m.as_ref())
     }
 
     /// Take ownership of a subscription guard, dropping it when this cell is dropped.
@@ -656,8 +485,6 @@ impl<T, M> Cell<T, M> {
         self.inner.owned.insert(Uuid::new_v4(), guard);
         #[cfg(feature = "scheduler")]
         invalidate_height_cone(self.inner.as_ref());
-        #[cfg(feature = "trace")]
-        crate::tracing::update_owned_count(self.inner.id, self.inner.owned.len());
     }
 
     /// Take ownership of a subscription guard with a stable key.
@@ -692,8 +519,6 @@ impl<T, M> Cell<T, M> {
         // (this cell + its transitive dependents), not the whole process.
         #[cfg(feature = "scheduler")]
         invalidate_height_cone(self.inner.as_ref());
-        #[cfg(feature = "trace")]
-        crate::tracing::update_owned_count(self.inner.id, self.inner.owned.len());
     }
 }
 
@@ -881,8 +706,6 @@ impl<T: CellValue> Cell<T, CellImmutable> {
     pub fn with_name(self, name: impl Into<Arc<str>>) -> Self {
         let name = name.into();
         *self.inner.name.lock().expect("cell name poisoned") = Some(name.clone());
-        #[cfg(feature = "trace")]
-        crate::tracing::update_name(self.inner.id, name.to_string());
         self
     }
 }
@@ -992,14 +815,6 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
             .entered()
         };
 
-        // Start timing if metrics enabled
-        #[cfg(feature = "metrics")]
-        let notify_start = self
-            .inner
-            .metrics
-            .as_ref()
-            .map(|_| crate::platform::Instant::now());
-
         // Hot path: take the subscribers mutex briefly to grab the notify
         // snapshot (rebuilt from the id-index only if it changed since the last
         // notify), drop the lock, then iterate with no internal lock held.
@@ -1015,47 +830,12 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
             subs
         };
 
-        // Slow-subscriber config is only consulted when metrics are enabled
-        // and configured. Defer the ArcSwap loads until then so the steady
-        // state pays nothing.
-        #[cfg(feature = "metrics")]
-        let metrics = &self.inner.metrics;
-        #[cfg(feature = "metrics")]
-        let (slow_threshold, slow_callback) = if metrics.is_some() {
-            (
-                **self.inner.slow_subscriber_threshold_ns.load(),
-                (**self.inner.slow_subscriber_callback.load()).clone(),
-            )
-        } else {
-            (None, None)
-        };
-
         // Subscriber callbacks must not panic — see `Watchable::subscribe` docs.
         // A panic here propagates out of the caller's `set`/`send` and halts the
         // rest of this fanout, which is a bug in the subscriber that should surface
         // loudly rather than be silently swallowed.
         for (_subscriber_id, sub) in subs.as_slice() {
-            #[cfg(feature = "metrics")]
-            let sub_start = metrics.as_ref().map(|_| crate::platform::Instant::now());
-
             (sub.callback)(signal);
-
-            #[cfg(feature = "metrics")]
-            if let (Some(m), Some(start)) = (metrics, sub_start) {
-                let elapsed = start.elapsed().as_nanos() as u64;
-                m.update_slowest_subscriber(elapsed);
-
-                if let (Some(threshold), Some(cb)) = (&slow_threshold, &slow_callback)
-                    && elapsed > *threshold
-                {
-                    let alert = SlowSubscriberAlert {
-                        subscriber_id: *_subscriber_id,
-                        duration_ns: elapsed,
-                        threshold_ns: *threshold,
-                    };
-                    cb(alert);
-                }
-            }
         }
 
         // Fallible subscribers run after the infallible chain. Errors are logged
@@ -1071,9 +851,6 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         };
 
         for (subscriber_id, sub) in result_subs.as_slice() {
-            #[cfg(feature = "metrics")]
-            let sub_start = metrics.as_ref().map(|_| crate::platform::Instant::now());
-
             if let Err(err) = (sub.callback)(signal) {
                 log::error!(
                     "hyphae: fallible subscriber {} on cell {} returned error: {}",
@@ -1082,38 +859,6 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
                     err
                 );
             }
-
-            #[cfg(feature = "metrics")]
-            if let (Some(m), Some(start)) = (metrics, sub_start) {
-                let elapsed = start.elapsed().as_nanos() as u64;
-                m.update_slowest_subscriber(elapsed);
-
-                if let (Some(threshold), Some(cb)) = (&slow_threshold, &slow_callback)
-                    && elapsed > *threshold
-                {
-                    let alert = SlowSubscriberAlert {
-                        subscriber_id: *subscriber_id,
-                        duration_ns: elapsed,
-                        threshold_ns: *threshold,
-                    };
-                    cb(alert);
-                }
-            }
-        }
-
-        // Record overall notify timing
-        #[cfg(feature = "metrics")]
-        if let (Some(metrics), Some(start)) = (&self.inner.metrics, notify_start) {
-            let duration_ns = start.elapsed().as_nanos() as u64;
-            metrics.record_notify(duration_ns);
-            #[cfg(feature = "trace")]
-            crate::tracing::record_notify(
-                self.inner.id,
-                duration_ns,
-                subs.as_slice().len() + result_subs.as_slice().len(),
-                self.inner.owned.len(),
-                metrics.slowest_subscriber_ns(),
-            );
         }
     }
 }
@@ -1186,41 +931,14 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
             (sub.callback)(&Signal::Error(err));
         }
 
-        // Record subscriber added if metrics enabled
-        #[cfg(feature = "metrics")]
-        if let Some(metrics) = &self.inner.metrics {
-            metrics.record_subscriber_added();
-        }
-        #[cfg(feature = "trace")]
-        {
-            let subs_len = self.inner.subscribers.lock().len();
-            let result_len = self.inner.result_subscribers.lock().len();
-            crate::tracing::update_subscriber_count(self.inner.id, subs_len + result_len);
-        }
-
         let source: Arc<dyn DepNode> = Arc::new(self.clone());
         let cell = self.clone();
-        #[cfg(feature = "metrics")]
-        let metrics = self.inner.metrics.clone();
         SubscriptionGuard::new(id, source, move || {
             // O(1) indexed remove; the removed subscriber and displaced stale
             // snapshot both drop outside the lock (see insert above).
             let (removed_sub, stale_snap) = cell.inner.subscribers.lock().remove(&id);
-            let removed = removed_sub.is_some();
             drop(removed_sub);
             drop(stale_snap);
-            #[cfg(feature = "metrics")]
-            if removed && let Some(m) = &metrics {
-                m.record_subscriber_removed();
-            }
-            #[cfg(not(feature = "metrics"))]
-            let _ = removed;
-            #[cfg(feature = "trace")]
-            {
-                let subs_len = cell.inner.subscribers.lock().len();
-                let result_len = cell.inner.result_subscribers.lock().len();
-                crate::tracing::update_subscriber_count(cell.inner.id, subs_len + result_len);
-            }
         })
     }
 
@@ -1233,27 +951,10 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
         let removed_from_subs = removed_sub.is_some();
         drop(removed_sub);
         drop(stale_snap);
-        let removed_from_result = if removed_from_subs {
-            false
-        } else {
+        if !removed_from_subs {
             let (removed, stale_result_snap) = self.inner.result_subscribers.lock().remove(&id);
-            let did = removed.is_some();
             drop(removed);
             drop(stale_result_snap);
-            did
-        };
-        if removed_from_subs || removed_from_result {
-            // Record subscriber removed if metrics enabled
-            #[cfg(feature = "metrics")]
-            if let Some(metrics) = &self.inner.metrics {
-                metrics.record_subscriber_removed();
-            }
-            #[cfg(feature = "trace")]
-            {
-                let subs_len = self.inner.subscribers.lock().len();
-                let result_len = self.inner.result_subscribers.lock().len();
-                crate::tracing::update_subscriber_count(self.inner.id, subs_len + result_len);
-            }
         }
     }
 
@@ -1325,40 +1026,14 @@ impl<T: CellValue, U: Send + Sync + 'static> WatchableResult<T> for Cell<T, U> {
         let displaced = self.inner.result_subscribers.lock().insert(id, sub);
         drop(displaced);
 
-        #[cfg(feature = "metrics")]
-        if let Some(metrics) = &self.inner.metrics {
-            metrics.record_subscriber_added();
-        }
-        #[cfg(feature = "trace")]
-        {
-            let subs_len = self.inner.subscribers.lock().len();
-            let result_len = self.inner.result_subscribers.lock().len();
-            crate::tracing::update_subscriber_count(self.inner.id, subs_len + result_len);
-        }
-
         let source: Arc<dyn DepNode> = Arc::new(self.clone());
         let cell = self.clone();
-        #[cfg(feature = "metrics")]
-        let metrics = self.inner.metrics.clone();
         SubscriptionGuard::new(id, source, move || {
             // O(1) indexed remove; removed subscriber and stale snapshot drop
             // outside the lock. See Watchable::subscribe above.
             let (removed_sub, stale_snap) = cell.inner.result_subscribers.lock().remove(&id);
-            let removed = removed_sub.is_some();
             drop(removed_sub);
             drop(stale_snap);
-            #[cfg(feature = "metrics")]
-            if removed && let Some(m) = &metrics {
-                m.record_subscriber_removed();
-            }
-            #[cfg(not(feature = "metrics"))]
-            let _ = removed;
-            #[cfg(feature = "trace")]
-            {
-                let subs_len = cell.inner.subscribers.lock().len();
-                let result_len = cell.inner.result_subscribers.lock().len();
-                crate::tracing::update_subscriber_count(cell.inner.id, subs_len + result_len);
-            }
         })
     }
 }
@@ -1431,21 +1106,9 @@ impl<T: CellValue> DepNode for CellInner<T> {
 
 impl<T> Drop for CellInner<T> {
     fn drop(&mut self) {
-        #[cfg(feature = "trace")]
-        crate::tracing::deregister_cell(&self.id);
         #[cfg(feature = "inspector")]
         crate::registry::registry().deregister(&self.id);
     }
-}
-
-#[cfg(all(feature = "metrics", feature = "trace"))]
-fn default_metrics() -> Option<Arc<CellMetrics>> {
-    Some(Arc::new(CellMetrics::new()))
-}
-
-#[cfg(all(feature = "metrics", not(feature = "trace")))]
-fn default_metrics() -> Option<Arc<CellMetrics>> {
-    None
 }
 
 #[cfg(test)]

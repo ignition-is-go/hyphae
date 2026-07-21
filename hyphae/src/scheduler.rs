@@ -648,7 +648,7 @@ pub fn no_coalesce<R>(f: impl FnOnce() -> R) -> R {
 }
 
 /// Whether a [`no_coalesce`] construction scope is active on this thread. Read
-/// by `Cell::new`/`with_metrics` to stamp a cell's coalescing policy at birth.
+/// by `Cell::new` to stamp a cell's coalescing policy at birth.
 pub(crate) fn birth_no_coalesce() -> bool {
     NO_COALESCE_DEPTH.with(|d| d.get() > 0)
 }

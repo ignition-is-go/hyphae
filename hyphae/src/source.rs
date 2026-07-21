@@ -133,8 +133,6 @@ impl<T: CellValue> Source<T> {
         });
         #[cfg(feature = "inspector")]
         crate::registry::registry().register(inner.id, Arc::downgrade(&inner) as Weak<dyn DepNode>);
-        #[cfg(feature = "trace")]
-        crate::tracing::register_cell(inner.id, Some(Location::caller().to_string()));
         Self {
             inner,
             _marker: PhantomData,
@@ -161,12 +159,11 @@ impl<T: CellValue> Source<T> {
         self.inner.completed.load(Ordering::SeqCst)
     }
 
-    /// Builder-style name attachment for tracing/inspector. No-op when the
-    /// inspector / trace features are off.
+    /// Builder-style name attachment, kept for API compatibility with
+    /// [`Cell::with_name`](crate::Cell::with_name). `Source` carries no name
+    /// field, so this is a no-op.
     #[allow(unused_variables)]
     pub fn with_name(self, name: impl Into<std::sync::Arc<str>>) -> Self {
-        #[cfg(feature = "trace")]
-        crate::tracing::update_name(self.inner.id, name.into().to_string());
         self
     }
 
@@ -414,8 +411,6 @@ impl<T: Send + Sync> DepNode for SourceInner<T> {
 
 impl<T> Drop for SourceInner<T> {
     fn drop(&mut self) {
-        #[cfg(feature = "trace")]
-        crate::tracing::deregister_cell(&self.id);
         #[cfg(feature = "inspector")]
         crate::registry::registry().deregister(&self.id);
     }
