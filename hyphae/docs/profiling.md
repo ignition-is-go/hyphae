@@ -101,6 +101,35 @@ With `profiling` on, `notify` / `fanout` / subscriber frames now separate.
   perf script | inferno-flamegraph > flame.svg
   ```
 
+### What a working capture looks like
+
+Validated on a live rship server (pprof, 499 Hz, 20 s, 126 warmed scenes)
+against hyphae 2.0:
+
+```
+ 234 samples  hyphae::cell::…<CellMutable>>::notify::
+ 171 samples  hyphae::cell::…<CellMutable>>::fanout
+              write_value present
+3015 samples  hyphae::platform::native::reactor::
+1132 samples  hyphae::scheduler::run_wave::run_group
+ 587 samples  hyphae::scheduler::batch
+ 593 samples  hyphae::source::Source<IntervalTick>>::emit
+```
+
+Two things to check in your own capture, because they are what the feature
+exists to guarantee:
+
+1. **`notify` and `fanout` appear as separate frames.** If they have collapsed
+   into one, the `inline(never)` boundaries are not in effect — you built
+   without the `profiling` feature.
+2. **Cells carry their type parameters** (`Cell<Arc<BindingNodeInputValue>…>`,
+   `Cell<BindingDatagram…>`). That is what makes fanout attributable *by cell
+   type* without any in-process registry — it is the replacement for the deleted
+   `hot_cells()`, and it comes from the symbol, not from instrumentation.
+
+Scheduler internals (`run_wave`, `run_group`, `batch`, `Source::emit`) resolve
+in the same capture.
+
 ## Layer 3b — span-based profiling (structured, deterministic)
 
 The `profiling` feature emits `tracing` spans; attach a subscriber in the app.

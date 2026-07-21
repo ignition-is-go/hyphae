@@ -205,3 +205,33 @@ and `SourceInner` has no name field, so the name is discarded. Kept for API
 symmetry with `Cell::with_name` and documented as such. Either give `SourceInner`
 a name field that the span reads, or remove the method; leaving a silently
 discarding builder is the worst of the three.
+
+## Field validation (2026-07-21, pre-merge)
+
+The design was verified *cheap* by benchmark and verified to *emit* the right
+things by construction — but that is validation by design, not by use. Before
+merging, rship drove myko's in-process pprof (499 Hz, 20 s) through a live
+server built against this branch, real workload, 126 warmed scenes:
+
+```
+ 234 samples  hyphae::cell::…<CellMutable>>::notify::
+ 171 samples  hyphae::cell::…<CellMutable>>::fanout
+              write_value present
+3015 samples  hyphae::platform::native::reactor::
+1132 samples  hyphae::scheduler::run_wave::run_group
+ 587 samples  hyphae::scheduler::batch
+ 593 samples  hyphae::source::Source<IntervalTick>>::emit
+```
+
+Both load-bearing guarantees hold in the field:
+
+- `notify` and `fanout` resolve as **distinct frames** — the `inline(never)`
+  boundaries do what they exist for; no folding.
+- Cells carry their **type parameters** in the symbol, so fanout is attributable
+  by cell type with no in-process registry. This is the concrete replacement for
+  the deleted `hot_cells()`, and it confirms the central bet of this design: the
+  attribution the registry provided is recoverable from symbols + a standard
+  profiler, at zero resident cost.
+
+Scheduler internals resolve too. No missing boundary, no unattributable span, no
+change requested by the consumer. The surviving feature is sufficient as shipped.
