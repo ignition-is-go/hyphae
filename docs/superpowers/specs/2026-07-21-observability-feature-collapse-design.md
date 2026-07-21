@@ -99,28 +99,33 @@ Removing feature names and public items (`hot_traced_cells`, `log_hot_cells`,
 |---|---|---|
 | myko workspace dep | `["scheduler"]` (PR #39, landed) | unchanged — already forward-compatible |
 | myko-core | `profiling = ["dep:pprof", "hyphae/profiling"]` | unchanged |
-| myko-server | `trace = ["hyphae/trace"]` | **dangling** — drop, or point at `hyphae/profiling` |
-| myko-server | `inspector = ["hyphae/inspector"]` | see open question |
+| myko-server | `trace = ["hyphae/trace"]` | **drop it.** It gates no myko source at all — a pure forwarding alias. Repointing it at `hyphae/profiling` would just make it a confusing synonym for myko-server's existing `profiling`, which already reaches `hyphae/profiling` transitively. One name per switch. |
+| myko-server | `ci = ["profiling", "trace"]` (Cargo.toml:79) | references myko-server's own `trace`, so dropping that feature means editing the CI umbrella too — one decision, two edit sites |
+| myko-server | `inspector = ["hyphae/inspector"]` | repoint at the extracted `hyphae-inspector` crate. This is a real integration, not a pass-through: `CellServer` holds `_inspector: hyphae::server::InspectorServer` for the server's lifetime and calls `hyphae::server::start_server("myko")` at construction — deleting rather than extracting would break live code |
+| rship | no inspector usage at all | nothing |
 | myko source | `hyphae::profiling::pass` / `take_report` in `core/src/server/context.rs` | unchanged (already behind myko's own feature with an `emit()` fallback) |
 | rship | `--features profiling,hyphae/profiling` | unchanged |
 
 ## Open questions
 
-1. **`inspector`'s fate.** It is independent of trace/metrics, costs nothing on
-   the hot path, and is genuinely useful for graph debugging — but it is a tokio
-   + serde_json in-process server, i.e. precisely the "bespoke service" class
-   Trevor wants out. Folding it into the single feature would drag tokio into
-   production builds, so that is the one option to reject. Recommend extracting
-   it to a `hyphae-inspector` crate (keeps the capability, ends the maintenance
-   burden inside hyphae, and leaves hyphae with exactly one feature) — but
-   confirm first whether anything actually consumes it today.
+1. **`inspector` moves out.** Decided on merit, not on who currently wires it:
+   a tokio + serde_json websocket server does not belong inside a crate of
+   reactive primitives. It is independent of trace/metrics and costs nothing on
+   the hot path, and dependency-graph inspection is genuinely useful — so the
+   capability is worth keeping, just not here. Extract to a `hyphae-inspector`
+   crate that depends on hyphae's public `DepNode` surface. Folding it into the
+   single feature is the one option to reject outright: it would drag tokio into
+   every production build. That leaves hyphae with exactly one feature.
 
 2. ~~`#[inline(never)]` in production (constraint 2).~~ **Settled — measured, see
    below.** The two constraints turn out not to collide at all.
 
-3. **Naming.** `profiling` is retained rather than something broader like
-   `observability` purely to minimize downstream churn: myko-core and rship
-   already name `hyphae/profiling`, so they need no edit at all.
+3. **Naming.** `profiling` on merit: the feature's entire job is to make the
+   crate legible to external profilers, and that is what the word means. The
+   alternative, `observability`, is broader than what it delivers — hyphae emits
+   spans and symbol boundaries and nothing else; it does not collect, aggregate,
+   or export. (Downstream churn deliberately did *not* drive this choice, or
+   `inspector`'s: consumers get fixed after hyphae is right.)
 
 ## Measured: where the hot-path cost actually lives
 
