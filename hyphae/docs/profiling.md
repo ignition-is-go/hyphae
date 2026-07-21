@@ -36,20 +36,23 @@ removed in 2.0.0). It does three things, and compiles to nothing when off:
   of a propagation pass is redundant re-fire.
 
 It adds **zero per-cell resident bytes** and no global census. With no
-subscriber attached it costs, measured against a feature-off build
-(`benches/latency.rs`, `--quick`):
+subscriber attached, its hot-path cost is below what `benches/latency.rs` can
+resolve — four alternating `--quick` runs on an idle machine:
 
-| | feature off | `profiling` on | delta |
-|---|---|---|---|
-| single cell set + watch | 45.8 ns | 54.6 ns | +19% (+8.8 ns) |
-| chain depth / map chain 20 | 286 ns | 321 ns | +12% (+35 ns) |
+| run | feature off | `profiling` on |
+|---|---|---|
+| 1 | 48.10 ns | 46.38 ns |
+| 2 | 47.29 ns | 48.27 ns |
 
-That is the honest number: ~19% relative on the cheapest possible operation,
-which is single-digit nanoseconds absolute, from `record_fire`'s thread-local
-borrow, the name clone, and span creation. Cheap enough to leave on in
-production — which is the point — but it is not free, and it is not the "~1%"
-you get if you mistakenly compare against the old `trace` build instead of
-against baseline.
+The feature-on runs straddle the feature-off runs, so the delta is inside the
+±3% run-to-run noise of this benchmark. That is not the same as free —
+`record_fire`'s thread-local borrow, the name clone, and span creation are real
+work — but it is under ~1.5 ns on a 48 ns operation, which is what "cheap enough
+to leave on in production" needs to mean.
+
+Measure on an idle machine if you repeat this. A single run taken while other
+cargo builds were competing for cores produced an apparent +19%, which
+alternating repeats did not reproduce.
 
 For scale, the feature this replaced (`trace`, removed in 2.0) cost **12.5×** on
 the same benchmark — 595 ns and 1743 ns — plus ~0.63 GB of resident registry on

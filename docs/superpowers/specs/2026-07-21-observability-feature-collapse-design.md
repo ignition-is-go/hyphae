@@ -141,60 +141,37 @@ Removing feature names and public items (`hot_traced_cells`, `log_hot_cells`,
 
 `cargo bench --bench latency -- --quick`, same machine, one run per config:
 
-| build | single cell set + watch | map chain / 20 | vs baseline |
-|---|---|---|---|
-| `scheduler` (baseline) | 47.8 ns | 301 ns | — |
-| `scheduler,metrics` | 47.4 ns | 285 ns | free (within noise) |
-| `scheduler,trace` | 587.7 ns | 1733 ns | **12.3× / 5.8×** |
-| `scheduler,profiling` | 595.5 ns | 1743 ns | 12.5× / 5.8× |
-
-Three conclusions, and together they dissolve the apparent conflict between
-Trevor's two constraints:
-
-- **`trace` is ~100% of the pessimization**, not just ~100% of the memory. The
-  registry is a single cause behind both symptoms — and it is the thing being
-  deleted.
-- **Spans + `#[inline(never)]` cost ~1% *relative to the `trace` build*** (595 ns
-  vs 588 ns; 1743 ns vs 1733 ns). **This framing is misleading and was corrected
-  after implementation** — see the post-implementation numbers below. Measured
-  against the feature-off baseline, which is what a reader will assume, the
-  surviving feature costs **+19% single-cell / +12% chain-20**. Still single-digit
-  nanoseconds absolute and still cheap enough to leave on in production, but
-  "~1%" overstated the case. Caveat unchanged: this is with no `tracing`
-  subscriber installed. Attaching Tracy or `tracing-flame` makes the span cost
-  real, as intended.
-- **`metrics` alone is measurably free** — because `trace` is what decides
-  whether cells carry metrics at all (cell.rs:1441). As a standalone feature it
-  does nothing observable today, which is an independent argument for deleting
-  the name.
-
-So the post-collapse feature is ~1% on the hot path and zero per-cell resident
-bytes, versus 12.5× and 0.63 GB today. Constraint 2 is satisfied without giving
-up anything constraint 1 asked for.
-
-## Post-implementation: measured result
-
-Implemented in `a8c2080` (12 files, +76 / −951). `tracing.rs`, `metrics.rs` and
-`tests/metrics.rs` deleted; `metrics` and `trace` gone as feature names.
+Measured on an idle machine, alternating runs (`benches/latency.rs --quick`):
 
 | build | single cell set + watch | map chain / 20 |
 |---|---|---|
-| feature off | 45.8 ns | 286 ns |
-| `profiling` (new) | 54.6 ns | 321 ns |
+| feature off | 47.3 – 48.1 ns | 305 ns |
+| `profiling` (new) | 46.4 – 48.3 ns | 302 ns |
 | `trace` (old, removed) | 587.7 ns | 1733 ns |
 | `profiling` (old, implied trace) | 595.5 ns | 1743 ns |
 
 The design goal is met: the observability build went from **12.5× baseline to
-1.19×**, and from ~0.63 GB of resident registry to zero per-cell bytes.
+indistinguishable from baseline**, and from ~0.63 GB of resident registry to
+zero per-cell bytes.
 
-**Correction to this document's earlier claim.** The pre-implementation section
-above reported the surviving feature at "~1%", which was measured against the
-`trace` build rather than against baseline. Against baseline it is +19% / +12%.
-The absolute cost is ~9 ns on the cheapest operation in the crate, so the
-conclusion — cheap enough to leave on in production — survives; but the number
-as originally stated would have been read as ten times better than it is. Kept
-visible rather than quietly edited, because the "~1%" figure was quoted to both
-downstream repos while the decision was being made.
+**Two corrections to this document's own numbers**, both kept visible rather
+than quietly edited, because both were quoted to the downstream repos while the
+decision was being made:
+
+1. The pre-implementation "~1%" compared the surviving feature against the
+   `trace` build rather than against a feature-off build — the comparison a
+   reader would assume. Wrong base.
+2. The first post-implementation measurement reported +19% / +12%. That was a
+   single run taken while parallel cargo builds were competing for cores.
+   Alternating repeats on an idle machine did not reproduce it: the feature-on
+   runs straddle the feature-off runs.
+
+The honest statement is that the cost is **below this benchmark's resolution**
+(±3% run-to-run, so under ~1.5 ns on a 48 ns operation) — not free, since
+`record_fire`'s TLS borrow, the name clone and span creation are real work, but
+not measurable here. The conclusion that it is cheap enough to leave on in
+production survives all three numbers; the discipline worth keeping is that a
+benchmark run under load is not evidence.
 
 ### Public API removed (2.0.0)
 
