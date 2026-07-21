@@ -263,7 +263,27 @@ this document deletes:
 - **It is decision-support for live work** — sizing the coalesceable fraction is
   how you decide whether to adopt `batch`/`scheduler`, which is ongoing.
 
-**Condition on that decision:** it now ships unused, which is how code rots. If
-it still has no consumer by the next breaking release, delete it then — removing
-it at 3.0 costs the same as removing it here, and an API with no user and no
-advocate has failed to earn its place.
+**Condition on that decision:** it now ships unused, which is how code rots.
+Revisit at the next breaking release and delete it if it has not earned its
+place.
+
+**How to run that review — read this before applying the condition.** Do *not*
+decide it on "does anything call it?". That question is rigged toward deletion
+here, and the trap is structural rather than a matter of care: with myko's call
+site gone there is **no way to exercise `pass`/`take_report` against a real
+workload without someone first adding a call site back**. So it cannot
+accumulate evidence for its own value in the normal course of things, and the
+default path to 3.0 is "still unused, delete" — not because it lacked value but
+because nothing was positioned to demonstrate it.
+
+The question that actually discriminates is: **"did anyone need to size the
+coalesceable fraction, and find this hard to reach?"** Those two questions give
+opposite answers today. Justification 4 above (decision-support before adopting
+`batch`/`scheduler`) is real, but it only pays off if a consumer exists at the
+moment someone wants that answer — so absence of calls is evidence about
+*positioning*, not about worth.
+
+If the honest answer is that nobody wanted the measurement, delete it without
+sentiment. If someone wanted it and reached for a profiler instead because there
+was no wired-up path, the fix is a call site, not a deletion.
+(Raised by stormy-mole, 2026-07-21, reviewing this decision.)
