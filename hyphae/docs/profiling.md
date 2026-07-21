@@ -79,20 +79,31 @@ export RUSTFLAGS="-Cforce-frame-pointers=yes -Csymbol-mangling-version=v0"
 
 - `force-frame-pointers=yes` — frame-pointer unwinding, which most samplers walk
   faster and more reliably than DWARF.
-- `symbol-mangling-version=v0` — legible demangled names. **Check your
-  collector demangles `v0`.** This is the one place the recipe can half-work:
-  `v0` (RFC 2603, symbols starting `_RNvXs…`) is newer than legacy `_ZN`, and
-  support differs by tool *version*. `samply` and pprof-style collectors carry
-  Rust demanglers with `v0` support; `perf` resolves from `.symtab` with its own
-  implementation, which gained `v0` later — **perf 7.1.3 is verified clean here
-  (zero `_RNv…` leakage in a 117k-line capture)**, but an older one may not be.
-  The failure is partial and
-  therefore easy to misread: you still get **correct frames** — `notify` and
-  `fanout` genuinely distinct, so the `inline(never)` half is fine — while cell
-  **type parameters** come back as raw `_RNvXs…`, which silently costs you the
-  attribute-by-cell-type half. If you see mangled symbols, that is the
-  demangler, not your build; switch to `samply` or a newer `perf` rather than
-  changing flags.
+- `symbol-mangling-version=v0` — legible demangled names.
+
+  **Test that your collector demangles `v0`, don't assume it:**
+
+  ```sh
+  grep -c '_RNv' <your-capture-output>    # 0 = working
+  ```
+
+  This is the one place the recipe can half-work, and the failure is designed to
+  be misread as success: you still get **correct frames** — `notify` and `fanout`
+  genuinely distinct, so the `inline(never)` half looks fine and confirms —
+  while cell **type parameters** come back as raw `_RNvXs…`, silently costing
+  the attribute-by-cell-type half, which is the one that replaces the deleted
+  registry.
+
+  Any `_RNv` hits mean your **collector** lacks `v0` support (RFC 2603 mangling
+  is newer than legacy `_ZN`). Switch collectors — `samply` and pprof-style
+  tools carry Rust demanglers; `perf` uses its own, added later. Do **not**
+  change `-Csymbol-mangling-version` in response, which would only degrade the
+  symbols you are trying to read.
+
+  A version number is deliberately not given here: distro backports make
+  `perf --version` a poor predictor, and the grep is self-evident on the artifact
+  in front of you. (For reference, `perf` 7.1.3 measured zero leakage across a
+  117k-line capture.)
 - `-Zshare-generics=off` (nightly) — the biggest lever against "every cell is the
   same symbol"; only needed if folding is still hiding distinct cells.
 
