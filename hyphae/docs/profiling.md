@@ -102,8 +102,13 @@ export RUSTFLAGS="-Cforce-frame-pointers=yes -Csymbol-mangling-version=v0"
 
   A version number is deliberately not given here: distro backports make
   `perf --version` a poor predictor, and the grep is self-evident on the artifact
-  in front of you. (For reference, `perf` 7.1.3 measured zero leakage across a
-  117k-line capture.)
+  in front of you. (For reference, `perf` 7.1.3 produced zero lines containing
+  `_RNv` across a 117,450-line capture. Note `-c` counts *lines*, not
+  occurrences — `grep -c -o` does not do what it looks like it does.)
+
+  Better still, put that assertion in whatever script wraps your capture, so it
+  runs on every profile instead of when someone remembers. A check you have to
+  remember to run, and correctly interpret, eventually won't be.
 - `-Zshare-generics=off` (nightly) — the biggest lever against "every cell is the
   same symbol"; only needed if folding is still hiding distinct cells.
 
