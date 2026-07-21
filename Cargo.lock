@@ -808,7 +808,7 @@ dependencies = [
 
 [[package]]
 name = "hyphae"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -833,7 +833,7 @@ dependencies = [
 
 [[package]]
 name = "hyphae-leptos"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "hyphae",
  "leptos",
