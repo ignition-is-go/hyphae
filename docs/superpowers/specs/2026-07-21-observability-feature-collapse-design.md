@@ -120,7 +120,9 @@ Removing feature names and public items (`hot_traced_cells`, `log_hot_cells`,
    `uuid/serde` optional dependencies (hyphae stops depending on tokio at all),
    and the two `DepNode` methods that exist solely to feed the registry —
    `value_debug` (dep_node.rs:64) and `caller` (dep_node.rs:69) — which
-   simplifies a public trait every operator implements.
+   simplifies a public trait every operator implements. Confirmed safe
+   downstream: myko never implements `DepNode` nor calls either method, and
+   rship has no inspector usage at all, so no impl block breaks.
 
    **Final feature set: `async`, `scheduler`, `profiling`.** One observability
    feature, and it is the one that only wires up external tooling.
