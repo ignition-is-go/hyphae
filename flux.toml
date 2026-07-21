@@ -1,7 +1,7 @@
 [channels]
 main = "production"
 
-# `--all-features` so the feature-gated modules (scheduler, profiling, metrics,
+# `--all-features` so the feature-gated modules (scheduler, profiling,
 # inspector, async) are actually compiled/linted/tested — with `default = []` a
 # bare cargo invocation skips most of the crate. No `--all-targets`: that pulls
 # in the benches, which are slow to build and are not a correctness gate. Target
@@ -36,7 +36,7 @@ cargo = [
     "--target",
     "wasm32-unknown-unknown",
     "--features",
-    "scheduler,async,metrics,trace,profiling",
+    "scheduler,async,profiling",
 ]
 workspace_batchable = true
 
