@@ -59,6 +59,15 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           VERSION=$(cargo flux version)
+          # `cargo flux version` prints nothing (and exits 0) when the commits
+          # since the last tag warrant no release — only non-releasing
+          # Conventional Commit types like docs/chore. A genuine error still
+          # exits non-zero and fails the step above, so empty-and-successful
+          # unambiguously means "nothing to release".
+          if [ -z "$VERSION" ]; then
+            echo "No release-worthy commits since the last tag; skipping release."
+            exit 0
+          fi
           cargo flux stamp "$VERSION"
           cargo update --workspace
           cargo fmt --all
