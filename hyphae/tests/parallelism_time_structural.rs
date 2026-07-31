@@ -190,7 +190,10 @@ fn delay_wide_parallel_input_wave_all_fire() {
     let dur = Duration::from_millis(30);
 
     let sources: Vec<Cell<i64, _>> = (0..WIDE).map(|_| Cell::new(0i64)).collect();
-    let outs: Vec<_> = sources.iter().map(|s| s.delay(dur)).collect();
+    let outs: Vec<_> = sources
+        .iter()
+        .map(|s| s.clone().delay(dur).materialize())
+        .collect();
 
     batch(|| {
         for (i, s) in sources.iter().enumerate() {

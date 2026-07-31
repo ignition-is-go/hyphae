@@ -182,9 +182,9 @@ pub use subscription::SubscriptionGuard;
 pub use traits::{
     AuditExt, BackpressureExt, BufferCountExt, BufferCountPipeline, BufferTimeExt, CatchErrorExt,
     CellValue, ColdExt, ConcatExt, CountByExt, CountByPlan, DebounceExt, DedupedExt, DelayExt,
-    DepNode, DistinctExt, DistinctUntilChangedByExt, DropNewestPipeline, FilterExt, FilterPipeline,
-    FinalizeExt, FirstExt, Gettable, GroupByExt, GroupByPlan, HasForeignKey, IdFor, IdType,
-    InnerJoinByKeyPlan, InnerJoinByPairPlan, InnerJoinExt, JoinExt, JoinKeyFrom, KeyChange,
+    DelayPipeline, DepNode, DistinctExt, DistinctUntilChangedByExt, DropNewestPipeline, FilterExt,
+    FilterPipeline, FinalizeExt, FirstExt, Gettable, GroupByExt, GroupByPlan, HasForeignKey, IdFor,
+    IdType, InnerJoinByKeyPlan, InnerJoinByPairPlan, InnerJoinExt, JoinExt, JoinKeyFrom, KeyChange,
     LastExt, LeftJoinExt, LeftJoinPlan, LeftSemiJoinExt, LeftSemiJoinPlan, MapErrExt, MapExt,
     MapOkExt, MapPipeline, MergeExt, MergeMapExt, MultiLeftJoinExt, MultiLeftJoinPlan, Mutable,
     PairwiseExt, ParallelCell, ParallelExt, ProjectCellExt, ProjectCellPlan, ProjectManyExt,

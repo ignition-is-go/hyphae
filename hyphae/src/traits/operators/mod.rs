@@ -50,7 +50,7 @@ pub use cold::{ColdExt, ColdPipeline};
 pub use concat::ConcatExt;
 pub use debounce::DebounceExt;
 pub use deduped::DedupedExt;
-pub use delay::DelayExt;
+pub use delay::{DelayExt, DelayPipeline};
 pub use distinct::{DistinctExt, DistinctPipeline};
 pub use distinct_until_changed_by::{DistinctUntilChangedByExt, DistinctUntilChangedByPipeline};
 pub use filter::{FilterExt, FilterPipeline};

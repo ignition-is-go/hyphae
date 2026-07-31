@@ -16,6 +16,7 @@ The first pass removes four avoidable cell boundaries:
 | --- | --- | --- |
 | `window` | existing typed `scan -> map` chain | removed |
 | `buffer_count` | `BufferCountPipeline` with install-local queue | removed |
+| `delay` | `DelayPipeline` with install-local timer callbacks | removed |
 | `drop_oldest` | identity pipeline | removed |
 | `sample_latest` | identity pipeline | removed |
 | `drop_newest` | `DropNewestPipeline` with install-local queue | removed |
@@ -24,7 +25,7 @@ The first pass removes four avoidable cell boundaries:
 synchronous and a materialized cell already stores the latest value.
 `drop_oldest`'s former queue never affected its emitted stream.
 
-After this pass, 17 operator entry points still return concrete cells.
+After this pass, 16 operator entry points still return concrete cells.
 
 ## Remaining single-source operators
 
@@ -38,7 +39,6 @@ does not allocate state or subscribe.
 | `audit` | latest value, generation, window flag |
 | `buffer_time` | pending chunk, timer generation |
 | `debounce` | generation |
-| `delay` | delayed jobs |
 | `throttle` | last-emission time |
 | `timeout` | generation, timed-out flag |
 

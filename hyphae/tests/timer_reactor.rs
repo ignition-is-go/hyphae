@@ -22,7 +22,7 @@ use std::{
     time::Duration,
 };
 
-use hyphae::{Cell, DelayExt, Mutable, Signal, Watchable, interval_source};
+use hyphae::{Cell, DelayExt, MaterializeDefinite, Mutable, Signal, Watchable, interval_source};
 
 /// The timer reactor thread is a single process-wide singleton (that's the
 /// point of this file). Serializing these tests isn't needed for
@@ -129,7 +129,10 @@ fn burst_of_delayed_timers_all_fire() {
             let fired = fired.clone();
             std::thread::spawn(move || {
                 let source = Cell::new(0u64);
-                let delayed = source.delay(Duration::from_millis(5 + (i % 7) as u64));
+                let delayed = source
+                    .clone()
+                    .delay(Duration::from_millis(5 + (i % 7) as u64))
+                    .materialize();
                 let fired = fired.clone();
                 let guard = delayed.subscribe(move |signal| {
                     if let Signal::Value(v) = signal
