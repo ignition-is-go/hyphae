@@ -21,13 +21,14 @@ pub use foreign_key::{HasForeignKey, IdFor, IdType, JoinKeyFrom};
 pub use mutable::Mutable;
 // Re-export all operators for convenience
 pub use operators::{
-    AuditExt, BackpressureExt, BufferCountExt, BufferTimeExt, CatchErrorExt, ColdExt, ConcatExt,
-    DebounceExt, DedupedExt, DelayExt, DistinctExt, DistinctUntilChangedByExt, FilterExt,
-    FilterPipeline, FinalizeExt, FirstExt, JoinExt, LastExt, MapErrExt, MapExt, MapOkExt,
-    MapPipeline, MergeExt, MergeMapExt, PairwiseExt, RetryExt, SampleExt, ScanExt, SkipExt,
-    SkipWhileExt, StateMachineBuilder, StateTransitionExt, SwitchMapExt, TakeExt, TakeUntilExt,
-    TakeWhileExt, TapExt, TapPipeline, ThrottleExt, TimeoutExt, TryMapExt, TryMapPipeline,
-    UnwrapOrExt, WindowExt, WithLatestFromExt, ZipExt, join_vec,
+    AuditExt, BackpressureExt, BufferCountExt, BufferCountPipeline, BufferTimeExt, CatchErrorExt,
+    ColdExt, ConcatExt, DebounceExt, DedupedExt, DelayExt, DistinctExt, DistinctUntilChangedByExt,
+    DropNewestPipeline, FilterExt, FilterPipeline, FinalizeExt, FirstExt, JoinExt, LastExt,
+    MapErrExt, MapExt, MapOkExt, MapPipeline, MergeExt, MergeMapExt, PairwiseExt, RetryExt,
+    SampleExt, ScanExt, SkipExt, SkipWhileExt, StateMachineBuilder, StateTransitionExt,
+    SwitchMapExt, TakeExt, TakeUntilExt, TakeWhileExt, TapExt, TapPipeline, ThrottleExt,
+    TimeoutExt, TryMapExt, TryMapPipeline, UnwrapOrExt, WindowExt, WithLatestFromExt, ZipExt,
+    join_vec,
 };
 pub use operators::{ParallelCell, ParallelExt};
 pub use reactive_keys::{KeyChange, ReactiveKeys};

@@ -340,7 +340,10 @@ fn backpressure_drop_oldest_wide_parallel_wave_correct() {
     const ITERS: i64 = 200;
 
     let sources: Vec<Cell<i64, _>> = (0..WIDE).map(|_| Cell::new(0i64)).collect();
-    let outs: Vec<_> = sources.iter().map(|s| s.drop_oldest(8)).collect();
+    let outs: Vec<_> = sources
+        .iter()
+        .map(|s| s.clone().drop_oldest(8).materialize())
+        .collect();
 
     for it in 1..=ITERS {
         batch(|| {
@@ -370,7 +373,7 @@ fn backpressure_drop_newest_wide_parallel_wave_correct() {
     let sources: Vec<Cell<i64, _>> = (0..WIDE).map(|_| Cell::new(0i64)).collect();
     let outs: Vec<_> = sources
         .iter()
-        .map(|s| s.drop_newest(CAP as usize))
+        .map(|s| s.clone().drop_newest(CAP as usize).materialize())
         .collect();
 
     for it in 1..=ITERS {
@@ -405,7 +408,10 @@ fn backpressure_sample_latest_wide_parallel_wave_correct() {
     const ITERS: i64 = 200;
 
     let sources: Vec<Cell<i64, _>> = (0..WIDE).map(|_| Cell::new(0i64)).collect();
-    let outs: Vec<_> = sources.iter().map(|s| s.sample_latest()).collect();
+    let outs: Vec<_> = sources
+        .iter()
+        .map(|s| s.clone().sample_latest().materialize())
+        .collect();
 
     for it in 1..=ITERS {
         batch(|| {

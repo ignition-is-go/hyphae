@@ -493,7 +493,7 @@ fn buffer_count_no_coalesce_burst_keeps_chunks_in_order() {
 
     let (src, buffered) = no_coalesce(|| {
         let src = Cell::<i64, CellMutable>::new(0);
-        let buffered = src.buffer_count(COUNT);
+        let buffered = src.clone().buffer_count(COUNT).materialize();
         (src, buffered)
     });
 
@@ -536,7 +536,7 @@ fn window_no_coalesce_burst_keeps_windows_in_order() {
 
     let (src, windowed) = no_coalesce(|| {
         let src = Cell::<i64, CellMutable>::new(0);
-        let windowed = src.window(COUNT as usize);
+        let windowed = src.clone().window(COUNT as usize).materialize();
         (src, windowed)
     });
 

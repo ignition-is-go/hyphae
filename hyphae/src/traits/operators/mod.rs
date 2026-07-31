@@ -43,8 +43,8 @@ mod with_latest_from;
 mod zip;
 
 pub use audit::AuditExt;
-pub use backpressure::BackpressureExt;
-pub use buffer_count::BufferCountExt;
+pub use backpressure::{BackpressureExt, DropNewestPipeline};
+pub use buffer_count::{BufferCountExt, BufferCountPipeline};
 pub use buffer_time::BufferTimeExt;
 pub use cold::{ColdExt, ColdPipeline};
 pub use concat::ConcatExt;

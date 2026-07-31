@@ -1,112 +1,154 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+use std::{
+    marker::PhantomData,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
 };
 
 use crossbeam::queue::SegQueue;
 
-use super::{CellValue, Watchable};
+use super::CellValue;
 use crate::{
-    cell::{Cell, CellImmutable, CellMutable},
+    pipeline::{Definite, MaterializeDefinite, Pipeline, PipelineInstall, PipelineSeed},
     signal::Signal,
+    subscription::SubscriptionGuard,
 };
 
-pub trait BufferCountExt<T>: Watchable<T> {
-    /// Collect values into non-overlapping chunks of size `count`.
-    ///
-    /// Emits a `Vec<T>` containing exactly `count` elements each time.
-    /// On completion, emits any remaining buffered values (may be less than `count`).
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use hyphae::{Cell, Mutable, Gettable, BufferCountExt};
-    ///
-    /// let source = Cell::new(0);
-    /// let buffered = source.buffer_count(3);
-    ///
-    /// source.set(1);
-    /// source.set(2);
-    /// source.set(3); // Emits [1, 2, 3]
-    /// source.set(4);
-    /// source.set(5);
-    /// source.set(6); // Emits [4, 5, 6]
-    /// ```
-    #[track_caller]
-    fn buffer_count(&self, count: usize) -> Cell<Vec<T>, CellImmutable>
-    where
-        T: CellValue,
-        Self: Clone + Send + Sync + 'static,
-    {
-        assert!(count > 0, "buffer_count must be positive");
+/// Pipeline node representing `source.buffer_count(count)`.
+pub struct BufferCountPipeline<S, T> {
+    source: S,
+    count: usize,
+    _t: PhantomData<fn(T)>,
+}
 
-        let derived = Cell::<Vec<T>, CellMutable>::new(Vec::new());
-        let derived = if let Some(name) = self.name() {
-            derived.with_name(format!("{}::buffer_count", name))
-        } else {
-            derived
-        };
-
-        let weak = derived.downgrade();
-        let buffer: Arc<SegQueue<T>> = Arc::new(SegQueue::new());
+impl<S, T> PipelineInstall<Vec<T>> for BufferCountPipeline<S, T>
+where
+    S: PipelineInstall<T> + Send + Sync + 'static,
+    T: CellValue,
+{
+    fn install(&self, callback: Arc<dyn Fn(&Signal<Vec<T>>) + Send + Sync>) -> SubscriptionGuard {
+        let buffer = Arc::new(SegQueue::new());
         let buffer_len = Arc::new(AtomicUsize::new(0));
-        let first = Arc::new(AtomicBool::new(true));
+        let first = AtomicBool::new(true);
+        let count = self.count;
 
-        let guard = self.subscribe(move |signal| {
-            if let Some(d) = weak.upgrade() {
-                match signal {
-                    Signal::Value(value) => {
-                        if first.swap(false, Ordering::SeqCst) {
-                            return;
-                        }
-                        buffer.push((**value).clone());
-                        let len = buffer_len.fetch_add(1, Ordering::SeqCst) + 1;
-                        if len >= count {
-                            // Drain count items into a vec
-                            let mut chunk = Vec::with_capacity(count);
-                            for _ in 0..count {
-                                if let Some(v) = buffer.pop() {
-                                    chunk.push(v);
-                                }
-                            }
-                            buffer_len.fetch_sub(count, Ordering::SeqCst);
-                            d.notify(Signal::value(chunk));
+        self.source.install(Arc::new(move |signal| match signal {
+            Signal::Value(value) => {
+                if first.swap(false, Ordering::SeqCst) {
+                    return;
+                }
+                buffer.push(value.as_ref().clone());
+                let len = buffer_len.fetch_add(1, Ordering::SeqCst) + 1;
+                if len >= count {
+                    let mut chunk = Vec::with_capacity(count);
+                    for _ in 0..count {
+                        if let Some(value) = buffer.pop() {
+                            chunk.push(value);
                         }
                     }
-                    Signal::Complete => {
-                        // Emit remaining buffer on complete
-                        let mut remainder = Vec::new();
-                        while let Some(v) = buffer.pop() {
-                            remainder.push(v);
-                        }
-                        if !remainder.is_empty() {
-                            d.notify(Signal::value(remainder));
-                        }
-                        d.notify(Signal::Complete);
-                    }
-                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
+                    buffer_len.fetch_sub(chunk.len(), Ordering::SeqCst);
+                    callback(&Signal::value(chunk));
                 }
             }
-        });
-        derived.own(guard);
-
-        derived.lock()
+            Signal::Complete => {
+                let mut remainder = Vec::new();
+                while let Some(value) = buffer.pop() {
+                    remainder.push(value);
+                }
+                if !remainder.is_empty() {
+                    callback(&Signal::value(remainder));
+                }
+                callback(&Signal::Complete);
+            }
+            Signal::Error(error) => callback(&Signal::Error(error.clone())),
+        }))
     }
 }
 
-impl<T, W: Watchable<T>> BufferCountExt<T> for W {}
+impl<S, T> PipelineSeed<Vec<T>> for BufferCountPipeline<S, T>
+where
+    S: PipelineInstall<T>,
+    T: CellValue,
+{
+    fn seed(&self) -> Vec<T> {
+        Vec::new()
+    }
+}
+
+#[allow(private_bounds)]
+impl<S, T> Pipeline<Vec<T>, Definite> for BufferCountPipeline<S, T>
+where
+    S: Pipeline<T, Definite>,
+    T: CellValue,
+{
+}
+
+impl<S, T> MaterializeDefinite<Vec<T>> for BufferCountPipeline<S, T>
+where
+    S: Pipeline<T, Definite>,
+    T: CellValue,
+{
+}
+
+#[allow(private_bounds)]
+pub trait BufferCountExt<T: CellValue>: Pipeline<T, Definite> {
+    /// Collect values into non-overlapping chunks of size `count`.
+    ///
+    /// Emits a `Vec<T>` containing exactly `count` elements each time. On
+    /// completion, emits any remaining buffered values.
+    ///
+    /// ```
+    /// use hyphae::{BufferCountExt, Cell, MaterializeDefinite, Mutable};
+    ///
+    /// let source = Cell::new(0);
+    /// let buffered = source.clone().buffer_count(3).materialize();
+    /// source.set(1);
+    /// source.set(2);
+    /// source.set(3);
+    /// ```
+    #[track_caller]
+    fn buffer_count(self, count: usize) -> BufferCountPipeline<Self, T> {
+        assert!(count > 0, "buffer_count must be positive");
+        BufferCountPipeline {
+            source: self,
+            count,
+            _t: PhantomData,
+        }
+    }
+}
+
+impl<T: CellValue, P: Pipeline<T, Definite>> BufferCountExt<T> for P {}
 
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::AtomicUsize;
 
     use super::*;
-    use crate::Mutable;
+    use crate::{Cell, MaterializeDefinite, Mutable, traits::Watchable};
+
+    #[test]
+    fn buffer_count_installs_only_when_materialized() {
+        let source = Cell::new(0);
+        let initial_subscribers = crate::traits::DepNode::subscriber_count(&source);
+        let pipeline = source.clone().buffer_count(3);
+
+        assert_eq!(
+            crate::traits::DepNode::subscriber_count(&source),
+            initial_subscribers
+        );
+
+        let _buffered = pipeline.materialize();
+        assert_eq!(
+            crate::traits::DepNode::subscriber_count(&source),
+            initial_subscribers + 1
+        );
+    }
 
     #[test]
     fn test_buffer_count() {
         let source = Cell::new(0);
-        let buffered = source.buffer_count(3);
+        let buffered = source.clone().buffer_count(3).materialize();
         let (tx, rx) = std::sync::mpsc::channel::<Vec<i32>>();
 
         let _guard = buffered.subscribe(move |signal| {
@@ -115,16 +157,12 @@ mod tests {
             }
         });
 
-        // Initial empty vec
         assert_eq!(rx.recv().ok(), Some(vec![]));
-
         source.set(1);
         source.set(2);
-        assert!(rx.try_recv().is_err()); // Not yet
-
+        assert!(rx.try_recv().is_err());
         source.set(3);
         assert_eq!(rx.recv().ok(), Some(vec![1, 2, 3]));
-
         source.set(4);
         source.set(5);
         source.set(6);
@@ -134,7 +172,7 @@ mod tests {
     #[test]
     fn test_buffer_count_emits_remainder_on_complete() {
         let source = Cell::new(0);
-        let buffered = source.buffer_count(3);
+        let buffered = source.clone().buffer_count(3).materialize();
         let (tx, rx) = std::sync::mpsc::channel::<Vec<i32>>();
         let completed = Arc::new(AtomicUsize::new(0));
 
@@ -151,11 +189,8 @@ mod tests {
 
         source.set(1);
         source.set(2);
-        // Only 2 values, not a full buffer
-        assert_eq!(rx.recv().ok(), Some(vec![])); // Just initial
-
+        assert_eq!(rx.recv().ok(), Some(vec![]));
         source.complete();
-        // Should emit remainder [1, 2] then complete
         assert_eq!(rx.recv().ok(), Some(vec![1, 2]));
         assert_eq!(completed.load(Ordering::SeqCst), 1);
     }
