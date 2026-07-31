@@ -1,0 +1,76 @@
+¶ditem©dbodyyZEvery materialized map-query stage mirrors its ENTIRE source map, regardless of predicate
+selectivity. Memory scales as (materializations x source rows), not with matched rows.
+
+## Root cause
+
+`hyphae/src/traits/collections/internal/map_runtime.rs:19` ‚Äî `MapState`:
+
+    source_rows:        FxHashMap<SK, SV>,             // every source row
+    source_output_keys: FxHashMap<SK, FxHashSet<OK>>,  // per projected source key
+    output_cache:       FxHashMap<OK, OV>,             // only matches
+
+`apply_source_diff` (same file, :39) inserts every source row unconditionally;
+`MapDiff::Initial` mirrors the whole source map before the predicate is consulted.
+
+## Measured (hyphae 2.0.1, features = ["scheduler"], release)
+
+Source CellMap<Arc<str>, Arc<Row>>, materialized `select` holding the result:
+
+  fixed N=25000, vary M (predicate matches 1%):
+    m=1    1012 KiB/select
+    m=10   1124 KiB/select
+    m=50   1008 KiB/select
+    m=100   989 KiB/select      -> linear in M, ~1 MB each for 250 matched rows
+
+  fixed N=25000 M=50, vary match%:
+    1%     1008 KiB/select  (250 matched)
+    10%    1641 KiB/select
+    50%    4205 KiB/select
+    100%   6379 KiB/select  (vs 5704 KiB for the source map itself)
+
+  fixed M=50 match%=1, vary N:
+    N=5000    311 KiB/select
+    N=10000   533 KiB/select
+    N=25000  1008 KiB/select
+    N=50000  1915 KiB/select   -> linear in SOURCE size
+
+Decomposes to a fixed floor of ~40 bytes per source row (the mirror, paid even when
+nothing matches) plus ~215 bytes per matched row.
+
+## Proposed fix: stateless path for key-preserving filters
+
+The mirror exists because `recompute_impacted` is generic over
+`FO: Fn(&SK, &SV) -> Vec<(OK, OV)>` ‚Äî projections that fan out or rekey genuinely need
+the source value to recompute.
+
+`select` is neither. It is key-preserving and 1:0-or-1, and `MapDiff` already carries
+everything needed (`cell_map.rs:29`):
+
+    Remove { key, old_value }
+    Update { key, old_value, new_value }
+
+So for a value-only predicate:
+  - Insert -> test `value`, emit if match
+  - Update -> test `old_value` and `new_value`, emit insert/remove/update
+  - Remove -> test `old_value`, emit remove if it had matched
+  - Initial -> test each, emit matches
+
+No source state required. Specializing this path drops both `source_rows` and
+`source_output_keys` for select stages, leaving `output_cache` sized by matches.
+
+## Secondary suspect (not measured)
+
+`CellMapInner::key_cells` (`cell_map.rs:56`) ‚Äî DashMap<K, WeakCell<..>> whose own
+doc-comment warns of "an unbounded leak on maps with high key churn", mitigated by an
+amortized sweep in `maybe_prune_key_cells`. Worth confirming the sweep keeps pace under
+sustained churn.
+
+## Impact
+
+Found while investigating a downstream deployment holding ~82k entity records across 156
+types in tens of GB of RSS ‚Äî a 100-1000x amplification over data at rest. Per-stage source
+mirroring across many cached query instantiations is a strong candidate for the dominant
+term. Chained operators multiply it further, since each stage has its own MapState.
+
+Repro harness is throwaway; the numbers above are reproducible with a ~60-line main.rs
+against hyphae 2.0.1.gcreatedx2026-07-26T07:30:28.681701ZlcreatedByDevxtrevor.a.sargent@gmail.compcreatedByMachinegmalcolmbidx c68241f2ad1d463ea856ccded1a8b633flabelsÅdperfhprioritybP1iprojectIdx b84f94e9884549c8a7503abf702905d2etitlex<map_runtime mirrors entire source map per materialized stagejchangeTypecSEThitemTypedTaskicreatedAtx2026-07-26T07:30:28.681709Zbtxx$80fc4e61-d057-4559-89a9-515ab066d8bbhsourceIdgmalcolm

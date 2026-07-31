@@ -1,0 +1,15 @@
+¦ditem¦dbodyy†Scoping note on the downstream impact claim.
+
+The measurements in the body stand â€” they are pure hyphae, reproducible against 2.0.1.
+
+But the 'Impact' section extrapolated to a myko deployment on the assumption that myko's
+queries chain hyphae select over full stores. On inspection they largely do not: myko has its
+own filtering machinery (belongs_to index buckets, and a scan mode that maintains a
+matches-only result from store diffs) that never builds a MapState.
+
+hyphae MapState mirrors show up in myko via views, reports, and explicitly chained operators
+(e.g. .diffs().map(..).materialize()), not via generated queries.
+
+So the fix is still worth making â€” a select paying ~40 bytes per SOURCE row while matching 1%
+is wrong regardless of who calls it â€” but the tens-of-GB figure quoted should not be attributed
+to this without measuring how many hyphae operator stages are actually live.ebyDevxtrevor.a.sargent@gmail.comgcreatedx2026-07-26T07:34:53.670617Zbidx 61cfd645621e4a8ea776986953618056iprojectIdx b84f94e9884549c8a7503abf702905d2ftaskIdx c68241f2ad1d463ea856ccded1a8b633jchangeTypecSEThitemTypegCommenticreatedAtx2026-07-26T07:34:53.670622Zbtxx$c3ca8ddc-22d4-4ab3-84e4-6162ed5f3166hsourceIdgmalcolm
