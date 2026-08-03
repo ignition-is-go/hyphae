@@ -24,10 +24,9 @@
 //! // until you materialize.
 //! let doubled = x.clone().map(|val| val * 2).materialize().with_name("doubled");
 //!
-//! // Combine multiple cells with join + flat!. join is stateful — it
-//! // returns a Cell directly. Chaining .map fuses into the join's
-//! // installed callback when materialized.
-//! let sum = x.join(y).map(flat!(|a, b| a + b)).materialize().with_name("sum");
+//! // Combine multiple cells with join + flat!. join stays lazy, then creates
+//! // its required fan-in coalescing boundary when the chain is materialized.
+//! let sum = x.clone().join(y).map(flat!(|a, b| a + b)).materialize().with_name("sum");
 //!
 //! // Subscribe on the materialized cell
 //! let _guard = sum.subscribe(|signal| {

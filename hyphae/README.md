@@ -17,10 +17,9 @@ use hyphae::{Cell, Signal, flat, JoinExt, MapExt, Mutable, Pipeline, Watchable};
 let x = Cell::new(5);
 let y = Cell::new(10);
 
-// join is stateful and returns a Cell. Chaining .map fuses into the
-// join's installed callback when materialized; .materialize() compiles
-// the chain into a cell you can subscribe to.
-let sum = x.join(y).map(flat!(|a, b| a + b)).materialize();
+// join stays lazy, then creates its required fan-in coalescing boundary
+// when the chain is materialized.
+let sum = x.clone().join(y).map(flat!(|a, b| a + b)).materialize();
 
 // Subscribe to changes
 let _guard = sum.subscribe(|signal| {
