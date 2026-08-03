@@ -13,7 +13,7 @@
 //! every later iteration's assert fails.
 #![cfg(feature = "scheduler")]
 
-use hyphae::{Cell, Gettable, Mutable, ZipExt, batch};
+use hyphae::{Cell, Gettable, MaterializeDefinite, Mutable, ZipExt, batch};
 
 const PAIRS: usize = 8;
 const ITERATIONS: i64 = 3_000;
@@ -28,7 +28,7 @@ fn concurrent_zips_never_mispair_the_two_streams() {
     for _ in 0..PAIRS {
         let l = Cell::new(0i64);
         let r = Cell::new(0i64);
-        let z = l.zip(&r);
+        let z = l.clone().zip(r.clone()).materialize();
         lefts.push(l);
         rights.push(r);
         outputs.push(z);

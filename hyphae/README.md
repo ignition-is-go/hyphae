@@ -20,7 +20,7 @@ let y = Cell::new(10);
 // join is stateful and returns a Cell. Chaining .map fuses into the
 // join's installed callback when materialized; .materialize() compiles
 // the chain into a cell you can subscribe to.
-let sum = x.join(&y).map(flat!(|a, b| a + b)).materialize();
+let sum = x.join(y).map(flat!(|a, b| a + b)).materialize();
 
 // Subscribe to changes
 let _guard = sum.subscribe(|signal| {

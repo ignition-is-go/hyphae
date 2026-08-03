@@ -170,7 +170,7 @@ fn no_coalesce_scope_preserves_multiplicity_but_settles_glitch_free() {
     let sink = no_coalesce(|| {
         let a = s.clone().map(|x| x + 1).materialize();
         let b = s.clone().map(|x| x * 10).materialize();
-        a.join(&b).map(|(x, y)| x + y).materialize()
+        a.join(b).map(|(x, y)| x + y).materialize()
     });
 
     let fires = fire_counter(&sink);
@@ -234,7 +234,7 @@ fn batched_source_coalesces_a_same_rate_diamond_that_per_subscriber_batch_cannot
         }));
         // k is fed by both legs; it owns the subscriptions to a and b, keeping
         // them alive after the locals drop.
-        let k = a.join(&b).map(|(x, y)| x + y).materialize();
+        let k = a.join(b).map(|(x, y)| x + y).materialize();
         let fires = fire_counter(&k);
         (k, fires)
     }

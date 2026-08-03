@@ -164,7 +164,7 @@ fn join_vec_wide_wave_settles_correctly_under_repeated_concurrent_execution() {
     let cells: Vec<_> = (0..N)
         .map(|k| s.clone().map(move |x| x * (k + 1)).materialize())
         .collect();
-    let combined = join_vec(cells);
+    let combined = join_vec(cells).materialize();
     let last = Arc::new(Mutex::new(vec![0i64; N as usize]));
     let sink = last.clone();
     let guard = combined.subscribe(move |sig| {

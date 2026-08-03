@@ -899,7 +899,7 @@ fn barrage_join_chaos() {
     let b = Cell::new(0u64);
     let c = Cell::new(0u64);
 
-    let joined = a.join(&b).join(&c);
+    let joined = a.clone().join(b.clone()).join(c.clone()).materialize();
 
     let read_count = Arc::new(AtomicU64::new(0));
     let barrier = Arc::new(Barrier::new(4));

@@ -43,12 +43,11 @@ fn build_diamond(work: u64) -> Diamond {
     let s = Cell::new(0i64);
     let a = s.clone().map(|x| x + 1).materialize();
     let b = s.clone().map(|x| x * 10).materialize();
-    let j = a.join(&b);
+    let j = a.join(b);
 
     let solves = Arc::new(AtomicU64::new(0));
     let counter = solves.clone();
     let k = j
-        .clone()
         .map(move |(x, y)| {
             counter.fetch_add(1, Ordering::Relaxed);
             solve(*x, *y, work)

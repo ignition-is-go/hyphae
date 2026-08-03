@@ -130,6 +130,7 @@ fn bench_contention_shared_sink(c: &mut Criterion) {
                     let solves = Arc::new(AtomicU64::new(0));
                     let counter = solves.clone();
                     let sink = join_vec(sources.iter().cloned().map(|s| s.lock()).collect())
+                        .materialize()
                         .map(move |v: &Vec<i64>| {
                             counter.fetch_add(1, Ordering::Relaxed);
                             v.iter().sum::<i64>()

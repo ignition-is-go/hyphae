@@ -54,7 +54,7 @@ fn independent_diamonds_and_accumulators_settle_correctly_under_contention() {
                 let src = Cell::new(0i64);
                 let a = src.clone().map(|x| x + 1).materialize();
                 let b = src.clone().map(|x| x * 10).materialize();
-                let k = a.join(&b).map(|(x, y)| *x + *y).materialize();
+                let k = a.join(b).map(|(x, y)| *x + *y).materialize();
                 let sink = last.clone();
                 let g1 = k.subscribe(move |sig| {
                     if let Signal::Value(v) = sig {

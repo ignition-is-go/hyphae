@@ -73,12 +73,11 @@ fn diamond_synchronous_solves_twice_batched_once() {
     let s = Cell::new(0i64);
     let a = s.clone().map(|x| x + 1).materialize();
     let b = s.clone().map(|x| x * 10).materialize();
-    let j = a.join(&b);
+    let j = a.join(b);
 
     let solves = Arc::new(AtomicUsize::new(0));
     let counter = solves.clone();
     let k = j
-        .clone()
         .map(move |(x, y)| {
             counter.fetch_add(1, Ordering::SeqCst);
             x + y
@@ -118,14 +117,13 @@ fn unequal_diamond_settles_in_height_order() {
     let s = Cell::new(0i64);
     let a = s.clone().map(|x| x + 1).materialize();
     let c = a.clone().map(|x| x * 2).materialize();
-    let j = c.join(&s);
+    let j = c.join(s.clone());
 
     let solves = Arc::new(AtomicUsize::new(0));
     let counter = solves.clone();
     // Encode both inputs into one i64 so a stale `c` would be observable:
     // value = c * 1000 + s.
     let k = j
-        .clone()
         .map(move |(cv, sv)| {
             counter.fetch_add(1, Ordering::SeqCst);
             cv * 1000 + sv
@@ -164,12 +162,11 @@ fn diamond_with_unequal_branch_heights_solves_once() {
     let b = s.clone().map(|x| x + 100).materialize(); // h1
     let c = b.clone().map(|x| x + 1000).materialize(); // h2
     let d = c.clone().map(|x| x + 10000).materialize(); // h3
-    let j = a.join(&d); // h4
+    let j = a.join(d); // h4
 
     let solves = Arc::new(AtomicUsize::new(0));
     let counter = solves.clone();
     let k = j
-        .clone()
         .map(move |(x, y)| {
             counter.fetch_add(1, Ordering::SeqCst);
             x * 1_000_000 + y
@@ -206,12 +203,11 @@ fn filtered_diamond_does_not_wait_for_a_suppressed_branch() {
         .filter(|x| x % 2 == 0)
         .map(|x| x * 10)
         .materialize();
-    let j = a.join(&b);
+    let j = a.join(b);
 
     let solves = Arc::new(AtomicUsize::new(0));
     let counter = solves.clone();
     let k = j
-        .clone()
         .map(move |(x, y)| {
             counter.fetch_add(1, Ordering::SeqCst);
             *x + (*y).unwrap_or(0)

@@ -195,7 +195,7 @@ fn take_until_wide_independent_wave_each_instance_exact() {
     let cells: Vec<_> = sources
         .iter()
         .zip(&stoppers)
-        .map(|(s, st)| s.take_until(st))
+        .map(|(s, st)| s.clone().take_until(st.clone()).materialize())
         .collect();
 
     // Wide source wave: each instance tracks the latest value of its own source.

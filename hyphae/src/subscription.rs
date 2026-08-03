@@ -27,6 +27,37 @@ impl DepNode for CallbackDepNode {
     }
 }
 
+/// Dependency node representing one installed pipeline with multiple roots.
+///
+/// The node is deliberately transparent to graph traversal: its dependencies
+/// are the real subscription sources, and scheduler invalidation registration
+/// is forwarded to each of them.
+struct CompositeDepNode {
+    id: Uuid,
+    sources: Vec<Arc<dyn DepNode>>,
+}
+
+impl DepNode for CompositeDepNode {
+    fn id(&self) -> Uuid {
+        self.id
+    }
+
+    fn name(&self) -> Option<String> {
+        Some("composite_subscription".to_string())
+    }
+
+    fn deps(&self) -> Vec<Arc<dyn DepNode>> {
+        self.sources.clone()
+    }
+
+    #[cfg(feature = "scheduler")]
+    fn add_height_dependent(&self, dep: std::sync::Weak<dyn crate::cell::HeightInvalidate>) {
+        for source in &self.sources {
+            source.add_height_dependent(dep.clone());
+        }
+    }
+}
+
 impl SubscriptionGuard {
     pub(crate) fn new(
         id: Uuid,
@@ -70,6 +101,27 @@ impl SubscriptionGuard {
         })
     }
 
+    /// Combine multiple upstream subscriptions into one pipeline guard.
+    ///
+    /// Dropping the returned guard drops every child guard. Its dependency
+    /// source exposes every child source so materialized cells retain correct
+    /// scheduler height and dependency-tree information.
+    pub(crate) fn combine(guards: Vec<Self>) -> Self {
+        match guards.len() {
+            0 => Self::from_callback(|| {}),
+            1 => guards.into_iter().next().expect("guard length checked"),
+            _ => {
+                let id = Uuid::new_v4();
+                let sources = guards.iter().map(|guard| guard.source.clone()).collect();
+                let source = Arc::new(CompositeDepNode { id, sources });
+                let mut guards = Some(guards);
+                Self::new(id, source, move || {
+                    guards.take();
+                })
+            }
+        }
+    }
+
     /// Get the source cell this subscription is connected to.
     pub fn source(&self) -> &Arc<dyn DepNode> {
         &self.source
@@ -107,5 +159,49 @@ impl Drop for SubscriptionGuard {
             // and a loosely-held (non-cell-owned) guard has no dependent height to
             // invalidate. See `Cell::own`/`own_keyed` for the localized bump.
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    #[test]
+    fn combined_guard_exposes_all_sources_and_drops_all_children() {
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let source_a: Arc<dyn DepNode> = Arc::new(CallbackDepNode(Uuid::new_v4()));
+        let source_b: Arc<dyn DepNode> = Arc::new(CallbackDepNode(Uuid::new_v4()));
+
+        let guard_a = {
+            let dropped = dropped.clone();
+            SubscriptionGuard::new(Uuid::new_v4(), source_a.clone(), move || {
+                dropped.fetch_add(1, Ordering::SeqCst);
+            })
+        };
+        let guard_b = {
+            let dropped = dropped.clone();
+            SubscriptionGuard::new(Uuid::new_v4(), source_b.clone(), move || {
+                dropped.fetch_add(1, Ordering::SeqCst);
+            })
+        };
+
+        let guard = SubscriptionGuard::combine(vec![guard_a, guard_b]);
+        let deps = guard.source().deps();
+        assert_eq!(deps.len(), 2);
+        assert_eq!(deps[0].id(), source_a.id());
+        assert_eq!(deps[1].id(), source_b.id());
+
+        drop(guard);
+        assert_eq!(dropped.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn combining_one_guard_preserves_its_source() {
+        let source: Arc<dyn DepNode> = Arc::new(CallbackDepNode(Uuid::new_v4()));
+        let guard = SubscriptionGuard::new(Uuid::new_v4(), source.clone(), || {});
+        let combined = SubscriptionGuard::combine(vec![guard]);
+        assert_eq!(combined.source().id(), source.id());
     }
 }

@@ -24,12 +24,13 @@ pub use operators::{
     AuditExt, AuditPipeline, BackpressureExt, BufferCountExt, BufferCountPipeline, BufferTimeExt,
     BufferTimePipeline, CatchErrorExt, ColdExt, ConcatExt, DebounceExt, DebouncePipeline,
     DedupedExt, DelayExt, DelayPipeline, DistinctExt, DistinctUntilChangedByExt,
-    DropNewestPipeline, FilterExt, FilterPipeline, FinalizeExt, FirstExt, JoinExt, LastExt,
-    MapErrExt, MapExt, MapOkExt, MapPipeline, MergeExt, MergeMapExt, PairwiseExt, RetryExt,
-    SampleExt, ScanExt, SkipExt, SkipWhileExt, StateMachineBuilder, StateTransitionExt,
-    StateTransitionPipeline, SwitchMapExt, TakeExt, TakeUntilExt, TakeWhileExt, TapExt,
-    TapPipeline, ThrottleExt, ThrottlePipeline, TimeoutExt, TimeoutPipeline, TryMapExt,
-    TryMapPipeline, UnwrapOrExt, WindowExt, WithLatestFromExt, ZipExt, join_vec,
+    DropNewestPipeline, FilterExt, FilterPipeline, FinalizeExt, FirstExt, JoinExt, JoinPipeline,
+    JoinVecPipeline, LastExt, MapErrExt, MapExt, MapOkExt, MapPipeline, MergeExt, MergeMapExt,
+    MergePipeline, PairwiseExt, RetryExt, SampleExt, ScanExt, SkipExt, SkipWhileExt,
+    StateMachineBuilder, StateTransitionExt, StateTransitionPipeline, SwitchMapExt, TakeExt,
+    TakeUntilExt, TakeUntilPipeline, TakeWhileExt, TapExt, TapPipeline, ThrottleExt,
+    ThrottlePipeline, TimeoutExt, TimeoutPipeline, TryMapExt, TryMapPipeline, UnwrapOrExt,
+    WindowExt, WithLatestFromExt, ZipExt, ZipPipeline, join_vec,
 };
 pub use operators::{ParallelCell, ParallelExt};
 pub use reactive_keys::{KeyChange, ReactiveKeys};

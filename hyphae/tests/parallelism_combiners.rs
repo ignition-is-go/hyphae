@@ -48,8 +48,8 @@ use std::sync::{
 };
 
 use hyphae::{
-    Cell, Gettable, MergeExt, MergeMapExt, Mutable, Signal, SwitchMapExt, Watchable, batch,
-    scheduler::no_coalesce,
+    Cell, Gettable, MaterializeDefinite, MergeExt, MergeMapExt, Mutable, Signal, SwitchMapExt,
+    Watchable, batch, scheduler::no_coalesce,
 };
 
 /// Width of every wave. Must be >= `PARALLEL_WAVE_THRESHOLD` (8) so the drain
@@ -91,7 +91,7 @@ fn concurrent_merges_never_drop_or_duplicate_and_complete_once() {
         let (l, r, m) = no_coalesce(|| {
             let l = Cell::new(0i64);
             let r = Cell::new(0i64);
-            let m = l.merge(&r);
+            let m = l.clone().merge(r.clone()).materialize();
             (l, r, m)
         });
 

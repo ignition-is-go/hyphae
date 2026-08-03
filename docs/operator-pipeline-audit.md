@@ -10,7 +10,7 @@ subscription; state alone does not require a cell.
 
 ## Current result
 
-The first pass removes four avoidable cell boundaries:
+The migration has removed every static single- and multi-source cell boundary:
 
 | Operator | Pipeline shape | Internal cell |
 | --- | --- | --- |
@@ -26,12 +26,18 @@ The first pass removes four avoidable cell boundaries:
 | `drop_newest` | `DropNewestPipeline` with install-local queue | removed |
 | `throttle` | `ThrottlePipeline` with install-local gate | removed |
 | `timeout` | `TimeoutPipeline` with install-local generation | removed |
+| `join` | `JoinPipeline` with two install-local latest values | removed |
+| `merge` | `MergePipeline` with install-local completion state | removed |
+| `zip` | `ZipPipeline` with install-local pair queues | removed |
+| `join_vec` | `JoinVecPipeline` with install-local latest values | removed |
+| `take_until` | `TakeUntilPipeline` with two root subscriptions | removed |
 
 `drop_oldest` and `sample_latest` are identities because delivery is
 synchronous and a materialized cell already stores the latest value.
 `drop_oldest`'s former queue never affected its emitted stream.
 
-After this pass, 10 operator entry points still return concrete cells.
+After this pass, 5 operator entry points still return concrete cells. Every one
+of them dynamically replaces or adds a subscription after installation.
 
 ## Remaining single-source operators
 
@@ -50,16 +56,15 @@ logic still applies.
 
 | Operators | Additional requirement |
 | --- | --- |
-| `join`, `merge`, `zip`, `join_vec` | one installed pipeline owns multiple root guards |
-| `concat`, `take_until` | completion can change which root subscription is active |
+| `concat` | completion changes which root subscription is active |
 | `switch_map`, `merge_map` | dynamic inner-subscription ownership |
 | `retry`, `retry_when` | dynamic re-subscription to the source |
 
-Before porting these, subscription ownership needs a composite guard whose
-`DepNode` exposes every live upstream dependency. A callback-only guard would
-unsubscribe correctly but would hide the dependency graph from scheduler
-height calculation. Dynamic operators additionally need an RAII subscription
-slot owned by the installed pipeline rather than by an output cell.
+Static multi-root ownership is provided by `SubscriptionGuard::combine`, whose
+composite `DepNode` exposes every root and forwards scheduler invalidation
+registration. The remaining dynamic operators need the corresponding mutable
+RAII subscription slot, including dependency replacement and height-cone
+invalidation, owned by the installed pipeline rather than by an output cell.
 
 ## Required invariants for every port
 

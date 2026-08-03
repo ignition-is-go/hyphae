@@ -27,7 +27,7 @@
 //! // Combine multiple cells with join + flat!. join is stateful — it
 //! // returns a Cell directly. Chaining .map fuses into the join's
 //! // installed callback when materialized.
-//! let sum = x.join(&y).map(flat!(|a, b| a + b)).materialize().with_name("sum");
+//! let sum = x.join(y).map(flat!(|a, b| a + b)).materialize().with_name("sum");
 //!
 //! // Subscribe on the materialized cell
 //! let _guard = sum.subscribe(|signal| {
@@ -73,9 +73,9 @@
 //! // Without flat!: |(((a, b), c), d)| - deeply nested
 //! // With flat!: |a, b, c, d| - clean and simple
 //! let sum = a
-//!     .join(&b)
-//!     .join(&c)
-//!     .join(&d)
+//!     .join(b)
+//!     .join(c)
+//!     .join(d)
 //!     .map(flat!(|a, b, c, d| a + b + c + d))
 //!     .materialize();
 //! assert_eq!(sum.get(), 10);
@@ -185,14 +185,15 @@ pub use traits::{
     DebounceExt, DebouncePipeline, DedupedExt, DelayExt, DelayPipeline, DepNode, DistinctExt,
     DistinctUntilChangedByExt, DropNewestPipeline, FilterExt, FilterPipeline, FinalizeExt,
     FirstExt, Gettable, GroupByExt, GroupByPlan, HasForeignKey, IdFor, IdType, InnerJoinByKeyPlan,
-    InnerJoinByPairPlan, InnerJoinExt, JoinExt, JoinKeyFrom, KeyChange, LastExt, LeftJoinExt,
-    LeftJoinPlan, LeftSemiJoinExt, LeftSemiJoinPlan, MapErrExt, MapExt, MapOkExt, MapPipeline,
-    MergeExt, MergeMapExt, MultiLeftJoinExt, MultiLeftJoinPlan, Mutable, PairwiseExt, ParallelCell,
-    ParallelExt, ProjectCellExt, ProjectCellPlan, ProjectManyExt, ProjectManyPlan, ProjectMapExt,
-    ProjectPlan, ReactiveKeys, ReactiveMap, RetryExt, SampleExt, ScanExt, SelectCellExt,
-    SelectCellPlan, SelectExt, SelectPlan, SkipExt, SkipWhileExt, StateMachineBuilder,
-    StateTransitionExt, StateTransitionPipeline, SwitchMapExt, TakeExt, TakeUntilExt, TakeWhileExt,
+    InnerJoinByPairPlan, InnerJoinExt, JoinExt, JoinKeyFrom, JoinPipeline, JoinVecPipeline,
+    KeyChange, LastExt, LeftJoinExt, LeftJoinPlan, LeftSemiJoinExt, LeftSemiJoinPlan, MapErrExt,
+    MapExt, MapOkExt, MapPipeline, MergeExt, MergeMapExt, MergePipeline, MultiLeftJoinExt,
+    MultiLeftJoinPlan, Mutable, PairwiseExt, ParallelCell, ParallelExt, ProjectCellExt,
+    ProjectCellPlan, ProjectManyExt, ProjectManyPlan, ProjectMapExt, ProjectPlan, ReactiveKeys,
+    ReactiveMap, RetryExt, SampleExt, ScanExt, SelectCellExt, SelectCellPlan, SelectExt,
+    SelectPlan, SkipExt, SkipWhileExt, StateMachineBuilder, StateTransitionExt,
+    StateTransitionPipeline, SwitchMapExt, TakeExt, TakeUntilExt, TakeUntilPipeline, TakeWhileExt,
     TapExt, TapPipeline, ThrottleExt, ThrottlePipeline, TimeoutExt, TimeoutPipeline, TryMapExt,
     TryMapPipeline, UnwrapOrExt, Watchable, WatchableResult, WindowExt, WithLatestFromExt, ZipExt,
-    join_vec,
+    ZipPipeline, join_vec,
 };

@@ -34,7 +34,7 @@ fn pass_reports_a_synchronous_diamond_refire() {
     let s = Cell::new(0i64);
     let a = s.clone().map(|x| x + 1).materialize();
     let b = s.clone().map(|x| x * 10).materialize();
-    let sink = a.join(&b).map(|(x, y)| x + y).materialize();
+    let sink = a.join(b).map(|(x, y)| x + y).materialize();
     let guard = sink.subscribe(|_| {});
     std::mem::forget(guard);
 
@@ -95,7 +95,7 @@ fn batch_collapses_the_refire_the_pass_measures() {
     let s = Cell::new(0i64);
     let a = s.clone().map(|x| x + 1).materialize();
     let b = s.clone().map(|x| x * 10).materialize();
-    let sink = a.join(&b).map(|(x, y)| x + y).materialize();
+    let sink = a.join(b).map(|(x, y)| x + y).materialize();
     let guard = sink.subscribe(|_| {});
     std::mem::forget(guard);
 
