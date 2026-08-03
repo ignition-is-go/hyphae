@@ -49,18 +49,18 @@ directly — they hold per-subscription state, so memoization is unavoidable.
 
 Transform, combine, and filter reactive streams. Pure operators below
 (`map`, `filter`, `catch_error`) return pipelines — call `.materialize()`
-when you need a cell. Stateful operators (`scan`, `debounce`, `throttle`)
-return cells directly.
+when you need a cell. Stateful operators such as `scan`, `debounce`, and
+`throttle` are lazy pipelines too.
 
 ```rust
 use std::time::Duration;
-use hyphae::{MapExt, FilterExt, ScanExt, DebounceExt, ThrottleExt, CatchErrorExt, Pipeline};
+use hyphae::{MapExt, FilterExt, ScanExt, DebounceExt, ThrottleExt, CatchErrorExt, MaterializeDefinite};
 
 let doubled = x.map(|v| v * 2).materialize();
 let filtered = x.filter(|v| *v > 10).materialize();
-let running_sum = numbers.scan(0, |acc, x| acc + x);
-let debounced = input.debounce(Duration::from_millis(100));
-let throttled = input.throttle(Duration::from_millis(50));
+let running_sum = numbers.scan(0, |acc, x| acc + x).materialize();
+let debounced = input.debounce(Duration::from_millis(100)).materialize();
+let throttled = input.throttle(Duration::from_millis(50)).materialize();
 let safe = fallible.catch_error(|_| Cell::new(default)).materialize();
 ```
 

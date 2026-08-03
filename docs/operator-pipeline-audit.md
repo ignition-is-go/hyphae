@@ -14,18 +14,24 @@ The first pass removes four avoidable cell boundaries:
 
 | Operator | Pipeline shape | Internal cell |
 | --- | --- | --- |
+| `audit` | `AuditPipeline` with install-local window state | removed |
 | `window` | existing typed `scan -> map` chain | removed |
 | `buffer_count` | `BufferCountPipeline` with install-local queue | removed |
+| `buffer_time` | `BufferTimePipeline` with install-local queue/timer | removed |
+| `debounce` | `DebouncePipeline` with install-local generation | removed |
 | `delay` | `DelayPipeline` with install-local timer callbacks | removed |
 | `drop_oldest` | identity pipeline | removed |
 | `sample_latest` | identity pipeline | removed |
+| `state_transition` | `StateTransitionPipeline` with install-local state | removed |
 | `drop_newest` | `DropNewestPipeline` with install-local queue | removed |
+| `throttle` | `ThrottlePipeline` with install-local gate | removed |
+| `timeout` | `TimeoutPipeline` with install-local generation | removed |
 
 `drop_oldest` and `sample_latest` are identities because delivery is
 synchronous and a materialized cell already stores the latest value.
 `drop_oldest`'s former queue never affected its emitted stream.
 
-After this pass, 16 operator entry points still return concrete cells.
+After this pass, 10 operator entry points still return concrete cells.
 
 ## Remaining single-source operators
 
@@ -35,12 +41,6 @@ does not allocate state or subscribe.
 
 | Operators | Install-local state |
 | --- | --- |
-| `state_transition` | current state-machine state |
-| `audit` | latest value, generation, window flag |
-| `buffer_time` | pending chunk, timer generation |
-| `debounce` | generation |
-| `throttle` | last-emission time |
-| `timeout` | generation, timed-out flag |
 
 The time-based nodes must capture the pipeline callback, not a weak reference
 to a privately allocated output cell. Their existing generation/cancellation

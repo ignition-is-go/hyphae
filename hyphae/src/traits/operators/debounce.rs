@@ -1,4 +1,5 @@
 use std::{
+    marker::PhantomData,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -6,76 +7,87 @@ use std::{
     time::Duration,
 };
 
-use super::{CellValue, Watchable};
+use super::CellValue;
 use crate::{
-    cell::{Cell, CellImmutable, CellMutable},
+    pipeline::{Definite, MaterializeDefinite, Pipeline, PipelineInstall, PipelineSeed},
     platform,
     signal::Signal,
+    subscription::SubscriptionGuard,
 };
 
-pub trait DebounceExt<T>: Watchable<T> {
-    #[track_caller]
-    fn debounce(&self, duration: Duration) -> Cell<T, CellImmutable>
-    where
-        T: CellValue,
-        Self: Clone + Send + Sync + 'static,
-    {
-        let cell = Cell::<T, CellMutable>::new(self.get());
-        let cell = if let Some(name) = self.name() {
-            cell.with_name(format!("{}::debounce", name))
-        } else {
-            cell
-        };
+pub struct DebouncePipeline<S, T> {
+    source: S,
+    duration: Duration,
+    _t: PhantomData<fn(T)>,
+}
 
+impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for DebouncePipeline<S, T> {
+    fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
         let generation = Arc::new(AtomicU64::new(0));
-        let weak = cell.downgrade();
-        let guard = self.subscribe(move |signal| {
-            match signal {
-                Signal::Value(value) => {
-                    let my_gen = generation.fetch_add(1, Ordering::SeqCst) + 1;
-                    let value = value.clone(); // Arc clone
-                    let weak = weak.clone();
-                    let generation = generation.clone();
-
-                    platform::spawn_delayed(duration, move || {
-                        if generation.load(Ordering::SeqCst) == my_gen
-                            && let Some(c) = weak.upgrade()
-                        {
-                            c.notify(Signal::value_arc(value));
-                        }
-                    });
-                }
-                Signal::Complete => {
-                    if let Some(c) = weak.upgrade() {
-                        c.notify(Signal::Complete);
+        let duration = self.duration;
+        self.source.install(Arc::new(move |signal| match signal {
+            Signal::Value(value) => {
+                let my_generation = generation.fetch_add(1, Ordering::SeqCst) + 1;
+                let generation = generation.clone();
+                let callback = callback.clone();
+                let value = value.clone();
+                platform::spawn_delayed(duration, move || {
+                    if generation.load(Ordering::SeqCst) == my_generation {
+                        callback(&Signal::value_arc(value));
                     }
-                }
-                Signal::Error(e) => {
-                    if let Some(c) = weak.upgrade() {
-                        c.notify(Signal::Error(e.clone()));
-                    }
-                }
+                });
             }
-        });
-        cell.own(guard);
-
-        cell.lock()
+            Signal::Complete => callback(&Signal::Complete),
+            Signal::Error(error) => callback(&Signal::Error(error.clone())),
+        }))
     }
 }
 
-impl<T, W: Watchable<T>> DebounceExt<T> for W {}
+impl<S: PipelineSeed<T>, T: CellValue> PipelineSeed<T> for DebouncePipeline<S, T> {
+    fn seed(&self) -> T {
+        self.source.seed()
+    }
+}
+
+#[allow(private_bounds)]
+impl<S: Pipeline<T, Definite> + PipelineSeed<T>, T: CellValue> Pipeline<T, Definite>
+    for DebouncePipeline<S, T>
+{
+}
+
+impl<S: Pipeline<T, Definite> + PipelineSeed<T>, T: CellValue> MaterializeDefinite<T>
+    for DebouncePipeline<S, T>
+{
+}
+
+#[allow(private_bounds)]
+pub trait DebounceExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
+    #[track_caller]
+    fn debounce(self, duration: Duration) -> DebouncePipeline<Self, T> {
+        DebouncePipeline {
+            source: self,
+            duration,
+            _t: PhantomData,
+        }
+    }
+}
+
+impl<T: CellValue, P: Pipeline<T, Definite> + PipelineSeed<T>> DebounceExt<T> for P {}
 
 #[cfg(test)]
 mod tests {
     use std::{sync::atomic::AtomicU64, thread};
 
     use super::*;
-    use crate::Mutable;
+    use crate::{Cell, MaterializeDefinite, Mutable, traits::Watchable};
 
     #[test]
     fn test_debounce_waits_for_pause() {
         let source = Cell::new(0u64);
-        let debounced = source.debounce(Duration::from_millis(50));
+        let debounced = source
+            .clone()
+            .debounce(Duration::from_millis(50))
+            .materialize();
         let received = Arc::new(AtomicU64::new(0));
 
         let r = received.clone();
@@ -85,16 +97,11 @@ mod tests {
             }
         });
 
-        // Rapid updates
         source.set(1);
         source.set(2);
         source.set(3);
-
-        // Should not have updated yet
         thread::sleep(Duration::from_millis(10));
         assert_eq!(received.load(Ordering::SeqCst), 0);
-
-        // Wait for debounce
         thread::sleep(Duration::from_millis(100));
         assert_eq!(received.load(Ordering::SeqCst), 3);
     }

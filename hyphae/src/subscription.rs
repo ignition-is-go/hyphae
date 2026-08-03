@@ -55,6 +55,21 @@ impl SubscriptionGuard {
         }
     }
 
+    /// Attach cleanup to this guard without changing its dependency source.
+    ///
+    /// Pipeline operators use this to stop auxiliary work such as interval
+    /// timers when the materialized output drops. Keeping the original source
+    /// is important: scheduler height calculation must still see the real
+    /// upstream dependency rather than a callback-only placeholder.
+    pub(crate) fn with_cleanup(self, mut cleanup: impl FnMut() + Send + Sync + 'static) -> Self {
+        let source = self.source.clone();
+        let mut guard = Some(self);
+        Self::new(Uuid::new_v4(), source, move || {
+            cleanup();
+            guard.take();
+        })
+    }
+
     /// Get the source cell this subscription is connected to.
     pub fn source(&self) -> &Arc<dyn DepNode> {
         &self.source

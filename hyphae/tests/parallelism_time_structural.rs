@@ -123,7 +123,10 @@ fn debounce_wide_parallel_input_wave_all_fire() {
     let dur = Duration::from_millis(30);
 
     let sources: Vec<Cell<i64, _>> = (0..WIDE).map(|_| Cell::new(0i64)).collect();
-    let outs: Vec<_> = sources.iter().map(|s| s.debounce(dur)).collect();
+    let outs: Vec<_> = sources
+        .iter()
+        .map(|s| s.clone().debounce(dur).materialize())
+        .collect();
 
     // One wide batch: all WIDE source ops land at height 0 → parallel wave.
     batch(|| {
@@ -158,7 +161,10 @@ fn throttle_wide_parallel_wave_leading_emit_correct() {
     let dur = Duration::from_millis(20);
 
     let sources: Vec<Cell<i64, _>> = (0..WIDE).map(|_| Cell::new(0i64)).collect();
-    let outs: Vec<_> = sources.iter().map(|s| s.throttle(dur)).collect();
+    let outs: Vec<_> = sources
+        .iter()
+        .map(|s| s.clone().throttle(dur).materialize())
+        .collect();
 
     for round in 0..3i64 {
         // Let every instance's `can_emit` reset before the next leading edge.
@@ -227,7 +233,10 @@ fn timeout_wide_parallel_wave_value_passthrough_correct() {
     let dur = Duration::from_millis(500);
 
     let sources: Vec<Cell<i64, _>> = (0..WIDE).map(|_| Cell::new(0i64)).collect();
-    let outs: Vec<_> = sources.iter().map(|s| s.timeout(dur)).collect();
+    let outs: Vec<_> = sources
+        .iter()
+        .map(|s| s.clone().timeout(dur).materialize())
+        .collect();
 
     for it in 1..=ITERS {
         batch(|| {
@@ -257,7 +266,10 @@ fn buffer_time_wide_parallel_input_wave_all_collect() {
     let dur = Duration::from_millis(30);
 
     let sources: Vec<Cell<i64, _>> = (0..WIDE).map(|_| Cell::new(0i64)).collect();
-    let outs: Vec<_> = sources.iter().map(|s| s.buffer_time(dur)).collect();
+    let outs: Vec<_> = sources
+        .iter()
+        .map(|s| s.clone().buffer_time(dur).materialize())
+        .collect();
 
     // Accumulate every non-empty flattened emission per instance.
     let seen: Vec<Arc<Mutex<Vec<i64>>>> = (0..WIDE)
@@ -307,7 +319,10 @@ fn audit_wide_parallel_input_wave_all_fire() {
     let dur = Duration::from_millis(30);
 
     let sources: Vec<Cell<i64, _>> = (0..WIDE).map(|_| Cell::new(0i64)).collect();
-    let outs: Vec<_> = sources.iter().map(|s| s.audit(dur)).collect();
+    let outs: Vec<_> = sources
+        .iter()
+        .map(|s| s.clone().audit(dur).materialize())
+        .collect();
 
     batch(|| {
         for (i, s) in sources.iter().enumerate() {

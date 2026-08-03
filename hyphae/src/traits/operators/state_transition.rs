@@ -7,10 +7,11 @@ use std::{
     },
 };
 
-use super::{CellValue, Watchable};
+use super::CellValue;
 use crate::{
-    cell::{Cell, CellImmutable, CellMutable},
+    pipeline::{Definite, MaterializeDefinite, Pipeline, PipelineInstall, PipelineSeed},
     signal::Signal,
+    subscription::SubscriptionGuard,
 };
 
 /// Type alias for transition handler callbacks.
@@ -111,7 +112,108 @@ impl<S: Eq + Hash + CellValue, R: CellValue> StateMachineBuilder<S, R> {
     }
 }
 
-pub trait StateTransitionExt<S>: Watchable<S> {
+pub struct StateTransitionPipeline<P, S, R> {
+    source: P,
+    transitions: Arc<HashMap<(S, S), TransitionFn<S, R>>>,
+    on_enter: Arc<HashMap<S, StateFn<S>>>,
+    on_exit: Arc<HashMap<S, StateFn<S>>>,
+    guards: Arc<HashMap<(S, S), GuardFn<S>>>,
+    on_any_enter: Arc<Vec<StateFn<S>>>,
+    on_invalid: Option<InvalidFn<S>>,
+    initial: R,
+}
+
+impl<P, S, R> PipelineInstall<R> for StateTransitionPipeline<P, S, R>
+where
+    P: PipelineInstall<S> + PipelineSeed<S>,
+    S: CellValue + Eq + Hash,
+    R: CellValue,
+{
+    fn install(&self, callback: Arc<dyn Fn(&Signal<R>) + Send + Sync>) -> SubscriptionGuard {
+        let transitions = self.transitions.clone();
+        let on_enter = self.on_enter.clone();
+        let on_exit = self.on_exit.clone();
+        let guards = self.guards.clone();
+        let on_any_enter = self.on_any_enter.clone();
+        let on_invalid = self.on_invalid.clone();
+        let first = AtomicBool::new(true);
+        let current_state = Arc::new(Mutex::new(self.source.seed()));
+
+        self.source.install(Arc::new(move |signal| match signal {
+            Signal::Value(next) => {
+                if first.swap(false, Ordering::SeqCst) {
+                    return;
+                }
+                let current = {
+                    let mut guard = current_state.lock().expect("state_transition poisoned");
+                    let previous = guard.clone();
+                    *guard = next.as_ref().clone();
+                    previous
+                };
+                let key = (current.clone(), next.as_ref().clone());
+                if !transitions.contains_key(&key) {
+                    if let Some(handler) = &on_invalid {
+                        handler(&current, next);
+                    }
+                    return;
+                }
+                if let Some(guard) = guards.get(&key)
+                    && !guard(&current, next)
+                {
+                    return;
+                }
+                if let Some(handler) = on_exit.get(&current) {
+                    handler(&current);
+                }
+                let output = transitions.get(&key).map(|handler| handler(&current, next));
+                if let Some(handler) = on_enter.get(next.as_ref()) {
+                    handler(next);
+                }
+                for handler in on_any_enter.iter() {
+                    handler(next);
+                }
+                if let Some(value) = output {
+                    callback(&Signal::value(value));
+                }
+            }
+            Signal::Complete => callback(&Signal::Complete),
+            Signal::Error(error) => callback(&Signal::Error(error.clone())),
+        }))
+    }
+}
+
+impl<P, S, R> PipelineSeed<R> for StateTransitionPipeline<P, S, R>
+where
+    P: PipelineInstall<S> + PipelineSeed<S>,
+    S: CellValue + Eq + Hash,
+    R: CellValue,
+{
+    fn seed(&self) -> R {
+        self.initial.clone()
+    }
+}
+
+#[allow(private_bounds)]
+impl<P, S, R> Pipeline<R, Definite> for StateTransitionPipeline<P, S, R>
+where
+    P: Pipeline<S, Definite> + PipelineSeed<S>,
+    S: CellValue + Eq + Hash,
+    R: CellValue,
+{
+}
+
+impl<P, S, R> MaterializeDefinite<R> for StateTransitionPipeline<P, S, R>
+where
+    P: Pipeline<S, Definite> + PipelineSeed<S>,
+    S: CellValue + Eq + Hash,
+    R: CellValue,
+{
+}
+
+#[allow(private_bounds)]
+pub trait StateTransitionExt<S: CellValue + Eq + Hash>:
+    Pipeline<S, Definite> + PipelineSeed<S>
+{
     /// State machine operator for defining valid transitions and transition handlers.
     ///
     /// Each transition handler returns a value of type `R` that is emitted downstream.
@@ -139,116 +241,42 @@ pub trait StateTransitionExt<S>: Watchable<S> {
     /// let triggers = sm.filter(|v| *v);
     /// ```
     #[track_caller]
-    fn state_transition<R, F>(&self, configure: F) -> Cell<R, CellImmutable>
+    fn state_transition<R, F>(self, configure: F) -> StateTransitionPipeline<Self, S, R>
     where
         S: CellValue + Eq + Hash,
         R: CellValue + Default,
         F: FnOnce(&mut StateMachineBuilder<S, R>),
-        Self: Clone + Send + Sync + 'static,
     {
         let mut builder = StateMachineBuilder::new();
         configure(&mut builder);
 
-        let transitions = Arc::new(builder.transitions);
-        let on_enter = Arc::new(builder.on_enter);
-        let on_exit = Arc::new(builder.on_exit);
-        let guards = Arc::new(builder.guards);
-        let on_any_enter = Arc::new(builder.on_any_enter);
-        let on_invalid = builder.on_invalid;
-
         let initial = builder.default.take().unwrap_or_default();
-        let derived = Cell::<R, CellMutable>::new(initial);
-        let derived = if let Some(name) = self.name() {
-            derived.with_name(format!("{}::state_transition", name))
-        } else {
-            derived
-        };
-
-        let weak = derived.downgrade();
-        let first = Arc::new(AtomicBool::new(true));
-        let current_state: Arc<Mutex<S>> = Arc::new(Mutex::new(self.get()));
-
-        let guard = self.subscribe(move |signal| {
-            if let Some(d) = weak.upgrade() {
-                match signal {
-                    Signal::Value(next) => {
-                        if first.swap(false, Ordering::SeqCst) {
-                            return;
-                        }
-
-                        // Hold the lock just long enough to clone-and-replace
-                        // the current state. Release before invoking user
-                        // handlers so a panicking handler can't poison the
-                        // mutex.
-                        let current = {
-                            let mut guard =
-                                current_state.lock().expect("state_transition poisoned");
-                            let prev = guard.clone();
-                            *guard = (**next).clone();
-                            prev
-                        };
-                        let key = (current.clone(), (**next).clone());
-
-                        // Check if transition is defined
-                        if !transitions.contains_key(&key) {
-                            if let Some(ref handler) = on_invalid {
-                                handler(&current, &**next);
-                            }
-                            return;
-                        }
-
-                        // Check guard if defined
-                        if let Some(guard_fn) = guards.get(&key)
-                            && !guard_fn(&current, &**next)
-                        {
-                            return; // Guard rejected
-                        }
-
-                        // Valid transition - execute handlers
-                        // 1. on_exit for current state
-                        if let Some(exit_fn) = on_exit.get(&current) {
-                            exit_fn(&current);
-                        }
-
-                        // 2. transition handler — returns value to emit
-                        let output = transitions
-                            .get(&key)
-                            .map(|trans_fn| trans_fn(&current, &**next));
-
-                        // 3. on_enter for next state
-                        if let Some(enter_fn) = on_enter.get(&**next) {
-                            enter_fn(&**next);
-                        }
-
-                        // 4. on_any handlers
-                        for handler in on_any_enter.iter() {
-                            handler(&**next);
-                        }
-
-                        // Emit handler's return value
-                        if let Some(value) = output {
-                            d.notify(Signal::Value(Arc::new(value)));
-                        }
-                    }
-                    Signal::Complete => d.notify(Signal::Complete),
-                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
-                }
-            }
-        });
-        derived.own(guard);
-
-        derived.lock()
+        StateTransitionPipeline {
+            source: self,
+            transitions: Arc::new(builder.transitions),
+            on_enter: Arc::new(builder.on_enter),
+            on_exit: Arc::new(builder.on_exit),
+            guards: Arc::new(builder.guards),
+            on_any_enter: Arc::new(builder.on_any_enter),
+            on_invalid: builder.on_invalid,
+            initial,
+        }
     }
 }
 
-impl<S, W: Watchable<S>> StateTransitionExt<S> for W {}
+impl<S, P> StateTransitionExt<S> for P
+where
+    S: CellValue + Eq + Hash,
+    P: Pipeline<S, Definite> + PipelineSeed<S>,
+{
+}
 
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     use super::*;
-    use crate::Mutable;
+    use crate::{Cell, MaterializeDefinite, Mutable, traits::Watchable};
 
     #[derive(Clone, PartialEq, Eq, Hash, Debug)]
     enum State {
@@ -264,14 +292,17 @@ mod tests {
         let transition_count = Arc::new(AtomicU32::new(0));
 
         let tc = transition_count.clone();
-        let sm = source.state_transition(|sm| {
-            sm.on(State::Idle, State::Loading, move |_, _| {
-                tc.fetch_add(1, Ordering::SeqCst);
-                true
-            });
-            sm.on(State::Loading, State::Ready, |_, _| true);
-            sm.on(State::Loading, State::Error, |_, _| true);
-        });
+        let sm = source
+            .clone()
+            .state_transition(|sm| {
+                sm.on(State::Idle, State::Loading, move |_, _| {
+                    tc.fetch_add(1, Ordering::SeqCst);
+                    true
+                });
+                sm.on(State::Loading, State::Ready, |_, _| true);
+                sm.on(State::Loading, State::Error, |_, _| true);
+            })
+            .materialize();
 
         let emissions = Arc::new(AtomicU32::new(0));
         let e = emissions.clone();
@@ -294,10 +325,13 @@ mod tests {
     #[test]
     fn test_state_transition_undefined_advances_state() {
         let source = Cell::new(State::Idle);
-        let sm = source.state_transition(|sm| {
-            sm.on(State::Idle, State::Loading, |_, _| true);
-            sm.on(State::Loading, State::Ready, |_, _| true);
-        });
+        let sm = source
+            .clone()
+            .state_transition(|sm| {
+                sm.on(State::Idle, State::Loading, |_, _| true);
+                sm.on(State::Loading, State::Ready, |_, _| true);
+            })
+            .materialize();
 
         let emissions = Arc::new(AtomicU32::new(0));
         let e = emissions.clone();
@@ -333,15 +367,18 @@ mod tests {
 
         let ec = enter_count.clone();
         let xc = exit_count.clone();
-        let _sm: Cell<bool, _> = source.state_transition(|sm| {
-            sm.on(State::Idle, State::Loading, |_, _| true);
-            sm.on_exit(State::Idle, move |_| {
-                xc.fetch_add(1, Ordering::SeqCst);
-            });
-            sm.on_enter(State::Loading, move |_| {
-                ec.fetch_add(1, Ordering::SeqCst);
-            });
-        });
+        let _sm: Cell<bool, _> = source
+            .clone()
+            .state_transition(|sm| {
+                sm.on(State::Idle, State::Loading, |_, _| true);
+                sm.on_exit(State::Idle, move |_| {
+                    xc.fetch_add(1, Ordering::SeqCst);
+                });
+                sm.on_enter(State::Loading, move |_| {
+                    ec.fetch_add(1, Ordering::SeqCst);
+                });
+            })
+            .materialize();
 
         source.set(State::Loading);
         assert_eq!(exit_count.load(Ordering::SeqCst), 1);
@@ -354,12 +391,15 @@ mod tests {
         let allow = Arc::new(AtomicBool::new(false));
 
         let a = allow.clone();
-        let sm = source.state_transition(|sm| {
-            sm.on(State::Idle, State::Loading, |_, _| true);
-            sm.guard(State::Idle, State::Loading, move |_, _| {
-                a.load(Ordering::SeqCst)
-            });
-        });
+        let sm = source
+            .clone()
+            .state_transition(|sm| {
+                sm.on(State::Idle, State::Loading, |_, _| true);
+                sm.guard(State::Idle, State::Loading, move |_, _| {
+                    a.load(Ordering::SeqCst)
+                });
+            })
+            .materialize();
 
         let emissions = Arc::new(AtomicU32::new(0));
         let e = emissions.clone();
@@ -378,12 +418,15 @@ mod tests {
         // Create fresh cell since current state might be Loading in sm
         let source2 = Cell::new(State::Idle);
         let a2 = allow.clone();
-        let sm2 = source2.state_transition(|sm| {
-            sm.on(State::Idle, State::Loading, |_, _| true);
-            sm.guard(State::Idle, State::Loading, move |_, _| {
-                a2.load(Ordering::SeqCst)
-            });
-        });
+        let sm2 = source2
+            .clone()
+            .state_transition(|sm| {
+                sm.on(State::Idle, State::Loading, |_, _| true);
+                sm.guard(State::Idle, State::Loading, move |_, _| {
+                    a2.load(Ordering::SeqCst)
+                });
+            })
+            .materialize();
 
         let emissions2 = Arc::new(AtomicU32::new(0));
         let e2 = emissions2.clone();
@@ -401,12 +444,15 @@ mod tests {
         let invalid_count = Arc::new(AtomicU32::new(0));
 
         let ic = invalid_count.clone();
-        let _sm: Cell<bool, _> = source.state_transition(|sm| {
-            sm.on(State::Idle, State::Loading, |_, _| true);
-            sm.on_invalid(move |_, _| {
-                ic.fetch_add(1, Ordering::SeqCst);
-            });
-        });
+        let _sm: Cell<bool, _> = source
+            .clone()
+            .state_transition(|sm| {
+                sm.on(State::Idle, State::Loading, |_, _| true);
+                sm.on_invalid(move |_, _| {
+                    ic.fetch_add(1, Ordering::SeqCst);
+                });
+            })
+            .materialize();
 
         // Invalid transition
         source.set(State::Ready);
@@ -422,7 +468,7 @@ mod tests {
         use crate::{FilterExt, Gettable, MaterializeEmpty};
 
         let source = Cell::new(State::Idle);
-        let sm = source.state_transition(|sm| {
+        let sm = source.clone().state_transition(|sm| {
             sm.on(State::Idle, State::Loading, |_, _| true);
             sm.on(State::Loading, State::Ready, |_, _| false);
             sm.on(State::Ready, State::Idle, |_, _| false);

@@ -367,9 +367,12 @@ fn state_transition_wide_wave_settles_each_instance_correctly() {
         for k in 0..N_B {
             let kk = k as i64;
             let s = Cell::new(0i64);
-            let sm: Cell<i64, CellImmutable> = s.state_transition(move |sm| {
-                sm.on(0i64, 1i64, move |_, _| (kk + 1) * 10);
-            });
+            let sm: Cell<i64, CellImmutable> = s
+                .clone()
+                .state_transition(move |sm| {
+                    sm.on(0i64, 1i64, move |_, _| (kk + 1) * 10);
+                })
+                .materialize();
             sources.push(s);
             machines.push(sm);
         }
@@ -592,12 +595,15 @@ fn state_transition_event_order_under_parallel_wave_regression() {
         // defined and emitting its target value. Driven in order 1,2,...,N_C
         // each batch, it emits exactly 1,2,...,N_C; the cycle edge (N_C->1)
         // keeps that true across batches even though the state persists.
-        let derived: Cell<i64, CellImmutable> = src.state_transition(|sm| {
-            for k in 0..N_C {
-                sm.on(k, k + 1, move |_, to| *to);
-            }
-            sm.on(N_C, 1i64, move |_, to| *to);
-        });
+        let derived: Cell<i64, CellImmutable> = src
+            .clone()
+            .state_transition(|sm| {
+                for k in 0..N_C {
+                    sm.on(k, k + 1, move |_, to| *to);
+                }
+                sm.on(N_C, 1i64, move |_, to| *to);
+            })
+            .materialize();
         (src, derived)
     });
     assert_ordered_event_delivery("state_transition", src, derived);
