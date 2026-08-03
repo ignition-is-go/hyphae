@@ -8,8 +8,9 @@ use std::{
 
 use parking_lot::Mutex;
 
-use super::CellValue;
+use super::{CellValue, Watchable};
 use crate::{
+    cell::{Cell, CellMutable},
     pipeline::{Definite, MaterializeDefinite, Pipeline, PipelineInstall, PipelineSeed},
     signal::Signal,
     subscription::SubscriptionGuard,
@@ -33,13 +34,15 @@ where
     U: CellValue,
 {
     fn install(&self, callback: Arc<dyn Fn(&Signal<(T, U)>) + Send + Sync>) -> SubscriptionGuard {
-        let latest = Arc::new(Mutex::new((self.left.seed(), self.right.seed())));
+        let initial = (self.left.seed(), self.right.seed());
+        let latest = Arc::new(Mutex::new(initial.clone()));
+        let derived = Cell::<(T, U), CellMutable>::new(initial);
         let completed = Arc::new(AtomicU8::new(0));
 
         let left_latest = latest.clone();
         let left_completed = completed.clone();
         let left_first = AtomicBool::new(true);
-        let left_callback = callback.clone();
+        let left_weak = derived.downgrade();
         let left_guard = self.left.install(Arc::new(move |signal| match signal {
             Signal::Value(value) => {
                 if left_first.swap(false, Ordering::SeqCst) {
@@ -47,17 +50,27 @@ where
                 }
                 let mut latest = left_latest.lock();
                 latest.0 = value.as_ref().clone();
-                left_callback(&Signal::value(latest.clone()));
-            }
-            Signal::Complete => {
-                if left_completed.fetch_or(LEFT_COMPLETE, Ordering::SeqCst) == RIGHT_COMPLETE {
-                    left_callback(&Signal::Complete);
+                if let Some(derived) = left_weak.upgrade() {
+                    derived.notify(Signal::value(latest.clone()));
                 }
             }
-            Signal::Error(error) => left_callback(&Signal::Error(error.clone())),
+            Signal::Complete => {
+                if left_completed.fetch_or(LEFT_COMPLETE, Ordering::SeqCst) == RIGHT_COMPLETE
+                    && let Some(derived) = left_weak.upgrade()
+                {
+                    derived.notify(Signal::Complete);
+                }
+            }
+            Signal::Error(error) => {
+                if let Some(derived) = left_weak.upgrade() {
+                    derived.notify(Signal::Error(error.clone()));
+                }
+            }
         }));
+        derived.own(left_guard);
 
         let right_first = AtomicBool::new(true);
+        let right_weak = derived.downgrade();
         let right_guard = self.right.install(Arc::new(move |signal| match signal {
             Signal::Value(value) => {
                 if right_first.swap(false, Ordering::SeqCst) {
@@ -65,17 +78,26 @@ where
                 }
                 let mut latest = latest.lock();
                 latest.1 = value.as_ref().clone();
-                callback(&Signal::value(latest.clone()));
-            }
-            Signal::Complete => {
-                if completed.fetch_or(RIGHT_COMPLETE, Ordering::SeqCst) == LEFT_COMPLETE {
-                    callback(&Signal::Complete);
+                if let Some(derived) = right_weak.upgrade() {
+                    derived.notify(Signal::value(latest.clone()));
                 }
             }
-            Signal::Error(error) => callback(&Signal::Error(error.clone())),
+            Signal::Complete => {
+                if completed.fetch_or(RIGHT_COMPLETE, Ordering::SeqCst) == LEFT_COMPLETE
+                    && let Some(derived) = right_weak.upgrade()
+                {
+                    derived.notify(Signal::Complete);
+                }
+            }
+            Signal::Error(error) => {
+                if let Some(derived) = right_weak.upgrade() {
+                    derived.notify(Signal::Error(error.clone()));
+                }
+            }
         }));
+        derived.own(right_guard);
 
-        SubscriptionGuard::combine(vec![left_guard, right_guard])
+        derived.subscribe(move |signal| callback(signal))
     }
 }
 

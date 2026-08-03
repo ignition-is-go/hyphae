@@ -26,10 +26,10 @@ The migration has removed every static single- and multi-source cell boundary:
 | `drop_newest` | `DropNewestPipeline` with install-local queue | removed |
 | `throttle` | `ThrottlePipeline` with install-local gate | removed |
 | `timeout` | `TimeoutPipeline` with install-local generation | removed |
-| `join` | `JoinPipeline` with two install-local latest values | removed |
+| `join` | `JoinPipeline`; install-time coalescing cell preserves glitch-free diamonds | required |
 | `merge` | `MergePipeline` with install-local completion state | removed |
 | `zip` | `ZipPipeline` with install-local pair queues | removed |
-| `join_vec` | `JoinVecPipeline` with install-local latest values | removed |
+| `join_vec` | `JoinVecPipeline`; install-time coalescing cell preserves glitch-free fan-in | required |
 | `take_until` | `TakeUntilPipeline` with two root subscriptions | removed |
 
 `drop_oldest` and `sample_latest` are identities because delivery is
@@ -65,6 +65,12 @@ composite `DepNode` exposes every root and forwards scheduler invalidation
 registration. The remaining dynamic operators need the corresponding mutable
 RAII subscription slot, including dependency replacement and height-cone
 invalidation, owned by the installed pipeline rather than by an output cell.
+
+`join` and `join_vec` are the deliberate exceptions to the no-internal-cell
+rule. Their fan-in must coalesce sibling updates before a fused downstream
+operator runs; otherwise one batched diamond executes downstream work once per
+root and exposes torn intermediate states. They remain lazy pipeline values,
+and allocate that boundary only when installed.
 
 ## Required invariants for every port
 
