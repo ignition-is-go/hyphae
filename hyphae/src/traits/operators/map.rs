@@ -132,6 +132,36 @@ mod tests {
     }
 
     #[test]
+    fn test_four_hop_lazy_and_materialized_chains_update_synchronously() {
+        let lazy_source = Cell::new(false);
+        let lazy = lazy_source
+            .clone()
+            .map(|value| !value)
+            .map(|value| !value)
+            .map(|value| !value)
+            .map(|value| !value)
+            .materialize();
+
+        let materialized_source = Cell::new(false);
+        let hop_1 = materialized_source
+            .clone()
+            .map(|value| !value)
+            .materialize();
+        let hop_2 = hop_1.map(|value| !value).materialize();
+        let hop_3 = hop_2.map(|value| !value).materialize();
+        let hop_4 = hop_3.map(|value| !value).materialize();
+
+        assert!(!lazy.get());
+        assert!(!hop_4.get());
+
+        lazy_source.set(true);
+        materialized_source.set(true);
+
+        assert!(lazy.get());
+        assert!(hop_4.get());
+    }
+
+    #[test]
     fn test_map_type_change() {
         let source = Cell::new(42);
         let stringified = source.map(|x| format!("value: {}", x)).materialize();

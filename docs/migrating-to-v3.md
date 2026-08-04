@@ -64,6 +64,27 @@ Materializing between these operators would create an extra cached multicast
 cell and an extra propagation boundary. Do that only when the intermediate
 value is intentionally observed or shared.
 
+Keep the terminal materialized cell alive for as long as the application needs
+the reactive graph to update. The cell owns the installed subscriptions;
+dropping it tears the graph down. A temporary read such as
+`build_report().materialize().get()` observes the current seed and then removes
+the installation at the end of the statement. It will not remain subscribed
+across a later source update. Store the terminal cell in the owning component
+or topology instead:
+
+```rust
+struct ViewModel {
+    output: Cell<Rendered, CellImmutable>,
+}
+
+let view_model = ViewModel {
+    output: source.clone().map(render).materialize(),
+};
+```
+
+One retained terminal boundary keeps the complete upstream pipeline alive;
+intermediate materializations are not required solely for lifetime.
+
 The operators moved to lazy pipelines in this release include `audit`,
 `buffer_count`, `buffer_time`, `concat`, `debounce`, `delay`, `drop_newest`,
 `drop_oldest`, `join`, `join_vec`, `merge`, `merge_map`, `retry`, `retry_when`,
@@ -223,5 +244,7 @@ lazy.
 7. Update types downstream of empty pipelines to handle `Option<T>`.
 8. Materialize reactive `CellMap`/`CellSet` views before calling `get`,
    `subscribe`, or passing them to a `Watchable` bound.
-9. Run the application test suite with the same Hyphae features used in
+9. Retain each terminal materialized cell for the full lifetime in which its
+   source updates must propagate.
+10. Run the application test suite with the same Hyphae features used in
    production, especially `scheduler`, `async`, and `profiling`.
