@@ -1202,7 +1202,7 @@ mod sub_index_tests {
 
 #[cfg(all(test, feature = "scheduler"))]
 mod height_dependents_tests {
-    use crate::{Cell, Mutable, SwitchMapExt, Watchable};
+    use crate::{Cell, MaterializeDefinite, Mutable, SwitchMapExt, Watchable};
 
     /// Re-owning the SAME live source must not grow the source's
     /// height-dependent set. This is the `switch_map`-onto-a-cached-cell shape:
@@ -1283,7 +1283,10 @@ mod height_dependents_tests {
         let outer = Cell::new(0i32);
         let shared_inner = Cell::new(100i32);
         let inner_for_closure = shared_inner.clone();
-        let switched = outer.switch_map(move |_| inner_for_closure.clone().lock());
+        let switched = outer
+            .clone()
+            .switch_map(move |_| inner_for_closure.clone().lock())
+            .materialize();
         let _guard = switched.subscribe(|_| {});
 
         for i in 1..500 {

@@ -192,7 +192,10 @@ fn concurrent_merge_maps_complete_exactly_once() {
                 // First (and only) inner is the `inner_src` cell itself, locked
                 // immutable — height 0, same as the outer, so completing both in
                 // one batch puts them in the same wide wave.
-                let mm = outer.merge_map(move |_: &i64| ic.clone().lock());
+                let mm = outer
+                    .clone()
+                    .merge_map(move |_: &i64| ic.clone().lock())
+                    .materialize();
 
                 let done = Arc::new(AtomicUsize::new(0));
                 let d = done.clone();
@@ -263,7 +266,10 @@ fn concurrent_switch_map_latest_inner_wins_same_height() {
             // wave. The old inner is the current inner until `sel` flips to 1.
             let old = old_src.clone().lock();
             let new = new_src.clone().lock();
-            let result = sel.switch_map(move |&k| if k == 0 { old.clone() } else { new.clone() });
+            let result = sel
+                .clone()
+                .switch_map(move |&k| if k == 0 { old.clone() } else { new.clone() })
+                .materialize();
 
             sels.push(sel);
             old_srcs.push(old_src);

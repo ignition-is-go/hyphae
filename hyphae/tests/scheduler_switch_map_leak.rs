@@ -138,19 +138,21 @@ fn stacked_cellmap_query_cache_reclaims_under_batch() {
     let query_cache_for_closure = query_cache.clone();
 
     // switch_map builds a fresh 2-layer cached query per outer emission.
-    let switched = outer_items.switch_map(move |items| {
-        let ids: Vec<Arc<str>> = (0..items.len() as i64)
-            .map(|i| format!("id-{i}").into())
-            .collect();
-        let cache_key = format!("{ids:?}");
-        let typed = query_cache_for_closure.get_or_build(&cache_key, || {
-            typed_wrap(build_ids_source_map(&store_for_closure, &ids))
-        });
-        typed
-            .items()
-            .map(|vals| Arc::new(vals.iter().map(|v| **v).sum::<i64>()))
-            .materialize()
-    });
+    let switched = outer_items
+        .switch_map(move |items| {
+            let ids: Vec<Arc<str>> = (0..items.len() as i64)
+                .map(|i| format!("id-{i}").into())
+                .collect();
+            let cache_key = format!("{ids:?}");
+            let typed = query_cache_for_closure.get_or_build(&cache_key, || {
+                typed_wrap(build_ids_source_map(&store_for_closure, &ids))
+            });
+            typed
+                .items()
+                .map(|vals| Arc::new(vals.iter().map(|v| **v).sum::<i64>()))
+                .materialize()
+        })
+        .materialize();
 
     let report_cell = switched.materialize();
     let _ = report_cell.get();

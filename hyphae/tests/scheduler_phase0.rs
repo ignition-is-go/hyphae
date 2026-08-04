@@ -251,7 +251,10 @@ fn switch_map_rewire_and_taller_inner_update_in_one_batch() {
 
     let sel = Cell::new(0i64);
     let (in0c, in1c) = (in0.clone(), in1.clone());
-    let result = sel.switch_map(move |&i| if i == 0 { in0c.clone() } else { in1c.clone() });
+    let result = sel
+        .clone()
+        .switch_map(move |&i| if i == 0 { in0c.clone() } else { in1c.clone() })
+        .materialize();
     let (_fires, last) = count_and_record(&result);
 
     batch(|| {
@@ -287,7 +290,10 @@ fn switch_map_old_inner_firing_during_switch_is_glitch_free() {
 
         let sel = Cell::new(0i64);
         let (in0c, in1c) = (in0.clone(), in1.clone());
-        let result = sel.switch_map(move |&i| if i == 0 { in0c.clone() } else { in1c.clone() });
+        let result = sel
+            .clone()
+            .switch_map(move |&i| if i == 0 { in0c.clone() } else { in1c.clone() })
+            .materialize();
         let (fires, last) = count_and_record(&result);
 
         fires.store(0, Ordering::SeqCst);

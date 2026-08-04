@@ -466,7 +466,7 @@ fn concat_wide_parallel_wave_both_sides_correct() {
     let outs: Vec<_> = firsts
         .iter()
         .zip(seconds.iter())
-        .map(|(f, s)| f.concat(s))
+        .map(|(f, s)| f.clone().concat(s.clone()).materialize())
         .collect();
 
     // Phase 1: drive the FIRST input side under a wide wave.
@@ -604,7 +604,10 @@ fn retry_wide_parallel_wave_value_passthrough() {
     const ITERS: i64 = 200;
 
     let sources: Vec<Cell<i64, _>> = (0..WIDE).map(|_| Cell::new(0i64)).collect();
-    let outs: Vec<_> = sources.iter().map(|s| s.retry(1_000)).collect();
+    let outs: Vec<_> = sources
+        .iter()
+        .map(|s| s.clone().retry(1_000).materialize())
+        .collect();
 
     for it in 1..=ITERS {
         batch(|| {

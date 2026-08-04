@@ -9,7 +9,7 @@
 #![cfg(feature = "scheduler")]
 #![allow(clippy::needless_range_loop)]
 
-use hyphae::{Cell, Gettable, Mutable, SwitchMapExt, batch};
+use hyphae::{Cell, Gettable, MaterializeDefinite, Mutable, SwitchMapExt, batch};
 
 // Wide enough that each batch is a 2*WIDTH height-0 wave dispatched across
 // rayon, so many units' old-inner emissions race their selector's gen-bump
@@ -33,7 +33,10 @@ fn switch_map_latest_inner_always_wins_under_wide_prolonged_contention() {
             // selector, so selector-set and old-inner-set collide in one wave.
             let old = old_src.clone().lock();
             let new = new_src.clone().lock();
-            let result = sel.switch_map(move |&k| if k == 0 { old.clone() } else { new.clone() });
+            let result = sel
+                .clone()
+                .switch_map(move |&k| if k == 0 { old.clone() } else { new.clone() })
+                .materialize();
             sels.push(sel);
             old_srcs.push(old_src);
             results.push(result);

@@ -1,15 +1,20 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+use std::{
+    marker::PhantomData,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
 };
 
 use parking_lot::Mutex;
 use uuid::Uuid;
 
-use super::{CellValue, Gettable, Watchable};
+use super::{CellValue, Watchable};
 use crate::{
-    cell::{Cell, CellImmutable, CellMutable},
+    cell::{Cell, CellMutable},
+    pipeline::{Definite, MaterializeDefinite, Pipeline, PipelineInstall, PipelineSeed},
     signal::Signal,
+    subscription::SubscriptionGuard,
 };
 
 // Lock-free completion state packed into a single u64:
@@ -20,22 +25,23 @@ const INNER_COMPLETE_BIT: u64 = 1 << 62;
 const OUTER_COMPLETE_BIT: u64 = 1 << 63;
 const GEN_MASK: u64 = (1 << 62) - 1;
 
-pub trait SwitchMapExt<T>: Watchable<T> {
-    #[track_caller]
-    fn switch_map<U, F>(&self, f: F) -> Cell<U, CellImmutable>
-    where
-        T: CellValue,
-        U: CellValue,
-        F: Fn(&T) -> Cell<U, CellImmutable> + Send + Sync + 'static,
-        Self: Clone + Send + Sync + 'static,
-    {
-        let first_inner = f(&self.get());
-        let cell = Cell::<U, CellMutable>::new(first_inner.get());
-        let cell = if let Some(name) = self.name() {
-            cell.with_name(format!("{}::switch_map", name))
-        } else {
-            cell
-        };
+pub struct SwitchMapPipeline<S, T, U, F, I> {
+    source: S,
+    f: Arc<F>,
+    _types: PhantomData<fn(T) -> (U, I)>,
+}
+
+impl<S, T, U, F, I> PipelineInstall<U> for SwitchMapPipeline<S, T, U, F, I>
+where
+    S: PipelineInstall<T> + PipelineSeed<T>,
+    T: CellValue,
+    U: CellValue,
+    F: Fn(&T) -> I + Send + Sync + 'static,
+    I: PipelineInstall<U> + PipelineSeed<U>,
+{
+    fn install(&self, callback: Arc<dyn Fn(&Signal<U>) + Send + Sync>) -> SubscriptionGuard {
+        let first_inner = (self.f)(&self.source.seed());
+        let cell = Cell::<U, CellMutable>::new(first_inner.seed());
 
         // Stable key for the inner subscription guard so switch_map replaces (not accumulates)
         let inner_guard_key = Uuid::new_v4();
@@ -64,7 +70,7 @@ pub trait SwitchMapExt<T>: Watchable<T> {
         let weak = cell.downgrade();
         let state_for_first = state.clone();
         let switch_lock_first = switch_lock.clone();
-        let first_guard = first_inner.subscribe(move |signal| {
+        let first_guard = first_inner.install(Arc::new(move |signal| {
             let _switch = switch_lock_first.lock();
             let current = state_for_first.load(Ordering::SeqCst);
             if current & GEN_MASK != 0 {
@@ -98,16 +104,16 @@ pub trait SwitchMapExt<T>: Watchable<T> {
                     Signal::Error(e) => c.notify(Signal::Error(e.clone())),
                 }
             }
-        });
+        }));
         cell.own_keyed(inner_guard_key, first_guard);
 
         // Single subscription to outer handles both value switching and completion tracking
         let weak = cell.downgrade();
-        let f = Arc::new(f);
+        let f = self.f.clone();
         let state_for_outer = state.clone();
         let switch_lock_outer = switch_lock;
         let first = Arc::new(AtomicBool::new(true));
-        let outer_guard = self.subscribe(move |signal| {
+        let outer_guard = self.source.install(Arc::new(move |signal| {
             match signal {
                 Signal::Value(outer_value) => {
                     if first.swap(false, Ordering::SeqCst) {
@@ -151,7 +157,7 @@ pub trait SwitchMapExt<T>: Watchable<T> {
                     let weak_inner = weak.clone();
                     let state_for_inner = state_for_outer.clone();
                     let switch_lock_inner = switch_lock_outer.clone();
-                    let value_guard = inner.subscribe(move |signal| {
+                    let value_guard = inner.install(Arc::new(move |signal| {
                         let _switch = switch_lock_inner.lock();
                         let current = state_for_inner.load(Ordering::SeqCst);
                         if current & GEN_MASK != my_gen {
@@ -187,7 +193,7 @@ pub trait SwitchMapExt<T>: Watchable<T> {
                                 Signal::Error(e) => c.notify(Signal::Error(e.clone())),
                             }
                         }
-                    });
+                    }));
                     c.own_keyed(inner_guard_key, value_guard);
                 }
                 Signal::Complete => {
@@ -217,27 +223,91 @@ pub trait SwitchMapExt<T>: Watchable<T> {
                     }
                 }
             }
-        });
+        }));
         cell.own(outer_guard);
 
-        cell.lock()
+        cell.subscribe(move |signal| callback(signal))
     }
 }
 
-impl<T, W: Watchable<T>> SwitchMapExt<T> for W {}
+impl<S, T, U, F, I> PipelineSeed<U> for SwitchMapPipeline<S, T, U, F, I>
+where
+    S: PipelineSeed<T>,
+    T: CellValue,
+    U: CellValue,
+    F: Fn(&T) -> I + Send + Sync + 'static,
+    I: PipelineInstall<U> + PipelineSeed<U>,
+{
+    fn seed(&self) -> U {
+        (self.f)(&self.source.seed()).seed()
+    }
+}
+impl<S, T, U, F, I> Pipeline<U, Definite> for SwitchMapPipeline<S, T, U, F, I>
+where
+    S: Pipeline<T, Definite> + PipelineSeed<T>,
+    T: CellValue,
+    U: CellValue,
+    F: Fn(&T) -> I + Send + Sync + 'static,
+    I: Pipeline<U, Definite> + PipelineSeed<U>,
+{
+}
+impl<S, T, U, F, I> MaterializeDefinite<U> for SwitchMapPipeline<S, T, U, F, I>
+where
+    S: Pipeline<T, Definite> + PipelineSeed<T>,
+    T: CellValue,
+    U: CellValue,
+    F: Fn(&T) -> I + Send + Sync + 'static,
+    I: Pipeline<U, Definite> + PipelineSeed<U>,
+{
+}
+
+pub trait SwitchMapExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
+    fn switch_map<U, F, I>(self, f: F) -> SwitchMapPipeline<Self, T, U, F, I>
+    where
+        U: CellValue,
+        F: Fn(&T) -> I + Send + Sync + 'static,
+        I: Pipeline<U, Definite> + PipelineSeed<U>,
+    {
+        SwitchMapPipeline {
+            source: self,
+            f: Arc::new(f),
+            _types: PhantomData,
+        }
+    }
+}
+impl<T: CellValue, P> SwitchMapExt<T> for P where P: Pipeline<T, Definite> + PipelineSeed<T> {}
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicUsize;
+
     use super::*;
-    use crate::{MapExt, MaterializeDefinite, Mutable};
+    use crate::{Gettable, MapExt, MaterializeDefinite, Mutable};
+
+    #[test]
+    fn switch_map_does_not_build_an_inner_until_materialized() {
+        let source = Cell::new(1u64);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let inner_calls = calls.clone();
+        let pipeline = source.switch_map(move |value| {
+            inner_calls.fetch_add(1, Ordering::SeqCst);
+            Cell::new(*value)
+        });
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let _switched = pipeline.materialize();
+        assert!(calls.load(Ordering::SeqCst) >= 2);
+    }
 
     #[test]
     fn test_switch_map_switches() {
         let source = Cell::new(1u64);
-        let switched = source.switch_map(|v| {
-            let v = *v;
-            Cell::new(v * 10).map(move |x| x + v).materialize()
-        });
+        let switched = source
+            .clone()
+            .switch_map(|v| {
+                let v = *v;
+                Cell::new(v * 10).map(move |x| x + v)
+            })
+            .materialize();
 
         // Initial: 1 * 10 + 1 = 11
         assert_eq!(switched.get(), 11);
@@ -254,33 +324,36 @@ mod tests {
         let source = Cell::new(0u64);
 
         let count = map_call_count.clone();
-        let switched = source.switch_map(move |v| {
-            let v = *v;
-            let count_inner = count.clone();
-            // Simulate: query_map().items() — an intermediate cell
-            let intermediate = Cell::new(v * 10);
-            // Simulate: .map() on items
-            intermediate
-                .map(move |x| {
-                    count_inner.fetch_add(1, Ordering::SeqCst);
-                    *x + v
-                })
-                .materialize()
-        });
+        let switched = source
+            .clone()
+            .switch_map(move |v| {
+                let v = *v;
+                let count_inner = count.clone();
+                // Simulate: query_map().items() — an intermediate cell
+                let intermediate = Cell::new(v * 10);
+                // Simulate: .map() on items
+                intermediate
+                    .map(move |x| {
+                        count_inner.fetch_add(1, Ordering::SeqCst);
+                        *x + v
+                    })
+                    .materialize()
+            })
+            .materialize();
 
         assert_eq!(switched.get(), 0); // 0 * 10 + 0
         let calls_after_init = map_call_count.load(Ordering::SeqCst);
         // Under the fused-pipeline model, materialize() runs the inner closure
         // twice per switch (once for self.get() to compute the initial cell
         // value, and once when install() subscribes synchronously).
-        let calls_per_switch = calls_after_init;
-        assert!(calls_per_switch >= 1);
+        assert!(calls_after_init >= 1);
 
         // Switch — old inner map closure should stop being called
         source.set(1);
         assert_eq!(switched.get(), 11); // 1 * 10 + 1
         let calls_after_switch = map_call_count.load(Ordering::SeqCst);
-        assert_eq!(calls_after_switch, 2 * calls_per_switch); // Only the new inner map called
+        let calls_per_switch = calls_after_switch - calls_after_init;
+        assert!(calls_per_switch >= 1);
 
         // Mutate source several times and verify calls grow linearly, not quadratically
         for i in 2..=20u64 {
@@ -292,10 +365,10 @@ mod tests {
         // ~1+2+3+...+20 instead of linear.
         assert_eq!(
             calls_after_20,
-            21 * calls_per_switch,
+            calls_after_init + 20 * calls_per_switch,
             "map called {} times after 20 switches, expected {} (old inner maps leaking if higher)",
             calls_after_20,
-            21 * calls_per_switch
+            calls_after_init + 20 * calls_per_switch
         );
     }
 
@@ -309,11 +382,14 @@ mod tests {
             Arc::new(std::sync::Mutex::new(Vec::new()));
 
         let collector = weak_collector.clone();
-        let switched = source.switch_map(move |v| {
-            let intermediate = Cell::new(*v * 10);
-            collector.lock().unwrap().push(intermediate.downgrade());
-            intermediate.lock()
-        });
+        let switched = source
+            .clone()
+            .switch_map(move |v| {
+                let intermediate = Cell::new(*v * 10);
+                collector.lock().unwrap().push(intermediate.downgrade());
+                intermediate.lock()
+            })
+            .materialize();
 
         assert_eq!(switched.get(), 0);
 
@@ -324,7 +400,10 @@ mod tests {
         assert_eq!(switched.get(), 200);
 
         let weaks = weak_collector.lock().unwrap();
-        assert_eq!(weaks.len(), 21); // 1 initial + 20 switches
+        // Definite pipeline materialization evaluates the seed recipe once,
+        // then installs an independent current inner. Both are expected; the
+        // seed-only inner must already be dead.
+        assert_eq!(weaks.len(), 22); // seed + installed initial + 20 switches
 
         // Only the last inner cell should be alive (the current one)
         let alive_count = weaks.iter().filter(|w| w.upgrade().is_some()).count();
