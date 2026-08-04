@@ -28,6 +28,10 @@ scheduler = []
 # global census — consumers attach their own `tracing` subscriber (Tracy,
 # `tracing-flame`, …), and use a heap profiler for memory attribution.
 profiling = ["dep:tracing"]
+# Compile the isolated 64-stage benchmark target. Kept out of the default
+# benchmark set because its deeply nested static type has a multi-gigabyte
+# compiler memory footprint.
+deep-bench = []
 
 [dependencies]
 anyhow = "1"
@@ -85,6 +89,11 @@ harness = false
 [[bench]]
 name = "reactive_graphs"
 harness = false
+
+[[bench]]
+name = "reactive_graphs_64"
+harness = false
+required-features = ["deep-bench"]
 
 [[bench]]
 name = "subscriber_registry"

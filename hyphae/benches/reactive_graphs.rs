@@ -1,14 +1,16 @@
 //! Deep and wide application-shaped reactive graph benchmarks.
 //!
 //! This suite is intentionally dominated by `CellMap` query plans: every
-//! materialized view joins up to 64 independently mutable data sources and
+//! materialized view joins up to 32 independently mutable data sources and
 //! performs four projections after every join. It measures updates entering at
 //! the root, updates entering at the deepest source, waves touching every source,
 //! graph installation/teardown, row scaling, and observer fan-out.
 //! A reported map depth is one `left_join_by` followed by four projections at
 //! every stage, modeling an application with roughly one join per five
-//! operators. Depth 32 and 64 therefore represent roughly 162 and 322 query
-//! operators once the initial select/project pair is included.
+//! operators. Depth 32 therefore represents roughly 162 query operators once
+//! the initial select/project pair is included. The opt-in
+//! `reactive_graphs_64` target isolates the 64-stage case to bound compiler
+//! memory.
 //!
 //! Keep benchmark names and workloads stable across the pre/post migration
 //! revisions. The `join_heavy_operator_pipeline` builders require explicit
@@ -28,7 +30,6 @@ use hyphae::{
 };
 use seq_macro::seq;
 
-const MAX_DEPTH: usize = 64;
 const DEFAULT_ROWS: usize = 1_000;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -51,7 +52,7 @@ struct Sources {
     buckets: usize,
 }
 
-fn populate(rows: usize) -> Sources {
+fn populate(rows: usize, dimension_count: usize) -> Sources {
     let buckets = (rows / 8).max(1);
     let root = CellMap::new();
     for i in 0..rows {
@@ -65,7 +66,7 @@ fn populate(rows: usize) -> Sources {
         );
     }
 
-    let dimensions = (0..MAX_DEPTH)
+    let dimensions = (0..dimension_count)
         .map(|source| {
             let map = CellMap::new();
             for i in 0..rows {
@@ -177,7 +178,6 @@ define_map_builder!(build_depth_8, 8);
 define_map_builder!(build_depth_12, 12);
 define_map_builder!(build_depth_16, 16);
 define_map_builder!(build_depth_32, 32);
-define_map_builder!(build_depth_64, 64);
 
 type Builder = fn(&Sources) -> CellMap<u64, Arc<Record>, CellImmutable>;
 
@@ -188,7 +188,6 @@ fn builder(depth: usize) -> Builder {
         12 => build_depth_12,
         16 => build_depth_16,
         32 => build_depth_32,
-        64 => build_depth_64,
         _ => unreachable!("unsupported benchmark depth"),
     }
 }
@@ -267,7 +266,6 @@ define_operator_builder!(operator_graph_depth_8, 8);
 define_operator_builder!(operator_graph_depth_12, 12);
 define_operator_builder!(operator_graph_depth_16, 16);
 define_operator_builder!(operator_graph_depth_32, 32);
-define_operator_builder!(operator_graph_depth_64, 64);
 
 type OperatorBuilder = fn(&[CellMap<u64, Arc<Record>, CellImmutable>]) -> Cell<u64, CellImmutable>;
 
@@ -278,7 +276,6 @@ fn operator_builder(depth: usize) -> OperatorBuilder {
         12 => operator_graph_depth_12,
         16 => operator_graph_depth_16,
         32 => operator_graph_depth_32,
-        64 => operator_graph_depth_64,
         _ => unreachable!("unsupported benchmark depth"),
     }
 }
@@ -297,9 +294,9 @@ fn mutate_dimension(sources: &Sources, source: usize, tick: u64) {
 fn bench_deep_root_updates(c: &mut Criterion) {
     let mut group = c.benchmark_group("reactive_graph/deep_root_update");
     group.sample_size(30);
-    for depth in [4usize, 8, 12, 16, 32, 64] {
+    for depth in [4usize, 8, 12, 16, 32] {
         group.bench_with_input(BenchmarkId::from_parameter(depth), &depth, |b, &depth| {
-            let sources = populate(DEFAULT_ROWS);
+            let sources = populate(DEFAULT_ROWS, depth);
             let view = builder(depth)(&sources);
             let mut tick = 0u64;
             b.iter(|| {
@@ -315,9 +312,9 @@ fn bench_deep_root_updates(c: &mut Criterion) {
 fn bench_deepest_source_updates(c: &mut Criterion) {
     let mut group = c.benchmark_group("reactive_graph/deepest_source_update");
     group.sample_size(30);
-    for depth in [4usize, 8, 12, 16, 32, 64] {
+    for depth in [4usize, 8, 12, 16, 32] {
         group.bench_with_input(BenchmarkId::from_parameter(depth), &depth, |b, &depth| {
-            let sources = populate(DEFAULT_ROWS);
+            let sources = populate(DEFAULT_ROWS, depth);
             let view = builder(depth)(&sources);
             let mut tick = 0u64;
             b.iter(|| {
@@ -333,9 +330,9 @@ fn bench_deepest_source_updates(c: &mut Criterion) {
 fn bench_all_source_waves(c: &mut Criterion) {
     let mut group = c.benchmark_group("reactive_graph/all_source_wave");
     group.sample_size(20);
-    for depth in [4usize, 8, 12, 16, 32, 64] {
+    for depth in [4usize, 8, 12, 16, 32] {
         group.bench_with_input(BenchmarkId::from_parameter(depth), &depth, |b, &depth| {
-            let sources = populate(DEFAULT_ROWS);
+            let sources = populate(DEFAULT_ROWS, depth);
             let view = builder(depth)(&sources);
             let mut tick = 0u64;
             b.iter(|| {
@@ -356,7 +353,7 @@ fn bench_row_scaling(c: &mut Criterion) {
     group.sample_size(20);
     for rows in [100usize, 1_000, 5_000] {
         group.bench_with_input(BenchmarkId::from_parameter(rows), &rows, |b, &rows| {
-            let sources = populate(rows);
+            let sources = populate(rows, 12);
             let view = build_depth_12(&sources);
             let mut tick = 0u64;
             b.iter(|| {
@@ -372,17 +369,17 @@ fn bench_row_scaling(c: &mut Criterion) {
 fn bench_materialize_and_teardown(c: &mut Criterion) {
     let mut group = c.benchmark_group("reactive_graph/materialize_and_teardown");
     group.sample_size(20);
-    for depth in [4usize, 8, 12, 16, 32, 64] {
+    for depth in [4usize, 8, 12, 16, 32] {
         group.bench_with_input(BenchmarkId::from_parameter(depth), &depth, |b, &depth| {
             b.iter_batched(
-                || populate(100),
+                || populate(100, depth),
                 |sources| {
                     let view = builder(depth)(&sources);
                     black_box(&view);
                     drop(view);
                     drop(sources);
                 },
-                BatchSize::SmallInput,
+                BatchSize::PerIteration,
             );
         });
     }
@@ -397,7 +394,7 @@ fn bench_observer_fanout(c: &mut Criterion) {
             BenchmarkId::from_parameter(observers),
             &observers,
             |b, &observers| {
-                let sources = populate(DEFAULT_ROWS);
+                let sources = populate(DEFAULT_ROWS, 12);
                 let view = build_depth_12(&sources);
                 let guards: Vec<_> = (0..observers)
                     .map(|_| {
@@ -421,9 +418,9 @@ fn bench_observer_fanout(c: &mut Criterion) {
 fn bench_join_heavy_operator_graph(c: &mut Criterion) {
     let mut group = c.benchmark_group("reactive_graph/join_heavy_operator_pipeline");
     group.sample_size(30);
-    for depth in [4usize, 8, 12, 16, 32, 64] {
+    for depth in [4usize, 8, 12, 16, 32] {
         group.bench_with_input(BenchmarkId::from_parameter(depth), &depth, |b, &depth| {
-            let sources = populate(100);
+            let sources = populate(100, 4);
             let views: Vec<_> = (0..depth).map(|_| build_depth_4(&sources)).collect();
             let output = operator_builder(depth)(&views);
             let mut tick = 0u64;
