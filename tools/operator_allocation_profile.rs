@@ -1,11 +1,8 @@
-//! Allocation profile shared by the v2.0.1 and v3 operator implementations.
+//! Allocation profile for v3 operator pipelines.
 //!
-//! This file is copied into each revision by `bench-operator-allocations.sh`.
-//! `hyphae_legacy` selects the v2.0.1 API, where every join stage must be
-//! materialized before it can feed the next join. The candidate builds the
-//! same join-plus-four-map stages as a pipeline and materializes once.
+//! This file is copied into the selected revision by
+//! `bench-operator-allocations.sh`.
 
-#![allow(unexpected_cfgs)]
 #![recursion_limit = "1024"]
 #![type_length_limit = "16777216"]
 
@@ -16,7 +13,7 @@ use std::{
     time::Instant,
 };
 
-use hyphae::{Cell, Gettable, JoinExt, MapExt, MaterializeDefinite, Mutable};
+use hyphae::{Cell, Gettable, JoinExt, MapExt, Materialize, Mutable};
 use seq_macro::seq;
 
 struct CountingAllocator;
@@ -150,16 +147,6 @@ fn transform_3(value: &u64) -> u64 {
 
 macro_rules! join_stage {
     ($plan:ident, $sources:ident, $index:literal) => {
-        #[cfg(hyphae_legacy)]
-        let $plan = $plan
-            .join(&$sources[$index])
-            .map(combine as fn(&(u64, u64)) -> u64)
-            .map(transform_1 as fn(&u64) -> u64)
-            .map(transform_2 as fn(&u64) -> u64)
-            .map(transform_3 as fn(&u64) -> u64)
-            .materialize();
-
-        #[cfg(not(hyphae_legacy))]
         let $plan = $plan
             .join($sources[$index].clone())
             .map(combine as fn(&(u64, u64)) -> u64)
@@ -190,9 +177,9 @@ macro_rules! define_measurement {
             let build_elapsed = build_started.elapsed().as_nanos();
             let after_build = Snapshot::now();
 
-            // Materializing a Cell is intentionally a no-op on v2.0.1. This
-            // leaves its eager intermediate work in graph_build while the v3
-            // candidate pays for its single explicit boundary here.
+            // Keep construction and the single v3 observation boundary as
+            // separate measurements so future releases can identify which
+            // phase changed.
             let materialize_started = Instant::now();
             let graph = plan.materialize();
             let materialize_elapsed = materialize_started.elapsed().as_nanos();

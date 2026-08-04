@@ -8,7 +8,7 @@ use std::{
 
 use super::CellValue;
 use crate::{
-    pipeline::{Definite, MaterializeDefinite, Pipeline, PipelineInstall, PipelineSeed},
+    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -79,16 +79,8 @@ where
 {
 }
 
-impl<L, R, T> MaterializeDefinite<T> for MergePipeline<L, R, T>
-where
-    L: Pipeline<T, Definite> + PipelineSeed<T>,
-    R: Pipeline<T, Definite>,
-    T: CellValue,
-{
-}
-
 pub trait MergeExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
-    fn merge<R>(self, other: R) -> MergePipeline<Self, R, T>
+    fn merge<R>(self, other: R) -> impl crate::Materialize<T, Definite>
     where
         R: Pipeline<T, Definite>,
     {
@@ -104,7 +96,7 @@ impl<T: CellValue, P> MergeExt<T> for P where P: Pipeline<T, Definite> + Pipelin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Cell, Gettable, MaterializeDefinite, Mutable};
+    use crate::{Cell, Gettable, Materialize, Mutable};
 
     #[test]
     fn test_merge() {

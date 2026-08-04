@@ -4,7 +4,7 @@
 /// This macro generates the nested pattern from a flat parameter list:
 ///
 /// ```
-/// use hyphae::{Cell, Gettable, JoinExt, MapExt, MaterializeDefinite, flat};
+/// use hyphae::{Cell, Gettable, JoinExt, MapExt, Materialize, flat};
 ///
 /// let a = Cell::new(1);
 /// let b = Cell::new(2);

@@ -105,20 +105,7 @@ where
     /// key. Right matches are collected into a `Vec`; an empty `Vec` means no
     /// matching right rows were found.
     #[allow(clippy::type_complexity)]
-    fn left_join<R, RV>(
-        self,
-        right: R,
-    ) -> LeftJoinPlan<
-        Self,
-        R,
-        K,
-        V,
-        K,
-        RV,
-        K,
-        impl Fn(&K, &V) -> K + Send + Sync + 'static,
-        impl Fn(&K, &RV) -> K + Send + Sync + 'static,
-    >
+    fn left_join<R, RV>(self, right: R) -> impl MapQuery<K, (V, Vec<RV>)>
     where
         R: MapQuery<K, RV>,
         RV: CellValue,
@@ -139,20 +126,7 @@ where
     /// Right matches are collected into a `Vec`; an empty `Vec` means no
     /// matching right rows were found.
     #[allow(clippy::type_complexity)]
-    fn left_join_fk<R, RK, RV>(
-        self,
-        right: R,
-    ) -> LeftJoinPlan<
-        Self,
-        R,
-        K,
-        V,
-        RK,
-        RV,
-        K,
-        impl Fn(&K, &V) -> K + Send + Sync + 'static,
-        impl Fn(&RK, &RV) -> K + Send + Sync + 'static,
-    >
+    fn left_join_fk<R, RK, RV>(self, right: R) -> impl MapQuery<K, (V, Vec<RV>)>
     where
         R: MapQuery<RK, RV>,
         RK: Hash + Eq + CellValue,
@@ -179,7 +153,7 @@ where
         right: R,
         left_key: FL,
         right_key: FR,
-    ) -> LeftJoinPlan<Self, R, K, V, RK, RV, JK, FL, FR>
+    ) -> impl MapQuery<K, (V, Vec<RV>)>
     where
         R: MapQuery<RK, RV>,
         RK: Hash + Eq + CellValue,
@@ -212,7 +186,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        CellMap, MapDiff, MaterializeDefinite,
+        CellMap, MapDiff, Materialize,
         traits::{Gettable, HasForeignKey, IdFor, IdType},
     };
 

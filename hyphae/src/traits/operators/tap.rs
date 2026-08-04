@@ -4,10 +4,7 @@ use std::{marker::PhantomData, sync::Arc};
 
 use super::CellValue;
 use crate::{
-    pipeline::{
-        Definite, Empty, MaterializeDefinite, MaterializeEmpty, Pipeline, PipelineInstall,
-        PipelineSeed, Seedness,
-    },
+    pipeline::{Pipeline, PipelineInstall, PipelineSeed, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -60,30 +57,14 @@ where
 {
 }
 
-impl<S, T, F> MaterializeDefinite<T> for TapPipeline<S, T, F>
-where
-    S: Pipeline<T, Definite> + PipelineSeed<T>,
-    T: CellValue,
-    F: Fn(&T) + Send + Sync + 'static,
-{
-}
-
-impl<S, T, F> MaterializeEmpty<T> for TapPipeline<S, T, F>
-where
-    S: Pipeline<T, Empty>,
-    T: CellValue,
-    F: Fn(&T) + Send + Sync + 'static,
-{
-}
-
 /// Extension trait for side-effecting observation.
 #[allow(private_bounds)]
 pub trait TapExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// Run `f(&value)` for side effects and forward the value untransformed.
     ///
-    /// Returns a [`TapPipeline`] node. Materialize to observe.
+    /// Returns an opaque lazy pipeline. Materialize to observe.
     #[track_caller]
-    fn tap<F>(self, f: F) -> TapPipeline<Self, T, F>
+    fn tap<F>(self, f: F) -> impl crate::Materialize<T, S>
     where
         F: Fn(&T) + Send + Sync + 'static,
     {
@@ -105,7 +86,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{Cell, Gettable, MaterializeDefinite, Mutable};
+    use crate::{Cell, Gettable, Materialize, Mutable};
 
     #[test]
     fn test_tap_side_effect() {

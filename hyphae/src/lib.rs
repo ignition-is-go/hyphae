@@ -1,11 +1,11 @@
-//! # hyphae - Lock-Free Reactive Programming Library
+//! # hyphae - High-Performance Reactive Programming Library
 //!
-//! A high-performance, type-safe reactive programming library featuring true lock-free operations,
-//! heterogeneous cell combinations, and comprehensive dependency tracking.
+//! A high-performance, type-safe concurrent reactive programming library with
+//! heterogeneous cell combinations and comprehensive dependency tracking.
 //!
 //! ## Features
 //!
-//! - **Lock-Free**: Uses `arc-swap` for atomic value updates without blocking
+//! - **Fast Reads**: Uses `arc-swap` for atomic value snapshots
 //! - **Type-Safe**: Full compile-time type checking with heterogeneous cell support
 //! - **Automatic Propagation**: Changes flow through dependency chains automatically
 //! - **Dependency Tracking**: Inspect and visualize cell relationships
@@ -14,7 +14,7 @@
 //! ## Quick Start
 //!
 //! ```rust
-//! use hyphae::{Cell, MapExt, MaterializeDefinite, Mutable, Watchable, JoinExt, Pipeline, Signal, flat};
+//! use hyphae::{Cell, MapExt, Materialize, Mutable, Watchable, JoinExt, Pipeline, Signal, flat};
 //!
 //! // Create reactive cells
 //! let x = Cell::new(5).with_name("x");
@@ -44,8 +44,7 @@
 //! `catch_error`, `unwrap_or`) return a [`Pipeline`] — an uncompiled chain
 //! that has not yet been materialized into a [`Cell`]. Chaining pipelines
 //! fuses closures at compile time; the fused closure runs only when a
-//! consumer calls [`MaterializeDefinite::materialize`] or
-//! [`MaterializeEmpty::materialize`].
+//! consumer calls [`Materialize::materialize`].
 //!
 //! [`Cell`] is the materialized, cached, multicast form. Subscribing requires
 //! a cell — there is no `Pipeline::subscribe` by design, forcing callers to
@@ -76,7 +75,7 @@
 //! fan-in coalescing boundary only when the chain is materialized:
 //!
 //! ```rust
-//! use hyphae::{Cell, Gettable, JoinExt, MapExt, MaterializeDefinite, flat};
+//! use hyphae::{Cell, Gettable, JoinExt, MapExt, Materialize, flat};
 //!
 //! let a = Cell::new(1);
 //! let b = Cell::new(2);
@@ -184,8 +183,7 @@ pub use constructors::{
 pub use map_query::{MapQuery, MapQueryShareExt, SharedMapQuery};
 pub use nested_map::NestedMap;
 pub use pipeline::{
-    Definite, Empty, MaterializeDefinite, MaterializeEmpty, Pipeline, PipelineShareExt, Seedness,
-    SharedPipeline,
+    Definite, Empty, Materialize, Pipeline, PipelineShareExt, Seedness, SharedPipeline,
 };
 #[cfg(feature = "scheduler")]
 pub use scheduler::batch;
@@ -193,21 +191,14 @@ pub use signal::Signal;
 pub use source::{SampleOnSourceExt, Source, WeakSource};
 pub use subscription::SubscriptionGuard;
 pub use traits::{
-    AuditExt, AuditPipeline, BackpressureExt, BufferCountExt, BufferCountPipeline, BufferTimeExt,
-    BufferTimePipeline, CatchErrorExt, CellValue, ColdExt, ConcatExt, ConcatPipeline, CountByExt,
-    CountByPlan, DebounceExt, DebouncePipeline, DedupedExt, DelayExt, DelayPipeline, DepNode,
-    DistinctExt, DistinctUntilChangedByExt, DropNewestPipeline, FilterExt, FilterPipeline,
-    FinalizeExt, FirstExt, Gettable, GroupByExt, GroupByPlan, HasForeignKey, IdFor, IdType,
-    InnerJoinByKeyPlan, InnerJoinByPairPlan, InnerJoinExt, JoinExt, JoinKeyFrom, JoinPipeline,
-    JoinVecPipeline, KeyChange, LastExt, LeftJoinExt, LeftJoinPlan, LeftSemiJoinExt,
-    LeftSemiJoinPlan, MapErrExt, MapExt, MapOkExt, MapPipeline, MergeExt, MergeMapExt,
-    MergeMapPipeline, MergePipeline, MultiLeftJoinExt, MultiLeftJoinPlan, Mutable, PairwiseExt,
-    ParallelCell, ParallelExt, ProjectCellExt, ProjectCellPlan, ProjectManyExt, ProjectManyPlan,
-    ProjectMapExt, ProjectPlan, ReactiveKeys, ReactiveMap, RetryExt, RetryPipeline, SampleExt,
-    ScanExt, SelectCellExt, SelectCellPlan, SelectExt, SelectPlan, SkipExt, SkipWhileExt,
-    StateMachineBuilder, StateTransitionExt, StateTransitionPipeline, SwitchMapExt,
-    SwitchMapPipeline, TakeExt, TakeUntilExt, TakeUntilPipeline, TakeWhileExt, TapExt, TapPipeline,
-    ThrottleExt, ThrottlePipeline, TimeoutExt, TimeoutPipeline, TryMapExt, TryMapPipeline,
-    UnwrapOrExt, Watchable, WatchableResult, WindowExt, WithLatestFromExt, ZipExt, ZipPipeline,
-    join_vec,
+    AuditExt, BackpressureExt, BufferCountExt, BufferTimeExt, CatchErrorExt, CellValue, ColdExt,
+    ConcatExt, CountByExt, DebounceExt, DedupedExt, DelayExt, DepNode, DistinctExt,
+    DistinctUntilChangedByExt, FilterExt, FinalizeExt, FirstExt, Gettable, GroupByExt,
+    HasForeignKey, IdFor, IdType, InnerJoinExt, JoinExt, JoinKeyFrom, KeyChange, LastExt,
+    LeftJoinExt, LeftSemiJoinExt, MapErrExt, MapExt, MapOkExt, MergeExt, MergeMapExt,
+    MultiLeftJoinExt, Mutable, PairwiseExt, ParallelCell, ParallelExt, ProjectCellExt,
+    ProjectManyExt, ProjectMapExt, ReactiveKeys, ReactiveMap, RetryExt, SampleExt, ScanExt,
+    SelectCellExt, SelectExt, SkipExt, SkipWhileExt, StateMachineBuilder, StateTransitionExt,
+    SwitchMapExt, TakeExt, TakeUntilExt, TakeWhileExt, TapExt, ThrottleExt, TimeoutExt, TryMapExt,
+    UnwrapOrExt, Watchable, WatchableResult, WindowExt, WithLatestFromExt, ZipExt, join_vec,
 };

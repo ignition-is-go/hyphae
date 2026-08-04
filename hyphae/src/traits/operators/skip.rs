@@ -14,7 +14,7 @@ use std::{
 
 use super::CellValue;
 use crate::{
-    pipeline::{Empty, MaterializeEmpty, Pipeline, PipelineInstall, Seedness},
+    pipeline::{Empty, Pipeline, PipelineInstall, PipelineSeed, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -25,6 +25,17 @@ pub struct SkipPipeline<S, T, Sd = crate::pipeline::Definite> {
     count: usize,
     _t: PhantomData<fn(T)>,
     _sd: PhantomData<fn(Sd)>,
+}
+
+impl<S, T, Sd> PipelineSeed<T> for SkipPipeline<S, T, Sd>
+where
+    S: PipelineInstall<T> + Send + Sync + 'static,
+    Sd: Seedness,
+    T: CellValue,
+{
+    fn seed(&self) -> T {
+        unreachable!("a skipped Empty pipeline has no seed")
+    }
 }
 
 impl<S, T, Sd> PipelineInstall<T> for SkipPipeline<S, T, Sd>
@@ -61,18 +72,10 @@ where
 {
 }
 
-impl<S, T, Sd> MaterializeEmpty<T> for SkipPipeline<S, T, Sd>
-where
-    S: Pipeline<T, Sd>,
-    Sd: Seedness,
-    T: CellValue,
-{
-}
-
 #[allow(private_bounds)]
 pub trait SkipExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     #[track_caller]
-    fn skip(self, count: usize) -> SkipPipeline<Self, T, S> {
+    fn skip(self, count: usize) -> impl crate::Materialize<T, Empty> {
         SkipPipeline {
             source: self,
             count,
@@ -92,7 +95,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{Cell, MaterializeEmpty, Mutable, traits::Watchable};
+    use crate::{Cell, Materialize, Mutable, traits::Watchable};
 
     #[test]
     fn test_skip_ignores_first_n() {

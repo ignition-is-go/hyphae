@@ -11,26 +11,20 @@ pub mod operators;
 
 pub use cell_value::CellValue;
 pub use collections::{
-    CountByExt, CountByPlan, GroupByExt, GroupByPlan, InnerJoinByKeyPlan, InnerJoinByPairPlan,
-    InnerJoinExt, LeftJoinExt, LeftJoinPlan, LeftSemiJoinExt, LeftSemiJoinPlan, MultiLeftJoinExt,
-    MultiLeftJoinPlan, ProjectCellExt, ProjectCellPlan, ProjectManyExt, ProjectManyPlan,
-    ProjectMapExt, ProjectPlan, SelectCellExt, SelectCellPlan, SelectExt, SelectPlan,
+    CountByExt, GroupByExt, InnerJoinExt, LeftJoinExt, LeftSemiJoinExt, MultiLeftJoinExt,
+    ProjectCellExt, ProjectManyExt, ProjectMapExt, SelectCellExt, SelectExt,
 };
 pub use dep_node::DepNode;
 pub use foreign_key::{HasForeignKey, IdFor, IdType, JoinKeyFrom};
 pub use mutable::Mutable;
 // Re-export all operators for convenience
 pub use operators::{
-    AuditExt, AuditPipeline, BackpressureExt, BufferCountExt, BufferCountPipeline, BufferTimeExt,
-    BufferTimePipeline, CatchErrorExt, ColdExt, ConcatExt, ConcatPipeline, DebounceExt,
-    DebouncePipeline, DedupedExt, DelayExt, DelayPipeline, DistinctExt, DistinctUntilChangedByExt,
-    DropNewestPipeline, FilterExt, FilterPipeline, FinalizeExt, FirstExt, JoinExt, JoinPipeline,
-    JoinVecPipeline, LastExt, MapErrExt, MapExt, MapOkExt, MapPipeline, MergeExt, MergeMapExt,
-    MergeMapPipeline, MergePipeline, PairwiseExt, RetryExt, RetryPipeline, SampleExt, ScanExt,
-    SkipExt, SkipWhileExt, StateMachineBuilder, StateTransitionExt, StateTransitionPipeline,
-    SwitchMapExt, SwitchMapPipeline, TakeExt, TakeUntilExt, TakeUntilPipeline, TakeWhileExt,
-    TapExt, TapPipeline, ThrottleExt, ThrottlePipeline, TimeoutExt, TimeoutPipeline, TryMapExt,
-    TryMapPipeline, UnwrapOrExt, WindowExt, WithLatestFromExt, ZipExt, ZipPipeline, join_vec,
+    AuditExt, BackpressureExt, BufferCountExt, BufferTimeExt, CatchErrorExt, ColdExt, ConcatExt,
+    DebounceExt, DedupedExt, DelayExt, DistinctExt, DistinctUntilChangedByExt, FilterExt,
+    FinalizeExt, FirstExt, JoinExt, LastExt, MapErrExt, MapExt, MapOkExt, MergeExt, MergeMapExt,
+    PairwiseExt, RetryExt, SampleExt, ScanExt, SkipExt, SkipWhileExt, StateMachineBuilder,
+    StateTransitionExt, SwitchMapExt, TakeExt, TakeUntilExt, TakeWhileExt, TapExt, ThrottleExt,
+    TimeoutExt, TryMapExt, UnwrapOrExt, WindowExt, WithLatestFromExt, ZipExt, join_vec,
 };
 pub use operators::{ParallelCell, ParallelExt};
 pub use reactive_keys::{KeyChange, ReactiveKeys};

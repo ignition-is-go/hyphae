@@ -22,7 +22,7 @@ use std::{
     time::Duration,
 };
 
-use hyphae::{Cell, DelayExt, MaterializeDefinite, Mutable, Signal, Watchable, interval_source};
+use hyphae::{Cell, DelayExt, Materialize, Mutable, Signal, Watchable, interval_source};
 
 /// The timer reactor thread is a single process-wide singleton (that's the
 /// point of this file). Serializing these tests isn't needed for

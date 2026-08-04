@@ -2,7 +2,7 @@ use std::{
     marker::PhantomData,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
 };
 
@@ -12,7 +12,7 @@ use uuid::Uuid;
 use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellMutable},
-    pipeline::{Definite, MaterializeDefinite, Pipeline, PipelineInstall, PipelineSeed},
+    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed, prepare_install},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -40,8 +40,13 @@ where
     I: PipelineInstall<U> + PipelineSeed<U>,
 {
     fn install(&self, callback: Arc<dyn Fn(&Signal<U>) + Send + Sync>) -> SubscriptionGuard {
-        let first_inner = (self.f)(&self.source.seed());
-        let cell = Cell::<U, CellMutable>::new(first_inner.seed());
+        // Subscribe to the selector before choosing its initial value. This
+        // closes the old seed/build-inner/subscribe window in which a topology
+        // update could become the replay that we then blindly discarded.
+        let outer_prepared = prepare_install(&self.source);
+        let first_inner = (self.f)(outer_prepared.initial());
+        let first_prepared = prepare_install(&first_inner);
+        let cell = Cell::<U, CellMutable>::new(first_prepared.initial().clone());
 
         // Stable key for the inner subscription guard so switch_map replaces (not accumulates)
         let inner_guard_key = Uuid::new_v4();
@@ -65,12 +70,16 @@ where
         // *after* the lock is released, so its synchronous seed can't re-enter
         // (and deadlock on) this same lock.
         let switch_lock = Arc::new(Mutex::new(()));
+        // Source callbacks may run concurrently. Serializing complete re-knits
+        // ensures an older installation can never return after a newer one and
+        // overwrite the newer generation's keyed guard.
+        let reknit_lock = Arc::new(Mutex::new(()));
 
         // Subscribe to first inner (generation 0)
         let weak = cell.downgrade();
         let state_for_first = state.clone();
         let switch_lock_first = switch_lock.clone();
-        let first_guard = first_inner.install(Arc::new(move |signal| {
+        let first_guard = first_prepared.activate(Arc::new(move |signal| {
             let _switch = switch_lock_first.lock();
             let current = state_for_first.load(Ordering::SeqCst);
             if current & GEN_MASK != 0 {
@@ -112,14 +121,11 @@ where
         let f = self.f.clone();
         let state_for_outer = state.clone();
         let switch_lock_outer = switch_lock;
-        let first = Arc::new(AtomicBool::new(true));
-        let outer_guard = self.source.install(Arc::new(move |signal| {
+        let reknit_lock_outer = reknit_lock;
+        let outer_guard = outer_prepared.activate(Arc::new(move |signal| {
+            let _reknit = reknit_lock_outer.lock();
             match signal {
                 Signal::Value(outer_value) => {
-                    if first.swap(false, Ordering::SeqCst) {
-                        return;
-                    }
-
                     // Per-outer-fire re-knit: rebuild the inner cell + re-subscribe
                     // + drop the prior inner guard. This span isolates switch_map's
                     // un-fusable teardown/rebuild cost from the anonymous
@@ -152,12 +158,21 @@ where
                     };
 
                     let inner = f(outer_value.as_ref());
+                    let prepared = prepare_install(&inner);
 
                     // Subscribe to new inner for values and completion
                     let weak_inner = weak.clone();
                     let state_for_inner = state_for_outer.clone();
                     let switch_lock_inner = switch_lock_outer.clone();
-                    let value_guard = inner.install(Arc::new(move |signal| {
+                    // Publish the prepared inner's freshest current value before
+                    // activating delivery of anything that arrived afterward.
+                    {
+                        let _switch = switch_lock_outer.lock();
+                        if state_for_outer.load(Ordering::SeqCst) & GEN_MASK == my_gen {
+                            c.notify(Signal::value(prepared.initial().clone()));
+                        }
+                    }
+                    let value_guard = prepared.activate(Arc::new(move |signal| {
                         let _switch = switch_lock_inner.lock();
                         let current = state_for_inner.load(Ordering::SeqCst);
                         if current & GEN_MASK != my_gen {
@@ -251,18 +266,9 @@ where
     I: Pipeline<U, Definite> + PipelineSeed<U>,
 {
 }
-impl<S, T, U, F, I> MaterializeDefinite<U> for SwitchMapPipeline<S, T, U, F, I>
-where
-    S: Pipeline<T, Definite> + PipelineSeed<T>,
-    T: CellValue,
-    U: CellValue,
-    F: Fn(&T) -> I + Send + Sync + 'static,
-    I: Pipeline<U, Definite> + PipelineSeed<U>,
-{
-}
 
 pub trait SwitchMapExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
-    fn switch_map<U, F, I>(self, f: F) -> SwitchMapPipeline<Self, T, U, F, I>
+    fn switch_map<U, F, I>(self, f: F) -> impl crate::Materialize<U, Definite>
     where
         U: CellValue,
         F: Fn(&T) -> I + Send + Sync + 'static,
@@ -282,7 +288,7 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
 
     use super::*;
-    use crate::{Gettable, MapExt, MaterializeDefinite, Mutable};
+    use crate::{Gettable, MapExt, Materialize, Mutable};
 
     #[test]
     fn switch_map_does_not_build_an_inner_until_materialized() {
@@ -295,7 +301,7 @@ mod tests {
         });
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         let _switched = pipeline.materialize();
-        assert!(calls.load(Ordering::SeqCst) >= 2);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -343,10 +349,7 @@ mod tests {
 
         assert_eq!(switched.get(), 0); // 0 * 10 + 0
         let calls_after_init = map_call_count.load(Ordering::SeqCst);
-        // Under the fused-pipeline model, materialize() runs the inner closure
-        // twice per switch (once for self.get() to compute the initial cell
-        // value, and once when install() subscribes synchronously).
-        assert!(calls_after_init >= 1);
+        assert_eq!(calls_after_init, 1);
 
         // Switch — old inner map closure should stop being called
         source.set(1);
@@ -400,10 +403,7 @@ mod tests {
         assert_eq!(switched.get(), 200);
 
         let weaks = weak_collector.lock().unwrap();
-        // Definite pipeline materialization evaluates the seed recipe once,
-        // then installs an independent current inner. Both are expected; the
-        // seed-only inner must already be dead.
-        assert_eq!(weaks.len(), 22); // seed + installed initial + 20 switches
+        assert_eq!(weaks.len(), 21); // installed initial + 20 switches
 
         // Only the last inner cell should be alive (the current one)
         let alive_count = weaks.iter().filter(|w| w.upgrade().is_some()).count();

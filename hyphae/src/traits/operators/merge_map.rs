@@ -9,7 +9,7 @@ use std::{
 use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellMutable},
-    pipeline::{Definite, MaterializeDefinite, Pipeline, PipelineInstall, PipelineSeed},
+    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -161,18 +161,9 @@ where
     I: Pipeline<U, Definite> + PipelineSeed<U>,
 {
 }
-impl<S, T, U, F, I> MaterializeDefinite<U> for MergeMapPipeline<S, T, U, F, I>
-where
-    S: Pipeline<T, Definite> + PipelineSeed<T>,
-    T: CellValue,
-    U: CellValue,
-    F: Fn(&T) -> I + Send + Sync + 'static,
-    I: Pipeline<U, Definite> + PipelineSeed<U>,
-{
-}
 
 pub trait MergeMapExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
-    fn merge_map<U, F, I>(self, f: F) -> MergeMapPipeline<Self, T, U, F, I>
+    fn merge_map<U, F, I>(self, f: F) -> impl crate::Materialize<U, Definite>
     where
         U: CellValue,
         F: Fn(&T) -> I + Send + Sync + 'static,
@@ -192,7 +183,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
-    use crate::{Gettable, MapExt, MaterializeDefinite};
+    use crate::{Gettable, MapExt, Materialize};
 
     #[test]
     fn merge_map_does_not_build_an_inner_until_materialized() {
@@ -205,7 +196,7 @@ mod tests {
         });
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         let _merged = pipeline.materialize();
-        assert!(calls.load(Ordering::SeqCst) >= 2);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]

@@ -13,7 +13,7 @@ use std::{
 
 use super::CellValue;
 use crate::{
-    pipeline::{Empty, MaterializeEmpty, Pipeline, PipelineInstall, Seedness},
+    pipeline::{Empty, Pipeline, PipelineInstall, PipelineSeed, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -24,6 +24,18 @@ pub struct TakeWhilePipeline<S, T, F, Sd = crate::pipeline::Definite> {
     predicate: Arc<F>,
     _t: PhantomData<fn(T)>,
     _sd: PhantomData<fn(Sd)>,
+}
+
+impl<S, T, F, Sd> PipelineSeed<T> for TakeWhilePipeline<S, T, F, Sd>
+where
+    S: PipelineInstall<T> + Send + Sync + 'static,
+    Sd: Seedness,
+    T: CellValue,
+    F: Fn(&T) -> bool + Send + Sync + 'static,
+{
+    fn seed(&self) -> T {
+        unreachable!("a take_while Empty pipeline has no seed")
+    }
 }
 
 impl<S, T, F, Sd> PipelineInstall<T> for TakeWhilePipeline<S, T, F, Sd>
@@ -66,21 +78,12 @@ where
 {
 }
 
-impl<S, T, F, Sd> MaterializeEmpty<T> for TakeWhilePipeline<S, T, F, Sd>
-where
-    S: Pipeline<T, Sd>,
-    Sd: Seedness,
-    T: CellValue,
-    F: Fn(&T) -> bool + Send + Sync + 'static,
-{
-}
-
 #[allow(private_bounds)]
 pub trait TakeWhileExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// Forward values while the predicate returns `true`. On the first `false`,
     /// emit `Complete` and ignore all subsequent values.
     #[track_caller]
-    fn take_while<F>(self, predicate: F) -> TakeWhilePipeline<Self, T, F, S>
+    fn take_while<F>(self, predicate: F) -> impl crate::Materialize<T, Empty>
     where
         F: Fn(&T) -> bool + Send + Sync + 'static,
     {
@@ -100,7 +103,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
 
     use super::*;
-    use crate::{Cell, Gettable, MaterializeEmpty, Mutable, traits::Watchable};
+    use crate::{Cell, Gettable, Materialize, Mutable, traits::Watchable};
 
     #[test]
     fn test_take_while() {

@@ -231,7 +231,7 @@ mod tests {
     use std::sync::mpsc;
 
     use super::*;
-    use crate::{Cell, CellMap, MapExt, MaterializeDefinite, cell_map::MapDiff};
+    use crate::{Cell, CellMap, MapExt, Materialize, cell_map::MapDiff};
 
     /// Capture every diff emitted into a `MapDiffSink` and replay them onto
     /// an in-memory `HashMap<K, U>` to assert per-row state.

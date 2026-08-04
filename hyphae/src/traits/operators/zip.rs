@@ -11,7 +11,7 @@ use parking_lot::Mutex;
 
 use super::CellValue;
 use crate::{
-    pipeline::{Definite, MaterializeDefinite, Pipeline, PipelineInstall, PipelineSeed},
+    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -84,17 +84,9 @@ where
     U: CellValue,
 {
 }
-impl<L, R, T, U> MaterializeDefinite<(T, U)> for ZipPipeline<L, R, T, U>
-where
-    L: Pipeline<T, Definite> + PipelineSeed<T>,
-    R: Pipeline<U, Definite> + PipelineSeed<U>,
-    T: CellValue,
-    U: CellValue,
-{
-}
 
 pub trait ZipExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
-    fn zip<U, R>(self, other: R) -> ZipPipeline<Self, R, T, U>
+    fn zip<U, R>(self, other: R) -> impl crate::Materialize<(T, U), Definite>
     where
         U: CellValue,
         R: Pipeline<U, Definite> + PipelineSeed<U>,
@@ -111,7 +103,7 @@ impl<T: CellValue, P> ZipExt<T> for P where P: Pipeline<T, Definite> + PipelineS
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Cell, Gettable, MaterializeDefinite, Mutable};
+    use crate::{Cell, Gettable, Materialize, Mutable};
     #[test]
     fn test_zip() {
         let a = Cell::new(1);

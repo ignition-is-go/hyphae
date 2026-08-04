@@ -82,7 +82,7 @@ where
     /// - `Some((output_key, output_value))` to include/update a row
     /// - `None` to remove/exclude that source row from output
     #[track_caller]
-    fn project<K2, V2, F>(self, f: F) -> ProjectPlan<Self, K, V, K2, V2, F>
+    fn project<K2, V2, F>(self, f: F) -> impl MapQuery<K2, V2>
     where
         K2: Hash + Eq + CellValue,
         V2: CellValue,

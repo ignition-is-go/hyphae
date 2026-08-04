@@ -11,10 +11,7 @@ use std::{
 
 use super::CellValue;
 use crate::{
-    pipeline::{
-        Definite, Empty, MaterializeDefinite, MaterializeEmpty, Pipeline, PipelineInstall,
-        PipelineSeed, Seedness,
-    },
+    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -66,9 +63,10 @@ where
     }
 }
 
-impl<S, T, F> PipelineSeed<T> for DistinctUntilChangedByPipeline<S, T, F, Definite>
+impl<S, T, F, Sd> PipelineSeed<T> for DistinctUntilChangedByPipeline<S, T, F, Sd>
 where
     S: PipelineSeed<T>,
+    Sd: Seedness,
     T: CellValue,
     F: Fn(&T, &T) -> bool + Send + Sync + 'static,
 {
@@ -87,22 +85,6 @@ where
 {
 }
 
-impl<S, T, F> MaterializeDefinite<T> for DistinctUntilChangedByPipeline<S, T, F, Definite>
-where
-    S: Pipeline<T, Definite> + PipelineSeed<T>,
-    T: CellValue,
-    F: Fn(&T, &T) -> bool + Send + Sync + 'static,
-{
-}
-
-impl<S, T, F> MaterializeEmpty<T> for DistinctUntilChangedByPipeline<S, T, F, Empty>
-where
-    S: Pipeline<T, Empty> + PipelineSeed<T>,
-    T: CellValue,
-    F: Fn(&T, &T) -> bool + Send + Sync + 'static,
-{
-}
-
 #[allow(private_bounds)]
 pub trait DistinctUntilChangedByExt<T: CellValue, S: Seedness>:
     Pipeline<T, S> + PipelineSeed<T>
@@ -114,7 +96,7 @@ pub trait DistinctUntilChangedByExt<T: CellValue, S: Seedness>:
     /// # Example
     ///
     /// ```
-    /// use hyphae::{Cell, DistinctUntilChangedByExt, MaterializeDefinite, Mutable};
+    /// use hyphae::{Cell, DistinctUntilChangedByExt, Materialize, Mutable};
     ///
     /// #[derive(Clone, Debug, PartialEq)]
     /// struct User { id: u32, name: String }
@@ -126,10 +108,7 @@ pub trait DistinctUntilChangedByExt<T: CellValue, S: Seedness>:
     /// source.set(User { id: 2, name: "Bob".into() });    // different id - passes
     /// ```
     #[track_caller]
-    fn distinct_until_changed_by<F>(
-        self,
-        comparator: F,
-    ) -> DistinctUntilChangedByPipeline<Self, T, F, S>
+    fn distinct_until_changed_by<F>(self, comparator: F) -> impl crate::Materialize<T, S>
     where
         F: Fn(&T, &T) -> bool + Send + Sync + 'static,
     {
@@ -155,7 +134,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{Cell, MaterializeDefinite, Mutable, traits::Watchable};
+    use crate::{Cell, Materialize, Mutable, traits::Watchable};
 
     #[derive(Clone, Debug, PartialEq)]
     struct User {

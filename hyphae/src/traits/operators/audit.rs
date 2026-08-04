@@ -9,7 +9,7 @@ use std::{
 
 use super::CellValue;
 use crate::{
-    pipeline::{Definite, MaterializeDefinite, Pipeline, PipelineInstall, PipelineSeed},
+    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed},
     platform,
     signal::Signal,
     subscription::SubscriptionGuard,
@@ -27,11 +27,12 @@ impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for AuditPipeline<S
         let latest: Arc<Mutex<Option<T>>> = Arc::new(Mutex::new(None));
         let generation = Arc::new(AtomicU64::new(0));
         let in_window = Arc::new(AtomicBool::new(false));
+        let terminated = Arc::new(AtomicBool::new(false));
         let duration = self.duration;
 
         self.source.install(Arc::new(move |signal| match signal {
             Signal::Value(value) => {
-                if first.swap(false, Ordering::SeqCst) {
+                if first.swap(false, Ordering::SeqCst) || terminated.load(Ordering::SeqCst) {
                     return;
                 }
                 *latest.lock().expect("audit poisoned") = Some(value.as_ref().clone());
@@ -40,9 +41,12 @@ impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for AuditPipeline<S
                     let latest = latest.clone();
                     let generation = generation.clone();
                     let in_window = in_window.clone();
+                    let terminated = terminated.clone();
                     let callback = callback.clone();
                     platform::spawn_delayed(duration, move || {
-                        if generation.load(Ordering::SeqCst) == current_generation {
+                        if !terminated.load(Ordering::SeqCst)
+                            && generation.load(Ordering::SeqCst) == current_generation
+                        {
                             if let Some(value) = latest.lock().expect("audit poisoned").clone() {
                                 callback(&Signal::value(value));
                             }
@@ -51,8 +55,22 @@ impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for AuditPipeline<S
                     });
                 }
             }
-            Signal::Complete => callback(&Signal::Complete),
-            Signal::Error(error) => callback(&Signal::Error(error.clone())),
+            Signal::Complete => {
+                if !terminated.swap(true, Ordering::SeqCst) {
+                    generation.fetch_add(1, Ordering::SeqCst);
+                    if let Some(value) = latest.lock().expect("audit poisoned").take() {
+                        callback(&Signal::value(value));
+                    }
+                    callback(&Signal::Complete);
+                }
+            }
+            Signal::Error(error) => {
+                if !terminated.swap(true, Ordering::SeqCst) {
+                    generation.fetch_add(1, Ordering::SeqCst);
+                    latest.lock().expect("audit poisoned").take();
+                    callback(&Signal::Error(error.clone()));
+                }
+            }
         }))
     }
 }
@@ -69,15 +87,10 @@ impl<S: Pipeline<T, Definite> + PipelineSeed<T>, T: CellValue> Pipeline<T, Defin
 {
 }
 
-impl<S: Pipeline<T, Definite> + PipelineSeed<T>, T: CellValue> MaterializeDefinite<T>
-    for AuditPipeline<S, T>
-{
-}
-
 #[allow(private_bounds)]
 pub trait AuditExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
     #[track_caller]
-    fn audit(self, duration: Duration) -> AuditPipeline<Self, T> {
+    fn audit(self, duration: Duration) -> impl crate::Materialize<T, Definite> {
         AuditPipeline {
             source: self,
             duration,
@@ -93,7 +106,7 @@ mod tests {
     use std::{sync::atomic::AtomicU32, thread};
 
     use super::*;
-    use crate::{Cell, Gettable, MaterializeDefinite, Mutable, traits::Watchable};
+    use crate::{Cell, Gettable, Materialize, Mutable, traits::Watchable};
 
     #[test]
     fn test_audit_emits_last() {
@@ -118,5 +131,26 @@ mod tests {
         thread::sleep(Duration::from_millis(70));
         assert_eq!(emissions.load(Ordering::SeqCst), 2);
         assert_eq!(audited.get(), 3);
+    }
+
+    #[test]
+    fn audit_flushes_before_complete_and_never_emits_after_terminal() {
+        let source = Cell::new(0);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let pipeline = source.clone().audit(Duration::from_millis(20));
+        let _guard = pipeline.install(Arc::new(move |signal| {
+            captured.lock().unwrap().push(match signal {
+                Signal::Value(value) => format!("value:{}", **value),
+                Signal::Complete => "complete".into(),
+                Signal::Error(_) => "error".into(),
+            });
+        }));
+
+        source.set(7);
+        source.complete();
+        thread::sleep(Duration::from_millis(60));
+
+        assert_eq!(&*events.lock().unwrap(), &["value:7", "complete"]);
     }
 }

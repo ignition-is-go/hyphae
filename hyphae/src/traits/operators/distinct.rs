@@ -10,10 +10,7 @@ use dashmap::DashSet;
 
 use super::CellValue;
 use crate::{
-    pipeline::{
-        Definite, Empty, MaterializeDefinite, MaterializeEmpty, Pipeline, PipelineInstall,
-        PipelineSeed, Seedness,
-    },
+    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -50,9 +47,10 @@ where
     }
 }
 
-impl<S, T> PipelineSeed<T> for DistinctPipeline<S, T, Definite>
+impl<S, T, Sd> PipelineSeed<T> for DistinctPipeline<S, T, Sd>
 where
     S: PipelineSeed<T>,
+    Sd: Seedness,
     T: CellValue + Eq + Hash,
 {
     fn seed(&self) -> T {
@@ -69,20 +67,6 @@ where
 {
 }
 
-impl<S, T> MaterializeDefinite<T> for DistinctPipeline<S, T, Definite>
-where
-    S: Pipeline<T, Definite> + PipelineSeed<T>,
-    T: CellValue + Eq + Hash,
-{
-}
-
-impl<S, T> MaterializeEmpty<T> for DistinctPipeline<S, T, Empty>
-where
-    S: Pipeline<T, Empty> + PipelineSeed<T>,
-    T: CellValue + Eq + Hash,
-{
-}
-
 #[allow(private_bounds)]
 pub trait DistinctExt<T: CellValue + Eq + Hash, S: Seedness>:
     Pipeline<T, S> + PipelineSeed<T>
@@ -92,7 +76,7 @@ pub trait DistinctExt<T: CellValue + Eq + Hash, S: Seedness>:
     /// # Example
     ///
     /// ```
-    /// use hyphae::{Cell, DistinctExt, MaterializeDefinite, Mutable};
+    /// use hyphae::{Cell, DistinctExt, Materialize, Mutable};
     ///
     /// let source = Cell::new(0);
     /// let distinct = source.clone().distinct().materialize();
@@ -104,7 +88,7 @@ pub trait DistinctExt<T: CellValue + Eq + Hash, S: Seedness>:
     /// source.set(2); // blocked - already seen
     /// ```
     #[track_caller]
-    fn distinct(self) -> DistinctPipeline<Self, T, S> {
+    fn distinct(self) -> impl crate::Materialize<T, S> {
         DistinctPipeline {
             source: self,
             _t: PhantomData,
@@ -123,7 +107,7 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     use super::*;
-    use crate::{Cell, MaterializeDefinite, Mutable, traits::Watchable};
+    use crate::{Cell, Materialize, Mutable, traits::Watchable};
 
     #[test]
     fn test_distinct() {

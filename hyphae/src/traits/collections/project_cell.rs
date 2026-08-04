@@ -237,7 +237,7 @@ where
     /// `mapper(&source_key, &source_value)` returns a watchable
     /// `Option<(output_key, output_value)>`. `None` means the row is excluded.
     #[track_caller]
-    fn project_cell<K2, V2, W, F>(self, mapper: F) -> ProjectCellPlan<Self, K, V, K2, V2, W, F>
+    fn project_cell<K2, V2, W, F>(self, mapper: F) -> impl MapQuery<K2, V2>
     where
         K2: Hash + Eq + CellValue,
         V2: CellValue,
@@ -263,7 +263,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Cell, CellMap, MapExt, MaterializeDefinite};
+    use crate::{Cell, CellMap, MapExt, Materialize};
 
     #[test]
     fn project_cell_reacts_to_inner_pipeline_emissions() {

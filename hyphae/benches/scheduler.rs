@@ -14,9 +14,7 @@ use std::sync::{
 };
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use hyphae::{
-    Cell, JoinExt, MapExt, MaterializeDefinite, Mutable, SubscriptionGuard, Watchable, batch,
-};
+use hyphae::{Cell, JoinExt, MapExt, Materialize, Mutable, SubscriptionGuard, Watchable, batch};
 
 /// A diamond `s ─> {a, b} ─> j ─> k(solve)` plus the guards keeping it alive.
 struct Diamond {

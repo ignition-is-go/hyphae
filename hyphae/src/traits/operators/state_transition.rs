@@ -9,7 +9,7 @@ use std::{
 
 use super::CellValue;
 use crate::{
-    pipeline::{Definite, MaterializeDefinite, Pipeline, PipelineInstall, PipelineSeed},
+    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -202,14 +202,6 @@ where
 {
 }
 
-impl<P, S, R> MaterializeDefinite<R> for StateTransitionPipeline<P, S, R>
-where
-    P: Pipeline<S, Definite> + PipelineSeed<S>,
-    S: CellValue + Eq + Hash,
-    R: CellValue,
-{
-}
-
 #[allow(private_bounds)]
 pub trait StateTransitionExt<S: CellValue + Eq + Hash>:
     Pipeline<S, Definite> + PipelineSeed<S>
@@ -241,7 +233,7 @@ pub trait StateTransitionExt<S: CellValue + Eq + Hash>:
     /// let triggers = sm.filter(|v| *v);
     /// ```
     #[track_caller]
-    fn state_transition<R, F>(self, configure: F) -> StateTransitionPipeline<Self, S, R>
+    fn state_transition<R, F>(self, configure: F) -> impl crate::Materialize<R, Definite>
     where
         S: CellValue + Eq + Hash,
         R: CellValue + Default,
@@ -276,7 +268,7 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     use super::*;
-    use crate::{Cell, MaterializeDefinite, Mutable, traits::Watchable};
+    use crate::{Cell, Materialize, Mutable, traits::Watchable};
 
     #[derive(Clone, PartialEq, Eq, Hash, Debug)]
     enum State {
@@ -465,7 +457,7 @@ mod tests {
 
     #[test]
     fn test_state_transition_selective_emit() {
-        use crate::{FilterExt, Gettable, MaterializeEmpty};
+        use crate::{FilterExt, Gettable, Materialize};
 
         let source = Cell::new(State::Idle);
         let sm = source.clone().state_transition(|sm| {

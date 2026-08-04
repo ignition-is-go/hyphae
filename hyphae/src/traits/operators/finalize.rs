@@ -14,10 +14,7 @@ use std::{
 
 use super::CellValue;
 use crate::{
-    pipeline::{
-        Definite, Empty, MaterializeDefinite, MaterializeEmpty, Pipeline, PipelineInstall,
-        PipelineSeed, Seedness,
-    },
+    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -85,9 +82,10 @@ where
     }
 }
 
-impl<S, T, F> PipelineSeed<T> for FinalizePipeline<S, T, F, Definite>
+impl<S, T, F, Sd> PipelineSeed<T> for FinalizePipeline<S, T, F, Sd>
 where
     S: PipelineSeed<T>,
+    Sd: Seedness,
     T: CellValue,
     F: FnOnce() + Send + Sync + 'static,
 {
@@ -106,22 +104,6 @@ where
 {
 }
 
-impl<S, T, F> MaterializeDefinite<T> for FinalizePipeline<S, T, F, Definite>
-where
-    S: Pipeline<T, Definite> + PipelineSeed<T>,
-    T: CellValue,
-    F: FnOnce() + Send + Sync + 'static,
-{
-}
-
-impl<S, T, F> MaterializeEmpty<T> for FinalizePipeline<S, T, F, Empty>
-where
-    S: Pipeline<T, Empty>,
-    T: CellValue,
-    F: FnOnce() + Send + Sync + 'static,
-{
-}
-
 #[allow(private_bounds)]
 pub trait FinalizeExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// Execute a callback exactly once when the stream completes or errors.
@@ -131,7 +113,7 @@ pub trait FinalizeExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// # Example
     ///
     /// ```
-    /// use hyphae::{Cell, FinalizeExt, MaterializeDefinite, Mutable};
+    /// use hyphae::{Cell, FinalizeExt, Materialize, Mutable};
     /// use std::sync::Arc;
     /// use std::sync::atomic::{AtomicBool, Ordering};
     ///
@@ -148,7 +130,7 @@ pub trait FinalizeExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// assert!(finalized_flag.load(Ordering::SeqCst));
     /// ```
     #[track_caller]
-    fn finalize<F>(self, callback: F) -> FinalizePipeline<Self, T, F, S>
+    fn finalize<F>(self, callback: F) -> impl crate::Materialize<T, S>
     where
         F: FnOnce() + Send + Sync + 'static,
     {
@@ -168,7 +150,7 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
 
     use super::*;
-    use crate::{Cell, Gettable, MaterializeDefinite, Mutable};
+    use crate::{Cell, Gettable, Materialize, Mutable};
 
     #[test]
     fn test_finalize_on_complete() {

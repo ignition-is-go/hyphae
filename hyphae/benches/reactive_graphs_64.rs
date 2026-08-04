@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use hyphae::{
-    Cell, CellImmutable, CellMap, JoinExt, MapExt, MapQuery, MaterializeDefinite, TapExt,
+    Cell, CellImmutable, CellMap, JoinExt, MapExt, MapQuery, Materialize, TapExt,
     traits::{LeftJoinExt, ProjectMapExt, SelectExt},
 };
 use seq_macro::seq;

@@ -59,8 +59,8 @@ use std::{
 
 use hyphae::{
     AuditExt, BackpressureExt, BufferTimeExt, Cell, ColdExt, ConcatExt, DebounceExt, DelayExt,
-    FinalizeExt, Gettable, MaterializeDefinite, MaterializeEmpty, Mutable, ParallelExt, RetryExt,
-    Signal, ThrottleExt, TimeoutExt, Watchable, batch,
+    FinalizeExt, Gettable, Materialize, Mutable, ParallelExt, RetryExt, Signal, ThrottleExt,
+    TimeoutExt, Watchable, batch,
 };
 
 /// The scheduler's tick queue is one process-wide structure, so `#[test]` fns

@@ -10,21 +10,21 @@ boundary is also an opportunity to avoid intermediate caches: build the entire
 operator chain first and call `.materialize()` once at the point where the
 application needs an observable value.
 
-## Import the materialization traits
+## Import the materialization trait
 
-`materialize` is provided by one of two traits, according to whether the
-pipeline has a guaranteed initial value:
+`materialize` is provided by one capability trait for every pipeline shape:
 
 ```rust
-use hyphae::{MaterializeDefinite, MaterializeEmpty};
+use hyphae::Materialize;
 ```
 
-- `MaterializeDefinite` produces `Cell<T>` for pipelines with a definite seed.
-- `MaterializeEmpty` produces `Cell<Option<T>>` for pipelines that may suppress
-  their initial emission, notably `filter`.
+- `Materialize<T, Definite>` produces `Cell<T>` for pipelines with a definite
+  seed.
+- `Materialize<T, Empty>` produces `Cell<Option<T>>` for pipelines that may
+  suppress their initial emission, notably `filter`.
 
-Import the trait or traits used by a module. `Pipeline` itself deliberately
-does not provide `get`, `subscribe`, or `materialize` methods.
+Import `Materialize` in every module that calls `.materialize()`. `Pipeline`
+itself deliberately does not provide `get` or `subscribe` methods.
 
 ## Add an explicit materialization boundary
 
@@ -174,7 +174,7 @@ share point makes that upstream installation explicit and reference-counted.
 ## Empty pipelines materialize to `Cell<Option<T>>`
 
 A pipeline that can suppress its initial emission cannot honestly seed a
-`Cell<T>`. `filter` therefore uses `MaterializeEmpty` and produces
+`Cell<T>`. `filter` therefore has `Empty` seedness and materializes to
 `Cell<Option<T>>`:
 
 ```rust
@@ -190,10 +190,10 @@ The cell starts as `None` when the initial value does not pass. After the first
 matching emission it becomes `Some(value)`. Later rejected emissions do not
 reset it to `None`; they simply produce no update.
 
-Generic helpers may need to express seedness and materialization as separate
-bounds. Prefer accepting a concrete source or returning `impl Pipeline<...>`
-unless callers genuinely need to abstract over both definite and empty
-pipelines.
+Generic helpers can accept or return `impl Materialize<T, S>` when the
+seedness is generic. Public operator factories intentionally hide their
+concrete plan nodes behind this contract so implementations can fuse or change
+storage strategies in compatible 3.x releases.
 
 ## Dynamic operators accept lazy inner pipelines
 
@@ -231,7 +231,7 @@ lazy.
 
 ## Migration checklist
 
-1. Import `MaterializeDefinite` and, where needed, `MaterializeEmpty`.
+1. Import `Materialize` wherever `.materialize()` is called.
 2. Follow compiler errors from `get`, `subscribe`, `with_name`, and
    `Watchable` bounds back to the intended cache boundary.
 3. Add one terminal `.materialize()` after the complete operator chain.

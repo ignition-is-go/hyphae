@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use hyphae::{
-    Cell, CellMap, CellSet, DelayExt, DepNode, Gettable, JoinExt, MapExt, MaterializeDefinite,
-    Mutable, SampleOnSourceExt, ScanExt, Source, SwitchMapExt, ZipExt,
+    Cell, CellMap, CellSet, DelayExt, DepNode, Gettable, JoinExt, MapExt, Materialize, Mutable,
+    SampleOnSourceExt, ScanExt, Source, SwitchMapExt, ZipExt,
 };
 
 #[test]

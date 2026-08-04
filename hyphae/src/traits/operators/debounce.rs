@@ -1,15 +1,15 @@
 use std::{
     marker::PhantomData,
     sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
 
 use super::CellValue;
 use crate::{
-    pipeline::{Definite, MaterializeDefinite, Pipeline, PipelineInstall, PipelineSeed},
+    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed},
     platform,
     signal::Signal,
     subscription::SubscriptionGuard,
@@ -24,21 +24,47 @@ pub struct DebouncePipeline<S, T> {
 impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for DebouncePipeline<S, T> {
     fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
         let generation = Arc::new(AtomicU64::new(0));
+        let terminated = Arc::new(AtomicBool::new(false));
+        let pending = Arc::new(Mutex::new(None::<Arc<T>>));
+        let first = AtomicBool::new(true);
         let duration = self.duration;
         self.source.install(Arc::new(move |signal| match signal {
             Signal::Value(value) => {
+                if first.swap(false, Ordering::SeqCst) || terminated.load(Ordering::SeqCst) {
+                    return;
+                }
                 let my_generation = generation.fetch_add(1, Ordering::SeqCst) + 1;
                 let generation = generation.clone();
+                let terminated = terminated.clone();
+                let pending = pending.clone();
                 let callback = callback.clone();
-                let value = value.clone();
+                *pending.lock().expect("debounce pending poisoned") = Some(value.clone());
                 platform::spawn_delayed(duration, move || {
-                    if generation.load(Ordering::SeqCst) == my_generation {
+                    if !terminated.load(Ordering::SeqCst)
+                        && generation.load(Ordering::SeqCst) == my_generation
+                        && let Some(value) =
+                            pending.lock().expect("debounce pending poisoned").take()
+                    {
                         callback(&Signal::value_arc(value));
                     }
                 });
             }
-            Signal::Complete => callback(&Signal::Complete),
-            Signal::Error(error) => callback(&Signal::Error(error.clone())),
+            Signal::Complete => {
+                if !terminated.swap(true, Ordering::SeqCst) {
+                    generation.fetch_add(1, Ordering::SeqCst);
+                    if let Some(value) = pending.lock().expect("debounce pending poisoned").take() {
+                        callback(&Signal::value_arc(value));
+                    }
+                    callback(&Signal::Complete);
+                }
+            }
+            Signal::Error(error) => {
+                if !terminated.swap(true, Ordering::SeqCst) {
+                    generation.fetch_add(1, Ordering::SeqCst);
+                    pending.lock().expect("debounce pending poisoned").take();
+                    callback(&Signal::Error(error.clone()));
+                }
+            }
         }))
     }
 }
@@ -55,15 +81,10 @@ impl<S: Pipeline<T, Definite> + PipelineSeed<T>, T: CellValue> Pipeline<T, Defin
 {
 }
 
-impl<S: Pipeline<T, Definite> + PipelineSeed<T>, T: CellValue> MaterializeDefinite<T>
-    for DebouncePipeline<S, T>
-{
-}
-
 #[allow(private_bounds)]
 pub trait DebounceExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
     #[track_caller]
-    fn debounce(self, duration: Duration) -> DebouncePipeline<Self, T> {
+    fn debounce(self, duration: Duration) -> impl crate::Materialize<T, Definite> {
         DebouncePipeline {
             source: self,
             duration,
@@ -79,7 +100,7 @@ mod tests {
     use std::{sync::atomic::AtomicU64, thread};
 
     use super::*;
-    use crate::{Cell, MaterializeDefinite, Mutable, traits::Watchable};
+    use crate::{Cell, Materialize, Mutable, traits::Watchable};
 
     #[test]
     fn test_debounce_waits_for_pause() {
@@ -104,5 +125,26 @@ mod tests {
         assert_eq!(received.load(Ordering::SeqCst), 0);
         thread::sleep(Duration::from_millis(100));
         assert_eq!(received.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn debounce_flushes_before_complete_and_never_emits_after_terminal() {
+        let source = Cell::new(0u64);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let pipeline = source.clone().debounce(Duration::from_millis(20));
+        let _guard = pipeline.install(Arc::new(move |signal| {
+            captured.lock().unwrap().push(match signal {
+                Signal::Value(value) => format!("value:{}", **value),
+                Signal::Complete => "complete".into(),
+                Signal::Error(_) => "error".into(),
+            });
+        }));
+
+        source.set(7);
+        source.complete();
+        thread::sleep(Duration::from_millis(60));
+
+        assert_eq!(&*events.lock().unwrap(), &["value:7", "complete"]);
     }
 }

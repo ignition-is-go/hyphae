@@ -10,8 +10,7 @@ use std::sync::{
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use hyphae::{
-    Cell, FilterExt, MapExt, MaterializeDefinite, MaterializeEmpty, Mutable, ParallelExt, ScanExt,
-    Signal, Watchable,
+    Cell, FilterExt, MapExt, Materialize, Mutable, ParallelExt, ScanExt, Signal, Watchable,
 };
 use seq_macro::seq;
 

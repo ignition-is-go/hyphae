@@ -1,7 +1,7 @@
 //! Integration tests for MapQuery type.
 
 use crate::{
-    CellMap, MapQuery, MaterializeDefinite,
+    CellMap, MapQuery, Materialize,
     traits::{CellValue, InnerJoinExt},
 };
 

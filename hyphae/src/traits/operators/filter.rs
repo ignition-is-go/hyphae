@@ -16,7 +16,7 @@ use std::{marker::PhantomData, sync::Arc};
 
 use super::CellValue;
 use crate::{
-    pipeline::{Definite, Empty, MaterializeEmpty, Pipeline, PipelineInstall, Seedness},
+    pipeline::{Definite, Empty, Pipeline, PipelineInstall, PipelineSeed, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -31,6 +31,18 @@ pub struct FilterPipeline<S, T, P, Sd = Definite> {
     predicate: Arc<P>,
     _t: PhantomData<fn(T)>,
     _sd: PhantomData<fn(Sd)>,
+}
+
+impl<S, T, P, Sd> PipelineSeed<T> for FilterPipeline<S, T, P, Sd>
+where
+    S: PipelineInstall<T> + Send + Sync + 'static,
+    Sd: Seedness,
+    T: CellValue,
+    P: Fn(&T) -> bool + Send + Sync + 'static,
+{
+    fn seed(&self) -> T {
+        unreachable!("a filtered Empty pipeline has no seed")
+    }
 }
 
 impl<S, T, P, Sd> PipelineInstall<T> for FilterPipeline<S, T, P, Sd>
@@ -66,19 +78,10 @@ where
 {
 }
 
-impl<S, T, P, Sd> MaterializeEmpty<T> for FilterPipeline<S, T, P, Sd>
-where
-    S: Pipeline<T, Sd>,
-    Sd: Seedness,
-    T: CellValue,
-    P: Fn(&T) -> bool + Send + Sync + 'static,
-{
-}
-
 #[allow(private_bounds)]
 pub trait FilterExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     #[track_caller]
-    fn filter<P>(self, predicate: P) -> FilterPipeline<Self, T, P, S>
+    fn filter<P>(self, predicate: P) -> impl crate::Materialize<T, Empty>
     where
         P: Fn(&T) -> bool + Send + Sync + 'static,
     {
@@ -101,7 +104,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{Cell, Gettable, MaterializeEmpty, Mutable, traits::Watchable};
+    use crate::{Cell, Gettable, Materialize, Mutable, traits::Watchable};
 
     #[test]
     fn test_filter_passes_matching() {

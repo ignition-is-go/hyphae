@@ -42,9 +42,9 @@
 use std::sync::{Arc, Mutex};
 
 use hyphae::{
-    BufferCountExt, Cell, CellMutable, FirstExt, Gettable, LastExt, MaterializeDefinite,
-    MaterializeEmpty, Mutable, PairwiseExt, Signal, SkipExt, SkipWhileExt, TakeExt, TakeUntilExt,
-    TakeWhileExt, Watchable, WindowExt, batch, scheduler::no_coalesce,
+    BufferCountExt, Cell, CellMutable, FirstExt, Gettable, LastExt, Materialize, Mutable,
+    PairwiseExt, Signal, SkipExt, SkipWhileExt, TakeExt, TakeUntilExt, TakeWhileExt, Watchable,
+    WindowExt, batch, scheduler::no_coalesce,
 };
 
 /// The scheduler's tick queue is a single process-wide structure, so `#[test]`

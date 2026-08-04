@@ -19,8 +19,7 @@ use std::sync::{
 };
 
 use hyphae::{
-    Cell, CellMutable, MaterializeDefinite, Mutable, Signal, Watchable, batch,
-    scheduler::no_coalesce,
+    Cell, CellMutable, Materialize, Mutable, Signal, Watchable, batch, scheduler::no_coalesce,
 };
 
 /// The scheduler's tick queue is a single process-wide structure (see
@@ -167,7 +166,7 @@ fn no_coalesce_scope_preserves_multiplicity_but_settles_glitch_free() {
     // final sink would leave that intermediate join cell coalescing, and it
     // would collapse the two arrivals before the sink ever saw them. This is
     // exactly the "every materialized cell on the path" rule.
-    use hyphae::{JoinExt, MapExt, MaterializeDefinite};
+    use hyphae::{JoinExt, MapExt, Materialize};
 
     let s = Cell::new(0i64);
     let sink = no_coalesce(|| {
@@ -209,7 +208,7 @@ fn no_coalesce_scope_preserves_multiplicity_but_settles_glitch_free() {
 #[test]
 fn batched_source_coalesces_a_same_rate_diamond_that_per_subscriber_batch_cannot() {
     let _serial = scheduler_test_serial();
-    use hyphae::{JoinExt, MapExt, MaterializeDefinite, Source};
+    use hyphae::{JoinExt, MapExt, Materialize, Source};
 
     // rship's shape: two cells sample the SAME source, each via its OWN
     // subscriber callback that opens its OWN batch around the set. A node
@@ -331,7 +330,7 @@ fn coalescing_cell_downstream_of_no_coalesce_settles_once() {
     // plain (coalescing) behavior cell downstream still settles ONCE to the final
     // value — so tagging a shared source no_coalesce never hurts its behavior
     // consumers, it only costs the source extra fanouts.
-    use hyphae::{MapExt, MaterializeDefinite};
+    use hyphae::{MapExt, Materialize};
 
     let s = Cell::new(0i64).no_coalesce();
     let derived = s.clone().map(|x| x * 2).materialize(); // born outside any scope → coalescing

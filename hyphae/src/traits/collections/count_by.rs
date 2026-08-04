@@ -93,7 +93,7 @@ where
     /// `group_key` is called for every source row and its return value
     /// becomes the output map key.
     #[track_caller]
-    fn count_by<GK, F>(self, group_key: F) -> CountByPlan<Self, K, V, GK, F>
+    fn count_by<GK, F>(self, group_key: F) -> impl MapQuery<GK, usize>
     where
         GK: Hash + Eq + CellValue,
         F: Fn(&K, &V) -> GK + Send + Sync + 'static,

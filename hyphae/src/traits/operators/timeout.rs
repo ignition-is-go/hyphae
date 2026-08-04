@@ -9,7 +9,7 @@ use std::{
 
 use super::CellValue;
 use crate::{
-    pipeline::{Definite, MaterializeDefinite, Pipeline, PipelineInstall, PipelineSeed},
+    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed},
     platform,
     signal::Signal,
     subscription::SubscriptionGuard,
@@ -35,6 +35,9 @@ impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for TimeoutPipeline
         platform::spawn_delayed(duration, move || {
             if !initial_completed.load(Ordering::SeqCst)
                 && initial_generation_ref.load(Ordering::SeqCst) == initial_generation
+                && initial_completed
+                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
             {
                 initial_callback(&Signal::error(anyhow::anyhow!("timeout")));
             }
@@ -42,6 +45,9 @@ impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for TimeoutPipeline
 
         self.source.install(Arc::new(move |signal| match signal {
             Signal::Value(value) => {
+                if completed.load(Ordering::SeqCst) {
+                    return;
+                }
                 if first.swap(false, Ordering::SeqCst) {
                     return;
                 }
@@ -53,6 +59,9 @@ impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for TimeoutPipeline
                 platform::spawn_delayed(duration, move || {
                     if !completed.load(Ordering::SeqCst)
                         && generation.load(Ordering::SeqCst) == new_generation
+                        && completed
+                            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                            .is_ok()
                     {
                         callback(&Signal::error(anyhow::anyhow!("timeout")));
                     }
@@ -82,15 +91,10 @@ impl<S: Pipeline<T, Definite> + PipelineSeed<T>, T: CellValue> Pipeline<T, Defin
 {
 }
 
-impl<S: Pipeline<T, Definite> + PipelineSeed<T>, T: CellValue> MaterializeDefinite<T>
-    for TimeoutPipeline<S, T>
-{
-}
-
 #[allow(private_bounds)]
 pub trait TimeoutExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
     #[track_caller]
-    fn timeout(self, duration: Duration) -> TimeoutPipeline<Self, T> {
+    fn timeout(self, duration: Duration) -> impl crate::Materialize<T, Definite> {
         TimeoutPipeline {
             source: self,
             duration,
@@ -106,7 +110,7 @@ mod tests {
     use std::{sync::atomic::AtomicU32, thread};
 
     use super::*;
-    use crate::{Cell, MaterializeDefinite, Mutable, traits::Watchable};
+    use crate::{Cell, Materialize, Mutable, traits::Watchable};
 
     fn error_count<T: CellValue>(
         timed: &crate::Cell<T, crate::CellImmutable>,

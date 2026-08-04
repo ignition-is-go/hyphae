@@ -4,8 +4,8 @@
 //! Returns a [`Pipeline`] (specifically a [`MapPipeline`] over the notifier).
 //! Materialize to subscribe; further operators can also chain off it.
 
-use super::{super::operators::MapExt, CellValue, Gettable, MapPipeline, Watchable};
-use crate::pipeline::{Pipeline, PipelineSeed};
+use super::{super::operators::MapExt, CellValue, Gettable, Watchable};
+use crate::pipeline::{Definite, Materialize, Pipeline, PipelineSeed};
 
 pub trait SampleExt<T>: Watchable<T> {
     /// Emit the source's latest value each time the notifier fires.
@@ -15,7 +15,7 @@ pub trait SampleExt<T>: Watchable<T> {
     /// # Example
     ///
     /// ```
-    /// use hyphae::{Cell, Gettable, MaterializeDefinite, Mutable, SampleExt};
+    /// use hyphae::{Cell, Gettable, Materialize, Mutable, SampleExt};
     ///
     /// let source = Cell::new(0);
     /// let ticker = Cell::new(());
@@ -31,10 +31,7 @@ pub trait SampleExt<T>: Watchable<T> {
     /// ```
     #[track_caller]
     #[allow(private_bounds)]
-    fn sample<N, U>(
-        &self,
-        notifier: &N,
-    ) -> MapPipeline<N, U, T, impl Fn(&U) -> T + Send + Sync + 'static>
+    fn sample<N, U>(&self, notifier: &N) -> impl Materialize<T, Definite>
     where
         T: CellValue,
         U: CellValue,
@@ -51,7 +48,7 @@ impl<T, W: Watchable<T>> SampleExt<T> for W {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Cell, MaterializeDefinite, Mutable, Signal, cell::CellImmutable};
+    use crate::{Cell, Materialize, Mutable, Signal, cell::CellImmutable};
 
     #[test]
     fn test_sample() {

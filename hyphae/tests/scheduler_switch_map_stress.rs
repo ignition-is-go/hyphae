@@ -9,7 +9,7 @@
 #![cfg(feature = "scheduler")]
 #![allow(clippy::needless_range_loop)]
 
-use hyphae::{Cell, Gettable, MaterializeDefinite, Mutable, SwitchMapExt, batch};
+use hyphae::{Cell, Gettable, Materialize, Mutable, SwitchMapExt, batch};
 
 // Wide enough that each batch is a 2*WIDTH height-0 wave dispatched across
 // rayon, so many units' old-inner emissions race their selector's gen-bump

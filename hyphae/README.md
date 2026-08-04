@@ -1,10 +1,10 @@
 # hyphae
 
-A lock-free reactive programming library for Rust.
+A high-performance concurrent reactive programming library for Rust.
 
 ## Features
 
-- **Lock-free** - Atomic updates via `arc-swap`, no blocking
+- **Fast reads** - Atomic value snapshots via `arc-swap`
 - **Type-safe** - Compile-time checking with heterogeneous cell combinations
 - **Thread-safe** - Safe concurrent access across threads
 - **Dependency tracking** - Inspect and visualize cell relationships
@@ -13,7 +13,7 @@ A lock-free reactive programming library for Rust.
 
 ```rust
 use hyphae::{
-    Cell, JoinExt, MapExt, MaterializeDefinite, Mutable, Signal, Watchable, flat,
+    Cell, JoinExt, MapExt, Materialize, Mutable, Signal, Watchable, flat,
 };
 
 let x = Cell::new(5);
@@ -41,9 +41,10 @@ fuses closures at compile time. Call `.materialize()` to compile the chain
 into a `Cell` you can subscribe to. There is no `Pipeline::subscribe` by
 design: callers make the memoization decision explicit.
 
-Definite pipelines use `MaterializeDefinite` and produce `Cell<T>`. Pipelines
-that may suppress their initial emission, such as `filter`, use
-`MaterializeEmpty` and produce `Cell<Option<T>>`.
+All pipeline surfaces use `Materialize<T, S>`. The seedness parameter selects
+the result shape: `Definite` produces `Cell<T>`, while `Empty` produces
+`Cell<Option<T>>` for operators such as `filter` that may suppress their
+initial emission. Import `Materialize` to call `.materialize()`.
 
 Operators that need state or multiple sources (`debounce`, `buffer_*`, `join`,
 `merge`, `switch_map`, and others) are lazy pipelines too. Their state and any
@@ -69,8 +70,7 @@ when you need a cell. Stateful operators such as `scan`, `debounce`, and
 ```rust
 use std::time::Duration;
 use hyphae::{
-    CatchErrorExt, DebounceExt, FilterExt, MapExt, MaterializeDefinite,
-    MaterializeEmpty, ScanExt, ThrottleExt,
+    CatchErrorExt, DebounceExt, FilterExt, MapExt, Materialize, ScanExt, ThrottleExt,
 };
 
 let doubled = x.map(|v| v * 2).materialize();
@@ -84,7 +84,7 @@ let safe = fallible.catch_error(|_| default).materialize();
 ## Reactive Collections
 
 ```rust
-use hyphae::{CellMap, Gettable, MaterializeDefinite};
+use hyphae::{CellMap, Gettable, Materialize};
 
 let users = CellMap::<String, User>::new();
 let admin = users.get(&"admin".to_string()).materialize();

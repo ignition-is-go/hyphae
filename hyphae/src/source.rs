@@ -39,7 +39,7 @@ use uuid::Uuid;
 
 use crate::{
     cell::{Cell, CellMutable, Subscriber, SubscriberCallback},
-    pipeline::{Empty, MaterializeDefinite, MaterializeEmpty, Pipeline, PipelineInstall},
+    pipeline::{Definite, Empty, Materialize, Pipeline, PipelineInstall, PipelineSeed},
     signal::Signal,
     subscription::SubscriptionGuard,
     traits::{CellValue, DepNode, Gettable, Mutable, Watchable},
@@ -202,7 +202,7 @@ impl<T: CellValue> Source<T> {
     ) -> SubscriptionGuard {
         let id = Uuid::new_v4();
         let cb: SubscriberCallback<T> = Arc::new(callback);
-        let sub = Arc::new(Subscriber { callback: cb });
+        let sub = Arc::new(Subscriber::new_live(cb));
         // Swap-and-defer: see Cell::subscribe.
         let _old = {
             let mut guard = self.inner.subscribers.lock();
@@ -300,11 +300,11 @@ impl<T: CellValue> Default for Source<T> {
 //
 // `Source<T>` is a `Pipeline<T, Empty>`: operators that don't require a
 // definite initial value (`map`, `filter`, `tap`, ...) compose with it.
-// `PipelineSeed` is intentionally NOT implemented — operators like `.sample`
-// (with Source as the value side), `.join`, `.combine_latest` require a
-// current value, and the type system rejects them at compile time.
+// The hidden `PipelineSeed` implementation is an unreachable type-level hook
+// used solely by generic Empty materialization dispatch. Source still has no
+// usable current value; operators requiring a Definite pipeline reject it.
 //
-// Materialization goes through `MaterializeEmpty`, producing a
+// Materialization uses `Materialize<T, Empty>`, producing a
 // `Cell<Option<T>, CellImmutable>` that starts as `None` and transitions to
 // `Some(value)` on the first `emit`.
 
@@ -314,37 +314,34 @@ impl<T: CellValue> PipelineInstall<T> for Source<T> {
     }
 }
 
+impl<T: CellValue> PipelineSeed<T> for Source<T> {
+    fn seed(&self) -> T {
+        unreachable!("an Empty source has no seed")
+    }
+}
+
 #[allow(private_bounds)]
 impl<T: CellValue> Pipeline<T, Empty> for Source<T> {}
-
-impl<T: CellValue> MaterializeEmpty<T> for Source<T> {}
 
 /// Extension trait: sample a [`Watchable`] cell using a [`Source`] as the
 /// notifier.
 ///
-/// Mirrors `Watchable::sample(&pipeline_notifier)` but accepts a `Source<U>`,
-/// which doesn't impl `Pipeline`/`PipelineSeed`. The returned pipeline surface
-/// keeps the materialization boundary explicit even though the current
-/// implementation uses a cell internally.
+/// Mirrors `Watchable::sample(&pipeline_notifier)` but accepts a `Source<U>`.
+/// The returned pipeline surface keeps the materialization boundary explicit
+/// even though the current implementation uses a cell internally.
 pub trait SampleOnSourceExt<T: CellValue>: Watchable<T> + Gettable<T> {
     /// Build a pipeline that re-emits the current value of `self` whenever
-    /// `notifier` emits. Equivalent to `notifier.subscribe(|_| cell.set(self.get()))`
-    /// but with subscription lifecycle owned by the resulting cell.
+    /// `notifier` emits, with lifecycle owned by the resulting cell.
     #[track_caller]
-    fn sample_on<U>(&self, notifier: &Source<U>) -> impl MaterializeDefinite<T> + use<Self, T, U>
+    fn sample_on<U>(&self, notifier: &Source<U>) -> impl Materialize<T, Definite> + use<Self, T, U>
     where
         U: CellValue,
     {
         let source = self.clone();
         let cell = Cell::<T, CellMutable>::new(source.get());
         // Weak, not a strong clone: `cell.own(guard)` below hands the cell
-        // ownership of the subscription, and a `SubscriptionGuard` holds a
-        // *strong* `Arc<dyn DepNode>` to whatever it subscribed to
-        // (`subscription.rs`). A strong capture here would close the loop
-        // cell -> owned guard -> notifier -> subscribers -> closure -> cell, so
-        // the cell could never reach zero: it would never drop, never
-        // unsubscribe, never deregister, and would keep sampling `source`
-        // forever — a CPU leak as well as a memory one (rship lv-df48).
+        // ownership of the subscription. Capturing the cell strongly here
+        // would create an unbreakable cell -> guard -> callback -> cell cycle.
         let weak_cell = cell.downgrade();
         let guard = notifier.subscribe(move |signal| {
             if let Signal::Value(_) = signal
@@ -391,6 +388,7 @@ mod tests {
     use std::sync::{Arc, atomic::Ordering};
 
     use super::*;
+    use crate::Materialize;
 
     /// `sample_on` used to capture a strong clone of its own output cell in the
     /// notifier's subscriber closure while also owning the guard, forming an

@@ -10,9 +10,9 @@ use std::{hash::Hash, marker::PhantomData, sync::Arc};
 use super::ProjectCellExt;
 use crate::{
     map_query::{MapDiffSink, MapQuery, MapQueryInstall},
-    pipeline::{MaterializeDefinite, Pipeline},
+    pipeline::{Materialize, Pipeline},
     subscription::SubscriptionGuard,
-    traits::{CellValue, Gettable, MapExt, collections::ProjectCellPlan},
+    traits::{CellValue, Gettable, MapExt},
 };
 
 /// Plan node for [`SelectCellExt::select_cell`].
@@ -61,20 +61,19 @@ where
         // Implement select_cell as a project_cell whose inner Watchable maps
         // the boolean gate into Option<(K, V)>.
         let predicate = self.predicate;
-        let inner_plan: ProjectCellPlan<S, K, V, K, V, _, _> =
-            self.source.project_cell(move |k, v| {
-                let k = k.clone();
-                let v = v.clone();
-                predicate(&k, &v)
-                    .map(move |include| {
-                        if *include {
-                            Some((k.clone(), v.clone()))
-                        } else {
-                            None
-                        }
-                    })
-                    .materialize()
-            });
+        let inner_plan = self.source.project_cell(move |k, v| {
+            let k = k.clone();
+            let v = v.clone();
+            predicate(&k, &v)
+                .map(move |include| {
+                    if *include {
+                        Some((k.clone(), v.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .materialize()
+        });
         inner_plan.install(sink)
     }
 }
@@ -112,7 +111,7 @@ where
     /// included when true and excluded when false.
     #[track_caller]
     #[allow(private_bounds)]
-    fn select_cell<W, F>(self, predicate: F) -> SelectCellPlan<Self, K, V, W, F>
+    fn select_cell<W, F>(self, predicate: F) -> impl MapQuery<K, V>
     where
         W: Pipeline<bool>
             + crate::pipeline::PipelineSeed<bool>
@@ -144,7 +143,7 @@ mod tests {
     use std::sync::mpsc;
 
     use super::*;
-    use crate::{Cell, CellMap, MapExt, MaterializeDefinite, cell_map::MapDiff};
+    use crate::{Cell, CellMap, MapExt, Materialize, cell_map::MapDiff};
 
     #[test]
     fn select_cell_reacts_to_predicate_changes() {

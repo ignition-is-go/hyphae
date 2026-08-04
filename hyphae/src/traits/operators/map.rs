@@ -4,10 +4,7 @@ use std::{marker::PhantomData, sync::Arc};
 
 use super::CellValue;
 use crate::{
-    pipeline::{
-        Definite, Empty, MaterializeDefinite, MaterializeEmpty, Pipeline, PipelineInstall,
-        PipelineSeed, Seedness,
-    },
+    pipeline::{Materialize, Pipeline, PipelineInstall, PipelineSeed, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -63,28 +60,10 @@ where
 {
 }
 
-impl<S, T, U, F> MaterializeDefinite<U> for MapPipeline<S, T, U, F>
-where
-    S: Pipeline<T, Definite> + PipelineSeed<T>,
-    T: CellValue,
-    U: CellValue,
-    F: Fn(&T) -> U + Send + Sync + 'static,
-{
-}
-
-impl<S, T, U, F> MaterializeEmpty<U> for MapPipeline<S, T, U, F>
-where
-    S: Pipeline<T, Empty>,
-    T: CellValue,
-    U: CellValue,
-    F: Fn(&T) -> U + Send + Sync + 'static,
-{
-}
-
 #[allow(private_bounds)]
 pub trait MapExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     #[track_caller]
-    fn map<U, F>(self, f: F) -> MapPipeline<Self, T, U, F>
+    fn map<U, F>(self, f: F) -> impl Materialize<U, S>
     where
         U: CellValue,
         F: Fn(&T) -> U + Send + Sync + 'static,
@@ -102,7 +81,7 @@ impl<T: CellValue, S: Seedness, P: Pipeline<T, S>> MapExt<T, S> for P {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Cell, Gettable, MaterializeDefinite, Mutable, traits::DepNode};
+    use crate::{Cell, Gettable, Materialize, Mutable, traits::DepNode};
 
     #[test]
     fn test_map_transform() {

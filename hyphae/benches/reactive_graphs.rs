@@ -12,11 +12,8 @@
 //! `reactive_graphs_64` target isolates the 64-stage case to bound compiler
 //! memory.
 //!
-//! Keep benchmark names and workloads stable across the pre/post migration
-//! revisions. The `join_heavy_operator_pipeline` builders require explicit
-//! intermediate `.materialize()` calls on v2.0.1 because its `join` operator
-//! accepts cells, not pipelines; otherwise both sides construct the same
-//! logical graph.
+//! Keep benchmark names and workloads stable so v3 releases can be compared
+//! against saved Criterion baselines without carrying an older API surface.
 
 #![recursion_limit = "1024"]
 #![type_length_limit = "16777216"]
@@ -25,7 +22,7 @@ use std::sync::Arc;
 
 use criterion::{BatchSize, BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use hyphae::{
-    Cell, CellImmutable, CellMap, JoinExt, MapExt, MapQuery, MaterializeDefinite, TapExt,
+    Cell, CellImmutable, CellMap, JoinExt, MapExt, MapQuery, Materialize, TapExt,
     traits::{LeftJoinExt, ProjectMapExt, SelectExt},
 };
 use seq_macro::seq;

@@ -11,7 +11,7 @@ use std::{
 
 use super::CellValue;
 use crate::{
-    pipeline::{Empty, MaterializeEmpty, Pipeline, PipelineInstall, PipelineSeed, Seedness},
+    pipeline::{Empty, Pipeline, PipelineInstall, PipelineSeed, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -21,6 +21,17 @@ pub struct PairwisePipeline<S, T, Sd = crate::pipeline::Definite> {
     source: S,
     _t: PhantomData<fn(T)>,
     _sd: PhantomData<fn(Sd)>,
+}
+
+impl<S, T, Sd> PipelineSeed<(T, T)> for PairwisePipeline<S, T, Sd>
+where
+    S: PipelineInstall<T> + PipelineSeed<T> + Send + Sync + 'static,
+    Sd: Seedness,
+    T: CellValue,
+{
+    fn seed(&self) -> (T, T) {
+        unreachable!("a pairwise Empty pipeline has no seed")
+    }
 }
 
 impl<S, T, Sd> PipelineInstall<(T, T)> for PairwisePipeline<S, T, Sd>
@@ -69,19 +80,11 @@ where
 {
 }
 
-impl<S, T, Sd> MaterializeEmpty<(T, T)> for PairwisePipeline<S, T, Sd>
-where
-    S: Pipeline<T, Sd> + PipelineSeed<T>,
-    Sd: Seedness,
-    T: CellValue,
-{
-}
-
 #[allow(private_bounds)]
 pub trait PairwiseExt<T: CellValue, S: Seedness>: Pipeline<T, S> + PipelineSeed<T> {
     /// Emit `(prev, current)` pairs for each consecutive pair of values.
     #[track_caller]
-    fn pairwise(self) -> PairwisePipeline<Self, T, S> {
+    fn pairwise(self) -> impl crate::Materialize<(T, T), Empty> {
         PairwisePipeline {
             source: self,
             _t: PhantomData,
@@ -95,7 +98,7 @@ impl<T: CellValue, S: Seedness, P: Pipeline<T, S> + PipelineSeed<T>> PairwiseExt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Cell, Gettable, MaterializeEmpty, Mutable};
+    use crate::{Cell, Gettable, Materialize, Mutable};
 
     #[test]
     fn test_pairwise_emits_pairs() {

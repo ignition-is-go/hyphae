@@ -45,8 +45,7 @@ use std::{
 
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use hyphae::{
-    Cell, CellMutable, MapExt, MaterializeDefinite, Mutable, SubscriptionGuard, Watchable, batch,
-    join_vec,
+    Cell, CellMutable, MapExt, Materialize, Mutable, SubscriptionGuard, Watchable, batch, join_vec,
 };
 
 /// How many `batch()` calls each thread performs per sample. High enough

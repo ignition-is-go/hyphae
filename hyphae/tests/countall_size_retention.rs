@@ -8,7 +8,7 @@
 //! stuck at 0 on canary.71.
 #![cfg(feature = "scheduler")]
 
-use hyphae::{CellMap, Gettable, MapQuery, MaterializeDefinite, SelectExt, batch};
+use hyphae::{CellMap, Gettable, MapQuery, Materialize, SelectExt, batch};
 
 fn serial() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

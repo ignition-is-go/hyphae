@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
-use super::{CellValue, MapExt, MapPipeline, ScanExt, ScanPipeline};
-use crate::pipeline::{Definite, Pipeline, PipelineSeed};
+use super::{CellValue, MapExt, ScanExt};
+use crate::pipeline::{Definite, Materialize, Pipeline, PipelineSeed};
 
 #[allow(private_bounds)]
 pub trait WindowExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
@@ -14,7 +14,7 @@ pub trait WindowExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
     /// # Example
     ///
     /// ```
-    /// use hyphae::{Cell, Mutable, Gettable, MaterializeDefinite, WindowExt};
+    /// use hyphae::{Cell, Mutable, Gettable, Materialize, WindowExt};
     ///
     /// let source = Cell::new(0);
     /// let windowed = source.clone().window(3).materialize();
@@ -31,20 +31,7 @@ pub trait WindowExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
     /// assert_eq!(windowed.get(), vec![1, 2, 3]);  // Sliding window
     /// ```
     #[track_caller]
-    fn window(
-        self,
-        count: usize,
-    ) -> MapPipeline<
-        ScanPipeline<
-            Self,
-            T,
-            VecDeque<T>,
-            impl Fn(&VecDeque<T>, &T) -> VecDeque<T> + Send + Sync + 'static,
-        >,
-        VecDeque<T>,
-        Vec<T>,
-        impl Fn(&VecDeque<T>) -> Vec<T> + Send + Sync + 'static,
-    > {
+    fn window(self, count: usize) -> impl Materialize<Vec<T>, Definite> {
         assert!(count > 0, "window size must be positive");
 
         self.scan(VecDeque::with_capacity(count), move |acc, value| {
@@ -64,7 +51,7 @@ impl<T: CellValue, P: Pipeline<T, Definite> + PipelineSeed<T>> WindowExt<T> for 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Cell, Gettable, MaterializeDefinite, Mutable};
+    use crate::{Cell, Gettable, Materialize, Mutable};
 
     #[test]
     fn window_installs_only_when_materialized() {

@@ -83,7 +83,7 @@ where
     /// produced by that source row. Changes are diffed automatically against
     /// previous output for the same source row.
     #[track_caller]
-    fn project_many<K2, V2, F>(self, f: F) -> ProjectManyPlan<Self, K, V, K2, V2, F>
+    fn project_many<K2, V2, F>(self, f: F) -> impl MapQuery<K2, V2>
     where
         K2: Hash + Eq + CellValue,
         V2: CellValue,

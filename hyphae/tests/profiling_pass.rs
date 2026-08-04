@@ -7,7 +7,7 @@
 #![cfg(feature = "profiling")]
 
 use hyphae::{
-    Cell, JoinExt, MapExt, MaterializeDefinite, Mutable, Watchable,
+    Cell, JoinExt, MapExt, Materialize, Mutable, Watchable,
     profiling::{pass, take_report},
 };
 

@@ -8,7 +8,7 @@ use dashmap::DashSet;
 
 use crate::{
     cell::{Cell, CellImmutable, CellMutable, WeakCell},
-    pipeline::MaterializeDefinite,
+    pipeline::{Definite, Materialize},
     signal::Signal,
     traits::{CellValue, Gettable, Mutable, Watchable},
 };
@@ -41,7 +41,7 @@ where
 /// # Example
 ///
 /// ```
-/// use hyphae::{CellSet, Gettable, MaterializeDefinite, Watchable, Signal};
+/// use hyphae::{CellSet, Gettable, Materialize, Watchable, Signal};
 ///
 /// let set = CellSet::<String>::new();
 ///
@@ -167,7 +167,7 @@ where
     /// in the set. Multiple installations currently reuse the same underlying
     /// membership cell, but that cache is not part of the public API.
     #[track_caller]
-    pub fn contains(&self, value: &T) -> impl MaterializeDefinite<bool> + use<T, M> {
+    pub fn contains(&self, value: &T) -> impl Materialize<bool, Definite> + use<T, M> {
         // Check cache first
         if let Some(weak) = self.inner.membership_cells.get(value)
             && let Some(cell) = weak.upgrade()
@@ -192,7 +192,7 @@ where
     /// The initial call is O(N) to build the snapshot, but subsequent updates
     /// are O(1) as they apply diffs incrementally.
     #[track_caller]
-    pub fn values(&self) -> impl MaterializeDefinite<Vec<T>> + use<T, M> {
+    pub fn values(&self) -> impl Materialize<Vec<T>, Definite> + use<T, M> {
         // Build initial values from current data (O(N) once)
         let initial: Vec<T> = self.inner.data.iter().map(|r| r.clone()).collect();
 
@@ -241,7 +241,7 @@ where
     }
 
     /// Build an observable pipeline of the set length.
-    pub fn len(&self) -> impl MaterializeDefinite<usize> + use<T, M> {
+    pub fn len(&self) -> impl Materialize<usize, Definite> + use<T, M> {
         self.inner.len_cell.clone().lock()
     }
 
@@ -253,7 +253,7 @@ where
     /// Build an observable pipeline of diff notifications.
     ///
     /// Emits `Some(SetDiff)` on each insert/remove, starts with `None`.
-    pub fn diffs(&self) -> impl MaterializeDefinite<Option<SetDiff<T>>> + use<T, M> {
+    pub fn diffs(&self) -> impl Materialize<Option<SetDiff<T>>, Definite> + use<T, M> {
         self.inner.diffs_cell.clone().lock()
     }
 
@@ -280,6 +280,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+    use crate::Materialize;
     use crate::traits::{Gettable, Watchable};
 
     #[test]

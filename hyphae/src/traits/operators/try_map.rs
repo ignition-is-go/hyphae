@@ -4,10 +4,7 @@ use std::{marker::PhantomData, sync::Arc};
 
 use super::CellValue;
 use crate::{
-    pipeline::{
-        Definite, Empty, MaterializeDefinite, MaterializeEmpty, Pipeline, PipelineInstall,
-        PipelineSeed, Seedness,
-    },
+    pipeline::{Pipeline, PipelineInstall, PipelineSeed, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -67,36 +64,16 @@ where
 {
 }
 
-impl<S, T, U, E, F> MaterializeDefinite<Result<U, E>> for TryMapPipeline<S, T, U, E, F>
-where
-    S: Pipeline<T, Definite> + PipelineSeed<T>,
-    T: CellValue,
-    U: CellValue,
-    E: CellValue,
-    F: Fn(&T) -> Result<U, E> + Send + Sync + 'static,
-{
-}
-
-impl<S, T, U, E, F> MaterializeEmpty<Result<U, E>> for TryMapPipeline<S, T, U, E, F>
-where
-    S: Pipeline<T, Empty>,
-    T: CellValue,
-    U: CellValue,
-    E: CellValue,
-    F: Fn(&T) -> Result<U, E> + Send + Sync + 'static,
-{
-}
-
 /// Extension trait for fallible transformations.
 #[allow(private_bounds)]
 pub trait TryMapExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// Transform values with a fallible function.
     ///
-    /// Returns a [`TryMapPipeline`] node that yields `Ok(value)` when the
+    /// Returns an opaque lazy pipeline that yields `Ok(value)` when the
     /// transform succeeds, or `Err(error)` when it fails. Materialize to
     /// observe.
     #[track_caller]
-    fn try_map<U, E, F>(self, f: F) -> TryMapPipeline<Self, T, U, E, F>
+    fn try_map<U, E, F>(self, f: F) -> impl crate::Materialize<Result<U, E>, S>
     where
         U: CellValue,
         E: CellValue,

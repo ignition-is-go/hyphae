@@ -11,10 +11,7 @@ use std::{
 
 use super::CellValue;
 use crate::{
-    pipeline::{
-        Definite, Empty, MaterializeDefinite, MaterializeEmpty, Pipeline, PipelineInstall,
-        PipelineSeed, Seedness,
-    },
+    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -60,9 +57,10 @@ where
     }
 }
 
-impl<S, T, U, F> PipelineSeed<U> for ScanPipeline<S, T, U, F, Definite>
+impl<S, T, U, F, Sd> PipelineSeed<U> for ScanPipeline<S, T, U, F, Sd>
 where
     S: PipelineSeed<T>,
+    Sd: Seedness,
     T: CellValue,
     U: CellValue,
     F: Fn(&U, &T) -> U + Send + Sync + 'static,
@@ -83,28 +81,10 @@ where
 {
 }
 
-impl<S, T, U, F> MaterializeDefinite<U> for ScanPipeline<S, T, U, F, Definite>
-where
-    S: Pipeline<T, Definite> + PipelineSeed<T>,
-    T: CellValue,
-    U: CellValue,
-    F: Fn(&U, &T) -> U + Send + Sync + 'static,
-{
-}
-
-impl<S, T, U, F> MaterializeEmpty<U> for ScanPipeline<S, T, U, F, Empty>
-where
-    S: Pipeline<T, Empty>,
-    T: CellValue,
-    U: CellValue,
-    F: Fn(&U, &T) -> U + Send + Sync + 'static,
-{
-}
-
 #[allow(private_bounds)]
 pub trait ScanExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     #[track_caller]
-    fn scan<U, F>(self, initial: U, f: F) -> ScanPipeline<Self, T, U, F, S>
+    fn scan<U, F>(self, initial: U, f: F) -> impl crate::Materialize<U, S>
     where
         U: CellValue,
         F: Fn(&U, &T) -> U + Send + Sync + 'static,
@@ -124,7 +104,7 @@ impl<T: CellValue, S: Seedness, P: Pipeline<T, S>> ScanExt<T, S> for P {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Cell, Gettable, MaterializeDefinite, Mutable};
+    use crate::{Cell, Gettable, Materialize, Mutable};
 
     #[test]
     fn test_scan_accumulates() {

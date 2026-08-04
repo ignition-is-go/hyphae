@@ -48,8 +48,8 @@ use std::sync::{
 };
 
 use hyphae::{
-    Cell, Gettable, MaterializeDefinite, MergeExt, MergeMapExt, Mutable, Signal, SwitchMapExt,
-    Watchable, batch, scheduler::no_coalesce,
+    Cell, Gettable, Materialize, MergeExt, MergeMapExt, Mutable, Signal, SwitchMapExt, Watchable,
+    batch, scheduler::no_coalesce,
 };
 
 /// Width of every wave. Must be >= `PARALLEL_WAVE_THRESHOLD` (8) so the drain

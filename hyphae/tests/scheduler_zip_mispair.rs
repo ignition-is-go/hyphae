@@ -13,7 +13,7 @@
 //! every later iteration's assert fails.
 #![cfg(feature = "scheduler")]
 
-use hyphae::{Cell, Gettable, MaterializeDefinite, Mutable, ZipExt, batch};
+use hyphae::{Cell, Gettable, Materialize, Mutable, ZipExt, batch};
 
 const PAIRS: usize = 8;
 const ITERATIONS: i64 = 3_000;

@@ -19,7 +19,7 @@ use std::{
 };
 
 use hyphae::{
-    Cell, CellMutable, JoinExt, MapExt, MaterializeDefinite, Mutable, Signal, Watchable, batch,
+    Cell, CellMutable, JoinExt, MapExt, Materialize, Mutable, Signal, Watchable, batch,
     scheduler::no_coalesce,
 };
 

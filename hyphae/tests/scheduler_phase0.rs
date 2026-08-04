@@ -16,8 +16,7 @@ use std::sync::{
 };
 
 use hyphae::{
-    Cell, FilterExt, JoinExt, MapExt, MaterializeDefinite, MaterializeEmpty, Mutable, Signal,
-    SwitchMapExt, Watchable, batch,
+    Cell, FilterExt, JoinExt, MapExt, Materialize, Mutable, Signal, SwitchMapExt, Watchable, batch,
 };
 
 /// The scheduler's tick queue is a single process-wide structure (see

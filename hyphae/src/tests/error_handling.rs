@@ -1,5 +1,5 @@
 use crate::{
-    CatchErrorExt, Cell, Gettable, MapErrExt, MapOkExt, MaterializeDefinite, Mutable, TryMapExt,
+    CatchErrorExt, Cell, Gettable, MapErrExt, MapOkExt, Materialize, Mutable, TryMapExt,
     UnwrapOrExt,
 };
 

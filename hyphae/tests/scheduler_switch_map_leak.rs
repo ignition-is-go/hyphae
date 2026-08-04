@@ -22,8 +22,8 @@ use std::{
 };
 
 use hyphae::{
-    CellImmutable, CellMap, Gettable, MapExt, MaterializeDefinite, Signal, SwitchMapExt, Watchable,
-    batch, cell_map::WeakCellMap,
+    CellImmutable, CellMap, Gettable, MapExt, Materialize, Signal, SwitchMapExt, Watchable, batch,
+    cell_map::WeakCellMap,
 };
 
 fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {

@@ -49,9 +49,8 @@ use std::sync::{
 
 use hyphae::{
     Cell, CellImmutable, CellMutable, DedupedExt, DistinctExt, DistinctUntilChangedByExt,
-    FilterExt, Gettable, MapErrExt, MapExt, MapOkExt, MaterializeDefinite, MaterializeEmpty,
-    Mutable, ScanExt, Signal, StateTransitionExt, TapExt, TryMapExt, Watchable, batch,
-    scheduler::no_coalesce,
+    FilterExt, Gettable, MapErrExt, MapExt, MapOkExt, Materialize, Mutable, ScanExt, Signal,
+    StateTransitionExt, TapExt, TryMapExt, Watchable, batch, scheduler::no_coalesce,
 };
 
 /// The scheduler's tick queue is a single process-wide structure, so tests

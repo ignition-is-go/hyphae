@@ -159,7 +159,7 @@ where
     /// Pairs left and right rows that share the same map key.
     /// Produces one output row per match, keyed by the shared key.
     /// Unmatched rows from either side are excluded.
-    fn inner_join<R, RV>(self, right: R) -> InnerJoinByKeyPlan<Self, R, K, V, RV>
+    fn inner_join<R, RV>(self, right: R) -> impl MapQuery<K, (V, RV)>
     where
         R: MapQuery<K, RV>,
         RV: CellValue,
@@ -177,20 +177,7 @@ where
     /// Produces one output row per matching (left, right) pair, keyed by
     /// `(K, RK)`. Unmatched rows from either side are excluded.
     #[allow(clippy::type_complexity)]
-    fn inner_join_fk<R, RK, RV>(
-        self,
-        right: R,
-    ) -> InnerJoinByPairPlan<
-        Self,
-        R,
-        K,
-        V,
-        RK,
-        RV,
-        K,
-        impl Fn(&K, &V) -> K + Send + Sync + 'static,
-        impl Fn(&RK, &RV) -> K + Send + Sync + 'static,
-    >
+    fn inner_join_fk<R, RK, RV>(self, right: R) -> impl MapQuery<(K, RK), (V, RV)>
     where
         R: MapQuery<RK, RV>,
         RK: Hash + Eq + CellValue,
@@ -216,7 +203,7 @@ where
         right: R,
         left_key: FL,
         right_key: FR,
-    ) -> InnerJoinByPairPlan<Self, R, K, V, RK, RV, JK, FL, FR>
+    ) -> impl MapQuery<(K, RK), (V, RV)>
     where
         R: MapQuery<RK, RV>,
         RK: Hash + Eq + CellValue,
@@ -249,7 +236,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        CellMap, MapDiff, MaterializeDefinite,
+        CellMap, MapDiff, Materialize,
         traits::{Gettable, HasForeignKey, IdFor, IdType},
     };
 

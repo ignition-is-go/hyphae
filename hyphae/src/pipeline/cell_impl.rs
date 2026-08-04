@@ -6,7 +6,7 @@
 //! sources that have a definite current value.
 //!
 //! [`Pipeline<T, Definite>`] is implemented explicitly per source type.
-//! [`MaterializeDefinite`] is overridden on [`Cell`] to skip the cell+forward
+//! [`Materialize`] is overridden on [`Cell`] to skip the cell+forward
 //! allocation: a cell is already a cached, multicast source, so materializing
 //! is just a marker flip on the same `Arc<inner>`.
 
@@ -15,7 +15,7 @@ use std::{marker::PhantomData, sync::Arc};
 use crate::{
     bounded_input::BoundedInput,
     cell::{Cell, CellImmutable},
-    pipeline::{Definite, MaterializeDefinite, Pipeline, PipelineInstall, PipelineSeed},
+    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed},
     signal::Signal,
     subscription::SubscriptionGuard,
     traits::{CellValue, Gettable, Watchable},
@@ -40,6 +40,13 @@ impl<T: CellValue, M: Send + Sync + 'static> PipelineSeed<T> for Cell<T, M> {
     fn seed(&self) -> T {
         self.get()
     }
+
+    fn materialize_definite(self) -> Cell<T, CellImmutable> {
+        Cell {
+            inner: self.inner,
+            _marker: PhantomData,
+        }
+    }
 }
 
 impl<T: CellValue> PipelineSeed<T> for BoundedInput<T> {
@@ -50,22 +57,3 @@ impl<T: CellValue> PipelineSeed<T> for BoundedInput<T> {
 
 #[allow(private_bounds)]
 impl<T: CellValue, M: Send + Sync + 'static> Pipeline<T, Definite> for Cell<T, M> {}
-
-impl<T: CellValue, M: Send + Sync + 'static> MaterializeDefinite<T> for Cell<T, M> {
-    /// No-op materialize: the cell is already a cached, multicast source.
-    /// Just flip the marker to `CellImmutable` and reuse the same `Arc<inner>`.
-    fn materialize(self) -> Cell<T, CellImmutable> {
-        Cell {
-            inner: self.inner,
-            _marker: PhantomData,
-        }
-    }
-}
-
-#[allow(private_bounds)]
-impl<T: CellValue> Pipeline<T, Definite> for BoundedInput<T> {}
-
-impl<T: CellValue> MaterializeDefinite<T> for BoundedInput<T> {
-    // Default body is correct: BoundedInput has no underlying immutable cell
-    // to short-circuit to, so allocate a fresh cell + forwarding subscription.
-}

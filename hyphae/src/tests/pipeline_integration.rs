@@ -1,8 +1,6 @@
 //! Integration tests for Pipeline type.
 
-use crate::{
-    Cell, CellMutable, Gettable, MapExt, MaterializeDefinite, MaterializeEmpty, Mutable, Pipeline,
-};
+use crate::{Cell, CellMutable, Gettable, MapExt, Materialize, Mutable, Pipeline};
 
 #[test]
 fn cell_is_pipeline() {

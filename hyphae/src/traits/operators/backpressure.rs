@@ -10,7 +10,7 @@ use crossbeam::queue::ArrayQueue;
 
 use super::CellValue;
 use crate::{
-    pipeline::{Definite, MaterializeDefinite, Pipeline, PipelineInstall, PipelineSeed},
+    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -68,13 +68,6 @@ where
 {
 }
 
-impl<S, T> MaterializeDefinite<T> for DropNewestPipeline<S, T>
-where
-    S: Pipeline<T, Definite> + PipelineSeed<T>,
-    T: CellValue,
-{
-}
-
 #[allow(private_bounds)]
 pub trait BackpressureExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
     /// Keep accepting values when capacity is reached.
@@ -95,7 +88,7 @@ pub trait BackpressureExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T>
     /// The queue state belongs to the installed pipeline subscription and no
     /// cell is allocated until the caller explicitly materializes the chain.
     #[track_caller]
-    fn drop_newest(self, capacity: usize) -> DropNewestPipeline<Self, T> {
+    fn drop_newest(self, capacity: usize) -> impl crate::Materialize<T, Definite> {
         assert!(capacity > 0, "capacity must be positive");
         DropNewestPipeline {
             source: self,
@@ -122,7 +115,7 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     use super::*;
-    use crate::{Cell, Gettable, MaterializeDefinite, Mutable, Signal, traits::Watchable};
+    use crate::{Cell, Gettable, Materialize, Mutable, Signal, traits::Watchable};
 
     #[test]
     fn drop_oldest_is_lazy_passthrough() {

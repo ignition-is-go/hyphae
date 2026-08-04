@@ -1,12 +1,11 @@
-use super::{CellValue, DistinctUntilChangedByExt, DistinctUntilChangedByPipeline};
+use super::{CellValue, DistinctUntilChangedByExt};
+
 use crate::pipeline::{Pipeline, PipelineSeed, Seedness};
 
 #[allow(private_bounds)]
 pub trait DedupedExt<T: CellValue, S: Seedness>: Pipeline<T, S> + PipelineSeed<T> {
     #[track_caller]
-    fn deduped(
-        self,
-    ) -> DistinctUntilChangedByPipeline<Self, T, impl Fn(&T, &T) -> bool + Send + Sync + 'static, S>
+    fn deduped(self) -> impl crate::Materialize<T, S>
     where
         T: PartialEq,
     {
@@ -24,7 +23,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{Cell, MaterializeDefinite, Mutable, Signal, traits::Watchable};
+    use crate::{Cell, Materialize, Mutable, Signal, traits::Watchable};
 
     #[test]
     fn test_deduped_blocks_duplicates() {

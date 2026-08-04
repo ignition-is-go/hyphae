@@ -8,7 +8,7 @@ use std::{
 
 use super::CellValue;
 use crate::{
-    pipeline::{Definite, MaterializeDefinite, Pipeline, PipelineInstall, PipelineSeed},
+    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -65,17 +65,9 @@ where
     U: CellValue,
 {
 }
-impl<S, N, T, U> MaterializeDefinite<T> for TakeUntilPipeline<S, N, T, U>
-where
-    S: Pipeline<T, Definite> + PipelineSeed<T>,
-    N: Pipeline<U, Definite>,
-    T: CellValue,
-    U: CellValue,
-{
-}
 
 pub trait TakeUntilExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
-    fn take_until<U, N>(self, notifier: N) -> TakeUntilPipeline<Self, N, T, U>
+    fn take_until<U, N>(self, notifier: N) -> impl crate::Materialize<T, Definite>
     where
         U: CellValue,
         N: Pipeline<U, Definite>,
@@ -92,7 +84,7 @@ impl<T: CellValue, P> TakeUntilExt<T> for P where P: Pipeline<T, Definite> + Pip
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Cell, Gettable, MaterializeDefinite, Mutable, Watchable};
+    use crate::{Cell, Gettable, Materialize, Mutable, Watchable};
     #[test]
     fn test_take_until() {
         let source = Cell::new(1u64);

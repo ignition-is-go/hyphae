@@ -111,7 +111,7 @@ where
         right: R,
         left_keys: FL,
         right_key: FR,
-    ) -> MultiLeftJoinPlan<Self, R, K, V, RK, RV, JK, FL, FR>
+    ) -> impl MapQuery<K, (V, Vec<RV>)>
     where
         R: MapQuery<RK, RV>,
         RK: Hash + Eq + CellValue,
@@ -141,7 +141,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CellMap, MaterializeDefinite, traits::Gettable};
+    use crate::{CellMap, Materialize, traits::Gettable};
 
     #[test]
     fn multi_join_empty_keys_produces_empty_right_vec() {

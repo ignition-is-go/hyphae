@@ -108,20 +108,7 @@ where
     /// Keeps left rows where a right row with the same key exists. Unmatched
     /// left rows are excluded. Output contains only left data.
     #[allow(clippy::type_complexity)]
-    fn left_semi_join<R, RV>(
-        self,
-        right: R,
-    ) -> LeftSemiJoinPlan<
-        Self,
-        R,
-        K,
-        V,
-        K,
-        RV,
-        K,
-        impl Fn(&K, &V) -> K + Send + Sync + 'static,
-        impl Fn(&K, &RV) -> K + Send + Sync + 'static,
-    >
+    fn left_semi_join<R, RV>(self, right: R) -> impl MapQuery<K, V>
     where
         R: MapQuery<K, RV>,
         RV: CellValue,
@@ -141,20 +128,7 @@ where
     /// Keeps left rows that have at least one matching right row. Unmatched
     /// left rows are excluded. Output contains only left data.
     #[allow(clippy::type_complexity)]
-    fn left_semi_join_fk<R, RK, RV>(
-        self,
-        right: R,
-    ) -> LeftSemiJoinPlan<
-        Self,
-        R,
-        K,
-        V,
-        RK,
-        RV,
-        K,
-        impl Fn(&K, &V) -> K + Send + Sync + 'static,
-        impl Fn(&RK, &RV) -> K + Send + Sync + 'static,
-    >
+    fn left_semi_join_fk<R, RK, RV>(self, right: R) -> impl MapQuery<K, V>
     where
         R: MapQuery<RK, RV>,
         RK: Hash + Eq + CellValue,
@@ -180,7 +154,7 @@ where
         right: R,
         left_key: FL,
         right_key: FR,
-    ) -> LeftSemiJoinPlan<Self, R, K, V, RK, RV, JK, FL, FR>
+    ) -> impl MapQuery<K, V>
     where
         R: MapQuery<RK, RV>,
         RK: Hash + Eq + CellValue,
@@ -213,7 +187,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        CellMap, MapDiff, MaterializeDefinite,
+        CellMap, MapDiff, Materialize,
         traits::{Gettable, HasForeignKey, IdFor, IdType},
     };
 

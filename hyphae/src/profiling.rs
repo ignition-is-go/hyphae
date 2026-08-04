@@ -21,7 +21,7 @@
 //! Gated behind `profiling`; compiles to nothing otherwise.
 //!
 //! ```
-//! use hyphae::{Cell, MapExt, MaterializeDefinite, Mutable, Watchable};
+//! use hyphae::{Cell, MapExt, Materialize, Mutable, Watchable};
 //! use hyphae::profiling::{pass, take_report};
 //!
 //! let a = Cell::new(1);

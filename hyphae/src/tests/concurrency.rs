@@ -6,9 +6,7 @@ use std::{
     thread,
 };
 
-use crate::{
-    Cell, Gettable, MapExt, MaterializeDefinite, MaterializeEmpty, Mutable, Signal, Watchable,
-};
+use crate::{Cell, Gettable, MapExt, Materialize, Mutable, Signal, Watchable, WatchableResult};
 
 // ============================================================================
 // Concurrent Write Tests
@@ -217,26 +215,11 @@ fn test_concurrent_subscribe_while_notifying() {
 /// Each round syncs a subscriber and a setter on a barrier and widens the
 /// window with a brief spin in the seed callback to make the race observable.
 ///
-/// NOTE: the assertion is "observed `R` at least once", not "last-observed ==
-/// `R`". A rarer out-of-order tail remains — the seed (older value) can execute
-/// after a concurrent notify(`R`), leaving the FINAL observed value stale on a
-/// source that then goes quiet. That self-heals on any subsequent emit (so it
-/// is invisible to continuous sources like clocks) and fully closing it would
-/// need a per-subscriber version gate on the notify hot path. The load-bearing
-/// bug — permanently MISSING the update — is what this guards.
-///
-/// Pre-fix the "observed at least once" assertion failed on ~3-5% of rounds.
-/// Post-`insert-before-seed` it is reliably green in isolation and dramatically
-/// less frequent, but STILL fails occasionally under heavy parallel load (e.g.
-/// the full test suite). That residual indicates `insert-before-seed` alone is
-/// not a complete fix — the subscribe/notify path needs a deeper change (a
-/// per-subscriber version gate, or store+snapshot and read+insert made mutually
-/// atomic) to fully guarantee no missed update under contention. Left #[ignore]
-/// as an on-demand characterization until that lands; run with `--ignored`.
+/// Notifications that race the initial replay are queued by the subscriber and
+/// drained after that replay, so an older seed can no longer overwrite a newer
+/// value. A second barrier keeps the subscription alive until the setter has
+/// definitely completed; timing sleeps cannot prove that property.
 #[test]
-#[ignore = "characterizes the subscribe/notify strand; insert-before-seed reduces \
-            but does not fully eliminate it under heavy contention — needs the \
-            deeper subscriber-registry fix. Run with --ignored."]
 fn subscribe_racing_set_never_strands() {
     const ROUNDS: usize = 3_000;
     const R: u64 = 42;
@@ -246,11 +229,13 @@ fn subscribe_racing_set_never_strands() {
         let saw_target = Arc::new(AtomicBool::new(false));
         let first = Arc::new(AtomicBool::new(true));
         let barrier = Arc::new(Barrier::new(2));
+        let completed = Arc::new(Barrier::new(2));
 
         let sub_cell = cell.clone();
         let sub_saw = saw_target.clone();
         let sub_first = first.clone();
         let sub_barrier = barrier.clone();
+        let sub_completed = completed.clone();
         let sub = thread::spawn(move || {
             sub_barrier.wait();
             let guard = sub_cell.subscribe(move |sig| {
@@ -268,15 +253,17 @@ fn subscribe_racing_set_never_strands() {
                     }
                 }
             });
-            thread::sleep(std::time::Duration::from_micros(300));
+            sub_completed.wait();
             drop(guard);
         });
 
         let set_cell = cell.clone();
         let set_barrier = barrier.clone();
+        let set_completed = completed.clone();
         let setter = thread::spawn(move || {
             set_barrier.wait();
             set_cell.set(R);
+            set_completed.wait();
         });
 
         sub.join().unwrap();
@@ -292,6 +279,65 @@ fn subscribe_racing_set_never_strands() {
             "round {round}: live subscription MISSED the update entirely — a \
              subscribe racing a concurrent set() never observed {R}. The \
              subscribe/notify insert-before-seed ordering has regressed."
+        );
+    }
+}
+
+/// The fallible subscription path must provide the same insert-before-replay
+/// guarantee as `Watchable::subscribe`; otherwise an update can disappear in
+/// the replay-to-insert gap and leave the subscriber permanently stale.
+#[test]
+fn subscribe_result_racing_set_never_strands() {
+    const ROUNDS: usize = 1_000;
+    const TARGET: u64 = 42;
+
+    for round in 0..ROUNDS {
+        let cell = Cell::new(0u64);
+        let saw_target = Arc::new(AtomicBool::new(false));
+        let first = Arc::new(AtomicBool::new(true));
+        let start = Arc::new(Barrier::new(2));
+        let completed = Arc::new(Barrier::new(2));
+
+        let sub_cell = cell.clone();
+        let sub_saw = saw_target.clone();
+        let sub_first = first.clone();
+        let sub_start = start.clone();
+        let sub_completed = completed.clone();
+        let subscriber = thread::spawn(move || {
+            sub_start.wait();
+            let guard = sub_cell.subscribe_result(move |signal| {
+                if let Signal::Value(value) = signal {
+                    if **value == TARGET {
+                        sub_saw.store(true, Ordering::SeqCst);
+                    }
+                    if sub_first.swap(false, Ordering::SeqCst) {
+                        let began = std::time::Instant::now();
+                        while began.elapsed() < std::time::Duration::from_micros(120) {
+                            std::hint::spin_loop();
+                        }
+                    }
+                }
+                Ok(())
+            });
+            sub_completed.wait();
+            drop(guard);
+        });
+
+        let set_cell = cell.clone();
+        let set_start = start.clone();
+        let set_completed = completed.clone();
+        let setter = thread::spawn(move || {
+            set_start.wait();
+            set_cell.set(TARGET);
+            set_completed.wait();
+        });
+
+        subscriber.join().unwrap();
+        setter.join().unwrap();
+
+        assert!(
+            saw_target.load(Ordering::SeqCst),
+            "round {round}: fallible subscription missed the racing update"
         );
     }
 }

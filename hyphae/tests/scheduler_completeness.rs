@@ -30,7 +30,7 @@ use std::{
 };
 
 use hyphae::{
-    Cell, CellMutable, MapExt, MaterializeDefinite, Mutable, Signal, Watchable, batch, join_vec,
+    Cell, CellMutable, MapExt, Materialize, Mutable, Signal, Watchable, batch, join_vec,
     scheduler::no_coalesce,
 };
 

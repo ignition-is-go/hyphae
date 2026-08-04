@@ -21,7 +21,7 @@ use std::{
 
 use super::CellValue;
 use crate::{
-    pipeline::{Empty, MaterializeEmpty, Pipeline, PipelineInstall, Seedness},
+    pipeline::{Empty, Pipeline, PipelineInstall, PipelineSeed, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -32,6 +32,17 @@ pub struct ColdPipeline<S, T, Sd = crate::pipeline::Definite> {
     source: S,
     _t: PhantomData<fn(T)>,
     _sd: PhantomData<fn(Sd)>,
+}
+
+impl<S, T, Sd> PipelineSeed<Arc<T>> for ColdPipeline<S, T, Sd>
+where
+    S: PipelineInstall<T> + Send + Sync + 'static,
+    Sd: Seedness,
+    T: CellValue,
+{
+    fn seed(&self) -> Arc<T> {
+        unreachable!("a cold Empty pipeline has no seed")
+    }
 }
 
 impl<S, T, Sd> PipelineInstall<Arc<T>> for ColdPipeline<S, T, Sd>
@@ -67,14 +78,6 @@ where
 {
 }
 
-impl<S, T, Sd> MaterializeEmpty<Arc<T>> for ColdPipeline<S, T, Sd>
-where
-    S: Pipeline<T, Sd>,
-    Sd: Seedness,
-    T: CellValue,
-{
-}
-
 #[allow(private_bounds)]
 pub trait ColdExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// Drop the synchronous-on-subscribe initial emission; subsequent values
@@ -84,7 +87,7 @@ pub trait ColdExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// post-subscribe emission arrives, the cell flips to `Some(Arc<value>)`
     /// and stays `Some` from then on (it tracks the most recent emission).
     #[track_caller]
-    fn cold(self) -> ColdPipeline<Self, T, S> {
+    fn cold(self) -> impl crate::Materialize<Arc<T>, Empty> {
         ColdPipeline {
             source: self,
             _t: PhantomData,
@@ -100,7 +103,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
     use super::*;
-    use crate::{Cell, Gettable, MaterializeEmpty, Mutable, traits::Watchable};
+    use crate::{Cell, Gettable, Materialize, Mutable, traits::Watchable};
 
     #[test]
     fn test_cold_starts_as_none() {

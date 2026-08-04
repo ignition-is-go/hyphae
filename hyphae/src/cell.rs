@@ -370,12 +370,55 @@ pub(crate) type SubscriberCallback<T> = Arc<dyn Fn(&Signal<T>) + Send + Sync>;
 
 pub(crate) struct Subscriber<T> {
     pub(crate) callback: SubscriberCallback<T>,
+    initializing: AtomicBool,
+    pending: Mutex<Vec<Signal<T>>>,
 }
 
-impl<T> Subscriber<T> {
+impl<T: Clone> Subscriber<T> {
     pub(crate) fn new(callback: impl Fn(&Signal<T>) + Send + Sync + 'static) -> Self {
         Self {
             callback: Arc::new(callback),
+            initializing: AtomicBool::new(true),
+            pending: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub(crate) fn new_live(callback: SubscriberCallback<T>) -> Self {
+        Self {
+            callback,
+            initializing: AtomicBool::new(false),
+            pending: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Queue notifications until the synchronous current-value replay has
+    /// completed. This prevents a concurrent notify from running before that
+    /// replay and then being overwritten by an older value delivered last.
+    fn deliver(&self, signal: &Signal<T>) {
+        if self.initializing.load(Ordering::Acquire) {
+            let mut pending = self.pending.lock().expect("subscriber pending poisoned");
+            if self.initializing.load(Ordering::Relaxed) {
+                pending.push(signal.clone());
+                return;
+            }
+        }
+        (self.callback)(signal);
+    }
+
+    fn finish_initial(&self, initial: Signal<T>) {
+        (self.callback)(&initial);
+        loop {
+            let pending = {
+                let mut pending = self.pending.lock().expect("subscriber pending poisoned");
+                if pending.is_empty() {
+                    self.initializing.store(false, Ordering::Release);
+                    return;
+                }
+                std::mem::take(&mut *pending)
+            };
+            for signal in pending {
+                (self.callback)(&signal);
+            }
         }
     }
 }
@@ -386,14 +429,56 @@ pub(crate) type ResultSubscriberCallback<T> =
 
 pub(crate) struct ResultSubscriber<T> {
     pub(crate) callback: ResultSubscriberCallback<T>,
+    initializing: AtomicBool,
+    pending: Mutex<Vec<Signal<T>>>,
 }
 
-impl<T> ResultSubscriber<T> {
+impl<T: Clone> ResultSubscriber<T> {
     pub(crate) fn new(
         callback: impl Fn(&Signal<T>) -> Result<(), String> + Send + Sync + 'static,
     ) -> Self {
         Self {
             callback: Arc::new(callback),
+            initializing: AtomicBool::new(true),
+            pending: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn deliver(&self, signal: &Signal<T>) -> Result<(), String> {
+        if self.initializing.load(Ordering::Acquire) {
+            let mut pending = self
+                .pending
+                .lock()
+                .expect("result subscriber pending poisoned");
+            if self.initializing.load(Ordering::Relaxed) {
+                pending.push(signal.clone());
+                return Ok(());
+            }
+        }
+        (self.callback)(signal)
+    }
+
+    fn finish_initial(&self, initial: Signal<T>, on_error: impl Fn(&str)) {
+        if let Err(error) = (self.callback)(&initial) {
+            on_error(&error);
+        }
+        loop {
+            let pending = {
+                let mut pending = self
+                    .pending
+                    .lock()
+                    .expect("result subscriber pending poisoned");
+                if pending.is_empty() {
+                    self.initializing.store(false, Ordering::Release);
+                    return;
+                }
+                std::mem::take(&mut *pending)
+            };
+            for signal in pending {
+                if let Err(error) = (self.callback)(&signal) {
+                    on_error(&error);
+                }
+            }
         }
     }
 }
@@ -865,7 +950,7 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         // rest of this fanout, which is a bug in the subscriber that should surface
         // loudly rather than be silently swallowed.
         for (_subscriber_id, sub) in subs.as_slice() {
-            (sub.callback)(signal);
+            sub.deliver(signal);
         }
 
         // Fallible subscribers run after the infallible chain. Errors are logged
@@ -881,7 +966,7 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         };
 
         for (subscriber_id, sub) in result_subs.as_slice() {
-            if let Err(err) = (sub.callback)(signal) {
+            if let Err(err) = sub.deliver(signal) {
                 log::error!(
                     "hyphae: fallible subscriber {} on cell {} returned error: {}",
                     subscriber_id,
@@ -950,15 +1035,15 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
             .lock()
             .expect("cell value poisoned")
             .clone();
-        (sub.callback)(&Signal::Value(current));
+        sub.finish_initial(Signal::Value(current));
 
         // If already complete or errored, send that signal too
         if self.is_complete() {
-            (sub.callback)(&Signal::Complete);
+            sub.deliver(&Signal::Complete);
         } else if self.is_error()
             && let Some(err) = self.error()
         {
-            (sub.callback)(&Signal::Error(err));
+            sub.deliver(&Signal::Error(err));
         }
 
         let source: Arc<dyn DepNode> = Arc::new(self.clone());
@@ -1021,6 +1106,14 @@ impl<T: CellValue, U: Send + Sync + 'static> WatchableResult<T> for Cell<T, U> {
         };
 
         let id = Uuid::new_v4();
+        let sub = Arc::new(ResultSubscriber::new(callback));
+
+        // Match the infallible subscribe path: install before replay so an
+        // update racing subscription cannot fall between the replay and the
+        // registry insert. Result callbacks use the same initialization queue
+        // to preserve replay-before-live ordering.
+        let displaced = self.inner.result_subscribers.lock().insert(id, sub.clone());
+        drop(displaced);
 
         // Send current value immediately (Arc clone, no deep copy).
         let current = self
@@ -1029,13 +1122,11 @@ impl<T: CellValue, U: Send + Sync + 'static> WatchableResult<T> for Cell<T, U> {
             .lock()
             .expect("cell value poisoned")
             .clone();
-        if let Err(err) = callback(&Signal::Value(current)) {
-            log_err(&id, &err);
-        }
+        sub.finish_initial(Signal::Value(current), |error| log_err(&id, error));
 
         // Replay any prior terminal signal.
         if self.inner.completed.load(Ordering::SeqCst) {
-            if let Err(err) = callback(&Signal::Complete) {
+            if let Err(err) = sub.deliver(&Signal::Complete) {
                 log_err(&id, &err);
             }
         } else if self.inner.errored.load(Ordering::SeqCst)
@@ -1045,16 +1136,10 @@ impl<T: CellValue, U: Send + Sync + 'static> WatchableResult<T> for Cell<T, U> {
                 .lock()
                 .expect("cell error poisoned")
                 .clone()
-            && let Err(err) = callback(&Signal::Error(e))
+            && let Err(err) = sub.deliver(&Signal::Error(e))
         {
             log_err(&id, &err);
         }
-
-        let sub = Arc::new(ResultSubscriber::new(callback));
-        // O(1) indexed insert; displaced Arc drops outside the lock. See
-        // Watchable::subscribe above.
-        let displaced = self.inner.result_subscribers.lock().insert(id, sub);
-        drop(displaced);
 
         let source: Arc<dyn DepNode> = Arc::new(self.clone());
         let cell = self.clone();
@@ -1202,7 +1287,7 @@ mod sub_index_tests {
 
 #[cfg(all(test, feature = "scheduler"))]
 mod height_dependents_tests {
-    use crate::{Cell, MaterializeDefinite, Mutable, SwitchMapExt, Watchable};
+    use crate::{Cell, Materialize, Mutable, SwitchMapExt, Watchable};
 
     /// Re-owning the SAME live source must not grow the source's
     /// height-dependent set. This is the `switch_map`-onto-a-cached-cell shape:

@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use crate::{
     cell::{Cell, CellImmutable, CellMutable, WeakCell},
-    pipeline::MaterializeDefinite,
+    pipeline::{Definite, Materialize},
     signal::Signal,
     subscription::SubscriptionGuard,
     traits::{CellValue, Mutable, Watchable},
@@ -72,7 +72,7 @@ where
 /// # Example
 ///
 /// ```
-/// use hyphae::{CellMap, Gettable, MaterializeDefinite, Watchable, Signal};
+/// use hyphae::{CellMap, Gettable, Materialize, Watchable, Signal};
 ///
 /// let map = CellMap::<String, i32>::new();
 ///
@@ -788,7 +788,7 @@ where
     /// key's value changes. Multiple installations currently reuse the same
     /// underlying per-key cell, but that cache is not part of the public API.
     #[track_caller]
-    pub fn get(&self, key: &K) -> impl MaterializeDefinite<Option<V>> + use<K, V, M> {
+    pub fn get(&self, key: &K) -> impl Materialize<Option<V>, Definite> + use<K, V, M> {
         // Check cache first
         if let Some(weak) = self.inner.key_cells.get(key)
             && let Some(cell) = weak.upgrade()
@@ -825,7 +825,7 @@ where
     /// The initial value is computed from the current map state, then updates
     /// are applied incrementally as O(1) operations per diff.
     #[track_caller]
-    pub fn entries(&self) -> impl MaterializeDefinite<Vec<(K, V)>> + use<K, V, M> {
+    pub fn entries(&self) -> impl Materialize<Vec<(K, V)>, Definite> + use<K, V, M> {
         let initial: Vec<(K, V)> = self
             .inner
             .data
@@ -884,7 +884,7 @@ where
     /// This maintains its own diff-driven projection to avoid forcing an
     /// intermediate entries materialization on hot value-only paths.
     #[track_caller]
-    pub fn items(&self) -> impl MaterializeDefinite<Vec<V>> + use<K, V, M> {
+    pub fn items(&self) -> impl Materialize<Vec<V>, Definite> + use<K, V, M> {
         let initial: Vec<(K, V)> = self
             .inner
             .data
@@ -932,7 +932,7 @@ where
 
     /// Build an observable pipeline of all keys.
     #[track_caller]
-    pub fn keys(&self) -> impl MaterializeDefinite<Vec<K>> + use<K, V, M> {
+    pub fn keys(&self) -> impl Materialize<Vec<K>, Definite> + use<K, V, M> {
         use crate::traits::MapExt;
         self.entries()
             .map(|entries| entries.iter().map(|(k, _)| k.clone()).collect())
@@ -942,7 +942,7 @@ where
     ///
     /// This is the preferred reactive count operator because it reuses the
     /// internally maintained length cell instead of materializing entries.
-    pub fn size(&self) -> impl MaterializeDefinite<usize> + use<K, V, M> {
+    pub fn size(&self) -> impl Materialize<usize, Definite> + use<K, V, M> {
         // A derived size Cell that RETAINS its parent map, mirroring
         // entries()/items()/subscribe_diffs. Returning a bare
         // `len_cell.clone().lock()` captured no keepalive, so a `.size()` cloned
@@ -972,7 +972,7 @@ where
     /// Get an observable Cell of the map length.
     ///
     /// Alias for [`CellMap::size`].
-    pub fn len(&self) -> impl MaterializeDefinite<usize> + use<K, V, M> {
+    pub fn len(&self) -> impl Materialize<usize, Definite> + use<K, V, M> {
         self.size()
     }
 
@@ -984,7 +984,7 @@ where
     /// Get an observable Cell of diff notifications.
     ///
     /// Emits `MapDiff` updates. Starts with `MapDiff::Initial { entries: vec![] }`.
-    pub fn diffs(&self) -> impl MaterializeDefinite<MapDiff<K, V>> + use<K, V, M> {
+    pub fn diffs(&self) -> impl Materialize<MapDiff<K, V>, Definite> + use<K, V, M> {
         self.inner.diffs_cell.clone().lock()
     }
 

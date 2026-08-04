@@ -2,7 +2,7 @@ use std::{
     marker::PhantomData,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
     },
 };
 
@@ -11,7 +11,7 @@ use parking_lot::Mutex;
 use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellMutable},
-    pipeline::{Definite, MaterializeDefinite, Pipeline, PipelineInstall, PipelineSeed},
+    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed, prepare_install},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -31,22 +31,20 @@ where
             callback(&Signal::Complete);
             return SubscriptionGuard::combine(vec![]);
         }
-        let initial = self
-            .sources
+        let prepared = self.sources.iter().map(prepare_install).collect::<Vec<_>>();
+        let initial = prepared
             .iter()
-            .map(PipelineSeed::seed)
+            .map(|source| source.initial().clone())
             .collect::<Vec<_>>();
         let latest = Arc::new(Mutex::new(initial.clone()));
         let derived = Cell::<Vec<T>, CellMutable>::new(initial);
         let completed = Arc::new(AtomicUsize::new(0));
         let count = self.sources.len();
-        for (index, source) in self.sources.iter().enumerate() {
+        for (index, source) in prepared.into_iter().enumerate() {
             let latest = latest.clone();
             let completed = completed.clone();
             let weak = derived.downgrade();
-            let first = AtomicBool::new(true);
-            let guard = source.install(Arc::new(move |signal| match signal {
-                Signal::Value(_) if first.swap(false, Ordering::SeqCst) => {}
+            let guard = source.activate(Arc::new(move |signal| match signal {
                 Signal::Value(value) => {
                     let mut latest = latest.lock();
                     latest[index] = value.as_ref().clone();
@@ -86,14 +84,8 @@ where
     T: CellValue,
 {
 }
-impl<P, T> MaterializeDefinite<Vec<T>> for JoinVecPipeline<P, T>
-where
-    P: Pipeline<T, Definite> + PipelineSeed<T>,
-    T: CellValue,
-{
-}
 
-pub fn join_vec<T, P>(sources: Vec<P>) -> JoinVecPipeline<P, T>
+pub fn join_vec<T, P>(sources: Vec<P>) -> impl crate::Materialize<Vec<T>, Definite>
 where
     T: CellValue,
     P: Pipeline<T, Definite> + PipelineSeed<T>,
@@ -107,7 +99,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Cell, Gettable, MaterializeDefinite, Mutable, Watchable};
+    use crate::{Cell, Gettable, Materialize, Mutable, Watchable};
     #[test]
     fn test_join_vec_empty() {
         let combined = join_vec::<i32, Cell<i32, crate::CellImmutable>>(vec![]).materialize();

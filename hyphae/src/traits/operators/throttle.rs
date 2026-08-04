@@ -9,7 +9,7 @@ use std::{
 
 use super::CellValue;
 use crate::{
-    pipeline::{Definite, MaterializeDefinite, Pipeline, PipelineInstall, PipelineSeed},
+    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed},
     platform,
     signal::Signal,
     subscription::SubscriptionGuard,
@@ -53,15 +53,10 @@ impl<S: Pipeline<T, Definite> + PipelineSeed<T>, T: CellValue> Pipeline<T, Defin
 {
 }
 
-impl<S: Pipeline<T, Definite> + PipelineSeed<T>, T: CellValue> MaterializeDefinite<T>
-    for ThrottlePipeline<S, T>
-{
-}
-
 #[allow(private_bounds)]
 pub trait ThrottleExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
     #[track_caller]
-    fn throttle(self, duration: Duration) -> ThrottlePipeline<Self, T> {
+    fn throttle(self, duration: Duration) -> impl crate::Materialize<T, Definite> {
         ThrottlePipeline {
             source: self,
             duration,
@@ -77,7 +72,7 @@ mod tests {
     use std::sync::atomic::AtomicU64;
 
     use super::*;
-    use crate::{Cell, MaterializeDefinite, Mutable, traits::Watchable};
+    use crate::{Cell, Materialize, Mutable, traits::Watchable};
 
     #[test]
     fn test_throttle_limits_rate() {

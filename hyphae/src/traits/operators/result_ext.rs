@@ -3,21 +3,13 @@
 //! These wrap `MapExt::map` with fixed per-variant closures. They are pure
 //! transformations and allocate no intermediate cells.
 
-use super::{CellValue, MapExt, MapPipeline};
-use crate::pipeline::{Pipeline, Seedness};
+use super::{CellValue, MapExt};
+use crate::pipeline::{Materialize, Pipeline, Seedness};
 
 #[allow(private_bounds)]
 pub trait MapOkExt<T: CellValue, E: CellValue, S: Seedness>: Pipeline<Result<T, E>, S> {
     #[track_caller]
-    fn map_ok<U, F>(
-        self,
-        f: F,
-    ) -> MapPipeline<
-        Self,
-        Result<T, E>,
-        Result<U, E>,
-        impl Fn(&Result<T, E>) -> Result<U, E> + Send + Sync + 'static,
-    >
+    fn map_ok<U, F>(self, f: F) -> impl Materialize<Result<U, E>, S>
     where
         Self: Sized,
         U: CellValue,
@@ -38,15 +30,7 @@ impl<T: CellValue, E: CellValue, S: Seedness, P: Pipeline<Result<T, E>, S>> MapO
 #[allow(private_bounds)]
 pub trait MapErrExt<T: CellValue, E: CellValue, S: Seedness>: Pipeline<Result<T, E>, S> {
     #[track_caller]
-    fn map_err<E2, F>(
-        self,
-        f: F,
-    ) -> MapPipeline<
-        Self,
-        Result<T, E>,
-        Result<T, E2>,
-        impl Fn(&Result<T, E>) -> Result<T, E2> + Send + Sync + 'static,
-    >
+    fn map_err<E2, F>(self, f: F) -> impl Materialize<Result<T, E2>, S>
     where
         Self: Sized,
         E2: CellValue,
@@ -69,10 +53,7 @@ pub trait CatchErrorExt<T: CellValue, E: CellValue, S: Seedness>:
     Pipeline<Result<T, E>, S>
 {
     #[track_caller]
-    fn catch_error<F>(
-        self,
-        f: F,
-    ) -> MapPipeline<Self, Result<T, E>, T, impl Fn(&Result<T, E>) -> T + Send + Sync + 'static>
+    fn catch_error<F>(self, f: F) -> impl Materialize<T, S>
     where
         Self: Sized,
         F: Fn(&E) -> T + Send + Sync + 'static,
@@ -92,10 +73,7 @@ impl<T: CellValue, E: CellValue, S: Seedness, P: Pipeline<Result<T, E>, S>> Catc
 #[allow(private_bounds)]
 pub trait UnwrapOrExt<T: CellValue, E: CellValue, S: Seedness>: Pipeline<Result<T, E>, S> {
     #[track_caller]
-    fn unwrap_or(
-        self,
-        default: T,
-    ) -> MapPipeline<Self, Result<T, E>, T, impl Fn(&Result<T, E>) -> T + Send + Sync + 'static>
+    fn unwrap_or(self, default: T) -> impl Materialize<T, S>
     where
         Self: Sized,
     {
@@ -106,10 +84,7 @@ pub trait UnwrapOrExt<T: CellValue, E: CellValue, S: Seedness>: Pipeline<Result<
     }
 
     #[track_caller]
-    fn unwrap_or_else<F>(
-        self,
-        f: F,
-    ) -> MapPipeline<Self, Result<T, E>, T, impl Fn(&Result<T, E>) -> T + Send + Sync + 'static>
+    fn unwrap_or_else<F>(self, f: F) -> impl Materialize<T, S>
     where
         Self: Sized,
         F: Fn(&E) -> T + Send + Sync + 'static,

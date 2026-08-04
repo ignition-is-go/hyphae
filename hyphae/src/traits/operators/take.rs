@@ -15,10 +15,7 @@ use std::{
 
 use super::CellValue;
 use crate::{
-    pipeline::{
-        Definite, Empty, MaterializeDefinite, MaterializeEmpty, Pipeline, PipelineInstall,
-        PipelineSeed, Seedness,
-    },
+    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -64,9 +61,10 @@ where
     }
 }
 
-impl<S, T> PipelineSeed<T> for TakePipeline<S, T, Definite>
+impl<S, T, Sd> PipelineSeed<T> for TakePipeline<S, T, Sd>
 where
     S: PipelineSeed<T>,
+    Sd: Seedness,
     T: CellValue,
 {
     fn seed(&self) -> T {
@@ -83,24 +81,10 @@ where
 {
 }
 
-impl<S, T> MaterializeDefinite<T> for TakePipeline<S, T, Definite>
-where
-    S: Pipeline<T, Definite> + PipelineSeed<T>,
-    T: CellValue,
-{
-}
-
-impl<S, T> MaterializeEmpty<T> for TakePipeline<S, T, Empty>
-where
-    S: Pipeline<T, Empty>,
-    T: CellValue,
-{
-}
-
 #[allow(private_bounds)]
 pub trait TakeExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     #[track_caller]
-    fn take(self, count: usize) -> TakePipeline<Self, T, S> {
+    fn take(self, count: usize) -> impl crate::Materialize<T, S> {
         TakePipeline {
             source: self,
             count,
@@ -120,7 +104,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{Cell, MaterializeDefinite, Mutable, traits::Watchable};
+    use crate::{Cell, Materialize, Mutable, traits::Watchable};
 
     #[test]
     fn test_take_limits_emissions() {

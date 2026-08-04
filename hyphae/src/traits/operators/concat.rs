@@ -11,7 +11,7 @@ use parking_lot::Mutex;
 use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellMutable},
-    pipeline::{Definite, MaterializeDefinite, Pipeline, PipelineInstall, PipelineSeed},
+    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -98,16 +98,9 @@ where
     T: CellValue,
 {
 }
-impl<A, B, T> MaterializeDefinite<T> for ConcatPipeline<A, B, T>
-where
-    A: Pipeline<T, Definite> + PipelineSeed<T>,
-    B: Pipeline<T, Definite>,
-    T: CellValue,
-{
-}
 
 pub trait ConcatExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
-    fn concat<B>(self, second: B) -> ConcatPipeline<Self, B, T>
+    fn concat<B>(self, second: B) -> impl crate::Materialize<T, Definite>
     where
         B: Pipeline<T, Definite>,
     {
@@ -123,7 +116,7 @@ impl<T: CellValue, P> ConcatExt<T> for P where P: Pipeline<T, Definite> + Pipeli
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Cell, DepNode, Gettable, MaterializeDefinite, Mutable};
+    use crate::{Cell, DepNode, Gettable, Materialize, Mutable};
 
     #[test]
     fn concat_is_lazy_until_materialized() {

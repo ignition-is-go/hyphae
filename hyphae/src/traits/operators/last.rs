@@ -15,7 +15,7 @@ use std::{
 
 use super::CellValue;
 use crate::{
-    pipeline::{Empty, MaterializeEmpty, Pipeline, PipelineInstall, Seedness},
+    pipeline::{Empty, Pipeline, PipelineInstall, PipelineSeed, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -25,6 +25,17 @@ pub struct LastPipeline<S, T, Sd = crate::pipeline::Definite> {
     source: S,
     _t: PhantomData<fn(T)>,
     _sd: PhantomData<fn(Sd)>,
+}
+
+impl<S, T, Sd> PipelineSeed<T> for LastPipeline<S, T, Sd>
+where
+    S: PipelineInstall<T> + Send + Sync + 'static,
+    Sd: Seedness,
+    T: CellValue,
+{
+    fn seed(&self) -> T {
+        unreachable!("a last Empty pipeline has no seed")
+    }
 }
 
 impl<S, T, Sd> PipelineInstall<T> for LastPipeline<S, T, Sd>
@@ -62,14 +73,6 @@ where
 
 #[allow(private_bounds)]
 impl<S, T, Sd> Pipeline<T, Empty> for LastPipeline<S, T, Sd>
-where
-    S: Pipeline<T, Sd>,
-    Sd: Seedness,
-    T: CellValue,
-{
-}
-
-impl<S, T, Sd> MaterializeEmpty<T> for LastPipeline<S, T, Sd>
 where
     S: Pipeline<T, Sd>,
     Sd: Seedness,
@@ -117,16 +120,19 @@ where
     }
 }
 
-#[allow(private_bounds)]
-impl<S, T, Sd> Pipeline<T, Empty> for LastOrPipeline<S, T, Sd>
+impl<S, T, Sd> PipelineSeed<T> for LastOrPipeline<S, T, Sd>
 where
-    S: Pipeline<T, Sd>,
+    S: PipelineInstall<T> + Send + Sync + 'static,
     Sd: Seedness,
     T: CellValue,
 {
+    fn seed(&self) -> T {
+        unreachable!("a last_or Empty pipeline has no seed")
+    }
 }
 
-impl<S, T, Sd> MaterializeEmpty<T> for LastOrPipeline<S, T, Sd>
+#[allow(private_bounds)]
+impl<S, T, Sd> Pipeline<T, Empty> for LastOrPipeline<S, T, Sd>
 where
     S: Pipeline<T, Sd>,
     Sd: Seedness,
@@ -141,7 +147,7 @@ pub trait LastExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// # Example
     ///
     /// ```
-    /// use hyphae::{Cell, Gettable, LastExt, MaterializeEmpty, Mutable};
+    /// use hyphae::{Cell, Gettable, LastExt, Materialize, Mutable};
     ///
     /// let source = Cell::new(0);
     /// let last = source.clone().last().materialize();
@@ -154,7 +160,7 @@ pub trait LastExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// assert_eq!(last.get(), Some(3));
     /// ```
     #[track_caller]
-    fn last(self) -> LastPipeline<Self, T, S> {
+    fn last(self) -> impl crate::Materialize<T, Empty> {
         LastPipeline {
             source: self,
             _t: PhantomData,
@@ -168,7 +174,7 @@ pub trait LastExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// # Example
     ///
     /// ```
-    /// use hyphae::{Cell, Gettable, LastExt, MaterializeEmpty, Mutable};
+    /// use hyphae::{Cell, Gettable, LastExt, Materialize, Mutable};
     ///
     /// let source = Cell::new(0);
     /// let last = source.clone().last_or(999).materialize();
@@ -178,7 +184,7 @@ pub trait LastExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// assert_eq!(last.get(), Some(999));
     /// ```
     #[track_caller]
-    fn last_or(self, default: T) -> LastOrPipeline<Self, T, S> {
+    fn last_or(self, default: T) -> impl crate::Materialize<T, Empty> {
         LastOrPipeline {
             source: self,
             default,
@@ -194,7 +200,7 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     use super::*;
-    use crate::{Cell, Gettable, MaterializeEmpty, Mutable, traits::Watchable};
+    use crate::{Cell, Gettable, Materialize, Mutable, traits::Watchable};
 
     #[test]
     fn test_last() {

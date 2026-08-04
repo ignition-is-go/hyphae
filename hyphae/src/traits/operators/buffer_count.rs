@@ -10,7 +10,7 @@ use crossbeam::queue::SegQueue;
 
 use super::CellValue;
 use crate::{
-    pipeline::{Definite, MaterializeDefinite, Pipeline, PipelineInstall, PipelineSeed},
+    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -84,13 +84,6 @@ where
 {
 }
 
-impl<S, T> MaterializeDefinite<Vec<T>> for BufferCountPipeline<S, T>
-where
-    S: Pipeline<T, Definite>,
-    T: CellValue,
-{
-}
-
 #[allow(private_bounds)]
 pub trait BufferCountExt<T: CellValue>: Pipeline<T, Definite> {
     /// Collect values into non-overlapping chunks of size `count`.
@@ -99,7 +92,7 @@ pub trait BufferCountExt<T: CellValue>: Pipeline<T, Definite> {
     /// completion, emits any remaining buffered values.
     ///
     /// ```
-    /// use hyphae::{BufferCountExt, Cell, MaterializeDefinite, Mutable};
+    /// use hyphae::{BufferCountExt, Cell, Materialize, Mutable};
     ///
     /// let source = Cell::new(0);
     /// let buffered = source.clone().buffer_count(3).materialize();
@@ -108,7 +101,7 @@ pub trait BufferCountExt<T: CellValue>: Pipeline<T, Definite> {
     /// source.set(3);
     /// ```
     #[track_caller]
-    fn buffer_count(self, count: usize) -> BufferCountPipeline<Self, T> {
+    fn buffer_count(self, count: usize) -> impl crate::Materialize<Vec<T>, Definite> {
         assert!(count > 0, "buffer_count must be positive");
         BufferCountPipeline {
             source: self,
@@ -125,7 +118,7 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
 
     use super::*;
-    use crate::{Cell, MaterializeDefinite, Mutable, traits::Watchable};
+    use crate::{Cell, Materialize, Mutable, traits::Watchable};
 
     #[test]
     fn buffer_count_installs_only_when_materialized() {

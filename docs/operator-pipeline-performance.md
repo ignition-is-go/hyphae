@@ -37,9 +37,14 @@ materialization/teardown. The final join-runtime candidate measured against
 
 | Join stages | `v2.0.1` | 3.0 candidate | Improvement |
 | ---: | ---: | ---: | ---: |
-| 16 | 232.75 us | 151.56 us | 34.9% |
-| 32 | 545.71 us | 361.90 us | 33.7% |
-| 64 | 1.4254 ms | approximately 0.94 ms | approximately 34.0% |
+| 16 | 232.75 us | 150.35 us | 35.4% |
+| 32 | 545.71 us | 367.51 us | 32.7% |
+| 64 | 1.4254 ms | 0.95739 ms | 32.8% |
+
+The final pre-release run measured 95% confidence intervals of
+`[148.89, 151.92] us`, `[362.13, 373.93] us`, and
+`[941.30, 978.01] us` respectively. Criterion reported no statistically
+significant change from the saved v3 candidate at depths 16 and 32.
 
 These depths represent approximately 80, 160, and 320 logical operators at the
 configured join density. The opt-in depth-64 target must be run alone because
@@ -50,18 +55,18 @@ the static type itself can require multiple gigabytes of compiler memory.
 `tools/operator_allocation_profile.rs` wraps the system allocator and measures
 graph construction, the terminal materialization, 100 source updates, and
 terminal-cell teardown separately. `tools/bench-operator-allocations.sh`
-archives both revisions into temporary directories and builds them with one
-compiler job. The shared source uses the mandatory intermediate
-materializations under the `v2.0.1` API and one terminal materialization under
-the 3.0 API.
+archives one selected v3 revision into a temporary directory and builds it with
+one compiler job. This keeps the release benchmark free of legacy conditional
+code while preserving a reproducible allocation snapshot for every 3.x
+revision.
 
 Run the exact comparison with:
 
 ```console
-tools/bench-operator-allocations.sh
+REVISION=HEAD tools/bench-operator-allocations.sh
 ```
 
-The first run on commit `b2a8cf9` produced:
+The original same-machine v2/v3 proof run on commit `b2a8cf9` produced:
 
 | Operators | Setup allocations, v2 / v3 | Reduction | Allocated bytes, v2 / v3 | Reduction |
 | ---: | ---: | ---: | ---: | ---: |

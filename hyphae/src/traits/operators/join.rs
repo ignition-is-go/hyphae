@@ -2,7 +2,7 @@ use std::{
     marker::PhantomData,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU8, Ordering},
+        atomic::{AtomicU8, Ordering},
     },
 };
 
@@ -11,7 +11,7 @@ use parking_lot::Mutex;
 use super::{CellValue, Watchable};
 use crate::{
     cell::{Cell, CellMutable},
-    pipeline::{Definite, MaterializeDefinite, Pipeline, PipelineInstall, PipelineSeed},
+    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed, prepare_install},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -34,20 +34,21 @@ where
     U: CellValue,
 {
     fn install(&self, callback: Arc<dyn Fn(&Signal<(T, U)>) + Send + Sync>) -> SubscriptionGuard {
-        let initial = (self.left.seed(), self.right.seed());
+        let left_prepared = prepare_install(&self.left);
+        let right_prepared = prepare_install(&self.right);
+        let initial = (
+            left_prepared.initial().clone(),
+            right_prepared.initial().clone(),
+        );
         let latest = Arc::new(Mutex::new(initial.clone()));
         let derived = Cell::<(T, U), CellMutable>::new(initial);
         let completed = Arc::new(AtomicU8::new(0));
 
         let left_latest = latest.clone();
         let left_completed = completed.clone();
-        let left_first = AtomicBool::new(true);
         let left_weak = derived.downgrade();
-        let left_guard = self.left.install(Arc::new(move |signal| match signal {
+        let left_guard = left_prepared.activate(Arc::new(move |signal| match signal {
             Signal::Value(value) => {
-                if left_first.swap(false, Ordering::SeqCst) {
-                    return;
-                }
                 let mut latest = left_latest.lock();
                 latest.0 = value.as_ref().clone();
                 if let Some(derived) = left_weak.upgrade() {
@@ -69,13 +70,9 @@ where
         }));
         derived.own(left_guard);
 
-        let right_first = AtomicBool::new(true);
         let right_weak = derived.downgrade();
-        let right_guard = self.right.install(Arc::new(move |signal| match signal {
+        let right_guard = right_prepared.activate(Arc::new(move |signal| match signal {
             Signal::Value(value) => {
-                if right_first.swap(false, Ordering::SeqCst) {
-                    return;
-                }
                 let mut latest = latest.lock();
                 latest.1 = value.as_ref().clone();
                 if let Some(derived) = right_weak.upgrade() {
@@ -122,17 +119,8 @@ where
 {
 }
 
-impl<L, R, T, U> MaterializeDefinite<(T, U)> for JoinPipeline<L, R, T, U>
-where
-    L: Pipeline<T, Definite> + PipelineSeed<T>,
-    R: Pipeline<U, Definite> + PipelineSeed<U>,
-    T: CellValue,
-    U: CellValue,
-{
-}
-
 pub trait JoinExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
-    fn join<U, R>(self, other: R) -> JoinPipeline<Self, R, T, U>
+    fn join<U, R>(self, other: R) -> impl crate::Materialize<(T, U), Definite>
     where
         U: CellValue,
         R: Pipeline<U, Definite> + PipelineSeed<U>,
@@ -150,7 +138,7 @@ impl<T: CellValue, P> JoinExt<T> for P where P: Pipeline<T, Definite> + Pipeline
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Cell, Gettable, MapExt, MaterializeDefinite, Mutable};
+    use crate::{Cell, Gettable, MapExt, Materialize, Mutable};
 
     #[test]
     fn test_join_combines_cells() {

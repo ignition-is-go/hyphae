@@ -17,7 +17,7 @@ use std::sync::{
 };
 
 use hyphae::{
-    Cell, CellMutable, MapExt, MaterializeDefinite, Mutable, Signal, Watchable, batch,
+    Cell, CellMutable, MapExt, Materialize, Mutable, Signal, Watchable, batch,
     scheduler::no_coalesce,
 };
 

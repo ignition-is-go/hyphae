@@ -78,7 +78,7 @@ where
     ///
     /// `predicate(&value)` decides whether a row is present in the output map.
     #[track_caller]
-    fn select<F>(self, predicate: F) -> SelectPlan<Self, K, V, F>
+    fn select<F>(self, predicate: F) -> impl MapQuery<K, V>
     where
         F: Fn(&V) -> bool + Send + Sync + 'static,
     {
@@ -108,7 +108,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        CellMap, MapDiff, MaterializeDefinite,
+        CellMap, MapDiff, Materialize,
         traits::{Gettable, Watchable},
     };
 

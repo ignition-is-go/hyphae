@@ -14,7 +14,7 @@ use std::{
 
 use super::CellValue;
 use crate::{
-    pipeline::{Empty, MaterializeEmpty, Pipeline, PipelineInstall, Seedness},
+    pipeline::{Empty, Pipeline, PipelineInstall, PipelineSeed, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -25,6 +25,18 @@ pub struct SkipWhilePipeline<S, T, F, Sd = crate::pipeline::Definite> {
     predicate: Arc<F>,
     _t: PhantomData<fn(T)>,
     _sd: PhantomData<fn(Sd)>,
+}
+
+impl<S, T, F, Sd> PipelineSeed<T> for SkipWhilePipeline<S, T, F, Sd>
+where
+    S: PipelineInstall<T> + Send + Sync + 'static,
+    Sd: Seedness,
+    T: CellValue,
+    F: Fn(&T) -> bool + Send + Sync + 'static,
+{
+    fn seed(&self) -> T {
+        unreachable!("a skip_while Empty pipeline has no seed")
+    }
 }
 
 impl<S, T, F, Sd> PipelineInstall<T> for SkipWhilePipeline<S, T, F, Sd>
@@ -66,15 +78,6 @@ where
 {
 }
 
-impl<S, T, F, Sd> MaterializeEmpty<T> for SkipWhilePipeline<S, T, F, Sd>
-where
-    S: Pipeline<T, Sd>,
-    Sd: Seedness,
-    T: CellValue,
-    F: Fn(&T) -> bool + Send + Sync + 'static,
-{
-}
-
 #[allow(private_bounds)]
 pub trait SkipWhileExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// Skip emissions while the predicate returns `true`.
@@ -85,7 +88,7 @@ pub trait SkipWhileExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// # Example
     ///
     /// ```
-    /// use hyphae::{Cell, MaterializeEmpty, Mutable, SkipWhileExt};
+    /// use hyphae::{Cell, Materialize, Mutable, SkipWhileExt};
     ///
     /// let source = Cell::new(0);
     /// let skipped = source.clone().skip_while(|v| *v < 3).materialize();
@@ -96,7 +99,7 @@ pub trait SkipWhileExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// source.set(1); // passes (gate already opened)
     /// ```
     #[track_caller]
-    fn skip_while<F>(self, predicate: F) -> SkipWhilePipeline<Self, T, F, S>
+    fn skip_while<F>(self, predicate: F) -> impl crate::Materialize<T, Empty>
     where
         F: Fn(&T) -> bool + Send + Sync + 'static,
     {
@@ -116,7 +119,7 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
 
     use super::*;
-    use crate::{Cell, MaterializeEmpty, Mutable, traits::Watchable};
+    use crate::{Cell, Materialize, Mutable, traits::Watchable};
 
     #[test]
     fn test_skip_while() {
