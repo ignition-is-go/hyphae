@@ -249,7 +249,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        CellMap, MapDiff,
+        CellMap, MapDiff, MaterializeDefinite,
         traits::{Gettable, HasForeignKey, IdFor, IdType},
     };
 
@@ -260,7 +260,7 @@ mod tests {
         let joined = left.clone().inner_join(right.clone()).materialize();
 
         left.insert("a".to_string(), 1);
-        assert_eq!(joined.entries().get().len(), 0);
+        assert_eq!(joined.entries().materialize().get().len(), 0);
 
         right.insert("a".to_string(), 10);
         assert_eq!(joined.get_value(&"a".to_string()), Some((1, 10)));
@@ -276,7 +276,7 @@ mod tests {
         left.insert("b".to_string(), 2);
         right.insert("a".to_string(), 10);
 
-        assert_eq!(joined.entries().get().len(), 1);
+        assert_eq!(joined.entries().materialize().get().len(), 1);
         assert_eq!(joined.get_value(&"a".to_string()), Some((1, 10)));
         assert_eq!(joined.get_value(&"b".to_string()), None);
     }
@@ -303,10 +303,10 @@ mod tests {
 
         left.insert("a".to_string(), 1);
         right.insert("a".to_string(), 10);
-        assert_eq!(joined.entries().get().len(), 1);
+        assert_eq!(joined.entries().materialize().get().len(), 1);
 
         right.remove(&"a".to_string());
-        assert_eq!(joined.entries().get().len(), 0);
+        assert_eq!(joined.entries().materialize().get().len(), 0);
     }
 
     #[test]
@@ -339,7 +339,7 @@ mod tests {
         right.insert("r1".to_string(), ("g1".to_string(), 5));
         right.insert("r2".to_string(), ("g1".to_string(), 7));
 
-        assert_eq!(joined.entries().get().len(), 2);
+        assert_eq!(joined.entries().materialize().get().len(), 2);
     }
 
     #[test]
@@ -466,7 +466,7 @@ mod tests {
             },
         );
 
-        assert_eq!(joined.entries().get().len(), 2);
+        assert_eq!(joined.entries().materialize().get().len(), 2);
     }
 
     #[test]
@@ -489,6 +489,6 @@ mod tests {
             },
         );
 
-        assert_eq!(joined.entries().get().len(), 0);
+        assert_eq!(joined.entries().materialize().get().len(), 0);
     }
 }

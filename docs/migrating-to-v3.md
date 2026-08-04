@@ -70,6 +70,27 @@ The operators moved to lazy pipelines in this release include `audit`,
 `sample_latest`, `state_transition`, `switch_map`, `take_until`, `throttle`,
 `timeout`, `window`, and `zip`.
 
+Reactive collection views now follow the same rule. `CellMap::get`, `entries`,
+`items`, `keys`, `size`, `len`, and `diffs`, plus `CellSet::contains`, `values`,
+`len`, and `diffs`, return definite pipeline surfaces. Add `.materialize()`
+before reading or subscribing:
+
+```rust
+let selected = users
+    .get(&user_id)
+    .map(render_user)
+    .materialize();
+
+let count = users.size().materialize();
+```
+
+Some of these views currently reuse or construct an internal cell, so the
+terminal materialization has no additional runtime cost. The explicit boundary
+is nevertheless part of the v3 API and leaves their caching strategy free to
+change in later compatible releases. `Source::sample_on` follows the same
+contract. Explicit conversion and source APIs such as `to_cell`, `lock`, and
+`interval` continue to return materialized values directly.
+
 ## Receivers and additional inputs are owned
 
 Pipeline operators consume `self`. Multi-source operators also take their
@@ -200,5 +221,7 @@ lazy.
 6. Replace attempts to clone a pipeline with either `.share()` or a single
    materialization followed by cheap `Cell` clones.
 7. Update types downstream of empty pipelines to handle `Option<T>`.
-8. Run the application test suite with the same Hyphae features used in
+8. Materialize reactive `CellMap`/`CellSet` views before calling `get`,
+   `subscribe`, or passing them to a `Watchable` bound.
+9. Run the application test suite with the same Hyphae features used in
    production, especially `scheduler`, `async`, and `profiling`.

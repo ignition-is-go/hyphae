@@ -38,8 +38,8 @@ use dashmap::DashMap;
 use uuid::Uuid;
 
 use crate::{
-    cell::{Cell, CellImmutable, CellMutable, Subscriber, SubscriberCallback},
-    pipeline::{Empty, MaterializeEmpty, Pipeline, PipelineInstall},
+    cell::{Cell, CellMutable, Subscriber, SubscriberCallback},
+    pipeline::{Empty, MaterializeDefinite, MaterializeEmpty, Pipeline, PipelineInstall},
     signal::Signal,
     subscription::SubscriptionGuard,
     traits::{CellValue, DepNode, Gettable, Mutable, Watchable},
@@ -323,15 +323,15 @@ impl<T: CellValue> MaterializeEmpty<T> for Source<T> {}
 /// notifier.
 ///
 /// Mirrors `Watchable::sample(&pipeline_notifier)` but accepts a `Source<U>`,
-/// which doesn't impl `Pipeline`/`PipelineSeed`. The result is materialized
-/// directly into a `Cell<T, CellImmutable>` seeded from the source's current
-/// value.
+/// which doesn't impl `Pipeline`/`PipelineSeed`. The returned pipeline surface
+/// keeps the materialization boundary explicit even though the current
+/// implementation uses a cell internally.
 pub trait SampleOnSourceExt<T: CellValue>: Watchable<T> + Gettable<T> {
-    /// Build a cell that re-emits the current value of `self` whenever
+    /// Build a pipeline that re-emits the current value of `self` whenever
     /// `notifier` emits. Equivalent to `notifier.subscribe(|_| cell.set(self.get()))`
     /// but with subscription lifecycle owned by the resulting cell.
     #[track_caller]
-    fn sample_on<U>(&self, notifier: &Source<U>) -> Cell<T, CellImmutable>
+    fn sample_on<U>(&self, notifier: &Source<U>) -> impl MaterializeDefinite<T> + use<Self, T, U>
     where
         U: CellValue,
     {
@@ -400,7 +400,7 @@ mod tests {
         let value = Cell::new(7i32);
         let notifier: Source<()> = Source::new();
 
-        let sampled = value.sample_on(&notifier);
+        let sampled = value.sample_on(&notifier).materialize();
         let weak = sampled.downgrade();
 
         value.set(8);
@@ -421,7 +421,7 @@ mod tests {
         let value = Cell::new(0i32);
         let notifier: Source<()> = Source::new();
 
-        let sampled = value.sample_on(&notifier);
+        let sampled = value.sample_on(&notifier).materialize();
         assert_eq!(notifier.subscriber_count(), 1);
 
         drop(sampled);

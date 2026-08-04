@@ -60,6 +60,12 @@
 //! is installed. Materialize at the point where a cached value, [`Gettable`],
 //! or [`Watchable`] boundary is required.
 //!
+//! Derived collection views (`CellMap::get`, `entries`, `items`, `keys`,
+//! `size`, `len`, `diffs`, and their `CellSet` counterparts) also expose
+//! definite pipelines. Some reuse an internal cell today, making terminal
+//! materialization a no-op, but callers cannot rely on that implementation
+//! detail as an implicit observation boundary.
+//!
 //! See the [Hyphae 3.0 migration guide](https://github.com/ignition-is-go/hyphae/blob/main/docs/migrating-to-v3.md)
 //! for owned-input and sharing examples.
 //!

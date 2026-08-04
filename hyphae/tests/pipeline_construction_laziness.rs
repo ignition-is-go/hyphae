@@ -1,8 +1,66 @@
 use std::time::Duration;
 
 use hyphae::{
-    Cell, DelayExt, DepNode, JoinExt, MapExt, MaterializeDefinite, ScanExt, SwitchMapExt, ZipExt,
+    Cell, CellMap, CellSet, DelayExt, DepNode, Gettable, JoinExt, MapExt, MaterializeDefinite,
+    Mutable, SampleOnSourceExt, ScanExt, Source, SwitchMapExt, ZipExt,
 };
+
+#[test]
+fn derived_collection_views_compose_before_materialization() {
+    let map = CellMap::<String, i32>::new();
+    let key = "answer".to_string();
+    let mapped = map
+        .get(&key)
+        .map(|value| value.unwrap_or_default() * 2)
+        .materialize();
+
+    assert_eq!(mapped.get(), 0);
+    map.insert(key, 21);
+    assert_eq!(mapped.get(), 42);
+
+    let set = CellSet::<String>::new();
+    let member = "present".to_string();
+    let described = set
+        .contains(&member)
+        .map(|present| if *present { "yes" } else { "no" })
+        .materialize();
+
+    assert_eq!(described.get(), "no");
+    set.insert(member);
+    assert_eq!(described.get(), "yes");
+}
+
+#[test]
+fn materialized_internal_view_still_exposes_only_a_pipeline_contract() {
+    let value = Cell::new(7i32);
+    let notifier = Source::<()>::new();
+    let sampled = value
+        .sample_on(&notifier)
+        .map(|value| value * 3)
+        .materialize();
+
+    assert_eq!(sampled.get(), 21);
+    value.set(9);
+    notifier.emit(());
+    assert_eq!(sampled.get(), 27);
+}
+
+#[test]
+fn opaque_view_pipelines_do_not_borrow_their_source_handles() {
+    let entries = {
+        let map = CellMap::<String, i32>::new();
+        map.insert("answer".to_string(), 42);
+        map.entries()
+    };
+    assert_eq!(entries.materialize().get().len(), 1);
+
+    let sampled = {
+        let value = Cell::new(7i32);
+        let notifier = Source::<()>::new();
+        value.sample_on(&notifier).map(|value| value * 2)
+    };
+    assert_eq!(sampled.materialize().get(), 14);
+}
 
 #[test]
 fn stateful_pipeline_subscribes_only_when_materialized() {

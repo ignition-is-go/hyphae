@@ -213,7 +213,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        CellMap, MapDiff,
+        CellMap, MapDiff, MaterializeDefinite,
         traits::{Gettable, HasForeignKey, IdFor, IdType},
     };
 
@@ -224,7 +224,7 @@ mod tests {
         let joined = left.clone().left_semi_join(right.clone()).materialize();
 
         left.insert("a".to_string(), 1);
-        assert_eq!(joined.entries().get().len(), 0);
+        assert_eq!(joined.entries().materialize().get().len(), 0);
 
         right.insert("a".to_string(), true);
         assert_eq!(joined.get_value(&"a".to_string()), Some(1));
@@ -240,7 +240,7 @@ mod tests {
         left.insert("b".to_string(), 2);
         right.insert("a".to_string(), true);
 
-        assert_eq!(joined.entries().get().len(), 1);
+        assert_eq!(joined.entries().materialize().get().len(), 1);
         assert_eq!(joined.get_value(&"a".to_string()), Some(1));
         assert_eq!(joined.get_value(&"b".to_string()), None);
     }
@@ -253,10 +253,10 @@ mod tests {
 
         left.insert("a".to_string(), 1);
         right.insert("a".to_string(), true);
-        assert_eq!(joined.entries().get().len(), 1);
+        assert_eq!(joined.entries().materialize().get().len(), 1);
 
         right.remove(&"a".to_string());
-        assert_eq!(joined.entries().get().len(), 0);
+        assert_eq!(joined.entries().materialize().get().len(), 0);
     }
 
     #[test]
@@ -353,7 +353,7 @@ mod tests {
             },
         );
 
-        assert_eq!(joined.entries().get().len(), 0);
+        assert_eq!(joined.entries().materialize().get().len(), 0);
 
         posts.insert(
             "p1".to_string(),
@@ -363,7 +363,7 @@ mod tests {
             },
         );
 
-        assert_eq!(joined.entries().get().len(), 1);
+        assert_eq!(joined.entries().materialize().get().len(), 1);
         assert_eq!(
             joined.get_value(&"u1".to_string()),
             Some(User {
@@ -392,9 +392,9 @@ mod tests {
                 title: "Hello".to_string(),
             },
         );
-        assert_eq!(joined.entries().get().len(), 1);
+        assert_eq!(joined.entries().materialize().get().len(), 1);
 
         posts.remove(&"p1".to_string());
-        assert_eq!(joined.entries().get().len(), 0);
+        assert_eq!(joined.entries().materialize().get().len(), 0);
     }
 }

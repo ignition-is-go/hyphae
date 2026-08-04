@@ -368,7 +368,7 @@ use crate::{MapQueryShareExt, traits::DepNode};
 fn shared_map_query_subscribes_upstream_once() {
     let src = CellMap::<String, i32>::new();
     src.insert("a".into(), 1);
-    let initial_subs = DepNode::subscriber_count(&src.diffs());
+    let initial_subs = DepNode::subscriber_count(&src.diffs().materialize());
 
     let shared = src.clone().project(|k, v| Some((k.clone(), v * 2))).share();
 
@@ -376,14 +376,17 @@ fn shared_map_query_subscribes_upstream_once() {
     let s1 = shared.clone();
     let s2 = shared.clone();
 
-    assert_eq!(DepNode::subscriber_count(&src.diffs()), initial_subs);
+    assert_eq!(
+        DepNode::subscriber_count(&src.diffs().materialize()),
+        initial_subs
+    );
 
     // Materializing each fan-out chain causes ONE upstream subscription.
     let m1 = s1.materialize();
     let m2 = s2.materialize();
 
     assert_eq!(
-        DepNode::subscriber_count(&src.diffs()),
+        DepNode::subscriber_count(&src.diffs().materialize()),
         initial_subs + 1,
         "share point should subscribe upstream exactly once even with N consumers"
     );
@@ -399,17 +402,23 @@ fn shared_map_query_subscribes_upstream_once() {
 fn shared_map_query_drops_upstream_when_all_subscribers_drop() {
     let src = CellMap::<String, i32>::new();
     src.insert("a".into(), 1);
-    let initial_subs = DepNode::subscriber_count(&src.diffs());
+    let initial_subs = DepNode::subscriber_count(&src.diffs().materialize());
 
     let shared = src.clone().project(|k, v| Some((k.clone(), v * 2))).share();
     let m1 = shared.clone().materialize();
     let m2 = shared.clone().materialize();
 
-    assert_eq!(DepNode::subscriber_count(&src.diffs()), initial_subs + 1);
+    assert_eq!(
+        DepNode::subscriber_count(&src.diffs().materialize()),
+        initial_subs + 1
+    );
 
     drop(m1);
     drop(m2);
     drop(shared);
     // After all subscribers gone, share-point's upstream subscription is released.
-    assert_eq!(DepNode::subscriber_count(&src.diffs()), initial_subs);
+    assert_eq!(
+        DepNode::subscriber_count(&src.diffs().materialize()),
+        initial_subs
+    );
 }

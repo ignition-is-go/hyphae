@@ -72,12 +72,12 @@ where
 /// # Example
 ///
 /// ```
-/// use hyphae::{CellMap, Gettable, Watchable, Signal};
+/// use hyphae::{CellMap, Gettable, MaterializeDefinite, Watchable, Signal};
 ///
 /// let map = CellMap::<String, i32>::new();
 ///
 /// // Observe a specific key
-/// let value_cell = map.get(&"counter".to_string());
+/// let value_cell = map.get(&"counter".to_string()).materialize();
 /// assert_eq!(value_cell.get(), None);
 ///
 /// // Insert triggers update
@@ -85,7 +85,7 @@ where
 /// assert_eq!(value_cell.get(), Some(42));
 ///
 /// // Observe all entries
-/// let entries = map.entries();
+/// let entries = map.entries().materialize();
 /// assert_eq!(entries.get().len(), 1);
 /// ```
 #[derive(Clone)]
@@ -782,12 +782,13 @@ where
         }
     }
 
-    /// Get an observable Cell for a specific key.
+    /// Build an observable pipeline for a specific key.
     ///
-    /// Returns a `Cell<Option<V>>` that updates whenever the key's value changes.
-    /// Multiple calls with the same key return the same underlying Cell.
+    /// Materializing produces a `Cell<Option<V>>` that updates whenever the
+    /// key's value changes. Multiple installations currently reuse the same
+    /// underlying per-key cell, but that cache is not part of the public API.
     #[track_caller]
-    pub fn get(&self, key: &K) -> Cell<Option<V>, CellImmutable> {
+    pub fn get(&self, key: &K) -> impl MaterializeDefinite<Option<V>> + use<K, V, M> {
         // Check cache first
         if let Some(weak) = self.inner.key_cells.get(key)
             && let Some(cell) = weak.upgrade()
@@ -818,13 +819,13 @@ where
         cell.lock()
     }
 
-    /// Get an observable Cell of all entries.
+    /// Build an observable pipeline of all entries.
     ///
     /// Returns a derived cell that maintains entries incrementally via diffs.
     /// The initial value is computed from the current map state, then updates
     /// are applied incrementally as O(1) operations per diff.
     #[track_caller]
-    pub fn entries(&self) -> Cell<Vec<(K, V)>, CellImmutable> {
+    pub fn entries(&self) -> impl MaterializeDefinite<Vec<(K, V)>> + use<K, V, M> {
         let initial: Vec<(K, V)> = self
             .inner
             .data
@@ -878,12 +879,12 @@ where
         cell.lock()
     }
 
-    /// Get an observable Cell of all values.
+    /// Build an observable pipeline of all values.
     ///
     /// This maintains its own diff-driven projection to avoid forcing an
     /// intermediate entries materialization on hot value-only paths.
     #[track_caller]
-    pub fn items(&self) -> Cell<Vec<V>, CellImmutable> {
+    pub fn items(&self) -> impl MaterializeDefinite<Vec<V>> + use<K, V, M> {
         let initial: Vec<(K, V)> = self
             .inner
             .data
@@ -929,20 +930,19 @@ where
         cell.lock()
     }
 
-    /// Get an observable Cell of all keys.
+    /// Build an observable pipeline of all keys.
     #[track_caller]
-    pub fn keys(&self) -> Cell<Vec<K>, CellImmutable> {
+    pub fn keys(&self) -> impl MaterializeDefinite<Vec<K>> + use<K, V, M> {
         use crate::traits::MapExt;
         self.entries()
             .map(|entries| entries.iter().map(|(k, _)| k.clone()).collect())
-            .materialize()
     }
 
     /// Get an observable Cell of the map size.
     ///
     /// This is the preferred reactive count operator because it reuses the
     /// internally maintained length cell instead of materializing entries.
-    pub fn size(&self) -> Cell<usize, CellImmutable> {
+    pub fn size(&self) -> impl MaterializeDefinite<usize> + use<K, V, M> {
         // A derived size Cell that RETAINS its parent map, mirroring
         // entries()/items()/subscribe_diffs. Returning a bare
         // `len_cell.clone().lock()` captured no keepalive, so a `.size()` cloned
@@ -972,7 +972,7 @@ where
     /// Get an observable Cell of the map length.
     ///
     /// Alias for [`CellMap::size`].
-    pub fn len(&self) -> Cell<usize, CellImmutable> {
+    pub fn len(&self) -> impl MaterializeDefinite<usize> + use<K, V, M> {
         self.size()
     }
 
@@ -984,7 +984,7 @@ where
     /// Get an observable Cell of diff notifications.
     ///
     /// Emits `MapDiff` updates. Starts with `MapDiff::Initial { entries: vec![] }`.
-    pub fn diffs(&self) -> Cell<MapDiff<K, V>, CellImmutable> {
+    pub fn diffs(&self) -> impl MaterializeDefinite<MapDiff<K, V>> + use<K, V, M> {
         self.inner.diffs_cell.clone().lock()
     }
 
@@ -1052,7 +1052,7 @@ where
         // dropped (e.g., passed by value to subscribe_diffs then goes out of scope), the
         // CellMapInner and its owned guards would be dropped, breaking upstream subscriptions.
         let map_keepalive = self.inner.clone();
-        let diffs = self.diffs();
+        let diffs = self.diffs().materialize();
         let first = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         diffs.subscribe(move |signal| {
             let _ = &map_keepalive;
@@ -1199,7 +1199,7 @@ mod tests {
         let map = CellMap::<String, i32>::new();
 
         // Get cell before key exists
-        let cell_a = map.get(&"a".to_string());
+        let cell_a = map.get(&"a".to_string()).materialize();
         assert_eq!(cell_a.get(), None);
 
         let count = Arc::new(AtomicUsize::new(0));
@@ -1229,7 +1229,7 @@ mod tests {
     #[test]
     fn test_cellmap_entries_observation() {
         let map = CellMap::<String, i32>::new();
-        let entries = map.entries();
+        let entries = map.entries().materialize();
 
         assert_eq!(entries.get(), vec![]);
 
@@ -1246,7 +1246,7 @@ mod tests {
     #[test]
     fn test_cellmap_size_observation() {
         let map = CellMap::<String, i32>::new();
-        let size = map.size();
+        let size = map.size().materialize();
 
         assert_eq!(size.get(), 0);
 
@@ -1266,7 +1266,7 @@ mod tests {
     #[test]
     fn test_cellmap_items_observation() {
         let map = CellMap::<String, i32>::new();
-        let items = map.items();
+        let items = map.items().materialize();
 
         assert_eq!(items.get(), Vec::<i32>::new());
 
@@ -1286,7 +1286,7 @@ mod tests {
     #[test]
     fn test_cellmap_diffs() {
         let map = CellMap::<String, i32>::new();
-        let diffs = map.diffs();
+        let diffs = map.diffs().materialize();
 
         assert_eq!(diffs.get(), MapDiff::Initial { entries: vec![] });
 
@@ -1482,7 +1482,7 @@ mod tests {
     #[test]
     fn test_cellmap_len() {
         let map = CellMap::<String, i32>::new();
-        let len = map.len();
+        let len = map.len().materialize();
 
         assert_eq!(len.get(), 0);
 
@@ -1504,8 +1504,8 @@ mod tests {
         let locked = map.lock();
 
         // Can still observe
-        assert_eq!(locked.get(&"a".to_string()).get(), Some(1));
-        assert_eq!(locked.entries().get().len(), 1);
+        assert_eq!(locked.get(&"a".to_string()).materialize().get(), Some(1));
+        assert_eq!(locked.entries().materialize().get().len(), 1);
 
         // But can't mutate - these methods don't exist on CellImmutable
         // locked.insert(...) // compile error
@@ -1515,8 +1515,8 @@ mod tests {
     fn test_cellmap_same_cell_returned() {
         let map = CellMap::<String, i32>::new();
 
-        let cell1 = map.get(&"a".to_string());
-        let cell2 = map.get(&"a".to_string());
+        let cell1 = map.get(&"a".to_string()).materialize();
+        let cell2 = map.get(&"a".to_string()).materialize();
 
         // Both should reflect same updates
         map.insert("a".to_string(), 42);
@@ -1535,8 +1535,8 @@ mod tests {
 
         map_clone.insert("b".to_string(), 2);
         assert_eq!(map.get_value(&"b".to_string()), Some(2));
-        assert_eq!(map.len().get(), 2);
-        assert_eq!(map_clone.len().get(), 2);
+        assert_eq!(map.len().materialize().get(), 2);
+        assert_eq!(map_clone.len().materialize().get(), 2);
     }
 
     #[test]
@@ -1554,7 +1554,7 @@ mod tests {
         // Replace: keep "a" (updated), add "d", remove "b" and "c"
         map.replace_all(vec![("a".to_string(), 10), ("d".to_string(), 4)]);
 
-        assert_eq!(map.len().get(), 2);
+        assert_eq!(map.len().materialize().get(), 2);
         assert_eq!(map.get_value(&"a".to_string()), Some(10));
         assert_eq!(map.get_value(&"d".to_string()), Some(4));
         assert_eq!(map.get_value(&"b".to_string()), None);
@@ -1580,7 +1580,7 @@ mod tests {
         // Replace with same data
         map.replace_all(vec![("a".to_string(), 1)]);
 
-        assert_eq!(map.len().get(), 1);
+        assert_eq!(map.len().materialize().get(), 1);
         assert_eq!(map.get_value(&"a".to_string()), Some(1));
     }
 
@@ -1592,7 +1592,7 @@ mod tests {
 
         map.replace_all(vec![]);
 
-        assert_eq!(map.len().get(), 0);
+        assert_eq!(map.len().materialize().get(), 0);
         assert_eq!(map.get_value(&"a".to_string()), None);
         assert_eq!(map.get_value(&"b".to_string()), None);
     }
@@ -1609,7 +1609,7 @@ mod tests {
         // key_cells slot), drop the observer, then drive mutations.
         const CHURN: u64 = 2_000;
         for i in 0..CHURN {
-            let cell = map.get(&i);
+            let cell = map.get(&i).materialize();
             assert_eq!(cell.get(), None);
             drop(cell); // observer gone → this key's weak now dangles
             map.insert(i, i);
@@ -1632,7 +1632,7 @@ mod tests {
         let map = CellMap::<u64, u64>::new();
 
         // A long-lived observer on a stable key.
-        let watched = map.get(&0);
+        let watched = map.get(&0).materialize();
         let hits = Arc::new(AtomicUsize::new(0));
         let h = hits.clone();
         let _guard = watched.subscribe(move |_| {
@@ -1642,7 +1642,7 @@ mod tests {
 
         // Churn many other keys to trigger repeated sweeps.
         for i in 1..2_000u64 {
-            let cell = map.get(&i);
+            let cell = map.get(&i).materialize();
             drop(cell);
             map.insert(i, i);
             map.remove(&i);

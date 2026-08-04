@@ -141,7 +141,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CellMap, traits::Gettable};
+    use crate::{CellMap, MaterializeDefinite, traits::Gettable};
 
     #[test]
     fn multi_join_empty_keys_produces_empty_right_vec() {
@@ -281,9 +281,9 @@ mod tests {
 
         left.insert("l1".to_string(), vec!["g1".to_string()]);
         right.insert("r1".to_string(), ("g1".to_string(), 10));
-        assert_eq!(joined.entries().get().len(), 1);
+        assert_eq!(joined.entries().materialize().get().len(), 1);
 
         left.remove(&"l1".to_string());
-        assert_eq!(joined.entries().get().len(), 0);
+        assert_eq!(joined.entries().materialize().get().len(), 0);
     }
 }

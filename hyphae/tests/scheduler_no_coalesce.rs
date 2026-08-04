@@ -18,7 +18,10 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use hyphae::{Cell, CellMutable, Mutable, Signal, Watchable, batch, scheduler::no_coalesce};
+use hyphae::{
+    Cell, CellMutable, MaterializeDefinite, Mutable, Signal, Watchable, batch,
+    scheduler::no_coalesce,
+};
 
 /// The scheduler's tick queue is a single process-wide structure (see
 /// `hyphae::scheduler`'s cross-thread docs) — correct for one real server
@@ -421,7 +424,7 @@ fn cellset_diffs_survive_a_batched_add_then_remove() {
     let set: CellSet<u32> = CellSet::new();
     let seen = std::sync::Arc::new(Mutex::new(0usize));
     let sink = seen.clone();
-    std::mem::forget(set.diffs().subscribe(move |sig| {
+    std::mem::forget(set.diffs().materialize().subscribe(move |sig| {
         if let Signal::Value(d) = sig
             && d.is_some()
         {

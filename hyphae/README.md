@@ -84,14 +84,20 @@ let safe = fallible.catch_error(|_| default).materialize();
 ## Reactive Collections
 
 ```rust
-use hyphae::{CellMap, Gettable};
+use hyphae::{CellMap, Gettable, MaterializeDefinite};
 
 let users = CellMap::<String, User>::new();
-let admin = users.get(&"admin".to_string()); // reactive cell
+let admin = users.get(&"admin".to_string()).materialize();
 
 users.insert("admin".to_string(), User::new());
 assert!(admin.get().is_some()); // updates automatically
 ```
+
+Reactive collection views (`get`, `entries`, `items`, `keys`, `size`, `len`,
+and `diffs`) expose pipelines too. Some currently reuse an internal cached cell,
+so their terminal `.materialize()` is a no-op today; keeping the boundary in the
+public contract lets those implementations become fully deferred later without
+another API break.
 
 ## Map Queries vs CellMaps
 

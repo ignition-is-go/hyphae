@@ -81,7 +81,7 @@ fn build_ids_source_map(
 ) -> CellMap<Arc<str>, Arc<i64>, CellImmutable> {
     let result: CellMap<Arc<str>, Arc<i64>> = CellMap::new();
     for id in ids {
-        let key_cell = store.get(id);
+        let key_cell = store.get(id).materialize();
         let result_weak = result.downgrade();
         let key_for_cb = id.clone();
         let guard = key_cell.subscribe(move |signal| {

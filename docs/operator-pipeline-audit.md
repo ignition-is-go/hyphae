@@ -44,6 +44,15 @@ No operator entry point now returns a concrete cell. `concat`, `switch_map`,
 `merge_map`, `retry`, and `retry_when` return typed pipelines and create their
 dynamic subscription owner only when installed.
 
+Public derived-view entry points follow the same type-level contract even when
+their current implementation uses a cell internally. `CellMap::{get, entries,
+items, keys, size, len, diffs}`, `CellSet::{contains, values, len, diffs}`, and
+`Source::sample_on` expose definite pipelines, so consumers must choose the
+observation boundary explicitly. This prevents callers from depending on the
+present cache shape and lets those implementations become deferred without a
+future return-type break. Explicit boundaries and hot sources (`materialize`,
+`to_cell`, `lock`, `interval`) still return cells directly.
+
 `switch_map` and `merge_map` accept inner pipelines directly. Generated inner
 chains therefore stay unmaterialized and fuse down to the dynamic ownership
 boundary instead of allocating one cell per inner recipe.

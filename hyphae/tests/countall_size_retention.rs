@@ -8,7 +8,7 @@
 //! stuck at 0 on canary.71.
 #![cfg(feature = "scheduler")]
 
-use hyphae::{CellMap, Gettable, MapQuery, SelectExt, batch};
+use hyphae::{CellMap, Gettable, MapQuery, MaterializeDefinite, SelectExt, batch};
 
 fn serial() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -32,7 +32,12 @@ fn count_tracks_after_intermediate_map_dropped() {
     let store = CellMap::<String, i32>::new();
     // `.materialize()` temporary drops at the end of this statement; only `count`
     // survives. Pre-fix this severed the store subscription.
-    let count = store.clone().select(|_| true).materialize().len();
+    let count = store
+        .clone()
+        .select(|_| true)
+        .materialize()
+        .len()
+        .materialize();
     assert_eq!(count.get(), 0);
     for i in 0..5 {
         store.insert(format!("k{i}"), i);
@@ -50,11 +55,23 @@ fn count_tracks_after_intermediate_map_dropped() {
 fn fresh_count_on_populated_store_reads_n() {
     let _s = serial();
     let store = populated(5);
-    let eager = store.clone().select(|_| true).materialize().len();
+    let eager = store
+        .clone()
+        .select(|_| true)
+        .materialize()
+        .len()
+        .materialize();
     assert_eq!(eager.get(), 5, "fresh count (eager) read wrong");
 
     let store2 = populated(5);
-    let batched = batch(|| store2.clone().select(|_| true).materialize().len());
+    let batched = batch(|| {
+        store2
+            .clone()
+            .select(|_| true)
+            .materialize()
+            .len()
+            .materialize()
+    });
     assert_eq!(
         batched.get(),
         5,
@@ -69,7 +86,7 @@ fn count_tracks_with_materialized_held() {
     let _s = serial();
     let store = CellMap::<String, i32>::new();
     let materialized = store.clone().select(|_| true).materialize();
-    let count = materialized.len();
+    let count = materialized.len().materialize();
     for i in 0..5 {
         store.insert(format!("k{i}"), i);
     }
@@ -82,7 +99,7 @@ fn count_tracks_with_materialized_held() {
 fn base_map_size_tracks_after_handle_scope() {
     let _s = serial();
     let store = populated(3);
-    let size = { store.clone().size() };
+    let size = { store.clone().size().materialize() };
     assert_eq!(size.get(), 3);
     store.insert("k99".to_string(), 99);
     assert_eq!(size.get(), 4);

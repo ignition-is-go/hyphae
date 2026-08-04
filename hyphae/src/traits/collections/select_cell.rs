@@ -144,7 +144,7 @@ mod tests {
     use std::sync::mpsc;
 
     use super::*;
-    use crate::{Cell, CellMap, MapExt, cell_map::MapDiff};
+    use crate::{Cell, CellMap, MapExt, MaterializeDefinite, cell_map::MapDiff};
 
     #[test]
     fn select_cell_reacts_to_predicate_changes() {
@@ -164,14 +164,14 @@ mod tests {
             })
             .materialize();
 
-        assert_eq!(filtered.entries().get().len(), 1);
+        assert_eq!(filtered.entries().materialize().get().len(), 1);
         assert!(!filtered.contains_key(&"a".to_string()));
         assert!(filtered.contains_key(&"b".to_string()));
 
         gates.insert("a".to_string(), true);
-        assert_eq!(filtered.entries().get().len(), 2);
+        assert_eq!(filtered.entries().materialize().get().len(), 2);
         gates.insert("b".to_string(), false);
-        assert_eq!(filtered.entries().get().len(), 1);
+        assert_eq!(filtered.entries().materialize().get().len(), 1);
     }
 
     #[test]

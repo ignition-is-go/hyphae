@@ -8,6 +8,7 @@ use dashmap::DashSet;
 
 use crate::{
     cell::{Cell, CellImmutable, CellMutable, WeakCell},
+    pipeline::MaterializeDefinite,
     signal::Signal,
     traits::{CellValue, Gettable, Mutable, Watchable},
 };
@@ -40,12 +41,12 @@ where
 /// # Example
 ///
 /// ```
-/// use hyphae::{CellSet, Gettable, Watchable, Signal};
+/// use hyphae::{CellSet, Gettable, MaterializeDefinite, Watchable, Signal};
 ///
 /// let set = CellSet::<String>::new();
 ///
 /// // Observe membership of a specific value
-/// let is_member = set.contains(&"admin".to_string());
+/// let is_member = set.contains(&"admin".to_string()).materialize();
 /// assert_eq!(is_member.get(), false);
 ///
 /// // Insert triggers update
@@ -53,7 +54,7 @@ where
 /// assert_eq!(is_member.get(), true);
 ///
 /// // Observe all values
-/// let values = set.values();
+/// let values = set.values().materialize();
 /// assert_eq!(values.get().len(), 1);
 /// ```
 pub struct CellSet<T, M = CellMutable>
@@ -160,12 +161,13 @@ impl<T, M> CellSet<T, M>
 where
     T: Hash + Eq + CellValue,
 {
-    /// Get an observable Cell for membership of a specific value.
+    /// Build an observable pipeline for membership of a specific value.
     ///
-    /// Returns a `Cell<bool>` that is `true` when the value is in the set.
-    /// Multiple calls with the same value return the same underlying Cell.
+    /// Materializing produces a `Cell<bool>` that is `true` when the value is
+    /// in the set. Multiple installations currently reuse the same underlying
+    /// membership cell, but that cache is not part of the public API.
     #[track_caller]
-    pub fn contains(&self, value: &T) -> Cell<bool, CellImmutable> {
+    pub fn contains(&self, value: &T) -> impl MaterializeDefinite<bool> + use<T, M> {
         // Check cache first
         if let Some(weak) = self.inner.membership_cells.get(value)
             && let Some(cell) = weak.upgrade()
@@ -184,13 +186,13 @@ where
         cell.lock()
     }
 
-    /// Get an observable Cell of all values.
+    /// Build an observable pipeline of all values.
     ///
     /// Returns a derived cell that maintains its state incrementally via diffs.
     /// The initial call is O(N) to build the snapshot, but subsequent updates
     /// are O(1) as they apply diffs incrementally.
     #[track_caller]
-    pub fn values(&self) -> Cell<Vec<T>, CellImmutable> {
+    pub fn values(&self) -> impl MaterializeDefinite<Vec<T>> + use<T, M> {
         // Build initial values from current data (O(N) once)
         let initial: Vec<T> = self.inner.data.iter().map(|r| r.clone()).collect();
 
@@ -238,8 +240,8 @@ where
         cell.lock()
     }
 
-    /// Get an observable Cell of the set length.
-    pub fn len(&self) -> Cell<usize, CellImmutable> {
+    /// Build an observable pipeline of the set length.
+    pub fn len(&self) -> impl MaterializeDefinite<usize> + use<T, M> {
         self.inner.len_cell.clone().lock()
     }
 
@@ -248,10 +250,10 @@ where
         self.inner.data.is_empty()
     }
 
-    /// Get an observable Cell of diff notifications.
+    /// Build an observable pipeline of diff notifications.
     ///
     /// Emits `Some(SetDiff)` on each insert/remove, starts with `None`.
-    pub fn diffs(&self) -> Cell<Option<SetDiff<T>>, CellImmutable> {
+    pub fn diffs(&self) -> impl MaterializeDefinite<Option<SetDiff<T>>> + use<T, M> {
         self.inner.diffs_cell.clone().lock()
     }
 
@@ -305,7 +307,7 @@ mod tests {
         let set = CellSet::<String>::new();
 
         // Get cell before value exists
-        let is_member = set.contains(&"a".to_string());
+        let is_member = set.contains(&"a".to_string()).materialize();
         assert!(!is_member.get());
 
         let count = Arc::new(AtomicUsize::new(0));
@@ -334,7 +336,7 @@ mod tests {
     #[test]
     fn test_cellset_values_observation() {
         let set = CellSet::<String>::new();
-        let values = set.values();
+        let values = set.values().materialize();
 
         assert_eq!(values.get(), Vec::<String>::new());
 
@@ -356,7 +358,7 @@ mod tests {
     #[test]
     fn values_cell_is_freed_when_dropped() {
         let set = CellSet::<String>::new();
-        let values = set.values();
+        let values = set.values().materialize();
         let weak = values.downgrade();
         assert!(weak.upgrade().is_some());
 
@@ -368,7 +370,7 @@ mod tests {
 
         // The set itself must remain usable after the observable is gone.
         set.insert("a".to_string());
-        assert_eq!(set.len().get(), 1);
+        assert_eq!(set.len().materialize().get(), 1);
     }
 
     /// Repeated `values()` calls must not accumulate anything in the set.
@@ -377,7 +379,7 @@ mod tests {
         let set = CellSet::<String>::new();
         let mut weaks = Vec::new();
         for _ in 0..100 {
-            let v = set.values();
+            let v = set.values().materialize();
             weaks.push(v.downgrade());
         }
         let live = weaks.iter().filter(|w| w.upgrade().is_some()).count();
@@ -395,7 +397,7 @@ mod tests {
         let values = {
             let set = CellSet::<String>::new();
             set.insert("a".to_string());
-            let values = set.values();
+            let values = set.values().materialize();
             assert_eq!(values.get().len(), 1);
             values
         };
@@ -406,7 +408,7 @@ mod tests {
     #[test]
     fn test_cellset_diffs() {
         let set = CellSet::<String>::new();
-        let diffs = set.diffs();
+        let diffs = set.diffs().materialize();
 
         assert_eq!(diffs.get(), None);
 
@@ -420,7 +422,7 @@ mod tests {
     #[test]
     fn test_cellset_len() {
         let set = CellSet::<String>::new();
-        let len = set.len();
+        let len = set.len().materialize();
 
         assert_eq!(len.get(), 0);
 
@@ -442,8 +444,8 @@ mod tests {
         let locked = set.lock();
 
         // Can still observe
-        assert!(locked.contains(&"a".to_string()).get());
-        assert_eq!(locked.values().get().len(), 1);
+        assert!(locked.contains(&"a".to_string()).materialize().get());
+        assert_eq!(locked.values().materialize().get().len(), 1);
 
         // But can't mutate - these methods don't exist on CellImmutable
         // locked.insert(...) // compile error
@@ -453,8 +455,8 @@ mod tests {
     fn test_cellset_same_cell_returned() {
         let set = CellSet::<String>::new();
 
-        let cell1 = set.contains(&"a".to_string());
-        let cell2 = set.contains(&"a".to_string());
+        let cell1 = set.contains(&"a".to_string()).materialize();
+        let cell2 = set.contains(&"a".to_string()).materialize();
 
         // Both should reflect same updates
         set.insert("a".to_string());

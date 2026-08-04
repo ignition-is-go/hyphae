@@ -212,7 +212,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        CellMap, MapDiff,
+        CellMap, MapDiff, MaterializeDefinite,
         traits::{Gettable, HasForeignKey, IdFor, IdType},
     };
 
@@ -272,10 +272,10 @@ mod tests {
 
         left.insert("a".to_string(), 1);
         right.insert("a".to_string(), 10);
-        assert_eq!(joined.entries().get().len(), 1);
+        assert_eq!(joined.entries().materialize().get().len(), 1);
 
         left.remove(&"a".to_string());
-        assert_eq!(joined.entries().get().len(), 0);
+        assert_eq!(joined.entries().materialize().get().len(), 0);
     }
 
     #[test]

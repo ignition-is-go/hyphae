@@ -108,7 +108,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        CellMap, MapDiff,
+        CellMap, MapDiff, MaterializeDefinite,
         traits::{Gettable, Watchable},
     };
 
@@ -120,7 +120,7 @@ mod tests {
         map.insert("c".to_string(), 25);
 
         let filtered = map.clone().select(|v| *v > 10).materialize();
-        assert_eq!(filtered.entries().get().len(), 2);
+        assert_eq!(filtered.entries().materialize().get().len(), 2);
         assert!(filtered.contains_key(&"b".to_string()));
         assert!(filtered.contains_key(&"c".to_string()));
         assert!(!filtered.contains_key(&"a".to_string()));
@@ -150,9 +150,9 @@ mod tests {
             _ => panic!("expected batch diff from select"),
         }
 
-        let before = filtered.entries().get().len();
+        let before = filtered.entries().materialize().get().len();
         map.insert_many(vec![("x".to_string(), 1), ("y".to_string(), 2)]);
-        let after = filtered.entries().get().len();
+        let after = filtered.entries().materialize().get().len();
         assert_eq!(before, after);
     }
 
@@ -160,7 +160,7 @@ mod tests {
     fn select_entries_observable() {
         let map = CellMap::<String, i32>::new();
         let filtered = map.clone().select(|v| *v > 10).materialize();
-        let entries = filtered.entries();
+        let entries = filtered.entries().materialize();
 
         let count = Arc::new(AtomicUsize::new(0));
         let c = count.clone();
