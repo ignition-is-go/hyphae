@@ -7,11 +7,10 @@
 //! which installs ONE subscription per root source and returns a
 //! subscribable cell map.
 //!
-//! This design makes the memoization boundary explicit. Today, chaining map
-//! operators (`inner_join`, `left_join`, `project`, ...) creates an
-//! intermediate [`CellMap`] per stage — each with its own diff cell and
-//! per-key cells. By moving these operators onto `MapQuery`, the cost of an
-//! intermediate map is paid only when the caller explicitly asks for one
+//! This design makes the memoization boundary explicit. Chaining map operators
+//! (`inner_join`, `left_join`, `project`, ...) builds a plan without allocating
+//! an intermediate [`CellMap`] per stage. The final map cache, diff cell, and
+//! per-key cells are allocated only when the caller explicitly asks for them
 //! with `.materialize()`.
 
 use std::{hash::Hash, marker::PhantomData, sync::Arc};

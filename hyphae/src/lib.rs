@@ -44,22 +44,30 @@
 //! `catch_error`, `unwrap_or`) return a [`Pipeline`] — an uncompiled chain
 //! that has not yet been materialized into a [`Cell`]. Chaining pipelines
 //! fuses closures at compile time; the fused closure runs only when a
-//! consumer calls [`Pipeline::materialize`].
+//! consumer calls [`MaterializeDefinite::materialize`] or
+//! [`MaterializeEmpty::materialize`].
 //!
 //! [`Cell`] is the materialized, cached, multicast form. Subscribing requires
 //! a cell — there is no `Pipeline::subscribe` by design, forcing callers to
 //! make the memoization decision explicit.
+//! [`Definite`] pipelines materialize to `Cell<T>`; [`Empty`] pipelines such
+//! as `filter` materialize to `Cell<Option<T>>` because they may not have an
+//! honest initial value.
 //!
-//! Stateful operators (`scan`, `debounce`, `throttle`, `buffer_*`, `pairwise`,
-//! `window`, `distinct*`, `sample`, `delay`, `take`, `first`, `last`, `merge`,
-//! `merge_map`, `switch_map`, `with_latest_from`, `zip`, `join`) return cells
-//! directly — they hold per-subscription state, so memoization is unavoidable.
+//! Operators that need state or multiple sources (`debounce`, `buffer_*`,
+//! `join`, `merge`, `switch_map`, and others) are lazy pipelines too. Their
+//! state and any required fan-in boundary are created only when the pipeline
+//! is installed. Materialize at the point where a cached value, [`Gettable`],
+//! or [`Watchable`] boundary is required.
+//!
+//! See the [Hyphae 3.0 migration guide](https://github.com/ignition-is-go/hyphae/blob/main/docs/migrating-to-v3.md)
+//! for owned-input and sharing examples.
 //!
 //! ## Combining Cells
 //!
 //! Use `join()` to combine cells, and the `flat!` macro to avoid nested tuple destructuring.
-//! `join` is stateful and returns a [`Cell`] directly, so the chain below is a cell
-//! once `.map(...)` fuses onto it — no `.materialize()` needed for `.get()`:
+//! `join` consumes its inputs into a lazy pipeline. It creates its required
+//! fan-in coalescing boundary only when the chain is materialized:
 //!
 //! ```rust
 //! use hyphae::{Cell, Gettable, JoinExt, MapExt, MaterializeDefinite, flat};

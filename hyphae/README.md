@@ -12,7 +12,9 @@ A lock-free reactive programming library for Rust.
 ## Quick Start
 
 ```rust
-use hyphae::{Cell, Signal, flat, JoinExt, MapExt, Mutable, Pipeline, Watchable};
+use hyphae::{
+    Cell, JoinExt, MapExt, MaterializeDefinite, Mutable, Signal, Watchable, flat,
+};
 
 let x = Cell::new(5);
 let y = Cell::new(10);
@@ -39,10 +41,23 @@ fuses closures at compile time. Call `.materialize()` to compile the chain
 into a `Cell` you can subscribe to. There is no `Pipeline::subscribe` by
 design: callers make the memoization decision explicit.
 
-Stateful operators (`scan`, `debounce`, `throttle`, `buffer_*`, `pairwise`,
-`window`, `distinct*`, `sample`, `delay`, `take`, `first`, `last`, `merge`,
-`merge_map`, `switch_map`, `with_latest_from`, `zip`, `join`) return cells
-directly — they hold per-subscription state, so memoization is unavoidable.
+Definite pipelines use `MaterializeDefinite` and produce `Cell<T>`. Pipelines
+that may suppress their initial emission, such as `filter`, use
+`MaterializeEmpty` and produce `Cell<Option<T>>`.
+
+Operators that need state or multiple sources (`debounce`, `buffer_*`, `join`,
+`merge`, `switch_map`, and others) are lazy pipelines too. Their state and any
+required fan-in boundary are created only when the pipeline is installed.
+Call `.materialize()` at the point where you need a cached value, `get()`, or
+`subscribe()`.
+
+Pipeline values are deliberately not `Clone`. To retain a source after an
+operator consumes it, clone the source handle before building the pipeline. To
+share one pipeline installation across several consumers, use `.share()`, or
+materialize once and clone the resulting `Cell`.
+
+Upgrading from Hyphae 2.x? See
+[Migrating to Hyphae 3.0](https://github.com/ignition-is-go/hyphae/blob/main/docs/migrating-to-v3.md).
 
 ## Operators
 
@@ -53,14 +68,17 @@ when you need a cell. Stateful operators such as `scan`, `debounce`, and
 
 ```rust
 use std::time::Duration;
-use hyphae::{MapExt, FilterExt, ScanExt, DebounceExt, ThrottleExt, CatchErrorExt, MaterializeDefinite};
+use hyphae::{
+    CatchErrorExt, DebounceExt, FilterExt, MapExt, MaterializeDefinite,
+    MaterializeEmpty, ScanExt, ThrottleExt,
+};
 
 let doubled = x.map(|v| v * 2).materialize();
 let filtered = x.filter(|v| *v > 10).materialize();
 let running_sum = numbers.scan(0, |acc, x| acc + x).materialize();
 let debounced = input.debounce(Duration::from_millis(100)).materialize();
 let throttled = input.throttle(Duration::from_millis(50)).materialize();
-let safe = fallible.catch_error(|_| Cell::new(default)).materialize();
+let safe = fallible.catch_error(|_| default).materialize();
 ```
 
 ## Reactive Collections

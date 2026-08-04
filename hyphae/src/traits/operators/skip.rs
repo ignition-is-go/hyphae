@@ -38,7 +38,7 @@ where
         let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
             Arc::new(move |signal: &Signal<T>| match signal {
                 Signal::Value(_) => {
-                    let prev = to_skip.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                    let prev = to_skip.try_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
                         if n > 0 { Some(n - 1) } else { None }
                     });
                     if prev.is_err() {

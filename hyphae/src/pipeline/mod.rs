@@ -1,11 +1,12 @@
 //! Uncompiled reactive operation chains.
 //!
-//! A [`Pipeline`] is a recipe for a reactive computation — a chain of pure
-//! operators (`map`, `filter`, ...) that has not yet been materialized into
-//! a [`Cell`]. Pipelines deliberately do not implement `subscribe` or expose
-//! a public `get`: to observe output you must call `.materialize()`, which
-//! installs a single subscription on the root source and returns a
-//! subscribable cell.
+//! A [`Pipeline`] is a recipe for a reactive computation — a chain of
+//! operators that has not yet been materialized into a [`Cell`]. Both pure
+//! transforms (`map`, `filter`, ...) and operators with install-local state
+//! (`debounce`, `buffer_count`, `join`, ...) remain lazy until this boundary.
+//! Pipelines deliberately do not implement `subscribe` or expose a public
+//! `get`: to observe output you must call `.materialize()`, which installs the
+//! required root subscriptions and returns a subscribable cell.
 //!
 //! # Seedness
 //!
@@ -93,9 +94,9 @@ pub trait PipelineSeed<T: CellValue>: PipelineInstall<T> {
 
 /// Uncompiled reactive operation chain.
 ///
-/// Pipelines are built by chaining pure operators on a source (`Cell` or
-/// another `Pipeline`). They deliberately do not expose `subscribe` or a
-/// public `get` — call `.materialize()` to produce a subscribable [`Cell`].
+/// Pipelines are built by chaining operators on a source (`Cell` or another
+/// `Pipeline`). They deliberately do not expose `subscribe` or a public `get`
+/// — call `.materialize()` to produce a subscribable [`Cell`].
 ///
 /// The `S: Seedness` parameter tracks whether the pipeline has a definite
 /// initial value. See module docs.
