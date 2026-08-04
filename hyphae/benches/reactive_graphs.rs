@@ -1,10 +1,13 @@
 //! Deep and wide application-shaped reactive graph benchmarks.
 //!
 //! This suite is intentionally dominated by `CellMap` query plans: every
-//! materialized view joins 4, 8, or 12 independently mutable data sources and
+//! materialized view joins up to 64 independently mutable data sources and
 //! performs a projection after every join. It measures updates entering at the
 //! root, updates entering at the deepest source, waves touching every source,
 //! graph installation/teardown, row scaling, and observer fan-out.
+//! A reported map depth is a `left_join_by` plus a `project` at every stage,
+//! so depth 32 and 64 represent roughly 66 and 130 total query operators once
+//! the initial select/project pair is included.
 //!
 //! Keep benchmark names and workloads stable across the pre/post migration
 //! revisions. The `join_heavy_operator_pipeline` builders require explicit
@@ -22,8 +25,9 @@ use hyphae::{
     Cell, CellImmutable, CellMap, JoinExt, MapExt, MapQuery, MaterializeDefinite,
     traits::{LeftJoinExt, ProjectMapExt, SelectExt},
 };
+use seq_macro::seq;
 
-const MAX_DEPTH: usize = 12;
+const MAX_DEPTH: usize = 64;
 const DEFAULT_ROWS: usize = 1_000;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -125,44 +129,24 @@ fn initial_plan(sources: &Sources) -> impl MapQuery<u64, Arc<Record>> + use<> {
         })
 }
 
-fn build_depth_4(sources: &Sources) -> CellMap<u64, Arc<Record>, CellImmutable> {
-    let plan = initial_plan(sources);
-    join_dimension!(plan, sources.dimensions[0], 1);
-    join_dimension!(plan, sources.dimensions[1], 2);
-    join_dimension!(plan, sources.dimensions[2], 3);
-    join_dimension!(plan, sources.dimensions[3], 4);
-    plan.materialize()
+macro_rules! define_map_builder {
+    ($name:ident, $depth:literal) => {
+        fn $name(sources: &Sources) -> CellMap<u64, Arc<Record>, CellImmutable> {
+            let plan = initial_plan(sources);
+            seq!(N in 0..$depth {
+                join_dimension!(plan, sources.dimensions[N], N as u64 + 1);
+            });
+            plan.materialize()
+        }
+    };
 }
 
-fn build_depth_8(sources: &Sources) -> CellMap<u64, Arc<Record>, CellImmutable> {
-    let plan = initial_plan(sources);
-    join_dimension!(plan, sources.dimensions[0], 1);
-    join_dimension!(plan, sources.dimensions[1], 2);
-    join_dimension!(plan, sources.dimensions[2], 3);
-    join_dimension!(plan, sources.dimensions[3], 4);
-    join_dimension!(plan, sources.dimensions[4], 5);
-    join_dimension!(plan, sources.dimensions[5], 6);
-    join_dimension!(plan, sources.dimensions[6], 7);
-    join_dimension!(plan, sources.dimensions[7], 8);
-    plan.materialize()
-}
-
-fn build_depth_12(sources: &Sources) -> CellMap<u64, Arc<Record>, CellImmutable> {
-    let plan = initial_plan(sources);
-    join_dimension!(plan, sources.dimensions[0], 1);
-    join_dimension!(plan, sources.dimensions[1], 2);
-    join_dimension!(plan, sources.dimensions[2], 3);
-    join_dimension!(plan, sources.dimensions[3], 4);
-    join_dimension!(plan, sources.dimensions[4], 5);
-    join_dimension!(plan, sources.dimensions[5], 6);
-    join_dimension!(plan, sources.dimensions[6], 7);
-    join_dimension!(plan, sources.dimensions[7], 8);
-    join_dimension!(plan, sources.dimensions[8], 9);
-    join_dimension!(plan, sources.dimensions[9], 10);
-    join_dimension!(plan, sources.dimensions[10], 11);
-    join_dimension!(plan, sources.dimensions[11], 12);
-    plan.materialize()
-}
+define_map_builder!(build_depth_4, 4);
+define_map_builder!(build_depth_8, 8);
+define_map_builder!(build_depth_12, 12);
+define_map_builder!(build_depth_16, 16);
+define_map_builder!(build_depth_32, 32);
+define_map_builder!(build_depth_64, 64);
 
 type Builder = fn(&Sources) -> CellMap<u64, Arc<Record>, CellImmutable>;
 
@@ -171,6 +155,9 @@ fn builder(depth: usize) -> Builder {
         4 => build_depth_4,
         8 => build_depth_8,
         12 => build_depth_12,
+        16 => build_depth_16,
+        32 => build_depth_32,
+        64 => build_depth_64,
         _ => unreachable!("unsupported benchmark depth"),
     }
 }
@@ -213,53 +200,28 @@ macro_rules! join_view_value {
     };
 }
 
-fn operator_graph_depth_4(
-    views: &[CellMap<u64, Arc<Record>, CellImmutable>],
-) -> Cell<u64, CellImmutable> {
-    let plan = views[0]
-        .get(&0)
-        .map(record_value as fn(&Option<Arc<Record>>) -> u64);
-    join_view_value!(plan, views[1]);
-    join_view_value!(plan, views[2]);
-    join_view_value!(plan, views[3]);
-    plan.materialize()
+macro_rules! define_operator_builder {
+    ($name:ident, $depth:literal) => {
+        fn $name(
+            views: &[CellMap<u64, Arc<Record>, CellImmutable>],
+        ) -> Cell<u64, CellImmutable> {
+            let plan = views[0]
+                .get(&0)
+                .map(record_value as fn(&Option<Arc<Record>>) -> u64);
+            seq!(N in 1..$depth {
+                join_view_value!(plan, views[N]);
+            });
+            plan.materialize()
+        }
+    };
 }
 
-fn operator_graph_depth_8(
-    views: &[CellMap<u64, Arc<Record>, CellImmutable>],
-) -> Cell<u64, CellImmutable> {
-    let plan = views[0]
-        .get(&0)
-        .map(record_value as fn(&Option<Arc<Record>>) -> u64);
-    join_view_value!(plan, views[1]);
-    join_view_value!(plan, views[2]);
-    join_view_value!(plan, views[3]);
-    join_view_value!(plan, views[4]);
-    join_view_value!(plan, views[5]);
-    join_view_value!(plan, views[6]);
-    join_view_value!(plan, views[7]);
-    plan.materialize()
-}
-
-fn operator_graph_depth_12(
-    views: &[CellMap<u64, Arc<Record>, CellImmutable>],
-) -> Cell<u64, CellImmutable> {
-    let plan = views[0]
-        .get(&0)
-        .map(record_value as fn(&Option<Arc<Record>>) -> u64);
-    join_view_value!(plan, views[1]);
-    join_view_value!(plan, views[2]);
-    join_view_value!(plan, views[3]);
-    join_view_value!(plan, views[4]);
-    join_view_value!(plan, views[5]);
-    join_view_value!(plan, views[6]);
-    join_view_value!(plan, views[7]);
-    join_view_value!(plan, views[8]);
-    join_view_value!(plan, views[9]);
-    join_view_value!(plan, views[10]);
-    join_view_value!(plan, views[11]);
-    plan.materialize()
-}
+define_operator_builder!(operator_graph_depth_4, 4);
+define_operator_builder!(operator_graph_depth_8, 8);
+define_operator_builder!(operator_graph_depth_12, 12);
+define_operator_builder!(operator_graph_depth_16, 16);
+define_operator_builder!(operator_graph_depth_32, 32);
+define_operator_builder!(operator_graph_depth_64, 64);
 
 type OperatorBuilder = fn(&[CellMap<u64, Arc<Record>, CellImmutable>]) -> Cell<u64, CellImmutable>;
 
@@ -268,6 +230,9 @@ fn operator_builder(depth: usize) -> OperatorBuilder {
         4 => operator_graph_depth_4,
         8 => operator_graph_depth_8,
         12 => operator_graph_depth_12,
+        16 => operator_graph_depth_16,
+        32 => operator_graph_depth_32,
+        64 => operator_graph_depth_64,
         _ => unreachable!("unsupported benchmark depth"),
     }
 }
@@ -286,7 +251,7 @@ fn mutate_dimension(sources: &Sources, source: usize, tick: u64) {
 fn bench_deep_root_updates(c: &mut Criterion) {
     let mut group = c.benchmark_group("reactive_graph/deep_root_update");
     group.sample_size(30);
-    for depth in [4usize, 8, 12] {
+    for depth in [4usize, 8, 12, 16, 32, 64] {
         group.bench_with_input(BenchmarkId::from_parameter(depth), &depth, |b, &depth| {
             let sources = populate(DEFAULT_ROWS);
             let view = builder(depth)(&sources);
@@ -304,7 +269,7 @@ fn bench_deep_root_updates(c: &mut Criterion) {
 fn bench_deepest_source_updates(c: &mut Criterion) {
     let mut group = c.benchmark_group("reactive_graph/deepest_source_update");
     group.sample_size(30);
-    for depth in [4usize, 8, 12] {
+    for depth in [4usize, 8, 12, 16, 32, 64] {
         group.bench_with_input(BenchmarkId::from_parameter(depth), &depth, |b, &depth| {
             let sources = populate(DEFAULT_ROWS);
             let view = builder(depth)(&sources);
@@ -322,7 +287,7 @@ fn bench_deepest_source_updates(c: &mut Criterion) {
 fn bench_all_source_waves(c: &mut Criterion) {
     let mut group = c.benchmark_group("reactive_graph/all_source_wave");
     group.sample_size(20);
-    for depth in [4usize, 8, 12] {
+    for depth in [4usize, 8, 12, 16, 32, 64] {
         group.bench_with_input(BenchmarkId::from_parameter(depth), &depth, |b, &depth| {
             let sources = populate(DEFAULT_ROWS);
             let view = builder(depth)(&sources);
@@ -361,7 +326,7 @@ fn bench_row_scaling(c: &mut Criterion) {
 fn bench_materialize_and_teardown(c: &mut Criterion) {
     let mut group = c.benchmark_group("reactive_graph/materialize_and_teardown");
     group.sample_size(20);
-    for depth in [4usize, 8, 12] {
+    for depth in [4usize, 8, 12, 16, 32, 64] {
         group.bench_with_input(BenchmarkId::from_parameter(depth), &depth, |b, &depth| {
             b.iter_batched(
                 || populate(100),
@@ -410,7 +375,7 @@ fn bench_observer_fanout(c: &mut Criterion) {
 fn bench_join_heavy_operator_graph(c: &mut Criterion) {
     let mut group = c.benchmark_group("reactive_graph/join_heavy_operator_pipeline");
     group.sample_size(30);
-    for depth in [4usize, 8, 12] {
+    for depth in [4usize, 8, 12, 16, 32, 64] {
         group.bench_with_input(BenchmarkId::from_parameter(depth), &depth, |b, &depth| {
             let sources = populate(100);
             let views: Vec<_> = (0..depth).map(|_| build_depth_4(&sources)).collect();
