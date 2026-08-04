@@ -2,12 +2,13 @@
 //!
 //! This suite is intentionally dominated by `CellMap` query plans: every
 //! materialized view joins up to 64 independently mutable data sources and
-//! performs a projection after every join. It measures updates entering at the
-//! root, updates entering at the deepest source, waves touching every source,
+//! performs four projections after every join. It measures updates entering at
+//! the root, updates entering at the deepest source, waves touching every source,
 //! graph installation/teardown, row scaling, and observer fan-out.
-//! A reported map depth is a `left_join_by` plus a `project` at every stage,
-//! so depth 32 and 64 represent roughly 66 and 130 total query operators once
-//! the initial select/project pair is included.
+//! A reported map depth is one `left_join_by` followed by four projections at
+//! every stage, modeling an application with roughly one join per five
+//! operators. Depth 32 and 64 therefore represent roughly 162 and 322 query
+//! operators once the initial select/project pair is included.
 //!
 //! Keep benchmark names and workloads stable across the pre/post migration
 //! revisions. The `join_heavy_operator_pipeline` builders require explicit
@@ -22,7 +23,7 @@ use std::sync::Arc;
 
 use criterion::{BatchSize, BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use hyphae::{
-    Cell, CellImmutable, CellMap, JoinExt, MapExt, MapQuery, MaterializeDefinite,
+    Cell, CellImmutable, CellMap, JoinExt, MapExt, MapQuery, MaterializeDefinite, TapExt,
     traits::{LeftJoinExt, ProjectMapExt, SelectExt},
 };
 use seq_macro::seq;
@@ -108,6 +109,36 @@ macro_rules! join_dimension {
                         generation: record.generation,
                     }),
                 ))
+            })
+            .project(|id, record| {
+                Some((
+                    *id,
+                    Arc::new(Record {
+                        bucket: record.bucket,
+                        checksum: record.checksum.rotate_left(7) ^ $salt,
+                        generation: record.generation,
+                    }),
+                ))
+            })
+            .project(|id, record| {
+                Some((
+                    *id,
+                    Arc::new(Record {
+                        bucket: record.bucket,
+                        checksum: record.checksum.wrapping_mul(33).wrapping_add($salt),
+                        generation: record.generation,
+                    }),
+                ))
+            })
+            .project(|id, record| {
+                Some((
+                    *id,
+                    Arc::new(Record {
+                        bucket: record.bucket,
+                        checksum: record.checksum.rotate_right(11) ^ ($salt << 1),
+                        generation: record.generation,
+                    }),
+                ))
             });
     };
 }
@@ -188,6 +219,18 @@ fn sum_pair((left, right): &(u64, u64)) -> u64 {
     left.wrapping_add(*right).rotate_left(3)
 }
 
+fn mix_value(value: &u64) -> u64 {
+    value.wrapping_mul(0x9e37_79b9).rotate_left(7)
+}
+
+fn fold_value(value: &u64) -> u64 {
+    value.rotate_right(11) ^ 0xa076_1d64_78bd_642f
+}
+
+fn observe_value(value: &u64) {
+    black_box(value);
+}
+
 macro_rules! join_view_value {
     ($plan:ident, $view:expr) => {
         let $plan = $plan
@@ -196,7 +239,10 @@ macro_rules! join_view_value {
                     .get(&0)
                     .map(record_value as fn(&Option<Arc<Record>>) -> u64),
             )
-            .map(sum_pair as fn(&(u64, u64)) -> u64);
+            .map(sum_pair as fn(&(u64, u64)) -> u64)
+            .map(mix_value as fn(&u64) -> u64)
+            .tap(observe_value as fn(&u64))
+            .map(fold_value as fn(&u64) -> u64);
     };
 }
 
