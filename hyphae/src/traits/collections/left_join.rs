@@ -12,7 +12,7 @@ use crate::{
     subscription::SubscriptionGuard,
     traits::{
         CellValue, HasForeignKey, IdFor,
-        collections::internal::join_runtime::install_join_runtime_via_query,
+        collections::internal::join_runtime::install_keyed_join_runtime_via_query,
     },
 };
 
@@ -59,14 +59,14 @@ where
     FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
 {
     fn install(self, sink: MapDiffSink<LK, (LV, Vec<RV>)>) -> Vec<SubscriptionGuard> {
-        install_join_runtime_via_query::<LK, LV, RK, RV, JK, LK, (LV, Vec<RV>), _, _, _, _, _>(
+        install_keyed_join_runtime_via_query::<LK, LV, RK, RV, JK, (LV, Vec<RV>), _, _, _, _, _>(
             self.left,
             self.right,
             self.left_key,
             self.right_key,
-            |left_k: &LK, left_v: &LV, rights: &[(RK, RV)]| {
+            |_left_k: &LK, left_v: &LV, rights: &[(RK, RV)]| {
                 let right_values: Vec<RV> = rights.iter().map(|(_, rv)| rv.clone()).collect();
-                vec![(left_k.clone(), (left_v.clone(), right_values))]
+                Some((left_v.clone(), right_values))
             },
             sink,
         )

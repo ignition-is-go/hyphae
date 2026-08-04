@@ -43,7 +43,7 @@ fn build_diamond(work: u64) -> Diamond {
     let s = Cell::new(0i64);
     let a = s.clone().map(|x| x + 1).materialize();
     let b = s.clone().map(|x| x * 10).materialize();
-    let j = a.join(b);
+    let j = a.clone().join(b.clone());
 
     let solves = Arc::new(AtomicU64::new(0));
     let counter = solves.clone();
@@ -60,7 +60,7 @@ fn build_diamond(work: u64) -> Diamond {
         solves,
         _guards: vec![g],
         // Keep the intermediate cells alive so the graph isn't torn down.
-        _keep: Box::new((a, b, j, k)),
+        _keep: Box::new((a, b, k)),
     }
 }
 

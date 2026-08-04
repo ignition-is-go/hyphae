@@ -79,6 +79,13 @@ fn inner_join_plan_materializes_to_joined_cell_map() {
 
     r.insert("b".into(), 20);
     assert_eq!(mat.get_value(&"b".to_string()), Some((2, 20)));
+
+    l.insert("a".into(), 3);
+    assert_eq!(mat.get_value(&"a".to_string()), Some((3, 10)));
+    r.remove(&"a".to_string());
+    assert_eq!(mat.get_value(&"a".to_string()), None);
+    r.insert("a".into(), 30);
+    assert_eq!(mat.get_value(&"a".to_string()), Some((3, 30)));
 }
 
 #[test]
@@ -132,6 +139,13 @@ fn left_join_plan_keeps_unmatched_left() {
     let mat = l.clone().left_join(r.clone()).materialize();
     assert_eq!(mat.get_value(&"a".to_string()), Some((1, vec![10])));
     assert_eq!(mat.get_value(&"b".to_string()), Some((2, vec![])));
+
+    r.insert("a".into(), 11);
+    assert_eq!(mat.get_value(&"a".to_string()), Some((1, vec![11])));
+    r.remove(&"a".to_string());
+    assert_eq!(mat.get_value(&"a".to_string()), Some((1, vec![])));
+    l.remove(&"b".to_string());
+    assert_eq!(mat.get_value(&"b".to_string()), None);
 }
 
 use crate::traits::LeftSemiJoinExt;
@@ -147,6 +161,13 @@ fn left_semi_join_plan_keeps_left_with_match() {
     let mat = l.clone().left_semi_join(r.clone()).materialize();
     assert_eq!(mat.get_value(&"a".to_string()), Some(1));
     assert_eq!(mat.get_value(&"b".to_string()), None);
+
+    r.remove(&"a".to_string());
+    assert_eq!(mat.get_value(&"a".to_string()), None);
+    r.insert("b".into(), 20);
+    assert_eq!(mat.get_value(&"b".to_string()), Some(2));
+    l.insert("b".into(), 3);
+    assert_eq!(mat.get_value(&"b".to_string()), Some(3));
 }
 
 use crate::traits::ProjectMapExt;
@@ -197,6 +218,15 @@ fn multi_left_join_plan_collects_matches_per_key() {
         .materialize();
     let (_, right_vals) = mat.get_value(&"l1".to_string()).unwrap();
     assert_eq!(right_vals.len(), 2);
+
+    r.remove(&"r1".to_string());
+    let (_, right_vals) = mat.get_value(&"l1".to_string()).unwrap();
+    assert_eq!(right_vals, vec![("g2".to_string(), 20)]);
+    l.insert("l1".into(), vec!["g1".into()]);
+    assert_eq!(
+        mat.get_value(&"l1".to_string()),
+        Some((vec!["g1".to_string()], vec![]))
+    );
 }
 
 use crate::traits::ProjectCellExt;

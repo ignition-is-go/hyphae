@@ -1,8 +1,10 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::hash_map::Entry,
     hash::Hash,
     sync::{Arc, Mutex},
 };
+
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{cell_map::MapDiff, subscription::SubscriptionGuard, traits::CellValue};
 
@@ -16,14 +18,33 @@ where
     OK: Hash + Eq + CellValue,
     OV: CellValue,
 {
-    left_rows: HashMap<LK, LV>,
-    left_join_keys: HashMap<LK, JK>,
-    join_to_left: HashMap<JK, HashSet<LK>>,
-    right_rows: HashMap<RK, RV>,
-    right_join_keys: HashMap<RK, JK>,
-    join_to_right: HashMap<JK, HashSet<RK>>,
-    left_output_keys: HashMap<LK, HashSet<OK>>,
-    output_cache: HashMap<OK, OV>,
+    left_rows: FxHashMap<LK, LV>,
+    left_join_keys: FxHashMap<LK, JK>,
+    join_to_left: FxHashMap<JK, FxHashSet<LK>>,
+    right_rows: FxHashMap<RK, RV>,
+    right_join_keys: FxHashMap<RK, JK>,
+    join_to_right: FxHashMap<JK, FxHashSet<RK>>,
+    left_output_keys: FxHashMap<LK, FxHashSet<OK>>,
+    output_cache: FxHashMap<OK, OV>,
+    scratch: JoinScratch<LK, RK, RV, JK, OK, OV>,
+}
+
+struct JoinScratch<LK, RK, RV, JK, OK, OV> {
+    impacted: FxHashSet<LK>,
+    changed_join_keys: FxHashSet<JK>,
+    right_rows: Vec<(RK, RV)>,
+    desired_rows: FxHashMap<OK, OV>,
+}
+
+impl<LK, RK, RV, JK, OK, OV> Default for JoinScratch<LK, RK, RV, JK, OK, OV> {
+    fn default() -> Self {
+        Self {
+            impacted: FxHashSet::default(),
+            changed_join_keys: FxHashSet::default(),
+            right_rows: Vec::new(),
+            desired_rows: FxHashMap::default(),
+        }
+    }
 }
 
 impl<LK, LV, RK, RV, JK, OK, OV> Default for JoinState<LK, LV, RK, RV, JK, OK, OV>
@@ -38,19 +59,20 @@ where
 {
     fn default() -> Self {
         Self {
-            left_rows: HashMap::new(),
-            left_join_keys: HashMap::new(),
-            join_to_left: HashMap::new(),
-            right_rows: HashMap::new(),
-            right_join_keys: HashMap::new(),
-            join_to_right: HashMap::new(),
-            left_output_keys: HashMap::new(),
-            output_cache: HashMap::new(),
+            left_rows: FxHashMap::default(),
+            left_join_keys: FxHashMap::default(),
+            join_to_left: FxHashMap::default(),
+            right_rows: FxHashMap::default(),
+            right_join_keys: FxHashMap::default(),
+            join_to_right: FxHashMap::default(),
+            left_output_keys: FxHashMap::default(),
+            output_cache: FxHashMap::default(),
+            scratch: JoinScratch::default(),
         }
     }
 }
 
-fn add_index_member<I, M>(index: &mut HashMap<I, HashSet<M>>, index_key: I, member: M)
+fn add_index_member<I, M>(index: &mut FxHashMap<I, FxHashSet<M>>, index_key: I, member: M)
 where
     I: Hash + Eq + CellValue,
     M: Hash + Eq + CellValue,
@@ -58,7 +80,7 @@ where
     index.entry(index_key).or_default().insert(member);
 }
 
-fn remove_index_member<I, M>(index: &mut HashMap<I, HashSet<M>>, index_key: &I, member: &M)
+fn remove_index_member<I, M>(index: &mut FxHashMap<I, FxHashSet<M>>, index_key: &I, member: &M)
 where
     I: Hash + Eq + CellValue,
     M: Hash + Eq + CellValue,
@@ -76,7 +98,7 @@ fn upsert_left<LK, LV, RK, RV, JK, OK, OV, FL>(
     left_key: LK,
     left_value: LV,
     left_join_key: &FL,
-    impacted: &mut HashSet<LK>,
+    impacted: &mut FxHashSet<LK>,
 ) where
     LK: Hash + Eq + CellValue,
     LV: CellValue,
@@ -103,7 +125,7 @@ fn upsert_left<LK, LV, RK, RV, JK, OK, OV, FL>(
 fn remove_left<LK, LV, RK, RV, JK, OK, OV>(
     state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV>,
     left_key: &LK,
-    impacted: &mut HashSet<LK>,
+    impacted: &mut FxHashSet<LK>,
 ) where
     LK: Hash + Eq + CellValue,
     LV: CellValue,
@@ -125,7 +147,7 @@ fn apply_left_diff<LK, LV, RK, RV, JK, OK, OV, FL>(
     state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV>,
     diff: &MapDiff<LK, LV>,
     left_join_key: &FL,
-    impacted: &mut HashSet<LK>,
+    impacted: &mut FxHashSet<LK>,
 ) where
     LK: Hash + Eq + CellValue,
     LV: CellValue,
@@ -173,7 +195,7 @@ fn upsert_right<LK, LV, RK, RV, JK, OK, OV, FR>(
     right_key: RK,
     right_value: RV,
     right_join_key: &FR,
-    changed_join_keys: &mut HashSet<JK>,
+    changed_join_keys: &mut FxHashSet<JK>,
 ) where
     LK: Hash + Eq + CellValue,
     LV: CellValue,
@@ -201,7 +223,7 @@ fn upsert_right<LK, LV, RK, RV, JK, OK, OV, FR>(
 fn remove_right<LK, LV, RK, RV, JK, OK, OV>(
     state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV>,
     right_key: &RK,
-    changed_join_keys: &mut HashSet<JK>,
+    changed_join_keys: &mut FxHashSet<JK>,
 ) where
     LK: Hash + Eq + CellValue,
     LV: CellValue,
@@ -222,7 +244,8 @@ fn apply_right_diff<LK, LV, RK, RV, JK, OK, OV, FR>(
     state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV>,
     diff: &MapDiff<RK, RV>,
     right_join_key: &FR,
-    impacted: &mut HashSet<LK>,
+    impacted: &mut FxHashSet<LK>,
+    changed_join_keys: &mut FxHashSet<JK>,
 ) where
     LK: Hash + Eq + CellValue,
     LV: CellValue,
@@ -233,13 +256,11 @@ fn apply_right_diff<LK, LV, RK, RV, JK, OK, OV, FR>(
     OV: CellValue,
     FR: Fn(&RK, &RV) -> JK,
 {
-    let mut changed_join_keys: HashSet<JK> = HashSet::new();
-
     fn apply_one<LK, LV, RK, RV, JK, OK, OV, FR>(
         state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV>,
         diff: &MapDiff<RK, RV>,
         right_join_key: &FR,
-        changed_join_keys: &mut HashSet<JK>,
+        changed_join_keys: &mut FxHashSet<JK>,
     ) where
         LK: Hash + Eq + CellValue,
         LV: CellValue,
@@ -293,9 +314,9 @@ fn apply_right_diff<LK, LV, RK, RV, JK, OK, OV, FR>(
         }
     }
 
-    apply_one(state, diff, right_join_key, &mut changed_join_keys);
+    apply_one(state, diff, right_join_key, changed_join_keys);
 
-    for join_key in changed_join_keys {
+    for join_key in changed_join_keys.drain() {
         if let Some(left_keys) = state.join_to_left.get(&join_key) {
             impacted.extend(left_keys.iter().cloned());
         }
@@ -304,7 +325,7 @@ fn apply_right_diff<LK, LV, RK, RV, JK, OK, OV, FR>(
 
 fn recompute_impacted<LK, LV, RK, RV, JK, OK, OV, FO>(
     state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV>,
-    impacted: HashSet<LK>,
+    scratch: &mut JoinScratch<LK, RK, RV, JK, OK, OV>,
     compute_rows: &FO,
 ) -> Vec<MapDiff<OK, OV>>
 where
@@ -319,54 +340,54 @@ where
 {
     let mut changes: Vec<MapDiff<OK, OV>> = Vec::new();
 
-    for left_key in impacted {
-        let previous_output_keys = state.left_output_keys.remove(&left_key).unwrap_or_default();
+    for left_key in scratch.impacted.drain() {
+        let mut current_output_keys = state.left_output_keys.remove(&left_key).unwrap_or_default();
 
-        let mut desired_rows: HashMap<OK, OV> = HashMap::new();
+        scratch.desired_rows.clear();
         if let Some(left_value) = state.left_rows.get(&left_key) {
-            let right_rows: Vec<(RK, RV)> = state
+            scratch.right_rows.clear();
+            if let Some(right_keys) = state
                 .left_join_keys
                 .get(&left_key)
                 .and_then(|join_key| state.join_to_right.get(join_key))
-                .map(|right_keys| {
-                    right_keys
-                        .iter()
-                        .filter_map(|right_key| {
-                            state
-                                .right_rows
-                                .get(right_key)
-                                .map(|right_value| (right_key.clone(), right_value.clone()))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            for (output_key, output_value) in compute_rows(&left_key, left_value, &right_rows) {
-                desired_rows.insert(output_key, output_value);
-            }
-        }
-
-        let desired_keys: HashSet<OK> = desired_rows.keys().cloned().collect();
-
-        for stale_key in previous_output_keys
-            .iter()
-            .filter(|output_key| !desired_keys.contains(*output_key))
-        {
-            if let Some(old_value) = state.output_cache.remove(stale_key) {
-                changes.push(MapDiff::Remove {
-                    key: stale_key.clone(),
-                    old_value,
-                });
-            }
-        }
-
-        for (output_key, new_value) in desired_rows {
-            match state.output_cache.get(&output_key).cloned() {
-                Some(old_value) => {
-                    if old_value != new_value {
+            {
+                scratch
+                    .right_rows
+                    .extend(right_keys.iter().filter_map(|right_key| {
                         state
-                            .output_cache
-                            .insert(output_key.clone(), new_value.clone());
+                            .right_rows
+                            .get(right_key)
+                            .map(|right_value| (right_key.clone(), right_value.clone()))
+                    }));
+            }
+
+            for (output_key, output_value) in
+                compute_rows(&left_key, left_value, &scratch.right_rows)
+            {
+                scratch.desired_rows.insert(output_key, output_value);
+            }
+        }
+
+        current_output_keys.retain(|output_key| {
+            if scratch.desired_rows.contains_key(output_key) {
+                true
+            } else {
+                if let Some(old_value) = state.output_cache.remove(output_key) {
+                    changes.push(MapDiff::Remove {
+                        key: output_key.clone(),
+                        old_value,
+                    });
+                }
+                false
+            }
+        });
+
+        for (output_key, new_value) in scratch.desired_rows.drain() {
+            current_output_keys.insert(output_key.clone());
+            match state.output_cache.entry(output_key.clone()) {
+                Entry::Occupied(mut entry) => {
+                    if entry.get() != &new_value {
+                        let old_value = entry.insert(new_value.clone());
                         changes.push(MapDiff::Update {
                             key: output_key,
                             old_value,
@@ -374,10 +395,8 @@ where
                         });
                     }
                 }
-                None => {
-                    state
-                        .output_cache
-                        .insert(output_key.clone(), new_value.clone());
+                Entry::Vacant(entry) => {
+                    entry.insert(new_value.clone());
                     changes.push(MapDiff::Insert {
                         key: output_key,
                         value: new_value,
@@ -386,8 +405,78 @@ where
             }
         }
 
-        if !desired_keys.is_empty() {
-            state.left_output_keys.insert(left_key, desired_keys);
+        if !current_output_keys.is_empty() {
+            state.left_output_keys.insert(left_key, current_output_keys);
+        }
+    }
+
+    changes
+}
+
+/// Recompute joins that produce zero or one output under the unchanged left key.
+///
+/// This covers left joins, semi joins, and key-equal inner joins. Their output
+/// shape does not need the general runtime's per-left output-key set or
+/// temporary desired-row map.
+fn recompute_keyed_impacted<LK, LV, RK, RV, JK, OV, FO>(
+    state: &mut JoinState<LK, LV, RK, RV, JK, LK, OV>,
+    scratch: &mut JoinScratch<LK, RK, RV, JK, LK, OV>,
+    compute_value: &FO,
+) -> Vec<MapDiff<LK, OV>>
+where
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    OV: CellValue,
+    FO: Fn(&LK, &LV, &[(RK, RV)]) -> Option<OV>,
+{
+    let mut changes = Vec::new();
+
+    for left_key in scratch.impacted.drain() {
+        scratch.right_rows.clear();
+        let desired_value = state.left_rows.get(&left_key).and_then(|left_value| {
+            if let Some(right_keys) = state
+                .left_join_keys
+                .get(&left_key)
+                .and_then(|join_key| state.join_to_right.get(join_key))
+            {
+                scratch
+                    .right_rows
+                    .extend(right_keys.iter().filter_map(|right_key| {
+                        state
+                            .right_rows
+                            .get(right_key)
+                            .map(|right_value| (right_key.clone(), right_value.clone()))
+                    }));
+            }
+            compute_value(&left_key, left_value, &scratch.right_rows)
+        });
+
+        match (state.output_cache.entry(left_key.clone()), desired_value) {
+            (Entry::Occupied(mut entry), Some(new_value)) => {
+                if entry.get() != &new_value {
+                    let old_value = entry.insert(new_value.clone());
+                    changes.push(MapDiff::Update {
+                        key: left_key,
+                        old_value,
+                        new_value,
+                    });
+                }
+            }
+            (Entry::Occupied(entry), None) => {
+                let (key, old_value) = entry.remove_entry();
+                changes.push(MapDiff::Remove { key, old_value });
+            }
+            (Entry::Vacant(entry), Some(new_value)) => {
+                entry.insert(new_value.clone());
+                changes.push(MapDiff::Insert {
+                    key: left_key,
+                    value: new_value,
+                });
+            }
+            (Entry::Vacant(_), None) => {}
         }
     }
 
@@ -461,9 +550,15 @@ where
         let sink = sink.clone();
         Arc::new(move |diff| {
             let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-            let mut impacted: HashSet<LK> = HashSet::new();
-            apply_left_diff(&mut state, diff, left_join_key.as_ref(), &mut impacted);
-            let changes = recompute_impacted(&mut state, impacted, compute_rows.as_ref());
+            let mut scratch = std::mem::take(&mut state.scratch);
+            apply_left_diff(
+                &mut state,
+                diff,
+                left_join_key.as_ref(),
+                &mut scratch.impacted,
+            );
+            let changes = recompute_impacted(&mut state, &mut scratch, compute_rows.as_ref());
+            state.scratch = scratch;
             // Emit while STILL holding `state`, not after dropping it. Under the
             // scheduler's wave-parallel drain the left and right sinks can run on
             // two threads at once; each reads the sibling's rows under this lock
@@ -485,9 +580,16 @@ where
         let sink = sink.clone();
         Arc::new(move |diff| {
             let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-            let mut impacted: HashSet<LK> = HashSet::new();
-            apply_right_diff(&mut state, diff, right_join_key.as_ref(), &mut impacted);
-            let changes = recompute_impacted(&mut state, impacted, compute_rows.as_ref());
+            let mut scratch = std::mem::take(&mut state.scratch);
+            apply_right_diff(
+                &mut state,
+                diff,
+                right_join_key.as_ref(),
+                &mut scratch.impacted,
+                &mut scratch.changed_join_keys,
+            );
+            let changes = recompute_impacted(&mut state, &mut scratch, compute_rows.as_ref());
+            state.scratch = scratch;
             // Emit while STILL holding `state`, not after dropping it. Under the
             // scheduler's wave-parallel drain the left and right sinks can run on
             // two threads at once; each reads the sibling's rows under this lock
@@ -497,6 +599,85 @@ where
             // row into the output map — the CellMap analogue of the join.rs
             // torn-value bug. Holding it across the emit makes emit order == lock
             // order, so whichever side observed the freshest sibling emits last.
+            emit_changes(&sink, changes);
+            drop(state);
+        })
+    };
+
+    let mut guards = left.install(left_sink);
+    guards.extend(right.install(right_sink));
+    guards
+}
+
+/// Install the zero-or-one-output, left-key-preserving join runtime.
+pub(crate) fn install_keyed_join_runtime_via_query<LK, LV, RK, RV, JK, OV, L, R, FL, FR, FO>(
+    left: L,
+    right: R,
+    left_join_key: FL,
+    right_join_key: FR,
+    compute_value: FO,
+    sink: crate::map_query::MapDiffSink<LK, OV>,
+) -> Vec<SubscriptionGuard>
+where
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    OV: CellValue,
+    L: crate::map_query::MapQuery<LK, LV>,
+    R: crate::map_query::MapQuery<RK, RV>,
+    FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
+    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    FO: Fn(&LK, &LV, &[(RK, RV)]) -> Option<OV> + Send + Sync + 'static,
+{
+    let state = Arc::new(Mutex::new(
+        JoinState::<LK, LV, RK, RV, JK, LK, OV>::default(),
+    ));
+    let left_join_key = Arc::new(left_join_key);
+    let right_join_key = Arc::new(right_join_key);
+    let compute_value = Arc::new(compute_value);
+
+    let left_sink: crate::map_query::MapDiffSink<LK, LV> = {
+        let state = state.clone();
+        let left_join_key = left_join_key.clone();
+        let compute_value = compute_value.clone();
+        let sink = sink.clone();
+        Arc::new(move |diff| {
+            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut scratch = std::mem::take(&mut state.scratch);
+            apply_left_diff(
+                &mut state,
+                diff,
+                left_join_key.as_ref(),
+                &mut scratch.impacted,
+            );
+            let changes =
+                recompute_keyed_impacted(&mut state, &mut scratch, compute_value.as_ref());
+            state.scratch = scratch;
+            emit_changes(&sink, changes);
+            drop(state);
+        })
+    };
+
+    let right_sink: crate::map_query::MapDiffSink<RK, RV> = {
+        let state = state.clone();
+        let right_join_key = right_join_key.clone();
+        let compute_value = compute_value.clone();
+        let sink = sink.clone();
+        Arc::new(move |diff| {
+            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut scratch = std::mem::take(&mut state.scratch);
+            apply_right_diff(
+                &mut state,
+                diff,
+                right_join_key.as_ref(),
+                &mut scratch.impacted,
+                &mut scratch.changed_join_keys,
+            );
+            let changes =
+                recompute_keyed_impacted(&mut state, &mut scratch, compute_value.as_ref());
+            state.scratch = scratch;
             emit_changes(&sink, changes);
             drop(state);
         })
