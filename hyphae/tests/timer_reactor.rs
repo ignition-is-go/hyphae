@@ -11,7 +11,7 @@
 //! actual regression gate for that bug; the rest cover that the reactor
 //! didn't lose basic interval/delayed-timer correctness in the rewrite.
 
-#![cfg(not(target_arch = "wasm32"))]
+#![cfg(all(not(target_arch = "wasm32"), feature = "scheduler"))]
 
 use std::{
     sync::{
