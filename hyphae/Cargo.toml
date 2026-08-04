@@ -83,6 +83,10 @@ name = "view_chains"
 harness = false
 
 [[bench]]
+name = "reactive_graphs"
+harness = false
+
+[[bench]]
 name = "subscriber_registry"
 harness = false
 
