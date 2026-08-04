@@ -12,9 +12,9 @@ true against `v2.0.1` on the same machine:
 
 1. Deep reactive update latency improves by at least 15% at 16, 32, and 64
    join stages, with the Criterion confidence interval excluding zero.
-2. At 80 logical operators (16 joins and four transforms per join), graph setup
-   performs at least 20% fewer allocations and allocates at least 35% fewer
-   bytes.
+2. At 80 logical operators (16 joins and four transforms per join), complete
+   recipe construction plus graph installation performs at least 10% fewer
+   allocations and allocates at least 35% fewer bytes.
 3. A steady-state update performs no more allocations than `v2.0.1`.
 4. Dropping the terminal materialized cell releases the installed candidate
    graph without requiring source destruction.
@@ -66,20 +66,26 @@ Run the exact comparison with:
 REVISION=HEAD tools/bench-operator-allocations.sh
 ```
 
-The original same-machine v2/v3 proof run on commit `b2a8cf9` produced:
+The final release-candidate run on `f76d57d`, compared with the original
+same-machine v2.0.1 measurements, produced:
 
 | Operators | Setup allocations, v2 / v3 | Reduction | Allocated bytes, v2 / v3 | Reduction |
 | ---: | ---: | ---: | ---: | ---: |
-| 20 | 152 / 125 | 17.8% | 140,592 / 89,236 | 36.5% |
-| 40 | 304 / 241 | 20.7% | 281,184 / 161,332 | 42.6% |
-| 80 | 608 / 473 | 22.2% | 562,368 / 305,524 | 45.7% |
+| 20 | 152 / 143 | 5.9% | 140,592 / 90,252 | 35.8% |
+| 40 | 304 / 275 | 9.5% | 281,184 / 163,244 | 41.9% |
+| 80 | 608 / 539 | 11.3% | 562,368 / 309,228 | 45.0% |
+
+These setup totals include both lazy-recipe construction (`graph_build`) and
+terminal installation (`materialize`). An earlier draft reported only the v3
+materialization phase (473 calls at 80 operators) while labeling it total
+setup; the final table corrects that accounting and uses 539 calls end to end.
 
 Across every depth, the allocation count and byte count for 100 steady-state
 updates were exactly equal between revisions. At 80 operators both performed
 4,470 allocations totaling 114,272 bytes; those are transient signal-value
 allocations, not graph construction deferred into the hot path.
 
-At teardown, the candidate released all 303,988 net bytes retained by its
+At teardown, the candidate released all 307,692 net bytes retained by its
 installed 80-operator graph. The `v2.0.1` terminal drop released only 35,052 of
 560,832 retained bytes; the remaining intermediate graph storage was released
 only when its sources died. This is the intended lifetime distinction of a
@@ -88,8 +94,8 @@ single explicit observation boundary.
 ## Conclusion
 
 The result clears every release threshold. At representative depth, the rewrite
-cuts update latency by roughly one third, setup allocation count by 22%, setup
-bytes and retained graph memory by roughly 46%, and does not increase
+cuts update latency by roughly one third, complete setup allocation count by
+11%, setup bytes and retained graph memory by roughly 45%, and does not increase
 steady-state update allocation. The explicit `.materialize()` migration buys a
 measured reduction in both work and resident graph state rather than merely
 changing where that work occurs.
