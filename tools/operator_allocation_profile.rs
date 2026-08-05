@@ -148,6 +148,7 @@ fn transform_3(value: &u64) -> u64 {
 macro_rules! join_stage {
     ($plan:ident, $sources:ident, $index:literal) => {
         let $plan = $plan
+            .materialize()
             .join($sources[$index].clone())
             .map(combine as fn(&(u64, u64)) -> u64)
             .map(transform_1 as fn(&u64) -> u64)
