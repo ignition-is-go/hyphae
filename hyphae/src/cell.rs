@@ -882,6 +882,11 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         // exact synchronous eager-push path, with no behavioral change.
         self.write_value(&signal);
         self.fanout(&signal);
+        // `notify` owns its signal because scheduler-enabled builds may move it
+        // into the deferred tick closure. End the synchronous signal lifetime
+        // explicitly as well so feature-minimal dependent builds preserve the
+        // same ownership contract.
+        drop(signal);
     }
 
     /// Settle this cell's current value — or its terminal completed/errored
