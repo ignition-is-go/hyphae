@@ -51,7 +51,7 @@ impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for TimeoutPipeline
                 if first.swap(false, Ordering::SeqCst) {
                     return;
                 }
-                let new_generation = generation.fetch_add(1, Ordering::SeqCst) + 1;
+                let new_generation = generation.fetch_add(1, Ordering::SeqCst).saturating_add(1);
                 callback(&Signal::Value(value.clone()));
                 let generation = generation.clone();
                 let completed = completed.clone();

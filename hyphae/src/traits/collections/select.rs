@@ -145,10 +145,10 @@ mod tests {
 
         let seen: Vec<_> = rx.try_iter().collect();
         assert_eq!(seen.len(), 2);
-        match seen.last().unwrap() {
-            MapDiff::Batch { changes } => assert_eq!(changes.len(), 2),
-            _ => panic!("expected batch diff from select"),
-        }
+        assert!(matches!(
+            seen.last(),
+            Some(MapDiff::Batch { changes }) if changes.len() == 2
+        ));
 
         let before = filtered.entries().materialize().get().len();
         map.insert_many(vec![("x".to_string(), 1), ("y".to_string(), 2)]);

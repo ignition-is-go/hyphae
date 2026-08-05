@@ -30,7 +30,7 @@ unsafe impl<F: Send> Send for OnceCallback<F> {}
 unsafe impl<F: Send> Sync for OnceCallback<F> {}
 
 impl<F: FnOnce()> OnceCallback<F> {
-    fn new(f: F) -> Self {
+    const fn new(f: F) -> Self {
         Self {
             called: AtomicBool::new(false),
             callback: UnsafeCell::new(Some(f)),
@@ -69,11 +69,7 @@ where
         let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
             Arc::new(move |signal: &Signal<T>| match signal {
                 Signal::Value(_) => callback(signal),
-                Signal::Complete => {
-                    oncecb.call();
-                    callback(signal);
-                }
-                Signal::Error(_) => {
+                Signal::Complete | Signal::Error(_) => {
                     oncecb.call();
                     callback(signal);
                 }
@@ -84,21 +80,30 @@ where
 
 impl<S, T, F, Sd> PipelineSeed<T> for FinalizePipeline<S, T, F, Sd>
 where
-    S: PipelineSeed<T>,
+    S: Pipeline<T, crate::pipeline::Definite>,
     Sd: Seedness,
     T: CellValue,
     F: FnOnce() + Send + Sync + 'static,
 {
     fn seed(&self) -> T {
-        self.source.seed()
+        self.source.pipeline_seed()
     }
 }
 
 #[allow(private_bounds)]
-impl<S, T, F, Sd> Pipeline<T, Sd> for FinalizePipeline<S, T, F, Sd>
+impl<S, T, F> Pipeline<T, crate::pipeline::Definite>
+    for FinalizePipeline<S, T, F, crate::pipeline::Definite>
 where
-    S: Pipeline<T, Sd>,
-    Sd: Seedness,
+    S: Pipeline<T, crate::pipeline::Definite>,
+    T: CellValue,
+    F: FnOnce() + Send + Sync + 'static,
+{
+}
+
+impl<S, T, F> Pipeline<T, crate::pipeline::Empty>
+    for FinalizePipeline<S, T, F, crate::pipeline::Empty>
+where
+    S: Pipeline<T, crate::pipeline::Empty>,
     T: CellValue,
     F: FnOnce() + Send + Sync + 'static,
 {
@@ -132,6 +137,14 @@ pub trait FinalizeExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     #[track_caller]
     fn finalize<F>(self, callback: F) -> impl crate::Materialize<T, S>
     where
+        F: FnOnce() + Send + Sync + 'static;
+}
+
+impl<T: CellValue, P: Pipeline<T, crate::pipeline::Definite>>
+    FinalizeExt<T, crate::pipeline::Definite> for P
+{
+    fn finalize<F>(self, callback: F) -> impl crate::Materialize<T, crate::pipeline::Definite>
+    where
         F: FnOnce() + Send + Sync + 'static,
     {
         FinalizePipeline {
@@ -143,7 +156,21 @@ pub trait FinalizeExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     }
 }
 
-impl<T: CellValue, S: Seedness, P: Pipeline<T, S>> FinalizeExt<T, S> for P {}
+impl<T: CellValue, P: Pipeline<T, crate::pipeline::Empty>> FinalizeExt<T, crate::pipeline::Empty>
+    for P
+{
+    fn finalize<F>(self, callback: F) -> impl crate::Materialize<T, crate::pipeline::Empty>
+    where
+        F: FnOnce() + Send + Sync + 'static,
+    {
+        FinalizePipeline {
+            source: self,
+            callback: Arc::new(OnceCallback::new(callback)),
+            _t: PhantomData,
+            _sd: PhantomData,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -1,7 +1,7 @@
 //! Select-cell plan node implementing [`MapQuery`].
 //!
 //! `select_cell` is the reactive variant of `select`: each row's inclusion is
-//! gated by a [`Watchable`]`<bool>`. Returns an uncompiled plan node; call
+//! gated by a [`Watchable`] producing `bool`. Returns an uncompiled plan node; call
 //! [`MapQuery::materialize`] to compile a plan into a subscribable
 //! [`CellMap`](crate::CellMap).
 
@@ -18,7 +18,7 @@ use crate::{
 /// Plan node for [`SelectCellExt::select_cell`].
 ///
 /// Reactive filter: each row's inclusion is decided by a per-row
-/// [`Watchable`]`<bool>` produced by `predicate(&key, &value)`. The row is
+/// [`Watchable`] producing `bool` from `predicate(&key, &value)`. The row is
 /// included while the gate is `true` and excluded when `false`.
 ///
 /// Not [`Clone`]: cloning a plan would silently duplicate per-row
@@ -156,7 +156,6 @@ mod tests {
         gates.insert("b".to_string(), true);
 
         let filtered = values
-            .clone()
             .select_cell({
                 let gates = gates.clone();
                 move |key, _value| gates.get(key).map(|v| v.unwrap_or(false)).materialize()
@@ -189,9 +188,9 @@ mod tests {
         source.insert_many(vec![("a".to_string(), 1), ("b".to_string(), 2)]);
         let seen: Vec<_> = rx.try_iter().collect();
         assert_eq!(seen.len(), 2);
-        match seen.last().unwrap() {
-            MapDiff::Batch { changes } => assert_eq!(changes.len(), 2),
-            _ => panic!("expected batch diff from select_cell"),
-        }
+        assert!(matches!(
+            seen.last(),
+            Some(MapDiff::Batch { changes }) if changes.len() == 2
+        ));
     }
 }

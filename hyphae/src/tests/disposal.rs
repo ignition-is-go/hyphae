@@ -17,7 +17,7 @@ fn test_weak_cell_upgrade_succeeds_while_cell_alive() {
     // While cell is alive, upgrade should succeed
     let upgraded = weak.upgrade();
     assert!(upgraded.is_some());
-    assert_eq!(upgraded.unwrap().get(), 42);
+    assert_eq!(upgraded.map(|cell| cell.get()), Some(42));
 }
 
 #[test]

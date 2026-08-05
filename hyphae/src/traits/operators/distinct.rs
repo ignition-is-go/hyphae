@@ -24,15 +24,12 @@ pub struct DistinctPipeline<S, T, Sd = Definite> {
 
 impl<S, T, Sd> PipelineInstall<T> for DistinctPipeline<S, T, Sd>
 where
-    S: PipelineInstall<T> + PipelineSeed<T> + Send + Sync + 'static,
+    S: PipelineInstall<T> + Send + Sync + 'static,
     Sd: Seedness,
     T: CellValue + Eq + Hash,
 {
     fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
         let seen: Arc<DashSet<T>> = Arc::new(DashSet::new());
-        // Pre-insert source's seed so the synchronous initial replay is naturally
-        // gated (the cell already holds it).
-        seen.insert(self.source.seed());
         let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
             Arc::new(move |signal: &Signal<T>| match signal {
                 Signal::Value(v) => {
@@ -49,28 +46,33 @@ where
 
 impl<S, T, Sd> PipelineSeed<T> for DistinctPipeline<S, T, Sd>
 where
-    S: PipelineSeed<T>,
+    S: Pipeline<T, crate::pipeline::Definite>,
     Sd: Seedness,
     T: CellValue + Eq + Hash,
 {
     fn seed(&self) -> T {
-        self.source.seed()
+        self.source.pipeline_seed()
     }
 }
 
 #[allow(private_bounds)]
-impl<S, T, Sd> Pipeline<T, Sd> for DistinctPipeline<S, T, Sd>
+impl<S, T> Pipeline<T, crate::pipeline::Definite>
+    for DistinctPipeline<S, T, crate::pipeline::Definite>
 where
-    S: Pipeline<T, Sd> + PipelineSeed<T>,
-    Sd: Seedness,
+    S: Pipeline<T, crate::pipeline::Definite>,
+    T: CellValue + Eq + Hash,
+{
+}
+
+impl<S, T> Pipeline<T, crate::pipeline::Empty> for DistinctPipeline<S, T, crate::pipeline::Empty>
+where
+    S: Pipeline<T, crate::pipeline::Empty>,
     T: CellValue + Eq + Hash,
 {
 }
 
 #[allow(private_bounds)]
-pub trait DistinctExt<T: CellValue + Eq + Hash, S: Seedness>:
-    Pipeline<T, S> + PipelineSeed<T>
-{
+pub trait DistinctExt<T: CellValue + Eq + Hash, S: Seedness>: Pipeline<T, S> {
     /// Filter out values that have already been emitted (by `Hash`/`Eq`).
     ///
     /// # Example
@@ -88,7 +90,13 @@ pub trait DistinctExt<T: CellValue + Eq + Hash, S: Seedness>:
     /// source.set(2); // blocked - already seen
     /// ```
     #[track_caller]
-    fn distinct(self) -> impl crate::Materialize<T, S> {
+    fn distinct(self) -> impl crate::Materialize<T, S>;
+}
+
+impl<T: CellValue + Eq + Hash, P: Pipeline<T, crate::pipeline::Definite>>
+    DistinctExt<T, crate::pipeline::Definite> for P
+{
+    fn distinct(self) -> impl crate::Materialize<T, crate::pipeline::Definite> {
         DistinctPipeline {
             source: self,
             _t: PhantomData,
@@ -97,9 +105,16 @@ pub trait DistinctExt<T: CellValue + Eq + Hash, S: Seedness>:
     }
 }
 
-impl<T: CellValue + Eq + Hash, S: Seedness, P: Pipeline<T, S> + PipelineSeed<T>> DistinctExt<T, S>
-    for P
+impl<T: CellValue + Eq + Hash, P: Pipeline<T, crate::pipeline::Empty>>
+    DistinctExt<T, crate::pipeline::Empty> for P
 {
+    fn distinct(self) -> impl crate::Materialize<T, crate::pipeline::Empty> {
+        DistinctPipeline {
+            source: self,
+            _t: PhantomData,
+            _sd: PhantomData,
+        }
+    }
 }
 
 #[cfg(test)]

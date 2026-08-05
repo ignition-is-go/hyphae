@@ -1,8 +1,9 @@
+use parking_lot::Mutex;
 use std::{
     collections::BTreeMap,
     marker::PhantomData,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
@@ -38,7 +39,7 @@ impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for DelayPipeline<S
             let ready = ready.clone();
             platform::spawn_delayed(duration, move || {
                 let deliver = {
-                    let mut state = ready.lock().expect("delay queue poisoned");
+                    let mut state = ready.lock();
                     state.1.insert(my_sequence, signal);
                     let mut deliver = Vec::new();
                     loop {
@@ -46,9 +47,10 @@ impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for DelayPipeline<S
                         let Some(signal) = state.1.remove(&next) else {
                             break;
                         };
-                        state.0 += 1;
+                        state.0 = state.0.saturating_add(1);
                         deliver.push(signal);
                     }
+                    drop(state);
                     deliver
                 };
                 for signal in deliver {
@@ -130,7 +132,7 @@ mod tests {
         let captured = events.clone();
         let pipeline = source.clone().delay(Duration::from_millis(20));
         let _guard = pipeline.install(Arc::new(move |signal| {
-            captured.lock().unwrap().push(match signal {
+            captured.lock().push(match signal {
                 Signal::Value(value) => format!("value:{}", **value),
                 Signal::Complete => "complete".into(),
                 Signal::Error(_) => "error".into(),
@@ -141,6 +143,6 @@ mod tests {
         source.complete();
         thread::sleep(Duration::from_millis(60));
 
-        assert_eq!(&*events.lock().unwrap(), &["value:7", "complete"]);
+        assert_eq!(&*events.lock(), &["value:7", "complete"]);
     }
 }

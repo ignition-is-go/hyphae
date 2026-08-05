@@ -13,31 +13,32 @@
 //! completion) and every graph is fully settled.
 #![cfg(feature = "scheduler")]
 
-use std::{
-    sync::{Arc, Mutex},
-    thread,
-};
+use std::{sync::Arc, thread};
+
+use parking_lot::Mutex;
 
 use hyphae::{
     Cell, CellMutable, JoinExt, MapExt, Materialize, Mutable, Signal, Watchable, batch,
     scheduler::no_coalesce,
 };
 
+const THREADS: usize = 8;
+const ITERS: i64 = 4_000;
+static SCHEDULER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
     // Force the wave-parallel drain path at test width: production defaults
     // the group threshold high (waves stay sequential at rest), so parallelism
     // tests must lower it to actually exercise concurrent same-height groups.
     hyphae::scheduler::set_wave_threshold_for_test(4);
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    SCHEDULER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 #[test]
 fn independent_diamonds_and_accumulators_settle_correctly_under_contention() {
     let _serial = scheduler_test_serial();
-    const THREADS: i64 = 8;
-    const ITERS: i64 = 4_000;
-
     // Per-thread observed state: (last diamond value, event-sum accumulator).
     let last: Vec<Arc<Mutex<i64>>> = (0..THREADS)
         .map(|_| Arc::new(Mutex::new(i64::MIN)))
@@ -45,20 +46,29 @@ fn independent_diamonds_and_accumulators_settle_correctly_under_contention() {
     let acc: Vec<Arc<Mutex<i64>>> = (0..THREADS).map(|_| Arc::new(Mutex::new(0))).collect();
 
     thread::scope(|s| {
-        for t in 0..THREADS {
-            let last = last[t as usize].clone();
-            let acc = acc[t as usize].clone();
+        for (last_value, accumulator) in last.iter().zip(&acc) {
+            let last = Arc::clone(last_value);
+            let acc = Arc::clone(accumulator);
             s.spawn(move || {
                 // A diamond: k = (src+1) + (src*10) — a behavior graph whose
                 // settled value is a pure function of the latest `src`.
                 let src = Cell::new(0i64);
-                let a = src.clone().map(|x| x + 1).materialize();
-                let b = src.clone().map(|x| x * 10).materialize();
-                let k = a.join(b).map(|(x, y)| *x + *y).materialize();
+                let a = src
+                    .clone()
+                    .map(|value| value.saturating_add(1))
+                    .materialize();
+                let b = src
+                    .clone()
+                    .map(|value| value.saturating_mul(10))
+                    .materialize();
+                let k = a
+                    .join(b)
+                    .map(|(left, right)| left.saturating_add(*right))
+                    .materialize();
                 let sink = last.clone();
                 let g1 = k.subscribe(move |sig| {
                     if let Signal::Value(v) = sig {
-                        *sink.lock().unwrap() = **v;
+                        *sink.lock() = **v;
                     }
                 });
 
@@ -69,10 +79,11 @@ fn independent_diamonds_and_accumulators_settle_correctly_under_contention() {
                 let esink = acc.clone();
                 let g2 = ev.clone().lock().subscribe(move |sig| {
                     if let Signal::Value(v) = sig {
-                        *esink.lock().unwrap() += **v;
+                        let mut sum = esink.lock();
+                        *sum = sum.saturating_add(**v);
                     }
                 });
-                *acc.lock().unwrap() = 0; // discard subscribe-time replay
+                *acc.lock() = 0; // discard subscribe-time replay
 
                 for i in 1..=ITERS {
                     // Diamond and accumulator driven together in one batch.
@@ -89,18 +100,20 @@ fn independent_diamonds_and_accumulators_settle_correctly_under_contention() {
 
     // Every thread has joined → scheduler quiescent → everything settled.
     let final_src = ITERS;
-    let expected_diamond = (final_src + 1) + (final_src * 10);
+    let expected_diamond = final_src
+        .saturating_add(1)
+        .saturating_add(final_src.saturating_mul(10));
     let expected_sum: i64 = (1..=ITERS).sum();
-    for t in 0..THREADS as usize {
+    for (thread_index, (last_value, accumulator)) in last.iter().zip(&acc).enumerate() {
         assert_eq!(
-            *last[t].lock().unwrap(),
+            *last_value.lock(),
             expected_diamond,
-            "thread {t}: diamond settled on the wrong (torn/stale) value"
+            "thread {thread_index}: diamond settled on the wrong (torn/stale) value"
         );
         assert_eq!(
-            *acc[t].lock().unwrap(),
+            *accumulator.lock(),
             expected_sum,
-            "thread {t}: event accumulator lost or double-counted a set"
+            "thread {thread_index}: event accumulator lost or double-counted a set"
         );
     }
 }

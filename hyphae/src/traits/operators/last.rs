@@ -5,17 +5,18 @@
 //! source never emits any values before completing, the cell stays `None`
 //! (use [`LastExt::last_or`] to pick a default in that case).
 
+use parking_lot::Mutex;
 use std::{
     marker::PhantomData,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, Ordering as AtomicOrdering},
     },
 };
 
 use super::CellValue;
 use crate::{
-    pipeline::{Empty, Pipeline, PipelineInstall, PipelineSeed, Seedness},
+    pipeline::{Empty, Pipeline, PipelineInstall, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -25,17 +26,6 @@ pub struct LastPipeline<S, T, Sd = crate::pipeline::Definite> {
     source: S,
     _t: PhantomData<fn(T)>,
     _sd: PhantomData<fn(Sd)>,
-}
-
-impl<S, T, Sd> PipelineSeed<T> for LastPipeline<S, T, Sd>
-where
-    S: PipelineInstall<T> + Send + Sync + 'static,
-    Sd: Seedness,
-    T: CellValue,
-{
-    fn seed(&self) -> T {
-        unreachable!("a last Empty pipeline has no seed")
-    }
 }
 
 impl<S, T, Sd> PipelineInstall<T> for LastPipeline<S, T, Sd>
@@ -56,10 +46,10 @@ where
                     if first.swap(false, AtomicOrdering::SeqCst) {
                         return;
                     }
-                    *last_value.lock().expect("last poisoned") = Some(v.as_ref().clone());
+                    *last_value.lock() = Some(v.as_ref().clone());
                 }
                 Signal::Complete => {
-                    let val = last_value.lock().expect("last poisoned").clone();
+                    let val = last_value.lock().clone();
                     if let Some(v) = val {
                         callback(&Signal::value(v));
                     }
@@ -103,31 +93,17 @@ where
                     if first.swap(false, AtomicOrdering::SeqCst) {
                         return;
                     }
-                    *last_value.lock().expect("last_or poisoned") = Some(v.as_ref().clone());
+                    *last_value.lock() = Some(v.as_ref().clone());
                 }
                 Signal::Complete => {
-                    let val = last_value.lock().expect("last_or poisoned").clone();
-                    let emit = match val {
-                        Some(v) => v,
-                        None => default.clone(),
-                    };
+                    let val = last_value.lock().clone();
+                    let emit = val.unwrap_or_else(|| default.clone());
                     callback(&Signal::value(emit));
                     callback(&Signal::Complete);
                 }
                 Signal::Error(e) => callback(&Signal::Error(e.clone())),
             });
         self.source.install(wrapped)
-    }
-}
-
-impl<S, T, Sd> PipelineSeed<T> for LastOrPipeline<S, T, Sd>
-where
-    S: PipelineInstall<T> + Send + Sync + 'static,
-    Sd: Seedness,
-    T: CellValue,
-{
-    fn seed(&self) -> T {
-        unreachable!("a last_or Empty pipeline has no seed")
     }
 }
 

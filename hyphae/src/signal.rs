@@ -20,54 +20,60 @@ pub enum Signal<T> {
 impl<T> Signal<T> {
     /// Create a value signal, wrapping in Arc.
     pub fn value(v: T) -> Self {
-        Signal::Value(Arc::new(v))
+        Self::Value(Arc::new(v))
     }
 
     /// Create a value signal from an existing Arc.
-    pub fn value_arc(v: Arc<T>) -> Self {
-        Signal::Value(v)
+    pub const fn value_arc(v: Arc<T>) -> Self {
+        Self::Value(v)
     }
 
     /// Create an error signal from any error type.
     pub fn error(err: impl Into<anyhow::Error>) -> Self {
-        Signal::Error(Arc::new(err.into()))
+        Self::Error(Arc::new(err.into()))
     }
 
     /// Returns true if this is a Value signal.
-    pub fn is_value(&self) -> bool {
-        matches!(self, Signal::Value(_))
+    #[must_use]
+    pub const fn is_value(&self) -> bool {
+        matches!(self, Self::Value(_))
     }
 
     /// Returns true if this is a Complete signal.
-    pub fn is_complete(&self) -> bool {
-        matches!(self, Signal::Complete)
+    #[must_use]
+    pub const fn is_complete(&self) -> bool {
+        matches!(self, Self::Complete)
     }
 
     /// Returns true if this is an Error signal.
-    pub fn is_error(&self) -> bool {
-        matches!(self, Signal::Error(_))
+    #[must_use]
+    pub const fn is_error(&self) -> bool {
+        matches!(self, Self::Error(_))
     }
 
     /// Returns a reference to the value if this is a Value signal.
+    #[must_use]
     pub fn value_ref(&self) -> Option<&T> {
         match self {
-            Signal::Value(v) => Some(v.as_ref()),
+            Self::Value(v) => Some(v.as_ref()),
             _ => None,
         }
     }
 
     /// Returns the Arc if this is a Value signal.
-    pub fn arc(&self) -> Option<&Arc<T>> {
+    #[must_use]
+    pub const fn arc(&self) -> Option<&Arc<T>> {
         match self {
-            Signal::Value(v) => Some(v),
+            Self::Value(v) => Some(v),
             _ => None,
         }
     }
 
     /// Returns the error if this is an Error signal.
-    pub fn error_ref(&self) -> Option<&Arc<anyhow::Error>> {
+    #[must_use]
+    pub const fn error_ref(&self) -> Option<&Arc<anyhow::Error>> {
         match self {
-            Signal::Error(e) => Some(e),
+            Self::Error(e) => Some(e),
             _ => None,
         }
     }
@@ -78,9 +84,9 @@ impl<T: Clone> Signal<T> {
     /// The mapper receives a reference and returns a new value.
     pub fn map<U>(&self, f: impl FnOnce(&T) -> U) -> Signal<U> {
         match self {
-            Signal::Value(v) => Signal::value(f(v.as_ref())),
-            Signal::Complete => Signal::Complete,
-            Signal::Error(e) => Signal::Error(e.clone()),
+            Self::Value(v) => Signal::value(f(v.as_ref())),
+            Self::Complete => Signal::Complete,
+            Self::Error(e) => Signal::Error(e.clone()),
         }
     }
 }

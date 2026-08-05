@@ -336,7 +336,6 @@ mod tests {
 
         let right = CellMap::<String, (String, i32)>::new();
         let joined = left
-            .clone()
             .inner_join_by(right.clone(), |_, lv| lv.0.clone(), |_, rv| rv.0.clone())
             .materialize();
 
@@ -352,10 +351,10 @@ mod tests {
 
         let seen: Vec<_> = rx.try_iter().collect();
         assert_eq!(seen.len(), 2);
-        match seen.last().expect("last diff") {
-            MapDiff::Batch { changes } => assert_eq!(changes.len(), 2),
-            _ => panic!("expected batch diff from inner_join_by"),
-        }
+        assert!(matches!(
+            seen.last(),
+            Some(MapDiff::Batch { changes }) if changes.len() == 2
+        ));
     }
 
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]

@@ -23,7 +23,7 @@ pub enum KeyChange<K> {
     /// A key was removed from the set.
     Removed(K),
     /// Multiple key changes emitted as a single atomic notification.
-    Batch(Vec<KeyChange<K>>),
+    Batch(Vec<Self>),
 }
 
 /// A reactive set of keys that notifies subscribers when membership changes.

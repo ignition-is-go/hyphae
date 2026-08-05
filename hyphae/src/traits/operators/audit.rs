@@ -1,7 +1,8 @@
+use parking_lot::Mutex;
 use std::{
     marker::PhantomData,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
@@ -35,9 +36,10 @@ impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for AuditPipeline<S
                 if first.swap(false, Ordering::SeqCst) || terminated.load(Ordering::SeqCst) {
                     return;
                 }
-                *latest.lock().expect("audit poisoned") = Some(value.as_ref().clone());
+                *latest.lock() = Some(value.as_ref().clone());
                 if !in_window.swap(true, Ordering::SeqCst) {
-                    let current_generation = generation.fetch_add(1, Ordering::SeqCst) + 1;
+                    let current_generation =
+                        generation.fetch_add(1, Ordering::SeqCst).saturating_add(1);
                     let latest = latest.clone();
                     let generation = generation.clone();
                     let in_window = in_window.clone();
@@ -47,7 +49,8 @@ impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for AuditPipeline<S
                         if !terminated.load(Ordering::SeqCst)
                             && generation.load(Ordering::SeqCst) == current_generation
                         {
-                            if let Some(value) = latest.lock().expect("audit poisoned").clone() {
+                            let value = latest.lock().clone();
+                            if let Some(value) = value {
                                 callback(&Signal::value(value));
                             }
                             in_window.store(false, Ordering::SeqCst);
@@ -58,7 +61,8 @@ impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for AuditPipeline<S
             Signal::Complete => {
                 if !terminated.swap(true, Ordering::SeqCst) {
                     generation.fetch_add(1, Ordering::SeqCst);
-                    if let Some(value) = latest.lock().expect("audit poisoned").take() {
+                    let value = latest.lock().take();
+                    if let Some(value) = value {
                         callback(&Signal::value(value));
                     }
                     callback(&Signal::Complete);
@@ -67,7 +71,7 @@ impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for AuditPipeline<S
             Signal::Error(error) => {
                 if !terminated.swap(true, Ordering::SeqCst) {
                     generation.fetch_add(1, Ordering::SeqCst);
-                    latest.lock().expect("audit poisoned").take();
+                    latest.lock().take();
                     callback(&Signal::Error(error.clone()));
                 }
             }
@@ -140,7 +144,7 @@ mod tests {
         let captured = events.clone();
         let pipeline = source.clone().audit(Duration::from_millis(20));
         let _guard = pipeline.install(Arc::new(move |signal| {
-            captured.lock().unwrap().push(match signal {
+            captured.lock().push(match signal {
                 Signal::Value(value) => format!("value:{}", **value),
                 Signal::Complete => "complete".into(),
                 Signal::Error(_) => "error".into(),
@@ -151,6 +155,6 @@ mod tests {
         source.complete();
         thread::sleep(Duration::from_millis(60));
 
-        assert_eq!(&*events.lock().unwrap(), &["value:7", "complete"]);
+        assert_eq!(&*events.lock(), &["value:7", "complete"]);
     }
 }

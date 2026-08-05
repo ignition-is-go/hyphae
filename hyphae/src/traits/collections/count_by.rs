@@ -50,7 +50,7 @@ where
             GroupedOps {
                 make_group_key: move |k, v| group_key(k, v),
                 on_insert: |group_count: &mut usize, _: &K, _: &V| {
-                    *group_count += 1;
+                    *group_count = group_count.saturating_add(1);
                 },
                 on_update: |_: &mut usize, _: &K, _: &V, _: &V| {},
                 on_remove: |group_count: &mut usize, _: &K, _: &V| {
@@ -134,9 +134,9 @@ mod tests {
         source.insert_many(vec![("a".to_string(), 1), ("b".to_string(), 2)]);
         let seen: Vec<_> = rx.try_iter().collect();
         assert_eq!(seen.len(), 2);
-        match seen.last().unwrap() {
-            MapDiff::Batch { changes } => assert_eq!(changes.len(), 2),
-            _ => panic!("expected batch diff from count_by"),
-        }
+        assert!(matches!(
+            seen.last(),
+            Some(MapDiff::Batch { changes }) if changes.len() == 2
+        ));
     }
 }

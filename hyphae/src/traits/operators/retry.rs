@@ -26,11 +26,11 @@ pub struct RetryPipeline<S, T, P> {
 
 fn install_attempt<S, T, P>(
     source: Arc<S>,
-    output: Cell<T, CellMutable>,
+    output: &Cell<T, CellMutable>,
     attempts: Arc<AtomicUsize>,
     policy: Arc<P>,
     key: Uuid,
-    generation: Arc<Mutex<u64>>,
+    generation: &Arc<Mutex<u64>>,
     skip_seed: bool,
 ) where
     S: PipelineInstall<T>,
@@ -55,15 +55,15 @@ fn install_attempt<S, T, P>(
             }
             Signal::Complete => output.notify(Signal::Complete),
             Signal::Error(error) => {
-                let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst).saturating_add(1);
                 if policy(error.as_ref(), attempt) {
                     install_attempt(
                         source.clone(),
-                        output.clone(),
+                        &output,
                         attempts.clone(),
                         policy.clone(),
                         key,
-                        generation_for_callback.clone(),
+                        &generation_for_callback,
                         false,
                     );
                 } else {
@@ -93,13 +93,15 @@ where
     fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
         let output = Cell::<T, CellMutable>::new(self.source.seed());
         let key = Uuid::new_v4();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let generation = Arc::new(Mutex::new(0));
         install_attempt(
             self.source.clone(),
-            output.clone(),
-            Arc::new(AtomicUsize::new(0)),
+            &output,
+            attempts,
             self.policy.clone(),
             key,
-            Arc::new(Mutex::new(0)),
+            &generation,
             true,
         );
         output.subscribe(move |signal| callback(signal))
@@ -137,9 +139,7 @@ pub trait RetryExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
     {
         RetryPipeline {
             source: Arc::new(self),
-            policy: Arc::new(move |error: &anyhow::Error, attempt| {
-                predicate(error as &dyn Any, attempt)
-            }),
+            policy: Arc::new(move |error: &anyhow::Error, attempt| predicate(error, attempt)),
             _type: PhantomData,
         }
     }

@@ -1,6 +1,6 @@
-//! Reactive HashMap with per-key observability.
+//! Reactive `HashMap` with per-key observability.
 //!
-//! `CellMap` wraps a concurrent HashMap where each entry can be individually observed.
+//! `CellMap` wraps a concurrent `HashMap` where each entry can be individually observed.
 //! Changes to keys trigger reactive updates to observers.
 
 use std::{
@@ -8,12 +8,13 @@ use std::{
     hash::Hash,
     marker::PhantomData,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicUsize, Ordering},
     },
 };
 
 use dashmap::DashMap;
+use parking_lot::Mutex;
 use uuid::Uuid;
 
 use crate::{
@@ -36,7 +37,7 @@ pub enum MapDiff<K, V> {
     /// An existing key's value was updated.
     Update { key: K, old_value: V, new_value: V },
     /// Multiple diffs emitted as a single notification.
-    Batch { changes: Vec<MapDiff<K, V>> },
+    Batch { changes: Vec<Self> },
 }
 
 pub(crate) struct CellMapInner<K, V>
@@ -67,7 +68,7 @@ where
     pub(crate) name: Mutex<Option<Arc<str>>>,
 }
 
-/// A reactive HashMap with per-key observability.
+/// A reactive `HashMap` with per-key observability.
 ///
 /// # Example
 ///
@@ -144,8 +145,12 @@ where
                 *self = Self::from_entries(entries.clone());
             }
             MapDiff::Insert { key, value } => {
-                if let Some(idx) = self.index_by_key.get(key).copied() {
-                    self.entries[idx].1 = value.clone();
+                if let Some(entry) = self
+                    .index_by_key
+                    .get(key)
+                    .and_then(|index| self.entries.get_mut(*index))
+                {
+                    entry.1 = value.clone();
                     return;
                 }
                 let idx = self.entries.len();
@@ -156,8 +161,12 @@ where
                 self.remove_key(key);
             }
             MapDiff::Update { key, new_value, .. } => {
-                if let Some(idx) = self.index_by_key.get(key).copied() {
-                    self.entries[idx].1 = new_value.clone();
+                if let Some(entry) = self
+                    .index_by_key
+                    .get(key)
+                    .and_then(|index| self.entries.get_mut(*index))
+                {
+                    entry.1 = new_value.clone();
                 }
             }
             MapDiff::Batch { changes } => {
@@ -173,9 +182,10 @@ where
             return;
         };
         self.entries.swap_remove(idx);
-        if idx < self.entries.len() {
-            let swapped_key = self.entries[idx].0.clone();
-            self.index_by_key.insert(swapped_key, idx);
+        if idx < self.entries.len()
+            && let Some((swapped_key, _)) = self.entries.get(idx)
+        {
+            self.index_by_key.insert(swapped_key.clone(), idx);
         }
     }
 }
@@ -220,8 +230,12 @@ where
                 *self = Self::from_entries(entries.clone());
             }
             MapDiff::Insert { key, value } => {
-                if let Some(idx) = self.index_by_key.get(key).copied() {
-                    self.items[idx] = value.clone();
+                if let Some(item) = self
+                    .index_by_key
+                    .get(key)
+                    .and_then(|index| self.items.get_mut(*index))
+                {
+                    *item = value.clone();
                     return;
                 }
                 let idx = self.items.len();
@@ -233,8 +247,12 @@ where
                 self.remove_key(key);
             }
             MapDiff::Update { key, new_value, .. } => {
-                if let Some(idx) = self.index_by_key.get(key).copied() {
-                    self.items[idx] = new_value.clone();
+                if let Some(item) = self
+                    .index_by_key
+                    .get(key)
+                    .and_then(|index| self.items.get_mut(*index))
+                {
+                    *item = new_value.clone();
                 }
             }
             MapDiff::Batch { changes } => {
@@ -251,9 +269,10 @@ where
         };
         self.items.swap_remove(idx);
         self.keys_by_index.swap_remove(idx);
-        if idx < self.keys_by_index.len() {
-            let swapped_key = self.keys_by_index[idx].clone();
-            self.index_by_key.insert(swapped_key, idx);
+        if idx < self.keys_by_index.len()
+            && let Some(swapped_key) = self.keys_by_index.get(idx)
+        {
+            self.index_by_key.insert(swapped_key.clone(), idx);
         }
     }
 }
@@ -263,8 +282,9 @@ where
     K: Hash + Eq + CellValue,
     V: CellValue,
 {
-    /// Create a new empty CellMap.
+    /// Create a new empty `CellMap`.
     #[track_caller]
+    #[must_use]
     pub fn new() -> Self {
         let diffs_cell = Cell::new(MapDiff::Initial {
             entries: Vec::new(),
@@ -297,14 +317,14 @@ where
         }
     }
 
-    /// Own a subscription guard, keeping it alive as long as this CellMap exists.
+    /// Own a subscription guard, keeping it alive as long as this `CellMap` exists.
     pub fn own(&self, guard: SubscriptionGuard) {
         self.inner.owned.insert(Uuid::new_v4(), guard);
     }
 
-    /// Own a subscription guard, keeping it alive as long as this CellMap exists.
+    /// Own a subscription guard, keeping it alive as long as this `CellMap` exists.
     ///
-    /// This enables building custom reactive CellMaps driven by external cells.
+    /// This enables building custom reactive `CellMaps` driven by external cells.
     pub fn own_guard(&self, guard: SubscriptionGuard) {
         self.own(guard);
     }
@@ -335,7 +355,13 @@ where
         // Sweep about once per `len` mutations, with a floor so tiny maps don't
         // sweep on nearly every op.
         let threshold = len.max(32);
-        if self.inner.prune_ops.fetch_add(1, Ordering::Relaxed) + 1 < threshold {
+        if self
+            .inner
+            .prune_ops
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1)
+            < threshold
+        {
             return;
         }
         self.inner.prune_ops.store(0, Ordering::Relaxed);
@@ -352,29 +378,23 @@ where
             return old;
         }
 
-        // Emit diff (O(1) - just notifies subscribers)
-        let diff = match &old {
-            Some(old_value) => MapDiff::Update {
-                key: key.clone(),
-                old_value: old_value.clone(),
-                new_value: value.clone(),
-            },
-            None => MapDiff::Insert {
-                key: key.clone(),
-                value: value.clone(),
-            },
-        };
-        self.inner.diffs_cell.set(diff);
-
-        // Update len (O(1))
-        self.inner.len_cell.set(self.inner.data.len());
-
         // Notify per-key observers (O(1))
         if let Some(weak) = self.inner.key_cells.get(&key)
             && let Some(cell) = weak.upgrade()
         {
-            cell.set(Some(value));
+            cell.set(Some(value.clone()));
         }
+
+        let diff = old
+            .as_ref()
+            .map(|old_value| MapDiff::Update {
+                key: key.clone(),
+                old_value: old_value.clone(),
+                new_value: value.clone(),
+            })
+            .unwrap_or(MapDiff::Insert { key, value });
+        self.inner.diffs_cell.set(diff);
+        self.inner.len_cell.set(self.inner.data.len());
 
         old
     }
@@ -392,17 +412,17 @@ where
             if old.as_ref().is_some_and(|old_value| old_value == &value) {
                 continue;
             }
-            let diff = match old {
-                Some(old_value) => MapDiff::Update {
+            let diff = old.map_or_else(
+                || MapDiff::Insert {
+                    key: key.clone(),
+                    value: value.clone(),
+                },
+                |old_value| MapDiff::Update {
                     key: key.clone(),
                     old_value,
                     new_value: value.clone(),
                 },
-                None => MapDiff::Insert {
-                    key: key.clone(),
-                    value: value.clone(),
-                },
-            };
+            );
             changes.push(diff);
 
             if let Some(weak) = self.inner.key_cells.get(&key)
@@ -527,17 +547,17 @@ where
             if old.as_ref().is_some_and(|old_value| old_value == &value) {
                 continue;
             }
-            changes.push(match old {
-                Some(old_value) => MapDiff::Update {
+            changes.push(old.map_or_else(
+                || MapDiff::Insert {
+                    key: key.clone(),
+                    value: value.clone(),
+                },
+                |old_value| MapDiff::Update {
                     key: key.clone(),
                     old_value,
                     new_value: value.clone(),
                 },
-                None => MapDiff::Insert {
-                    key: key.clone(),
-                    value: value.clone(),
-                },
-            });
+            ));
             if let Some(weak) = self.inner.key_cells.get(&key)
                 && let Some(cell) = weak.upgrade()
             {
@@ -557,7 +577,7 @@ where
     /// routing one diff through `apply_batch(vec![diff])` allocates a
     /// 1-element `Vec` and wraps the emission in `MapDiff::Batch` for
     /// nothing. Used by the `MapQuery` materialize sink and by downstream
-    /// per-diff routers (e.g. myko's belongs_to bucket index). Caller must
+    /// per-diff routers (e.g. myko's `belongs_to` bucket index). Caller must
     /// own the diff (one upstream clone is unavoidable when the source
     /// hands out `&diff`).
     pub fn apply_diff_owned(&self, diff: MapDiff<K, V>) {
@@ -614,13 +634,10 @@ where
                     cell.set(Some(new_value.clone()));
                 }
             }
-            MapDiff::Batch { .. } => {
+            MapDiff::Batch { changes } => {
                 // Batches still go through apply_batch (preserves existing
                 // semantics for callers that emit batched diffs).
-                self.apply_batch(match diff {
-                    MapDiff::Batch { changes } => changes,
-                    _ => unreachable!(),
-                });
+                self.apply_batch(changes.clone());
                 return;
             }
         }
@@ -631,11 +648,6 @@ where
 
     /// Apply a batch of diffs and emit them as one `MapDiff::Batch`.
     pub fn apply_batch(&self, changes: Vec<MapDiff<K, V>>) {
-        if changes.is_empty() {
-            return;
-        }
-        self.maybe_prune_key_cells();
-
         fn apply_one<K, V>(
             map: &CellMap<K, V, CellMutable>,
             diff: &MapDiff<K, V>,
@@ -719,9 +731,14 @@ where
             }
         }
 
+        if changes.is_empty() {
+            return;
+        }
+        self.maybe_prune_key_cells();
+
         let mut applied_changes = Vec::with_capacity(changes.len());
-        for change in &changes {
-            if let Some(applied) = apply_one(self, change) {
+        for change in changes {
+            if let Some(applied) = apply_one(self, &change) {
                 applied_changes.push(applied);
             }
         }
@@ -736,22 +753,28 @@ where
         });
     }
 
-    /// Give this CellMap a name for debugging. Names its internal cells accordingly.
+    /// Give this `CellMap` a name for debugging. Names its internal cells accordingly.
+    #[must_use]
     pub fn with_name(self, name: impl Into<Arc<str>>) -> Self {
         let name: Arc<str> = name.into();
-        self.inner
-            .diffs_cell
-            .clone()
-            .with_name(format!("{}::diffs", name));
-        self.inner
-            .len_cell
-            .clone()
-            .with_name(format!("{}::len", name));
-        *self.inner.name.lock().expect("cell_map name poisoned") = Some(name);
+        drop(
+            self.inner
+                .diffs_cell
+                .clone()
+                .with_name(format!("{name}::diffs")),
+        );
+        drop(
+            self.inner
+                .len_cell
+                .clone()
+                .with_name(format!("{name}::len")),
+        );
+        *self.inner.name.lock() = Some(name);
         self
     }
 
     /// Lock the map to prevent further mutations.
+    #[must_use]
     pub fn lock(self) -> CellMap<K, V, CellImmutable> {
         CellMap {
             inner: self.inner,
@@ -776,6 +799,7 @@ where
     V: CellValue,
 {
     /// Create a weak handle to this map.
+    #[must_use]
     pub fn downgrade(&self) -> WeakCellMap<K, V> {
         WeakCellMap {
             inner: Arc::downgrade(&self.inner),
@@ -799,14 +823,8 @@ where
         // Create new cell with current value
         let current = self.inner.data.get(key).map(|r| r.value().clone());
         let cell = Cell::new(current);
-        if let Some(map_name) = self
-            .inner
-            .name
-            .lock()
-            .expect("cell_map name poisoned")
-            .as_ref()
-        {
-            cell.clone().with_name(format!("{}[{:?}]", map_name, key));
+        if let Some(map_name) = self.inner.name.lock().as_ref() {
+            drop(cell.clone().with_name(format!("{map_name}[{key:?}]")));
         }
 
         // Mark per-key cell as owned by diffs_cell so it doesn't appear as an orphan root
@@ -825,6 +843,7 @@ where
     /// The initial value is computed from the current map state, then updates
     /// are applied incrementally as O(1) operations per diff.
     #[track_caller]
+    #[must_use]
     pub fn entries(&self) -> impl Materialize<Vec<(K, V)>, Definite> + use<K, V, M> {
         let initial: Vec<(K, V)> = self
             .inner
@@ -837,14 +856,8 @@ where
         )));
 
         let cell = Cell::new(initial);
-        if let Some(map_name) = self
-            .inner
-            .name
-            .lock()
-            .expect("cell_map name poisoned")
-            .as_ref()
-        {
-            cell.clone().with_name(format!("{}::entries", map_name));
+        if let Some(map_name) = self.inner.name.lock().as_ref() {
+            drop(cell.clone().with_name(format!("{map_name}::entries")));
         }
         let weak_cell = cell.downgrade();
 
@@ -884,6 +897,7 @@ where
     /// This maintains its own diff-driven projection to avoid forcing an
     /// intermediate entries materialization on hot value-only paths.
     #[track_caller]
+    #[must_use]
     pub fn items(&self) -> impl Materialize<Vec<V>, Definite> + use<K, V, M> {
         let initial: Vec<(K, V)> = self
             .inner
@@ -896,14 +910,8 @@ where
         )));
 
         let cell = Cell::new(initial.into_iter().map(|(_, value)| value).collect());
-        if let Some(map_name) = self
-            .inner
-            .name
-            .lock()
-            .expect("cell_map name poisoned")
-            .as_ref()
-        {
-            cell.clone().with_name(format!("{}::items", map_name));
+        if let Some(map_name) = self.inner.name.lock().as_ref() {
+            drop(cell.clone().with_name(format!("{map_name}::items")));
         }
         let weak_cell = cell.downgrade();
         let map_keepalive = self.inner.clone();
@@ -932,6 +940,7 @@ where
 
     /// Build an observable pipeline of all keys.
     #[track_caller]
+    #[must_use]
     pub fn keys(&self) -> impl Materialize<Vec<K>, Definite> + use<K, V, M> {
         use crate::traits::MapExt;
         self.entries()
@@ -942,6 +951,7 @@ where
     ///
     /// This is the preferred reactive count operator because it reuses the
     /// internally maintained length cell instead of materializing entries.
+    #[must_use]
     pub fn size(&self) -> impl Materialize<usize, Definite> + use<K, V, M> {
         // A derived size Cell that RETAINS its parent map, mirroring
         // entries()/items()/subscribe_diffs. Returning a bare
@@ -972,11 +982,13 @@ where
     /// Get an observable Cell of the map length.
     ///
     /// Alias for [`CellMap::size`].
+    #[must_use]
     pub fn len(&self) -> impl Materialize<usize, Definite> + use<K, V, M> {
         self.size()
     }
 
     /// Check if map is empty (non-reactive).
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.inner.data.is_empty()
     }
@@ -984,6 +996,7 @@ where
     /// Get an observable Cell of diff notifications.
     ///
     /// Emits `MapDiff` updates. Starts with `MapDiff::Initial { entries: vec![] }`.
+    #[must_use]
     pub fn diffs(&self) -> impl Materialize<MapDiff<K, V>, Definite> + use<K, V, M> {
         self.inner.diffs_cell.clone().lock()
     }
@@ -1000,7 +1013,7 @@ where
     /// or it may deadlock. Mutate after `for_each` returns, or use
     /// `snapshot()` when the loop body must write back.
     pub fn for_each(&self, mut f: impl FnMut(&K, &V)) {
-        for entry in self.inner.data.iter() {
+        for entry in &self.inner.data {
             f(entry.key(), entry.value());
         }
     }
@@ -1009,6 +1022,7 @@ where
     ///
     /// Unlike `entries()`, this does NOT create a Cell or subscribe to changes.
     /// Use this for one-shot reads where you don't need live updates.
+    #[must_use]
     pub fn snapshot(&self) -> Vec<(K, V)> {
         self.inner
             .data
@@ -1073,6 +1087,7 @@ where
     V: CellValue,
 {
     /// Upgrade to a mutable `CellMap` if it is still alive.
+    #[must_use]
     pub fn upgrade(&self) -> Option<CellMap<K, V, CellMutable>> {
         self.inner.upgrade().map(|inner| CellMap {
             inner,
@@ -1174,6 +1189,8 @@ mod tests {
 
     use super::*;
     use crate::traits::{Gettable, Watchable};
+
+    const KEY_CELL_CHURN: u64 = 2_000;
 
     #[test]
     fn test_cellmap_basic() {
@@ -1333,18 +1350,18 @@ mod tests {
         // Should have received Initial with both entries
         let diffs: Vec<_> = rx.try_iter().collect();
         assert_eq!(diffs.len(), 1);
-        match &diffs[0] {
-            MapDiff::Initial { entries } => {
-                assert_eq!(entries.len(), 2);
-            }
-            _ => panic!("Expected Initial diff"),
-        }
+        assert!(matches!(
+            diffs.first(),
+            Some(MapDiff::Initial { entries }) if entries.len() == 2
+        ));
 
         // Insert should trigger diff
         map.insert("c".to_string(), 3);
         let diffs: Vec<_> = rx.try_iter().collect();
         assert_eq!(diffs.len(), 1);
-        assert!(matches!(&diffs[0], MapDiff::Insert { key, value } if key == "c" && *value == 3));
+        assert!(
+            matches!(diffs.first(), Some(MapDiff::Insert { key, value }) if key == "c" && *value == 3)
+        );
     }
 
     #[test]
@@ -1369,14 +1386,8 @@ mod tests {
 
         let seen: Vec<_> = rx.try_iter().collect();
         assert_eq!(seen.len(), 2);
-        match &seen[0] {
-            MapDiff::Initial { entries } => assert!(entries.is_empty()),
-            _ => panic!("expected Initial diff first"),
-        }
-        match &seen[1] {
-            MapDiff::Batch { changes } => assert_eq!(changes.len(), 2),
-            _ => panic!("expected single Batch diff from apply_batch"),
-        }
+        assert!(matches!(seen.first(), Some(MapDiff::Initial { entries }) if entries.is_empty()));
+        assert!(matches!(seen.get(1), Some(MapDiff::Batch { changes }) if changes.len() == 2));
     }
 
     #[test]
@@ -1393,17 +1404,10 @@ mod tests {
 
         let seen: Vec<_> = rx.try_iter().collect();
         assert_eq!(seen.len(), 2);
-        match &seen[0] {
-            MapDiff::Initial { entries } => assert!(entries.is_empty()),
-            _ => panic!("expected Initial diff first"),
-        }
-        match &seen[1] {
-            MapDiff::Insert { key, value } => {
-                assert_eq!(key, "a");
-                assert_eq!(*value, 1);
-            }
-            _ => panic!("expected Insert diff"),
-        }
+        assert!(matches!(seen.first(), Some(MapDiff::Initial { entries }) if entries.is_empty()));
+        assert!(
+            matches!(seen.get(1), Some(MapDiff::Insert { key, value }) if key == "a" && *value == 1)
+        );
     }
 
     #[test]
@@ -1431,24 +1435,12 @@ mod tests {
 
         let seen: Vec<_> = rx.try_iter().collect();
         assert_eq!(seen.len(), 2);
-        match &seen[0] {
-            MapDiff::Initial { entries } => assert_eq!(entries.len(), 1),
-            _ => panic!("expected Initial diff first"),
-        }
-        match &seen[1] {
-            MapDiff::Batch { changes } => {
-                assert_eq!(changes.len(), 1);
-                assert!(matches!(
-                    &changes[0],
-                    MapDiff::Update {
-                        key,
-                        old_value: 1,
-                        new_value: 2
-                    } if key == "a"
-                ));
-            }
-            _ => panic!("expected single Batch diff from apply_batch"),
-        }
+        assert!(matches!(seen.first(), Some(MapDiff::Initial { entries }) if entries.len() == 1));
+        assert!(matches!(
+            seen.get(1),
+            Some(MapDiff::Batch { changes })
+                if matches!(changes.as_slice(), [MapDiff::Update { key, old_value: 1, new_value: 2 }] if key == "a")
+        ));
 
         assert_eq!(map.get_value(&"a".to_string()), Some(2));
     }
@@ -1469,14 +1461,8 @@ mod tests {
 
         let seen: Vec<_> = rx.try_iter().collect();
         assert_eq!(seen.len(), 2);
-        match &seen[0] {
-            MapDiff::Initial { entries } => assert_eq!(entries.len(), 2),
-            _ => panic!("expected Initial diff first"),
-        }
-        match &seen[1] {
-            MapDiff::Initial { entries } => assert!(entries.is_empty()),
-            _ => panic!("expected empty Initial diff after full clear"),
-        }
+        assert!(matches!(seen.first(), Some(MapDiff::Initial { entries }) if entries.len() == 2));
+        assert!(matches!(seen.get(1), Some(MapDiff::Initial { entries }) if entries.is_empty()));
     }
 
     #[test]
@@ -1563,13 +1549,7 @@ mod tests {
         // Initial snapshot + replace_all Batch
         let seen: Vec<_> = rx.try_iter().collect();
         assert_eq!(seen.len(), 2);
-        match &seen[1] {
-            MapDiff::Batch { changes } => {
-                // Should have: 2 removes (b, c) + 1 update (a: 1→10) + 1 insert (d)
-                assert_eq!(changes.len(), 4);
-            }
-            other => panic!("expected Batch from replace_all, got {:?}", other),
-        }
+        assert!(matches!(seen.get(1), Some(MapDiff::Batch { changes }) if changes.len() == 4));
     }
 
     #[test]
@@ -1607,8 +1587,7 @@ mod tests {
 
         // Churn a large number of distinct keys: observe each (creating a
         // key_cells slot), drop the observer, then drive mutations.
-        const CHURN: u64 = 2_000;
-        for i in 0..CHURN {
+        for i in 0..KEY_CELL_CHURN {
             let cell = map.get(&i).materialize();
             assert_eq!(cell.get(), None);
             drop(cell); // observer gone → this key's weak now dangles
@@ -1621,7 +1600,7 @@ mod tests {
         let live = map.inner.key_cells.len();
         assert!(
             live < 256,
-            "key_cells should stay bounded under churn, got {live} slots after {CHURN} keys",
+            "key_cells should stay bounded under churn, got {live} slots after {KEY_CELL_CHURN} keys",
         );
     }
 

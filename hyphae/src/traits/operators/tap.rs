@@ -36,22 +36,29 @@ where
 
 impl<S, T, F> PipelineSeed<T> for TapPipeline<S, T, F>
 where
-    S: PipelineSeed<T>,
+    S: Pipeline<T, crate::pipeline::Definite>,
     T: CellValue,
     F: Fn(&T) + Send + Sync + 'static,
 {
     fn seed(&self) -> T {
-        let v = self.source.seed();
+        let v = self.source.pipeline_seed();
         (self.f)(&v);
         v
     }
 }
 
 #[allow(private_bounds)]
-impl<S, T, F, Sd> Pipeline<T, Sd> for TapPipeline<S, T, F>
+impl<S, T, F> Pipeline<T, crate::pipeline::Definite> for TapPipeline<S, T, F>
 where
-    S: Pipeline<T, Sd>,
-    Sd: Seedness,
+    S: Pipeline<T, crate::pipeline::Definite>,
+    T: CellValue,
+    F: Fn(&T) + Send + Sync + 'static,
+{
+}
+
+impl<S, T, F> Pipeline<T, crate::pipeline::Empty> for TapPipeline<S, T, F>
+where
+    S: Pipeline<T, crate::pipeline::Empty>,
     T: CellValue,
     F: Fn(&T) + Send + Sync + 'static,
 {
@@ -66,6 +73,14 @@ pub trait TapExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     #[track_caller]
     fn tap<F>(self, f: F) -> impl crate::Materialize<T, S>
     where
+        F: Fn(&T) + Send + Sync + 'static;
+}
+
+impl<T: CellValue, P: Pipeline<T, crate::pipeline::Definite>> TapExt<T, crate::pipeline::Definite>
+    for P
+{
+    fn tap<F>(self, f: F) -> impl crate::Materialize<T, crate::pipeline::Definite>
+    where
         F: Fn(&T) + Send + Sync + 'static,
     {
         TapPipeline {
@@ -76,7 +91,18 @@ pub trait TapExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     }
 }
 
-impl<T: CellValue, S: Seedness, P: Pipeline<T, S>> TapExt<T, S> for P {}
+impl<T: CellValue, P: Pipeline<T, crate::pipeline::Empty>> TapExt<T, crate::pipeline::Empty> for P {
+    fn tap<F>(self, f: F) -> impl crate::Materialize<T, crate::pipeline::Empty>
+    where
+        F: Fn(&T) + Send + Sync + 'static,
+    {
+        TapPipeline {
+            source: self,
+            f: Arc::new(f),
+            _t: PhantomData,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

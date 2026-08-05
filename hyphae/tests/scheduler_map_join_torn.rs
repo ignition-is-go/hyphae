@@ -1,11 +1,11 @@
-//! CellMap analogue of the join.rs / join_vec.rs torn-value repro, under the
+//! `CellMap` analogue of the join.rs / `join_vec.rs` torn-value repro, under the
 //! scheduler's wave-parallel drain.
 //!
-//! A two-input CellMap join (`inner_join`, `left_join`, `multi_left_join`) has
+//! A two-input `CellMap` join (`inner_join`, `left_join`, `multi_left_join`) has
 //! a left sink and a right sink, each driven by a distinct height-0 root
 //! (`left.diffs_cell` / `right.diffs_cell`). Each sink reads the *sibling*
 //! side's rows to build the combined output row. Under wave-parallel draining
-//! (a wave of >= PARALLEL_WAVE_THRESHOLD same-height ops runs on rayon), the
+//! (a wave of >= `PARALLEL_WAVE_THRESHOLD` same-height ops runs on rayon), the
 //! two sinks can run at the literal same instant on different threads; if the
 //! emit is not ordered consistently with the sibling read, two concurrent
 //! updates to one output key can last-write-wins a stale combined value.
@@ -46,24 +46,23 @@ fn concurrent_inner_joins_never_settle_on_a_torn_value() {
         // Both sides of all PAIRS joins mutated in ONE batch → a single wave of
         // 2*PAIRS height-0 diff ops, wide enough to dispatch in parallel.
         batch(|| {
-            // Indexes three parallel Vecs (lefts/rights here, outputs below) by
-            // the same counter plus uses `i` in arithmetic — `enumerate()` over
-            // any single one doesn't fit this shape.
-            #[allow(clippy::needless_range_loop)]
-            for i in 0..PAIRS {
-                let base = it * 1000 + i as i64;
-                lefts[i].insert("k".into(), base);
-                rights[i].insert("k".into(), base + 500);
+            for (index, (left, right)) in lefts.iter().zip(&rights).enumerate() {
+                let base = it
+                    .saturating_mul(1000)
+                    .saturating_add(i64::try_from(index).unwrap_or(i64::MAX));
+                left.insert("k".into(), base);
+                right.insert("k".into(), base.saturating_add(500));
             }
         });
 
-        #[allow(clippy::needless_range_loop)]
-        for i in 0..PAIRS {
-            let base = it * 1000 + i as i64;
+        for (index, output) in outputs.iter().enumerate() {
+            let base = it
+                .saturating_mul(1000)
+                .saturating_add(i64::try_from(index).unwrap_or(i64::MAX));
             assert_eq!(
-                outputs[i].get_value(&"k".to_string()),
-                Some((base, base + 500)),
-                "inner_join settled on a torn/stale value at iteration {it}, pair {i}"
+                output.get_value(&"k".to_string()),
+                Some((base, base.saturating_add(500))),
+                "inner_join settled on a torn/stale value at iteration {it}, pair {index}"
             );
         }
     }

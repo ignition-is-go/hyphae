@@ -14,13 +14,15 @@
 #![cfg(feature = "scheduler")]
 
 use std::sync::{
-    Arc, Mutex,
+    Arc,
     atomic::{AtomicUsize, Ordering},
 };
 
 use hyphae::{
-    Cell, CellMutable, Materialize, Mutable, Signal, Watchable, batch, scheduler::no_coalesce,
+    Cell, CellImmutable, CellMap, CellMutable, CellSet, JoinExt, MapExt, Materialize, Mutable,
+    Signal, Source, Watchable, batch, scheduler::no_coalesce,
 };
+use parking_lot::Mutex;
 
 /// The scheduler's tick queue is a single process-wide structure (see
 /// `hyphae::scheduler`'s cross-thread docs) — correct for one real server
@@ -29,13 +31,14 @@ use hyphae::{
 /// with each other's batches. Serialize them. Recovers from poisoning so one
 /// test's intentional panic (e.g. the panic-cleanup regression test) can't
 /// cascade-fail the rest of the file.
-fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
+static SCHEDULER_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn scheduler_test_serial() -> parking_lot::MutexGuard<'static, ()> {
     // Force the wave-parallel drain path at test width: production defaults
     // the group threshold high (waves stay sequential at rest), so parallelism
     // tests must lower it to actually exercise concurrent same-height groups.
     hyphae::scheduler::set_wave_threshold_for_test(4);
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    SCHEDULER_TEST_LOCK.lock()
 }
 
 /// A hand-rolled accumulator: sum every value the cell emits. Returns the live
@@ -46,11 +49,35 @@ fn sum_sink(cell: &Cell<i64, CellMutable>) -> Arc<Mutex<i64>> {
     let sink = acc.clone();
     let guard = cell.subscribe(move |sig| {
         if let Signal::Value(v) = sig {
-            *sink.lock().unwrap() += **v;
+            let mut value = sink.lock();
+            *value = value.saturating_add(**v);
         }
     });
     std::mem::forget(guard);
     acc
+}
+
+fn wire_batched_source(src: &Source<u64>) -> (Cell<i64, CellImmutable>, Arc<AtomicUsize>) {
+    let a = Cell::new(0i64);
+    let b = Cell::new(0i64);
+    let (a2, b2) = (a.clone(), b.clone());
+    std::mem::forget(src.subscribe(move |s| {
+        if let Signal::Value(v) = s {
+            batch(|| a2.set(i64::try_from(**v).unwrap_or(i64::MAX)));
+        }
+    }));
+    std::mem::forget(src.subscribe(move |s| {
+        if let Signal::Value(v) = s {
+            batch(|| b2.set(i64::try_from(**v).unwrap_or(i64::MAX).saturating_mul(10)));
+        }
+    }));
+    let joined = a.join(b).map(|(x, y)| x.saturating_add(*y)).materialize();
+    let fires = fire_counter(&joined);
+    (joined, fires)
+}
+
+fn force_unwind() -> ! {
+    std::panic::resume_unwind(Box::new("intentional test unwind"))
 }
 
 /// Count every value emitted by `cell` (fanouts observed by a subscriber).
@@ -73,13 +100,13 @@ fn coalescing_source_drops_an_intermediate_set_in_a_batch() {
     // the accumulator never sees the intermediate `1` — it settles once at `2`.
     let s = Cell::new(0i64);
     let acc = sum_sink(&s);
-    *acc.lock().unwrap() = 0; // discard seed replay
+    *acc.lock() = 0; // discard seed replay
     batch(|| {
         s.set(1);
         s.set(2);
     });
     assert_eq!(
-        *acc.lock().unwrap(),
+        *acc.lock(),
         2,
         "a coalescing source drops the intermediate emission under batch"
     );
@@ -92,13 +119,13 @@ fn no_coalesce_source_preserves_every_set_in_a_batch() {
     // the accumulator folds every emission — 0 + 1 + 2.
     let s = Cell::new(0i64).no_coalesce();
     let acc = sum_sink(&s);
-    *acc.lock().unwrap() = 0;
+    *acc.lock() = 0;
     batch(|| {
         s.set(1);
         s.set(2);
     });
     assert_eq!(
-        *acc.lock().unwrap(),
+        *acc.lock(),
         1 + 2,
         "no_coalesce preserves every emission under batch"
     );
@@ -110,27 +137,23 @@ fn no_coalesce_scope_stamps_cells_born_inside() {
     // A cell constructed inside the scope is stamped at birth...
     let inside = no_coalesce(|| Cell::new(0i64));
     let acc_in = sum_sink(&inside);
-    *acc_in.lock().unwrap() = 0;
+    *acc_in.lock() = 0;
     batch(|| {
         inside.set(1);
         inside.set(2);
     });
-    assert_eq!(
-        *acc_in.lock().unwrap(),
-        3,
-        "cell born in scope is no_coalesce"
-    );
+    assert_eq!(*acc_in.lock(), 3, "cell born in scope is no_coalesce");
 
     // ...while a cell born outside it coalesces as usual.
     let outside = Cell::new(0i64);
     let acc_out = sum_sink(&outside);
-    *acc_out.lock().unwrap() = 0;
+    *acc_out.lock() = 0;
     batch(|| {
         outside.set(1);
         outside.set(2);
     });
     assert_eq!(
-        *acc_out.lock().unwrap(),
+        *acc_out.lock(),
         2,
         "cell born outside the scope still coalesces"
     );
@@ -143,14 +166,10 @@ fn no_coalesce_is_inert_outside_a_batch() {
     // nothing off the batch path.
     let tagged = Cell::new(0i64).no_coalesce();
     let acc = sum_sink(&tagged);
-    *acc.lock().unwrap() = 0;
+    *acc.lock() = 0;
     tagged.set(1);
     tagged.set(2);
-    assert_eq!(
-        *acc.lock().unwrap(),
-        3,
-        "synchronous path is unchanged by the tag"
-    );
+    assert_eq!(*acc.lock(), 3, "synchronous path is unchanged by the tag");
 }
 
 #[test]
@@ -166,8 +185,6 @@ fn no_coalesce_scope_preserves_multiplicity_but_settles_glitch_free() {
     // final sink would leave that intermediate join cell coalescing, and it
     // would collapse the two arrivals before the sink ever saw them. This is
     // exactly the "every materialized cell on the path" rule.
-    use hyphae::{JoinExt, MapExt, Materialize};
-
     let s = Cell::new(0i64);
     let sink = no_coalesce(|| {
         let a = s.clone().map(|x| x + 1).materialize();
@@ -181,7 +198,7 @@ fn no_coalesce_scope_preserves_multiplicity_but_settles_glitch_free() {
         let sink_slot = slot.clone();
         let g = sink.subscribe(move |sig| {
             if let Signal::Value(v) = sig {
-                *sink_slot.lock().unwrap() = **v;
+                *sink_slot.lock() = **v;
             }
         });
         std::mem::forget(g);
@@ -199,7 +216,7 @@ fn no_coalesce_scope_preserves_multiplicity_but_settles_glitch_free() {
     );
     // ...and the settled value is the height-ordered result: (5+1) + (5*10).
     assert_eq!(
-        *last.lock().unwrap(),
+        *last.lock(),
         (5 + 1) + (5 * 10),
         "final value is glitch-free despite preserved multiplicity"
     );
@@ -208,42 +225,14 @@ fn no_coalesce_scope_preserves_multiplicity_but_settles_glitch_free() {
 #[test]
 fn batched_source_coalesces_a_same_rate_diamond_that_per_subscriber_batch_cannot() {
     let _serial = scheduler_test_serial();
-    use hyphae::{JoinExt, MapExt, Materialize, Source};
-
     // rship's shape: two cells sample the SAME source, each via its OWN
     // subscriber callback that opens its OWN batch around the set. A node
     // joining the two same-rate values then re-fires once per subscriber,
     // because the two arrivals land in two separate propagation passes —
     // per-call-site batching cannot coalesce across subscribers.
-    fn wire(
-        src: &Source<u64>,
-    ) -> (
-        Cell<i64, hyphae::CellImmutable>,
-        std::sync::Arc<AtomicUsize>,
-    ) {
-        let a = Cell::new(0i64);
-        let b = Cell::new(0i64);
-        let (a2, b2) = (a.clone(), b.clone());
-        std::mem::forget(src.subscribe(move |s| {
-            if let Signal::Value(v) = s {
-                batch(|| a2.set(**v as i64));
-            }
-        }));
-        std::mem::forget(src.subscribe(move |s| {
-            if let Signal::Value(v) = s {
-                batch(|| b2.set(**v as i64 * 10));
-            }
-        }));
-        // k is fed by both legs; it owns the subscriptions to a and b, keeping
-        // them alive after the locals drop.
-        let k = a.join(b).map(|(x, y)| x + y).materialize();
-        let fires = fire_counter(&k);
-        (k, fires)
-    }
-
     // Unbatched source → two separate batch windows → the join fires twice.
     let plain = Source::new();
-    let (k1, f1) = wire(&plain);
+    let (k1, f1) = wire_batched_source(&plain);
     f1.store(0, Ordering::SeqCst);
     plain.emit(5);
     assert_eq!(
@@ -256,7 +245,7 @@ fn batched_source_coalesces_a_same_rate_diamond_that_per_subscriber_batch_cannot
     // Batched source → the whole fan-out is one pass; the per-subscriber batches
     // nest into it, so the join settles once for the emit.
     let batched = Source::new().batched();
-    let (k2, f2) = wire(&batched);
+    let (k2, f2) = wire_batched_source(&batched);
     f2.store(0, Ordering::SeqCst);
     batched.emit(5);
     assert_eq!(
@@ -270,16 +259,15 @@ fn batched_source_coalesces_a_same_rate_diamond_that_per_subscriber_batch_cannot
 #[test]
 fn cellmap_diffs_survive_a_batched_add_then_remove() {
     let _serial = scheduler_test_serial();
-    use hyphae::CellMap;
-
     let map: CellMap<u32, u32> = CellMap::new();
     let seen = std::sync::Arc::new(Mutex::new(0usize));
     let sink = seen.clone();
     let guard = map.subscribe_diffs(move |_diff| {
-        *sink.lock().unwrap() += 1;
+        let mut count = sink.lock();
+        *count = count.saturating_add(1);
     });
     std::mem::forget(guard);
-    *seen.lock().unwrap() = 0; // discard the Initial replay
+    *seen.lock() = 0; // discard the Initial replay
 
     // Add then remove the same key inside one batch: two diffs_cell.set calls.
     // The diffs_cell is no_coalesce by default, so BOTH the Insert and Remove
@@ -291,9 +279,9 @@ fn cellmap_diffs_survive_a_batched_add_then_remove() {
     });
 
     assert!(
-        *seen.lock().unwrap() >= 2,
+        *seen.lock() >= 2,
         "both the add and the remove diff must survive the batch, saw {}",
-        *seen.lock().unwrap()
+        *seen.lock()
     );
 }
 
@@ -307,17 +295,17 @@ fn no_coalesce_preserves_arrival_order() {
     let sink = seq.clone();
     std::mem::forget(s.subscribe(move |sig| {
         if let Signal::Value(v) = sig {
-            sink.lock().unwrap().push(**v);
+            sink.lock().push(**v);
         }
     }));
-    seq.lock().unwrap().clear(); // discard seed replay
+    seq.lock().clear(); // discard seed replay
     batch(|| {
         s.set(1);
         s.set(2);
         s.set(3);
     });
     assert_eq!(
-        *seq.lock().unwrap(),
+        *seq.lock(),
         vec![1, 2, 3],
         "every set survives in arrival order"
     );
@@ -330,8 +318,6 @@ fn coalescing_cell_downstream_of_no_coalesce_settles_once() {
     // plain (coalescing) behavior cell downstream still settles ONCE to the final
     // value — so tagging a shared source no_coalesce never hurts its behavior
     // consumers, it only costs the source extra fanouts.
-    use hyphae::{MapExt, Materialize};
-
     let s = Cell::new(0i64).no_coalesce();
     let derived = s.clone().map(|x| x * 2).materialize(); // born outside any scope → coalescing
     let fires = fire_counter(&derived);
@@ -340,7 +326,7 @@ fn coalescing_cell_downstream_of_no_coalesce_settles_once() {
         let sink = slot.clone();
         std::mem::forget(derived.subscribe(move |sig| {
             if let Signal::Value(v) = sig {
-                *sink.lock().unwrap() = **v;
+                *sink.lock() = **v;
             }
         }));
         slot
@@ -357,7 +343,7 @@ fn coalescing_cell_downstream_of_no_coalesce_settles_once() {
         1,
         "coalescing subscriber settles once despite three no_coalesce arrivals"
     );
-    assert_eq!(*last.lock().unwrap(), 6, "and settles to the final value");
+    assert_eq!(*last.lock(), 6, "and settles to the final value");
 }
 
 #[test]
@@ -372,16 +358,16 @@ fn batch_tick_is_clean_after_a_panicking_body() {
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         batch(|| {
             s.set(1); // enqueued, never drained
-            panic!("boom in batch body");
+            force_unwind();
         });
     }));
     assert!(r.is_err(), "the panic propagates out of batch");
 
     // Next batch drains on a clean tick: sees 2 only, not a lingering 1.
-    *acc.lock().unwrap() = 0;
+    *acc.lock() = 0;
     batch(|| s.set(2));
     assert_eq!(
-        *acc.lock().unwrap(),
+        *acc.lock(),
         2,
         "the next batch drains cleanly after a panicking batch body"
     );
@@ -393,7 +379,7 @@ fn no_coalesce_scope_depth_restored_after_panic() {
     // The scope Guard decrements depth on unwind, so a panic inside
     // no_coalesce(|| ..) does not leave later cells wrongly stamped.
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        no_coalesce(|| panic!("boom in scope"));
+        no_coalesce(force_unwind);
     }));
     assert!(r.is_err());
 
@@ -401,13 +387,13 @@ fn no_coalesce_scope_depth_restored_after_panic() {
     // collapses to the last) — proving depth returned to zero.
     let s = Cell::new(0i64);
     let acc = sum_sink(&s);
-    *acc.lock().unwrap() = 0;
+    *acc.lock() = 0;
     batch(|| {
         s.set(1);
         s.set(2);
     });
     assert_eq!(
-        *acc.lock().unwrap(),
+        *acc.lock(),
         2,
         "a cell born after a panicking scope coalesces (depth restored)"
     );
@@ -418,8 +404,6 @@ fn cellset_diffs_survive_a_batched_add_then_remove() {
     let _serial = scheduler_test_serial();
     // CellSet mirror of the CellMap diffs test — its diffs_cell is no_coalesce by
     // default too, so a batched add+remove of one value keeps both diffs.
-    use hyphae::CellSet;
-
     let set: CellSet<u32> = CellSet::new();
     let seen = std::sync::Arc::new(Mutex::new(0usize));
     let sink = seen.clone();
@@ -427,10 +411,11 @@ fn cellset_diffs_survive_a_batched_add_then_remove() {
         if let Signal::Value(d) = sig
             && d.is_some()
         {
-            *sink.lock().unwrap() += 1;
+            let mut count = sink.lock();
+            *count = count.saturating_add(1);
         }
     }));
-    *seen.lock().unwrap() = 0; // discard the initial None
+    *seen.lock() = 0; // discard the initial None
 
     batch(|| {
         set.insert(1);
@@ -438,8 +423,8 @@ fn cellset_diffs_survive_a_batched_add_then_remove() {
     });
 
     assert!(
-        *seen.lock().unwrap() >= 2,
+        *seen.lock() >= 2,
         "both the add and remove SetDiff survive the batch, saw {}",
-        *seen.lock().unwrap()
+        *seen.lock()
     );
 }

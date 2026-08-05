@@ -9,11 +9,11 @@ use crate::{BoundedInput, Gettable, OverflowPolicy, Signal, Watchable};
 fn test_basic_push_and_get() {
     let input = BoundedInput::new(0, 10, OverflowPolicy::DropNewest);
 
-    input.push(1).unwrap();
+    assert!(input.push(1).is_ok());
     // get() flushes the buffer first
     assert_eq!(input.get(), 1);
 
-    input.push(2).unwrap();
+    assert!(input.push(2).is_ok());
     assert_eq!(input.get(), 2);
 }
 
@@ -30,10 +30,10 @@ fn test_subscribe_receives_values() {
     });
 
     // Use push_flush to notify subscribers immediately
-    input.push_flush(42).unwrap();
+    assert!(input.push_flush(42).is_ok());
     assert_eq!(received.load(Ordering::SeqCst), 42);
 
-    input.push_flush(100).unwrap();
+    assert!(input.push_flush(100).is_ok());
     assert_eq!(received.load(Ordering::SeqCst), 100);
 }
 
@@ -42,8 +42,8 @@ fn test_drop_newest_policy() {
     let input = BoundedInput::new(0, 2, OverflowPolicy::DropNewest);
 
     // Fill the buffer (values stay buffered, not drained immediately)
-    input.push(1).unwrap();
-    input.push(2).unwrap();
+    assert!(input.push(1).is_ok());
+    assert!(input.push(2).is_ok());
 
     // This should drop the incoming value (3) and return Ok
     let result = input.push(3);
@@ -63,11 +63,11 @@ fn test_drop_oldest_policy() {
     let input = BoundedInput::new(0, 2, OverflowPolicy::DropOldest);
 
     // Fill the buffer
-    input.push(1).unwrap();
-    input.push(2).unwrap();
+    assert!(input.push(1).is_ok());
+    assert!(input.push(2).is_ok());
 
     // This should drop the oldest (1) and push 3
-    input.push(3).unwrap();
+    assert!(input.push(3).is_ok());
 
     assert_eq!(input.metrics().dropped_count(), 1);
     assert_eq!(input.metrics().backpressure_events(), 1);
@@ -81,7 +81,7 @@ fn test_error_policy() {
     let input = BoundedInput::new(0, 1, OverflowPolicy::Error);
 
     // Fill the buffer
-    input.push(1).unwrap();
+    assert!(input.push(1).is_ok());
 
     // This should fail and error the cell
     let result = input.push(2);
@@ -94,7 +94,7 @@ fn test_error_policy() {
 fn test_close() {
     let input = BoundedInput::new(0, 10, OverflowPolicy::DropNewest);
 
-    input.push(1).unwrap();
+    assert!(input.push(1).is_ok());
     assert!(!input.is_closed());
     assert!(!input.is_complete());
 
@@ -133,13 +133,13 @@ fn test_to_cell() {
     let input = BoundedInput::new(0, 10, OverflowPolicy::DropNewest);
 
     // push_flush to immediately forward to cell
-    input.push_flush(5).unwrap();
+    assert!(input.push_flush(5).is_ok());
 
     let cell = input.to_cell();
     assert_eq!(cell.get(), 5);
 
     // Original input can still push and flush
-    input.push_flush(10).unwrap();
+    assert!(input.push_flush(10).is_ok());
 
     // Cell sees the update
     assert_eq!(cell.get(), 10);
@@ -150,7 +150,7 @@ fn test_clone() {
     let input1 = BoundedInput::new(0, 10, OverflowPolicy::DropNewest);
     let input2 = input1.clone();
 
-    input1.push_flush(42).unwrap();
+    assert!(input1.push_flush(42).is_ok());
 
     // Both should see the same value (they share the same inner cell)
     assert_eq!(input1.get(), 42);
@@ -164,7 +164,7 @@ fn test_complete_signal_on_close() {
     let completed_clone = completed.clone();
 
     let _guard = input.subscribe(move |signal| {
-        if let Signal::Complete = signal {
+        if matches!(signal, Signal::Complete) {
             completed_clone.store(1, Ordering::SeqCst);
         }
     });

@@ -514,7 +514,7 @@ where
 /// Used by `MapQuery` join plan nodes whose materialization owns a single
 /// output cell map; multiple plan stages share that output rather than each
 /// allocating their own.
-pub(crate) fn install_join_runtime_via_query<LK, LV, RK, RV, JK, OK, OV, L, R, FL, FR, FO>(
+pub fn install_join_runtime_via_query<LK, LV, RK, RV, JK, OK, OV, L, R, FL, FR, FO>(
     left: L,
     right: R,
     left_join_key: FL,
@@ -545,11 +545,13 @@ where
 
     let left_sink: crate::map_query::MapDiffSink<LK, LV> = {
         let state = state.clone();
-        let left_join_key = left_join_key.clone();
+        let left_join_key = left_join_key;
         let compute_rows = compute_rows.clone();
         let sink = sink.clone();
         Arc::new(move |diff| {
-            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let mut scratch = std::mem::take(&mut state.scratch);
             apply_left_diff(
                 &mut state,
@@ -574,12 +576,14 @@ where
     };
 
     let right_sink: crate::map_query::MapDiffSink<RK, RV> = {
-        let state = state.clone();
-        let right_join_key = right_join_key.clone();
-        let compute_rows = compute_rows.clone();
-        let sink = sink.clone();
+        let state = state;
+        let right_join_key = right_join_key;
+        let compute_rows = compute_rows;
+        let sink = sink;
         Arc::new(move |diff| {
-            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let mut scratch = std::mem::take(&mut state.scratch);
             apply_right_diff(
                 &mut state,
@@ -610,7 +614,7 @@ where
 }
 
 /// Install the zero-or-one-output, left-key-preserving join runtime.
-pub(crate) fn install_keyed_join_runtime_via_query<LK, LV, RK, RV, JK, OV, L, R, FL, FR, FO>(
+pub fn install_keyed_join_runtime_via_query<LK, LV, RK, RV, JK, OV, L, R, FL, FR, FO>(
     left: L,
     right: R,
     left_join_key: FL,
@@ -640,11 +644,13 @@ where
 
     let left_sink: crate::map_query::MapDiffSink<LK, LV> = {
         let state = state.clone();
-        let left_join_key = left_join_key.clone();
+        let left_join_key = left_join_key;
         let compute_value = compute_value.clone();
         let sink = sink.clone();
         Arc::new(move |diff| {
-            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let mut scratch = std::mem::take(&mut state.scratch);
             apply_left_diff(
                 &mut state,
@@ -661,12 +667,14 @@ where
     };
 
     let right_sink: crate::map_query::MapDiffSink<RK, RV> = {
-        let state = state.clone();
-        let right_join_key = right_join_key.clone();
-        let compute_value = compute_value.clone();
-        let sink = sink.clone();
+        let state = state;
+        let right_join_key = right_join_key;
+        let compute_value = compute_value;
+        let sink = sink;
         Arc::new(move |diff| {
-            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let mut scratch = std::mem::take(&mut state.scratch);
             apply_right_diff(
                 &mut state,

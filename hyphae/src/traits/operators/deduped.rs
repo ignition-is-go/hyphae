@@ -1,9 +1,11 @@
 use super::{CellValue, DistinctUntilChangedByExt};
 
-use crate::pipeline::{Pipeline, PipelineSeed, Seedness};
+use crate::pipeline::{Pipeline, Seedness};
 
 #[allow(private_bounds)]
-pub trait DedupedExt<T: CellValue, S: Seedness>: Pipeline<T, S> + PipelineSeed<T> {
+pub trait DedupedExt<T: CellValue, S: Seedness>:
+    Pipeline<T, S> + DistinctUntilChangedByExt<T, S>
+{
     #[track_caller]
     fn deduped(self) -> impl crate::Materialize<T, S>
     where
@@ -13,7 +15,10 @@ pub trait DedupedExt<T: CellValue, S: Seedness>: Pipeline<T, S> + PipelineSeed<T
     }
 }
 
-impl<T: CellValue, S: Seedness, P: Pipeline<T, S> + PipelineSeed<T>> DedupedExt<T, S> for P {}
+impl<T: CellValue, S: Seedness, P> DedupedExt<T, S> for P where
+    P: Pipeline<T, S> + DistinctUntilChangedByExt<T, S>
+{
+}
 
 #[cfg(test)]
 mod tests {
@@ -56,7 +61,7 @@ mod tests {
         let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let c = completed.clone();
         let _guard = deduped.subscribe(move |signal| {
-            if let Signal::Complete = signal {
+            if matches!(signal, Signal::Complete) {
                 c.store(true, Ordering::SeqCst);
             }
         });

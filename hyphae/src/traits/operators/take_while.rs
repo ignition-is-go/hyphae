@@ -13,7 +13,7 @@ use std::{
 
 use super::CellValue;
 use crate::{
-    pipeline::{Empty, Pipeline, PipelineInstall, PipelineSeed, Seedness},
+    pipeline::{Empty, Pipeline, PipelineInstall, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -24,18 +24,6 @@ pub struct TakeWhilePipeline<S, T, F, Sd = crate::pipeline::Definite> {
     predicate: Arc<F>,
     _t: PhantomData<fn(T)>,
     _sd: PhantomData<fn(Sd)>,
-}
-
-impl<S, T, F, Sd> PipelineSeed<T> for TakeWhilePipeline<S, T, F, Sd>
-where
-    S: PipelineInstall<T> + Send + Sync + 'static,
-    Sd: Seedness,
-    T: CellValue,
-    F: Fn(&T) -> bool + Send + Sync + 'static,
-{
-    fn seed(&self) -> T {
-        unreachable!("a take_while Empty pipeline has no seed")
-    }
 }
 
 impl<S, T, F, Sd> PipelineInstall<T> for TakeWhilePipeline<S, T, F, Sd>
@@ -131,7 +119,7 @@ mod tests {
 
         let c = completed.clone();
         let _guard = taken.subscribe(move |signal| {
-            if let Signal::Complete = signal {
+            if matches!(signal, Signal::Complete) {
                 c.store(true, Ordering::SeqCst);
             }
         });

@@ -1,6 +1,6 @@
 //! [`Source<T>`] — a watchable event channel with no current value.
 //!
-//! `Source` is to [`Cell`](crate::Cell) as RxJS's `Subject` is to `BehaviorSubject`:
+//! `Source` is to [`Cell`](crate::Cell) as `RxJS`'s `Subject` is to `BehaviorSubject`:
 //! it has subscribers and an emit method, but does not store a "current value"
 //! and is not [`Gettable`](crate::traits::Gettable).
 //!
@@ -9,7 +9,7 @@
 //! Use `Source` for pure event/notification channels where:
 //! - Subscribers care only about *that* something happened, not the latest
 //!   stored value.
-//! - The producer fires at high rate and the per-emission ArcSwap drop on a
+//! - The producer fires at high rate and the per-emission `ArcSwap` drop on a
 //!   [`Cell`]'s value field is pure overhead.
 //!
 //! Concrete examples: interval ticks, clock pulses, lifecycle events.
@@ -39,7 +39,7 @@ use uuid::Uuid;
 
 use crate::{
     cell::{Cell, CellMutable, Subscriber, SubscriberCallback},
-    pipeline::{Definite, Empty, Materialize, Pipeline, PipelineInstall, PipelineSeed},
+    pipeline::{Definite, Empty, Materialize, Pipeline, PipelineInstall},
     signal::Signal,
     subscription::SubscriptionGuard,
     traits::{CellValue, DepNode, Gettable, Mutable, Watchable},
@@ -92,6 +92,7 @@ pub struct WeakSource<T> {
 impl<T> WeakSource<T> {
     /// Try to upgrade to a strong [`Source`] reference. Returns `None` if the
     /// underlying source has been dropped.
+    #[must_use]
     pub fn upgrade(&self) -> Option<Source<T>> {
         self.inner.upgrade().map(|inner| Source {
             inner,
@@ -102,7 +103,7 @@ impl<T> WeakSource<T> {
 
 impl<T> Clone for WeakSource<T> {
     fn clone(&self) -> Self {
-        WeakSource {
+        Self {
             inner: self.inner.clone(),
             _marker: PhantomData,
         }
@@ -111,7 +112,7 @@ impl<T> Clone for WeakSource<T> {
 
 impl<T> Clone for Source<T> {
     fn clone(&self) -> Self {
-        Source {
+        Self {
             inner: Arc::clone(&self.inner),
             _marker: PhantomData,
         }
@@ -121,6 +122,7 @@ impl<T> Clone for Source<T> {
 impl<T: CellValue> Source<T> {
     /// Create a new source with no subscribers.
     #[track_caller]
+    #[must_use]
     pub fn new() -> Self {
         let inner = Arc::new(SourceInner {
             id: Uuid::new_v4(),
@@ -138,6 +140,7 @@ impl<T: CellValue> Source<T> {
     }
 
     /// Create a weak reference to this source.
+    #[must_use]
     pub fn downgrade(&self) -> WeakSource<T> {
         WeakSource {
             inner: Arc::downgrade(&self.inner),
@@ -151,6 +154,7 @@ impl<T: CellValue> Source<T> {
     }
 
     /// Returns true if this source has completed.
+    #[must_use]
     pub fn is_complete(&self) -> bool {
         self.inner.completed.load(Ordering::SeqCst)
     }
@@ -158,8 +162,8 @@ impl<T: CellValue> Source<T> {
     /// Builder-style name attachment, kept for API compatibility with
     /// [`Cell::with_name`](crate::Cell::with_name). `Source` carries no name
     /// field, so this is a no-op.
-    #[allow(unused_variables)]
-    pub fn with_name(self, name: impl Into<std::sync::Arc<str>>) -> Self {
+    #[must_use]
+    pub fn with_name(self, _name: impl Into<std::sync::Arc<str>>) -> Self {
         self
     }
 
@@ -184,6 +188,7 @@ impl<T: CellValue> Source<T> {
     ///
     /// Requires the `scheduler` feature (batching is meaningless without it).
     #[cfg(feature = "scheduler")]
+    #[must_use]
     pub fn batched(self) -> Self {
         self.inner.batched.store(true, Ordering::Relaxed);
         self
@@ -204,17 +209,18 @@ impl<T: CellValue> Source<T> {
         let cb: SubscriberCallback<T> = Arc::new(callback);
         let sub = Arc::new(Subscriber::new_live(cb));
         // Swap-and-defer: see Cell::subscribe.
-        let _old = {
+        let old_snapshot = {
             let mut guard = self.inner.subscribers.lock();
             let mut next: Vec<(Uuid, Arc<Subscriber<T>>)> = (**guard).clone();
             next.push((id, sub));
             std::mem::replace(&mut *guard, Arc::new(next))
         };
+        drop(old_snapshot);
 
         let source: Arc<dyn DepNode> = Arc::new(self.clone());
         let inner = self.inner.clone();
         SubscriptionGuard::new(id, source, move || {
-            let _old = {
+            let old_snapshot = {
                 let mut guard = inner.subscribers.lock();
                 let prev_len = guard.len();
                 let next: Vec<(Uuid, Arc<Subscriber<T>>)> = (**guard)
@@ -222,13 +228,13 @@ impl<T: CellValue> Source<T> {
                     .filter(|(i, _)| *i != id)
                     .cloned()
                     .collect();
-                if next.len() != prev_len {
-                    Some(std::mem::replace(&mut *guard, Arc::new(next)))
-                } else {
+                if next.len() == prev_len {
                     None
+                } else {
+                    Some(std::mem::replace(&mut *guard, Arc::new(next)))
                 }
             };
-            let _ = _old;
+            drop(old_snapshot);
         })
     }
 
@@ -300,9 +306,8 @@ impl<T: CellValue> Default for Source<T> {
 //
 // `Source<T>` is a `Pipeline<T, Empty>`: operators that don't require a
 // definite initial value (`map`, `filter`, `tap`, ...) compose with it.
-// The hidden `PipelineSeed` implementation is an unreachable type-level hook
-// used solely by generic Empty materialization dispatch. Source still has no
-// usable current value; operators requiring a Definite pipeline reject it.
+// A source has no seed: Empty materialization installs it directly and starts
+// the resulting cell at `None`.
 //
 // Materialization uses `Materialize<T, Empty>`, producing a
 // `Cell<Option<T>, CellImmutable>` that starts as `None` and transitions to
@@ -311,12 +316,6 @@ impl<T: CellValue> Default for Source<T> {
 impl<T: CellValue> PipelineInstall<T> for Source<T> {
     fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
         self.subscribe(move |signal| callback(signal))
-    }
-}
-
-impl<T: CellValue> PipelineSeed<T> for Source<T> {
-    fn seed(&self) -> T {
-        unreachable!("an Empty source has no seed")
     }
 }
 
@@ -501,7 +500,7 @@ mod tests {
             Signal::Complete => {
                 counter_clone.fetch_add(1000, Ordering::SeqCst);
             }
-            _ => {}
+            Signal::Error(_) => {}
         });
 
         src.emit(1);

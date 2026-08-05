@@ -40,9 +40,9 @@ where
     PK: Hash + Eq + CellValue,
     K: Hash + Eq + CellValue,
 {
-    /// parent_key → { child_keys }
+    /// `parent_key` → { `child_keys` }
     forward: HashMap<PK, HashSet<K>>,
-    /// child_key → parent_key
+    /// `child_key` → `parent_key`
     reverse: HashMap<K, PK>,
 }
 
@@ -75,14 +75,14 @@ where
     K: Hash + Eq + CellValue,
     V: CellValue,
 {
-    /// The underlying source data (M-erased: CellMapInner doesn't vary by M).
+    /// The underlying source data (M-erased: `CellMapInner` doesn't vary by M).
     source_inner: Arc<CellMapInner<K, V>>,
     /// Live FK index, updated reactively.
     state: Arc<ArcSwap<NestState<PK, K>>>,
     /// For concurrent parent-key lookups.
     reverse_cache: Arc<DashMap<K, PK>>,
     /// Subscription guard keeping the index alive.
-    _index_guard: Arc<SubscriptionGuard>,
+    index_guard: Arc<SubscriptionGuard>,
     _marker: PhantomData<V>,
 }
 
@@ -97,7 +97,7 @@ where
             source_inner: self.source_inner.clone(),
             state: self.state.clone(),
             reverse_cache: self.reverse_cache.clone(),
-            _index_guard: self._index_guard.clone(),
+            index_guard: self.index_guard.clone(),
             _marker: PhantomData,
         }
     }
@@ -201,7 +201,7 @@ where
             source_inner: source.inner.clone(),
             state,
             reverse_cache,
-            _index_guard: Arc::new(guard),
+            index_guard: Arc::new(guard),
             _marker: PhantomData,
         }
     }
@@ -266,14 +266,11 @@ where
     ) -> SubscriptionGuard {
         let reverse_cache = self.reverse_cache.clone();
         self.subscribe_source_diffs(move |diff| {
-            fn filter_for_parent<PK, K, V>(
+            fn filter_for_parent<K, V>(
                 diff: &MapDiff<K, V>,
-                _parent_key: &PK,
-                _rc: &DashMap<K, PK>,
                 fk_match: &dyn Fn(&K) -> bool,
             ) -> Option<MapDiff<K, V>>
             where
-                PK: Hash + Eq + CellValue,
                 K: Hash + Eq + CellValue,
                 V: CellValue,
             {
@@ -302,7 +299,7 @@ where
                     MapDiff::Batch { changes } => {
                         let filtered: Vec<_> = changes
                             .iter()
-                            .filter_map(|c| filter_for_parent(c, _parent_key, _rc, fk_match))
+                            .filter_map(|change| filter_for_parent(change, fk_match))
                             .collect();
                         if filtered.is_empty() {
                             None
@@ -317,8 +314,7 @@ where
             let fk_match =
                 |k: &K| -> bool { reverse_cache.get(k).is_some_and(|r| *r.value() == pk) };
 
-            if let Some(filtered) = filter_for_parent(diff, &parent_key, &reverse_cache, &fk_match)
-            {
+            if let Some(filtered) = filter_for_parent(diff, &fk_match) {
                 cb(&filtered);
             }
         })
@@ -373,8 +369,6 @@ where
                         }
                     }
                     MapDiff::Batch { changes } => {
-                        // Group batch members by parent key, emit one Batch per group.
-                        let mut groups: HashMap<PK, Vec<MapDiff<K, V>>> = HashMap::new();
                         fn collect_by_parent<PK, K, V>(
                             diff: &MapDiff<K, V>,
                             rc: &DashMap<K, PK>,
@@ -407,12 +401,17 @@ where
                             }
                         }
 
+                        // Group batch members by parent key, emit one Batch per group.
+                        let mut groups: HashMap<PK, Vec<MapDiff<K, V>>> = HashMap::new();
+
                         for change in changes {
                             collect_by_parent(change, rc, &mut groups);
                         }
                         for (pk, diffs) in groups {
                             if diffs.len() == 1 {
-                                cb(&pk, &diffs[0]);
+                                if let Some(diff) = diffs.first() {
+                                    cb(&pk, diff);
+                                }
                             } else {
                                 cb(&pk, &MapDiff::Batch { changes: diffs });
                             }

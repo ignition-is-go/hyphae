@@ -1,7 +1,8 @@
+use parking_lot::Mutex;
 use std::{
     marker::PhantomData,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
@@ -33,17 +34,16 @@ impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for DebouncePipelin
                 if first.swap(false, Ordering::SeqCst) || terminated.load(Ordering::SeqCst) {
                     return;
                 }
-                let my_generation = generation.fetch_add(1, Ordering::SeqCst) + 1;
+                let my_generation = generation.fetch_add(1, Ordering::SeqCst).saturating_add(1);
                 let generation = generation.clone();
                 let terminated = terminated.clone();
                 let pending = pending.clone();
                 let callback = callback.clone();
-                *pending.lock().expect("debounce pending poisoned") = Some(value.clone());
+                *pending.lock() = Some(value.clone());
                 platform::spawn_delayed(duration, move || {
                     if !terminated.load(Ordering::SeqCst)
                         && generation.load(Ordering::SeqCst) == my_generation
-                        && let Some(value) =
-                            pending.lock().expect("debounce pending poisoned").take()
+                        && let Some(value) = pending.lock().take()
                     {
                         callback(&Signal::value_arc(value));
                     }
@@ -52,7 +52,8 @@ impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for DebouncePipelin
             Signal::Complete => {
                 if !terminated.swap(true, Ordering::SeqCst) {
                     generation.fetch_add(1, Ordering::SeqCst);
-                    if let Some(value) = pending.lock().expect("debounce pending poisoned").take() {
+                    let value = pending.lock().take();
+                    if let Some(value) = value {
                         callback(&Signal::value_arc(value));
                     }
                     callback(&Signal::Complete);
@@ -61,7 +62,7 @@ impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for DebouncePipelin
             Signal::Error(error) => {
                 if !terminated.swap(true, Ordering::SeqCst) {
                     generation.fetch_add(1, Ordering::SeqCst);
-                    pending.lock().expect("debounce pending poisoned").take();
+                    pending.lock().take();
                     callback(&Signal::Error(error.clone()));
                 }
             }
@@ -134,7 +135,7 @@ mod tests {
         let captured = events.clone();
         let pipeline = source.clone().debounce(Duration::from_millis(20));
         let _guard = pipeline.install(Arc::new(move |signal| {
-            captured.lock().unwrap().push(match signal {
+            captured.lock().push(match signal {
                 Signal::Value(value) => format!("value:{}", **value),
                 Signal::Complete => "complete".into(),
                 Signal::Error(_) => "error".into(),
@@ -145,6 +146,6 @@ mod tests {
         source.complete();
         thread::sleep(Duration::from_millis(60));
 
-        assert_eq!(&*events.lock().unwrap(), &["value:7", "complete"]);
+        assert_eq!(&*events.lock(), &["value:7", "complete"]);
     }
 }

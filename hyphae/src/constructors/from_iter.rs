@@ -24,16 +24,15 @@ where
 
     // Use weak ref so the timer doesn't keep the cell alive
     let weak = cell.downgrade();
-    platform::spawn_interval(delay, false, move |_count| match iter.next() {
-        Some(value) => {
+    platform::spawn_interval(delay, false, move |_count| {
+        if let Some(value) = iter.next() {
             // Exit when cell is dropped
             let Some(c) = weak.upgrade() else {
                 return false;
             };
             c.notify(Signal::value(value));
             true
-        }
-        None => {
+        } else {
             // Complete when iterator exhausted
             if let Some(c) = weak.upgrade() {
                 c.notify(Signal::Complete);

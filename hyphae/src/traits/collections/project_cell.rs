@@ -1,7 +1,7 @@
 //! Project-cell plan node implementing [`MapQuery`].
 //!
 //! `project_cell` is the reactive variant of `project`: each source row maps
-//! to a [`Watchable`]`<Option<(K2, V2)>>` whose emissions update the row's
+//! to a [`Watchable`] producing `Option<(K2, V2)>` whose emissions update the row's
 //! output. Returns an uncompiled plan node; call [`MapQuery::materialize`] to
 //! compile a plan into a subscribable [`CellMap`](crate::CellMap).
 
@@ -24,7 +24,7 @@ use crate::{
 
 /// Plan node for [`ProjectCellExt::project_cell`].
 ///
-/// Each source row maps to a [`Watchable`]`<Option<(K2, V2)>>`; the watchable's
+/// Each source row maps to a [`Watchable`] producing `Option<(K2, V2)>`; its
 /// emissions drive that row's output. `Some((k, v))` includes/updates the row;
 /// `None` excludes it.
 ///
@@ -65,7 +65,7 @@ where
         let last_emitted: Arc<Mutex<HashMap<K, (K2, V2)>>> = Arc::new(Mutex::new(HashMap::new()));
 
         let intermediate_sink: MapDiffSink<K, Option<(K2, V2)>> = {
-            let last_emitted = last_emitted.clone();
+            let last_emitted = last_emitted;
             let final_sink = sink.clone();
             Arc::new(move |diff| {
                 let mut out: Vec<MapDiff<K2, V2>> = Vec::new();
@@ -74,7 +74,9 @@ where
                     return;
                 }
                 if out.len() == 1 {
-                    final_sink(&out.pop().unwrap());
+                    if let Some(diff) = out.pop() {
+                        final_sink(&diff);
+                    }
                 } else {
                     final_sink(&MapDiff::Batch { changes: out });
                 }
@@ -122,7 +124,9 @@ fn project_diff<K, K2, V2>(
         MapDiff::Initial { entries } => {
             // Reset all previously emitted output entries first.
             let stale: Vec<(K2, V2)> = {
-                let mut last = last_emitted.lock().unwrap_or_else(|e| e.into_inner());
+                let mut last = last_emitted
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 last.drain().map(|(_, v)| v).collect()
             };
             for (k2, v2) in stale {
@@ -144,7 +148,9 @@ fn project_diff<K, K2, V2>(
         MapDiff::Remove { key, .. } => {
             // Source row gone: Remove the K2 we last emitted (if any).
             let prev = {
-                let mut last = last_emitted.lock().unwrap_or_else(|e| e.into_inner());
+                let mut last = last_emitted
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 last.remove(key)
             };
             if let Some((k2, v2)) = prev {
@@ -168,11 +174,11 @@ fn project_diff<K, K2, V2>(
 /// Cases (prev = `last_emitted[k]`, new = `opt`):
 /// - prev = None,           new = None         : noop
 /// - prev = None,           new = Some(k2, v2) : Insert(k2, v2)
-/// - prev = Some(p_k2, p_v2), new = None       : Remove(p_k2)
-/// - prev = Some(p_k2, p_v2), new = Some(k2, v2):
-///     - p_k2 == k2 && p_v2 == v2 : noop
-///     - p_k2 == k2 && p_v2 != v2 : Update(k2, p_v2 -> v2)
-///     - p_k2 != k2               : Remove(p_k2) + Insert(k2, v2)
+/// - prev = `Some(p_k2`, `p_v2`), new = None       : `Remove(p_k2)`
+/// - prev = `Some(p_k2`, `p_v2`), new = Some(k2, v2):
+///     - `p_k2` == k2 && `p_v2` == v2 : noop
+///     - `p_k2` == k2 && `p_v2` != v2 : Update(k2, `p_v2` -> v2)
+///     - `p_k2` != k2               : `Remove(p_k2)` + Insert(k2, v2)
 fn apply_one<K, K2, V2>(
     last_emitted: &Arc<Mutex<HashMap<K, (K2, V2)>>>,
     k: &K,
@@ -184,7 +190,9 @@ fn apply_one<K, K2, V2>(
     V2: CellValue,
 {
     let prev = {
-        let mut last = last_emitted.lock().unwrap_or_else(|e| e.into_inner());
+        let mut last = last_emitted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match (&new_opt, last.get(k)) {
             (None, _) => last.remove(k),
             (Some(new_pair), _) => last.insert(k.clone(), new_pair.clone()),
@@ -196,25 +204,25 @@ fn apply_one<K, K2, V2>(
         (None, Some((k2, v2))) => {
             out.push(MapDiff::Insert { key: k2, value: v2 });
         }
-        (Some((p_k2, p_v2)), None) => {
+        (Some((previous_key, previous_value)), None) => {
             out.push(MapDiff::Remove {
-                key: p_k2,
-                old_value: p_v2,
+                key: previous_key,
+                old_value: previous_value,
             });
         }
-        (Some((p_k2, p_v2)), Some((k2, v2))) => {
-            if p_k2 == k2 {
-                if p_v2 != v2 {
+        (Some((previous_key, previous_value)), Some((k2, v2))) => {
+            if previous_key == k2 {
+                if previous_value != v2 {
                     out.push(MapDiff::Update {
                         key: k2,
-                        old_value: p_v2,
+                        old_value: previous_value,
                         new_value: v2,
                     });
                 }
             } else {
                 out.push(MapDiff::Remove {
-                    key: p_k2,
-                    old_value: p_v2,
+                    key: previous_key,
+                    old_value: previous_value,
                 });
                 out.push(MapDiff::Insert { key: k2, value: v2 });
             }
@@ -310,7 +318,6 @@ mod tests {
 
         let gates_for_mapper = gates.clone();
         let mat = src
-            .clone()
             .project_cell(move |key, value| {
                 let key = key.clone();
                 let value = *value;
@@ -361,7 +368,6 @@ mod tests {
 
         let key_choice_for_mapper = key_choice.clone();
         let mat = src
-            .clone()
             .project_cell(move |k, v| {
                 let v = *v;
                 let k = k.clone();

@@ -38,22 +38,30 @@ where
 // Seed only exists when the source has a seed (i.e. source is Definite).
 impl<S, T, U, F> PipelineSeed<U> for MapPipeline<S, T, U, F>
 where
-    S: PipelineSeed<T>,
+    S: Pipeline<T, crate::pipeline::Definite>,
     T: CellValue,
     U: CellValue,
     F: Fn(&T) -> U + Send + Sync + 'static,
 {
     fn seed(&self) -> U {
-        (self.f)(&self.source.seed())
+        (self.f)(&self.source.pipeline_seed())
     }
 }
 
 // Map propagates the source's Seedness.
 #[allow(private_bounds)]
-impl<S, T, U, F, Sd> Pipeline<U, Sd> for MapPipeline<S, T, U, F>
+impl<S, T, U, F> Pipeline<U, crate::pipeline::Definite> for MapPipeline<S, T, U, F>
 where
-    S: Pipeline<T, Sd>,
-    Sd: Seedness,
+    S: Pipeline<T, crate::pipeline::Definite>,
+    T: CellValue,
+    U: CellValue,
+    F: Fn(&T) -> U + Send + Sync + 'static,
+{
+}
+
+impl<S, T, U, F> Pipeline<U, crate::pipeline::Empty> for MapPipeline<S, T, U, F>
+where
+    S: Pipeline<T, crate::pipeline::Empty>,
     T: CellValue,
     U: CellValue,
     F: Fn(&T) -> U + Send + Sync + 'static,
@@ -66,6 +74,15 @@ pub trait MapExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     fn map<U, F>(self, f: F) -> impl Materialize<U, S>
     where
         U: CellValue,
+        F: Fn(&T) -> U + Send + Sync + 'static;
+}
+
+impl<T: CellValue, P: Pipeline<T, crate::pipeline::Definite>> MapExt<T, crate::pipeline::Definite>
+    for P
+{
+    fn map<U, F>(self, f: F) -> impl Materialize<U, crate::pipeline::Definite>
+    where
+        U: CellValue,
         F: Fn(&T) -> U + Send + Sync + 'static,
     {
         MapPipeline {
@@ -76,7 +93,19 @@ pub trait MapExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     }
 }
 
-impl<T: CellValue, S: Seedness, P: Pipeline<T, S>> MapExt<T, S> for P {}
+impl<T: CellValue, P: Pipeline<T, crate::pipeline::Empty>> MapExt<T, crate::pipeline::Empty> for P {
+    fn map<U, F>(self, f: F) -> impl Materialize<U, crate::pipeline::Empty>
+    where
+        U: CellValue,
+        F: Fn(&T) -> U + Send + Sync + 'static,
+    {
+        MapPipeline {
+            source: self,
+            f: Arc::new(f),
+            _types: PhantomData,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -143,7 +172,7 @@ mod tests {
     #[test]
     fn test_map_type_change() {
         let source = Cell::new(42);
-        let stringified = source.map(|x| format!("value: {}", x)).materialize();
+        let stringified = source.map(|x| format!("value: {x}")).materialize();
 
         assert_eq!(stringified.get(), "value: 42");
     }

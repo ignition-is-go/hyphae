@@ -1,6 +1,6 @@
-//! Reactive HashSet with membership observability.
+//! Reactive `HashSet` with membership observability.
 //!
-//! `CellSet` wraps a concurrent HashSet where membership changes can be observed.
+//! `CellSet` wraps a concurrent `HashSet` where membership changes can be observed.
 
 use std::{hash::Hash, marker::PhantomData, sync::Arc};
 
@@ -36,7 +36,7 @@ where
     len_cell: Cell<usize, CellMutable>,
 }
 
-/// A reactive HashSet with membership observability.
+/// A reactive `HashSet` with membership observability.
 ///
 /// # Example
 ///
@@ -69,7 +69,7 @@ impl<T> CellSet<T, CellMutable>
 where
     T: Hash + Eq + CellValue,
 {
-    /// Create a new empty CellSet.
+    /// Create a new empty `CellSet`.
     #[track_caller]
     pub fn new() -> Self {
         // A diffs stream is events, not a level — each SetDiff is a distinct
@@ -96,20 +96,14 @@ where
         let is_new = self.inner.data.insert(value.clone());
 
         if is_new {
-            // Emit diff (O(1) - just notifies subscribers)
-            self.inner
-                .diffs_cell
-                .set(Some(SetDiff::Insert(value.clone())));
-
-            // Update len (O(1))
-            self.inner.len_cell.set(self.inner.data.len());
-
             // Notify membership observers (O(1))
             if let Some(weak) = self.inner.membership_cells.get(&value)
                 && let Some(cell) = weak.upgrade()
             {
                 cell.set(true);
             }
+            self.inner.diffs_cell.set(Some(SetDiff::Insert(value)));
+            self.inner.len_cell.set(self.inner.data.len());
         }
 
         is_new
@@ -140,6 +134,7 @@ where
     }
 
     /// Lock the set to prevent further mutations.
+    #[must_use]
     pub fn lock(self) -> CellSet<T, CellImmutable> {
         CellSet {
             inner: self.inner,
@@ -192,6 +187,7 @@ where
     /// The initial call is O(N) to build the snapshot, but subsequent updates
     /// are O(1) as they apply diffs incrementally.
     #[track_caller]
+    #[must_use]
     pub fn values(&self) -> impl Materialize<Vec<T>, Definite> + use<T, M> {
         // Build initial values from current data (O(N) once)
         let initial: Vec<T> = self.inner.data.iter().map(|r| r.clone()).collect();
@@ -241,11 +237,13 @@ where
     }
 
     /// Build an observable pipeline of the set length.
+    #[must_use]
     pub fn len(&self) -> impl Materialize<usize, Definite> + use<T, M> {
         self.inner.len_cell.clone().lock()
     }
 
     /// Check if set is empty (non-reactive).
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.inner.data.is_empty()
     }
@@ -253,6 +251,7 @@ where
     /// Build an observable pipeline of diff notifications.
     ///
     /// Emits `Some(SetDiff)` on each insert/remove, starts with `None`.
+    #[must_use]
     pub fn diffs(&self) -> impl Materialize<Option<SetDiff<T>>, Definite> + use<T, M> {
         self.inner.diffs_cell.clone().lock()
     }

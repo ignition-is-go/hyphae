@@ -194,7 +194,7 @@ mod tests {
     fn left_join_keeps_unmatched_left_rows() {
         let left = CellMap::<String, i32>::new();
         let right = CellMap::<String, i32>::new();
-        let joined = left.clone().left_join(right.clone()).materialize();
+        let joined = left.clone().left_join(right).materialize();
 
         left.insert("a".to_string(), 1);
         assert_eq!(joined.get_value(&"a".to_string()), Some((1, vec![])));
@@ -266,10 +266,11 @@ mod tests {
         right.insert("r2".to_string(), ("g1".to_string(), 7));
 
         let val = joined.get_value(&"l1".to_string());
-        assert!(val.is_some());
-        let (left_val, right_vals) = val.unwrap();
-        assert_eq!(left_val, ("g1".to_string(), 10));
-        assert_eq!(right_vals.len(), 2);
+        assert!(matches!(
+            val,
+            Some((left_val, right_vals))
+                if left_val == ("g1".to_string(), 10) && right_vals.len() == 2
+        ));
     }
 
     #[test]
@@ -278,16 +279,17 @@ mod tests {
         let right = CellMap::<String, (String, i32)>::new();
         let joined = left
             .clone()
-            .left_join_by(right.clone(), |_, lv| lv.0.clone(), |_, rv| rv.0.clone())
+            .left_join_by(right, |_, lv| lv.0.clone(), |_, rv| rv.0.clone())
             .materialize();
 
         left.insert("l1".to_string(), ("g1".to_string(), 10));
 
         let val = joined.get_value(&"l1".to_string());
-        assert!(val.is_some());
-        let (left_val, right_vals) = val.unwrap();
-        assert_eq!(left_val, ("g1".to_string(), 10));
-        assert_eq!(right_vals.len(), 0);
+        assert!(matches!(
+            val,
+            Some((left_val, right_vals))
+                if left_val == ("g1".to_string(), 10) && right_vals.is_empty()
+        ));
     }
 
     #[test]
@@ -297,7 +299,6 @@ mod tests {
 
         let right = CellMap::<String, (String, i32)>::new();
         let joined = left
-            .clone()
             .left_join_by(right.clone(), |_, lv| lv.0.clone(), |_, rv| rv.0.clone())
             .materialize();
 
@@ -313,10 +314,10 @@ mod tests {
 
         let seen: Vec<_> = rx.try_iter().collect();
         assert_eq!(seen.len(), 2);
-        match seen.last().expect("last diff") {
-            MapDiff::Batch { changes } => assert!(!changes.is_empty()),
-            _ => panic!("expected batch diff from left_join_by"),
-        }
+        assert!(matches!(
+            seen.last(),
+            Some(MapDiff::Batch { changes }) if !changes.is_empty()
+        ));
     }
 
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -355,7 +356,7 @@ mod tests {
     fn left_join_fk_keeps_unmatched_with_empty_vec() {
         let users = CellMap::<String, User>::new();
         let posts = CellMap::<String, Post>::new();
-        let joined = users.clone().left_join_fk(posts.clone()).materialize();
+        let joined = users.clone().left_join_fk(posts).materialize();
 
         users.insert(
             "u1".to_string(),
@@ -365,10 +366,10 @@ mod tests {
         );
 
         let val = joined.get_value(&"u1".to_string());
-        assert!(val.is_some());
-        let (user, posts) = val.unwrap();
-        assert_eq!(user.name, "Alice");
-        assert_eq!(posts.len(), 0);
+        assert!(matches!(
+            val,
+            Some((user, posts)) if user.name == "Alice" && posts.is_empty()
+        ));
     }
 
     #[test]
@@ -399,8 +400,9 @@ mod tests {
         );
 
         let val = joined.get_value(&"u1".to_string());
-        assert!(val.is_some());
-        let (_, matched_posts) = val.unwrap();
-        assert_eq!(matched_posts.len(), 2);
+        assert!(matches!(
+            val,
+            Some((_, matched_posts)) if matched_posts.len() == 2
+        ));
     }
 }

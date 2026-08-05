@@ -1,8 +1,8 @@
-//! Wave-parallel torn-value stress tests for the remaining CellMap join
+//! Wave-parallel torn-value stress tests for the remaining `CellMap` join
 //! operators: `left_join`, `left_semi_join`, and `multi_left_join_by`.
 //! (`inner_join` is covered by `scheduler_map_join_torn.rs`.)
 //!
-//! Each of these is a two-input CellMap join: a left sink driven by
+//! Each of these is a two-input `CellMap` join: a left sink driven by
 //! `left.diffs_cell` and a right sink driven by `right.diffs_cell`, both
 //! height-0 roots. Each sink, when it recomputes an impacted left key, reads
 //! the *sibling* side's rows (under the shared join-state `Mutex`) to build the
@@ -34,6 +34,13 @@ use hyphae::{
 
 const PAIRS: usize = 8;
 const ITERATIONS: i64 = 3_000;
+static SCHEDULER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn iteration_value(iteration: i64, index: usize) -> i64 {
+    iteration
+        .saturating_mul(1000)
+        .saturating_add(i64::try_from(index).unwrap_or(i64::MAX))
+}
 
 /// The tick queue is process-wide, so these `#[test]` fns (run as concurrent
 /// threads within this one binary) would otherwise interfere on it. Serialize.
@@ -42,8 +49,9 @@ fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
     // the group threshold high (waves stay sequential at rest), so parallelism
     // tests must lower it to actually exercise concurrent same-height groups.
     hyphae::scheduler::set_wave_threshold_for_test(4);
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    SCHEDULER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// `left_join` output is `(LV, Vec<RV>)`: the left value paired with the `Vec`
@@ -72,21 +80,19 @@ fn concurrent_left_joins_never_settle_on_a_torn_value() {
         // Both sides of all PAIRS joins mutated in ONE batch → a single wave of
         // 2*PAIRS height-0 diff ops, wide enough to dispatch in parallel.
         batch(|| {
-            #[allow(clippy::needless_range_loop)]
-            for i in 0..PAIRS {
-                let base = it * 1000 + i as i64;
-                lefts[i].insert("k".into(), base);
-                rights[i].insert("k".into(), base + 500);
+            for (index, (left, right)) in lefts.iter().zip(&rights).enumerate() {
+                let base = iteration_value(it, index);
+                left.insert("k".into(), base);
+                right.insert("k".into(), base.saturating_add(500));
             }
         });
 
-        #[allow(clippy::needless_range_loop)]
-        for i in 0..PAIRS {
-            let base = it * 1000 + i as i64;
+        for (index, output) in outputs.iter().enumerate() {
+            let base = iteration_value(it, index);
             assert_eq!(
-                outputs[i].get_value(&"k".to_string()),
-                Some((base, vec![base + 500])),
-                "left_join settled on a torn/stale value at iteration {it}, pair {i}"
+                output.get_value(&"k".to_string()),
+                Some((base, vec![base.saturating_add(500)])),
+                "left_join settled on a torn/stale value at iteration {it}, pair {index}"
             );
         }
     }
@@ -120,21 +126,19 @@ fn concurrent_left_semi_joins_never_settle_on_a_stale_left_value() {
 
     for it in 1..=ITERATIONS {
         batch(|| {
-            #[allow(clippy::needless_range_loop)]
-            for i in 0..PAIRS {
-                let base = it * 1000 + i as i64;
-                lefts[i].insert("k".into(), base);
-                rights[i].insert("k".into(), base + 500);
+            for (index, (left, right)) in lefts.iter().zip(&rights).enumerate() {
+                let base = iteration_value(it, index);
+                left.insert("k".into(), base);
+                right.insert("k".into(), base.saturating_add(500));
             }
         });
 
-        #[allow(clippy::needless_range_loop)]
-        for i in 0..PAIRS {
-            let base = it * 1000 + i as i64;
+        for (index, output) in outputs.iter().enumerate() {
+            let base = iteration_value(it, index);
             assert_eq!(
-                outputs[i].get_value(&"k".to_string()),
+                output.get_value(&"k".to_string()),
                 Some(base),
-                "left_semi_join settled on a stale left value at iteration {it}, pair {i}"
+                "left_semi_join settled on a stale left value at iteration {it}, pair {index}"
             );
         }
     }
@@ -173,21 +177,19 @@ fn concurrent_multi_left_joins_never_settle_on_a_torn_value() {
 
     for it in 1..=ITERATIONS {
         batch(|| {
-            #[allow(clippy::needless_range_loop)]
-            for i in 0..PAIRS {
-                let base = it * 1000 + i as i64;
-                lefts[i].insert("k".into(), base);
-                rights[i].insert("k".into(), base + 500);
+            for (index, (left, right)) in lefts.iter().zip(&rights).enumerate() {
+                let base = iteration_value(it, index);
+                left.insert("k".into(), base);
+                right.insert("k".into(), base.saturating_add(500));
             }
         });
 
-        #[allow(clippy::needless_range_loop)]
-        for i in 0..PAIRS {
-            let base = it * 1000 + i as i64;
+        for (index, output) in outputs.iter().enumerate() {
+            let base = iteration_value(it, index);
             assert_eq!(
-                outputs[i].get_value(&"k".to_string()),
-                Some((base, vec![base + 500])),
-                "multi_left_join_by settled on a torn/stale value at iteration {it}, pair {i}"
+                output.get_value(&"k".to_string()),
+                Some((base, vec![base.saturating_add(500)])),
+                "multi_left_join_by settled on a torn/stale value at iteration {it}, pair {index}"
             );
         }
     }

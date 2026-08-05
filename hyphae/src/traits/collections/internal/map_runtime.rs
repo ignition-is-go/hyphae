@@ -77,7 +77,7 @@ fn apply_source_diff<SK, SV>(
             source_rows.remove(key);
             impacted.insert(key.clone());
         }
-        MapDiff::Batch { .. } => unreachable!("batch handled above"),
+        MapDiff::Batch { .. } => {}
     }
 }
 
@@ -144,28 +144,25 @@ where
         }
 
         for (out_key, new_value) in desired_rows {
-            match state.output_cache.get(&out_key).cloned() {
-                Some(old_value) => {
-                    if old_value != new_value {
-                        state
-                            .output_cache
-                            .insert(out_key.clone(), new_value.clone());
-                        changes.push(MapDiff::Update {
-                            key: out_key,
-                            old_value,
-                            new_value,
-                        });
-                    }
-                }
-                None => {
+            if let Some(old_value) = state.output_cache.get(&out_key).cloned() {
+                if old_value != new_value {
                     state
                         .output_cache
                         .insert(out_key.clone(), new_value.clone());
-                    changes.push(MapDiff::Insert {
+                    changes.push(MapDiff::Update {
                         key: out_key,
-                        value: new_value,
+                        old_value,
+                        new_value,
                     });
                 }
+            } else {
+                state
+                    .output_cache
+                    .insert(out_key.clone(), new_value.clone());
+                changes.push(MapDiff::Insert {
+                    key: out_key,
+                    value: new_value,
+                });
             }
         }
 
@@ -177,7 +174,7 @@ where
     changes
 }
 
-pub(crate) fn flatten_diff<K, V>(diff: &MapDiff<K, V>, out: &mut Vec<MapDiff<K, V>>)
+pub fn flatten_diff<K, V>(diff: &MapDiff<K, V>, out: &mut Vec<MapDiff<K, V>>)
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
@@ -213,7 +210,7 @@ where
 /// Used by `MapQuery` plan nodes (`ProjectPlan`, `ProjectManyPlan`,
 /// `SelectPlan`) whose materialization shares one output cell map. Chains of
 /// plans compose without intermediate [`CellMap`](crate::CellMap) allocations.
-pub(crate) fn install_map_runtime_via_query<SK, SV, OK, OV, S, FO>(
+pub fn install_map_runtime_via_query<SK, SV, OK, OV, S, FO>(
     source: S,
     compute_rows: FO,
     sink: crate::map_query::MapDiffSink<OK, OV>,
@@ -230,11 +227,13 @@ where
     let compute_rows = Arc::new(compute_rows);
 
     let upstream_sink: crate::map_query::MapDiffSink<SK, SV> = {
-        let state = state.clone();
-        let compute_rows = compute_rows.clone();
-        let sink = sink.clone();
+        let state = state;
+        let compute_rows = compute_rows;
+        let sink = sink;
         Arc::new(move |diff| {
-            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let mut impacted: FxHashSet<SK> = FxHashSet::default();
             apply_source_diff(&mut state.source_rows, diff, &mut impacted);
             let changes = recompute_impacted(&mut state, impacted, compute_rows.as_ref());

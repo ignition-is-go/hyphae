@@ -39,9 +39,8 @@ where
         let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> = Arc::new(move |signal: &Signal<T>| {
             match signal {
                 Signal::Value(_) => {
-                    let prev = remaining.try_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                        if n > 0 { Some(n - 1) } else { None }
-                    });
+                    let prev = remaining
+                        .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1));
                     match prev {
                         Ok(1) => {
                             callback(signal);
@@ -63,20 +62,26 @@ where
 
 impl<S, T, Sd> PipelineSeed<T> for TakePipeline<S, T, Sd>
 where
-    S: PipelineSeed<T>,
+    S: Pipeline<T, crate::pipeline::Definite>,
     Sd: Seedness,
     T: CellValue,
 {
     fn seed(&self) -> T {
-        self.source.seed()
+        self.source.pipeline_seed()
     }
 }
 
 #[allow(private_bounds)]
-impl<S, T, Sd> Pipeline<T, Sd> for TakePipeline<S, T, Sd>
+impl<S, T> Pipeline<T, crate::pipeline::Definite> for TakePipeline<S, T, crate::pipeline::Definite>
 where
-    S: Pipeline<T, Sd>,
-    Sd: Seedness,
+    S: Pipeline<T, crate::pipeline::Definite>,
+    T: CellValue,
+{
+}
+
+impl<S, T> Pipeline<T, crate::pipeline::Empty> for TakePipeline<S, T, crate::pipeline::Empty>
+where
+    S: Pipeline<T, crate::pipeline::Empty>,
     T: CellValue,
 {
 }
@@ -84,7 +89,13 @@ where
 #[allow(private_bounds)]
 pub trait TakeExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     #[track_caller]
-    fn take(self, count: usize) -> impl crate::Materialize<T, S> {
+    fn take(self, count: usize) -> impl crate::Materialize<T, S>;
+}
+
+impl<T: CellValue, P: Pipeline<T, crate::pipeline::Definite>> TakeExt<T, crate::pipeline::Definite>
+    for P
+{
+    fn take(self, count: usize) -> impl crate::Materialize<T, crate::pipeline::Definite> {
         TakePipeline {
             source: self,
             count,
@@ -94,7 +105,18 @@ pub trait TakeExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     }
 }
 
-impl<T: CellValue, S: Seedness, P: Pipeline<T, S>> TakeExt<T, S> for P {}
+impl<T: CellValue, P: Pipeline<T, crate::pipeline::Empty>> TakeExt<T, crate::pipeline::Empty>
+    for P
+{
+    fn take(self, count: usize) -> impl crate::Materialize<T, crate::pipeline::Empty> {
+        TakePipeline {
+            source: self,
+            count,
+            _t: PhantomData,
+            _sd: PhantomData,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -138,7 +160,7 @@ mod tests {
 
         let c = completed.clone();
         let _guard = taken.subscribe(move |signal| {
-            if let Signal::Complete = signal {
+            if matches!(signal, Signal::Complete) {
                 c.store(true, AtomicOrdering::SeqCst);
             }
         });

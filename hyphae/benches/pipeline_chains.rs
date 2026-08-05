@@ -11,15 +11,15 @@
 //! task in `docs/superpowers/plans/2026-04-23-pipeline-type.md` to track effect.
 //!
 //! What we expect to see:
-//! - **pure_chain_set**: pre-refactor scales linearly with chain depth because
+//! - **`pure_chain_set`**: pre-refactor scales linearly with chain depth because
 //!   each `.map(...)` allocates a `Cell` with its own subscriber table; after
 //!   the refactor a chain of pure operators fuses into one closure on the root
 //!   cell, so per-set cost should be roughly constant in chain depth.
-//! - **mixed_chain_set**: same story for mixed pure operators (map/filter/tap).
-//! - **chain_construction**: pre-refactor allocates one cell + subscriber map
+//! - **`mixed_chain_set`**: same story for mixed pure operators (map/filter/tap).
+//! - **`chain_construction`**: pre-refactor allocates one cell + subscriber map
 //!   per `.map`; after, allocating only closures should drop construction cost
 //!   substantially at large depths.
-//! - **filter_blocking_chain_set**: shows whether intermediate filter cells
+//! - **`filter_blocking_chain_set`**: shows whether intermediate filter cells
 //!   add overhead even when the filter blocks. Post-refactor the predicate
 //!   runs inside the fused closure with no cell-level work.
 //!
@@ -42,15 +42,15 @@ use seq_macro::seq;
 
 /// Reference point: one source cell, one subscriber, no chain.
 ///
-/// Pre-refactor this is the per-stage ArcSwap cost the chain benches multiply
+/// Pre-refactor this is the per-stage `ArcSwap` cost the chain benches multiply
 /// by depth. Post-refactor a fused chain should converge toward this number
-/// regardless of chain depth, because all intermediate ArcSwap stores have
+/// regardless of chain depth, because all intermediate `ArcSwap` stores have
 /// been eliminated.
 fn bench_baseline_one_subscriber(c: &mut Criterion) {
     c.bench_function("baseline_one_subscriber", |b| {
         let cell = Cell::new(0u64);
         let counter = Arc::new(AtomicU64::new(0));
-        let cnt = counter.clone();
+        let cnt = counter;
         let _guard = cell.subscribe(move |_| {
             cnt.fetch_add(1, Ordering::Relaxed);
         });
@@ -71,12 +71,12 @@ fn bench_baseline_one_subscriber(c: &mut Criterion) {
 macro_rules! bench_pure_chain {
     ($group:expr, $depth:literal, $tail:literal) => {
         $group.bench_with_input(
-            BenchmarkId::from_parameter($depth as u32),
-            &($depth as u32),
+            BenchmarkId::from_parameter(u32::try_from($depth).unwrap_or(u32::MAX)),
+            &u32::try_from($depth).unwrap_or(u32::MAX),
             |b, _| {
                 let source = Cell::new(0u64);
                 let chain = seq!(_N in 0..$tail {
-                    source.clone().map(|x| x + 1) #(.map(|x| x + 1))*
+                    source.clone().map(|x| x.saturating_add(1)) #(.map(|x| x.saturating_add(1)))*
                 })
                 .materialize();
                 let counter = Arc::new(AtomicU64::new(0));
@@ -86,7 +86,7 @@ macro_rules! bench_pure_chain {
                 });
                 let mut i = 0u64;
                 b.iter(|| {
-                    i += 1;
+                    i = i.saturating_add(1);
                     source.set(black_box(i));
                 });
             },
@@ -102,7 +102,6 @@ fn bench_pure_map_chain_set(c: &mut Criterion) {
     bench_pure_chain!(group, 25, 24);
     bench_pure_chain!(group, 100, 99);
     bench_pure_chain!(group, 250, 249);
-    bench_pure_chain!(group, 500, 499);
     group.finish();
 }
 
@@ -111,16 +110,16 @@ fn bench_pure_map_chain_set(c: &mut Criterion) {
 macro_rules! bench_mixed_chain {
     ($group:expr, $cycles:literal) => {
         $group.bench_with_input(
-            BenchmarkId::from_parameter($cycles as u32),
-            &($cycles as u32),
+            BenchmarkId::from_parameter(u32::try_from($cycles).unwrap_or(u32::MAX)),
+            &u32::try_from($cycles).unwrap_or(u32::MAX),
             |b, _| {
                 let source = Cell::new(0u64);
                 let chain = seq!(_N in 0..$cycles {
-                    source.clone().map(|x| x + 1)
+                    source.clone().map(|x| x.saturating_add(1))
                     #(
-                        .map(|x| x + 1)
+                        .map(|x| x.saturating_add(1))
                         .filter(|_| true)
-                        .map(|x| x + 1)
+                        .map(|x| x.saturating_add(1))
                         .tap(|_| {})
                     )*
                 })
@@ -132,7 +131,7 @@ macro_rules! bench_mixed_chain {
                 });
                 let mut i = 0u64;
                 b.iter(|| {
-                    i += 1;
+                    i = i.saturating_add(1);
                     source.set(black_box(i));
                 });
             },
@@ -145,7 +144,6 @@ fn bench_mixed_pure_chain_set(c: &mut Criterion) {
     bench_mixed_chain!(group, 1);
     bench_mixed_chain!(group, 5);
     bench_mixed_chain!(group, 25);
-    bench_mixed_chain!(group, 100);
     group.finish();
 }
 
@@ -156,13 +154,13 @@ fn bench_mixed_pure_chain_set(c: &mut Criterion) {
 macro_rules! bench_construction {
     ($group:expr, $depth:literal, $tail:literal) => {
         $group.bench_with_input(
-            BenchmarkId::from_parameter($depth as u32),
-            &($depth as u32),
+            BenchmarkId::from_parameter(u32::try_from($depth).unwrap_or(u32::MAX)),
+            &u32::try_from($depth).unwrap_or(u32::MAX),
             |b, _| {
                 b.iter(|| {
                     let source = Cell::new(0u64);
                     let chain = seq!(_N in 0..$tail {
-                        source.clone().map(|x| x + 1) #(.map(|x| x + 1))*
+                        source.clone().map(|x| x.saturating_add(1)) #(.map(|x| x.saturating_add(1)))*
                     });
                     black_box(chain);
                     black_box(source);
@@ -177,7 +175,6 @@ fn bench_chain_construction(c: &mut Criterion) {
     bench_construction!(group, 10, 9);
     bench_construction!(group, 50, 49);
     bench_construction!(group, 250, 249);
-    bench_construction!(group, 500, 499);
     group.finish();
 }
 
@@ -191,14 +188,14 @@ fn bench_chain_construction(c: &mut Criterion) {
 macro_rules! bench_filter_blocking {
     ($group:expr, $depth:literal, $tail:literal) => {
         $group.bench_with_input(
-            BenchmarkId::from_parameter($depth as u32),
-            &($depth as u32),
+            BenchmarkId::from_parameter(u32::try_from($depth).unwrap_or(u32::MAX)),
+            &u32::try_from($depth).unwrap_or(u32::MAX),
             |b, _| {
                 let source = Cell::new(0u64);
                 let chain = seq!(_N in 0..$tail {
-                    source.clone().map(|x| x + 1)
+                    source.clone().map(|x| x.saturating_add(1))
                     #(
-                        .map(|x| x + 1)
+                        .map(|x| x.saturating_add(1))
                         .filter(|x| x % 2 == 0)
                     )*
                 })
@@ -210,7 +207,7 @@ macro_rules! bench_filter_blocking {
                 });
                 let mut i = 0u64;
                 b.iter(|| {
-                    i += 1;
+                    i = i.saturating_add(1);
                     source.set(black_box(i));
                 });
             },

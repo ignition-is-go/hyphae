@@ -78,6 +78,7 @@ pub trait BackpressureExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T>
     /// therefore an allocation-free pass-through that retains the capacity
     /// check for API compatibility.
     #[track_caller]
+    #[must_use]
     fn drop_oldest(self, capacity: usize) -> Self {
         assert!(capacity > 0, "capacity must be positive");
         self
@@ -103,6 +104,7 @@ pub trait BackpressureExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T>
     /// pipeline layer this is exactly the identity operation, so it adds no
     /// intermediate state or subscription.
     #[track_caller]
+    #[must_use]
     fn sample_latest(self) -> Self {
         self
     }
@@ -197,7 +199,7 @@ mod tests {
         let completed = Arc::new(AtomicBool::new(false));
         let c = completed.clone();
         let _guard = buffered.subscribe(move |signal| {
-            if let Signal::Complete = signal {
+            if matches!(signal, Signal::Complete) {
                 c.store(true, Ordering::SeqCst);
             }
         });

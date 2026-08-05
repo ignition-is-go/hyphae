@@ -3,7 +3,7 @@ use super::{CellValue, TakeExt};
 use crate::pipeline::{Pipeline, Seedness};
 
 #[allow(private_bounds)]
-pub trait FirstExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
+pub trait FirstExt<T: CellValue, S: Seedness>: Pipeline<T, S> + TakeExt<T, S> {
     /// Take only the first value, then complete. Equivalent to `take(1)`.
     #[track_caller]
     fn first(self) -> impl crate::Materialize<T, S> {
@@ -11,7 +11,7 @@ pub trait FirstExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     }
 }
 
-impl<T: CellValue, S: Seedness, P: Pipeline<T, S>> FirstExt<T, S> for P {}
+impl<T: CellValue, S: Seedness, P> FirstExt<T, S> for P where P: Pipeline<T, S> + TakeExt<T, S> {}
 
 #[cfg(test)]
 mod tests {

@@ -12,7 +12,7 @@ pub struct SubscriptionGuard {
     source: Arc<dyn DepNode>,
 }
 
-/// Minimal DepNode for callback-only guards (no real cell dependency).
+/// Minimal `DepNode` for callback-only guards (no real cell dependency).
 struct CallbackDepNode(Uuid);
 
 impl DepNode for CallbackDepNode {
@@ -78,7 +78,7 @@ impl SubscriptionGuard {
     /// tied to a cell's lifetime via `cell.own()`.
     pub fn from_callback(callback: impl FnMut() + Send + Sync + 'static) -> Self {
         let id = Uuid::new_v4();
-        log::trace!("SubscriptionGuard::from_callback created id={}", id);
+        log::trace!("SubscriptionGuard::from_callback created id={id}");
         Self {
             unsubscribe_fn: Some(Box::new(callback)),
             id,
@@ -97,7 +97,9 @@ impl SubscriptionGuard {
         let mut guard = Some(self);
         Self::new(Uuid::new_v4(), source, move || {
             cleanup();
-            guard.take();
+            if let Some(guard) = guard.take() {
+                drop(guard);
+            }
         })
     }
 
@@ -109,26 +111,33 @@ impl SubscriptionGuard {
     pub(crate) fn combine(guards: Vec<Self>) -> Self {
         match guards.len() {
             0 => Self::from_callback(|| {}),
-            1 => guards.into_iter().next().expect("guard length checked"),
+            1 => {
+                let mut guards = guards;
+                guards.remove(0)
+            }
             _ => {
                 let id = Uuid::new_v4();
                 let sources = guards.iter().map(|guard| guard.source.clone()).collect();
                 let source = Arc::new(CompositeDepNode { id, sources });
                 let mut guards = Some(guards);
                 Self::new(id, source, move || {
-                    guards.take();
+                    if let Some(guards) = guards.take() {
+                        drop(guards);
+                    }
                 })
             }
         }
     }
 
     /// Get the source cell this subscription is connected to.
+    #[must_use]
     pub fn source(&self) -> &Arc<dyn DepNode> {
         &self.source
     }
 
     /// Prevent automatic unsubscribe on drop.
     /// Returns the subscription ID for manual management.
+    #[must_use]
     pub fn leak(mut self) -> Uuid {
         self.unsubscribe_fn = None;
         self.id
@@ -140,7 +149,8 @@ impl SubscriptionGuard {
     }
 
     /// Get the subscription ID.
-    pub fn id(&self) -> Uuid {
+    #[must_use]
+    pub const fn id(&self) -> Uuid {
         self.id
     }
 }
@@ -190,8 +200,8 @@ mod tests {
         let guard = SubscriptionGuard::combine(vec![guard_a, guard_b]);
         let deps = guard.source().deps();
         assert_eq!(deps.len(), 2);
-        assert_eq!(deps[0].id(), source_a.id());
-        assert_eq!(deps[1].id(), source_b.id());
+        assert_eq!(deps.first().map(|dep| dep.id()), Some(source_a.id()));
+        assert_eq!(deps.get(1).map(|dep| dep.id()), Some(source_b.id()));
 
         drop(guard);
         assert_eq!(dropped.load(Ordering::SeqCst), 2);

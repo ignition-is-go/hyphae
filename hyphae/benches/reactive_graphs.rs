@@ -29,6 +29,18 @@ use seq_macro::seq;
 
 const DEFAULT_ROWS: usize = 1_000;
 
+fn usize_u64(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
+}
+
+fn tick_index(value: u64) -> usize {
+    usize::try_from(value).unwrap_or(usize::MAX)
+}
+
+fn safe_mod(value: usize, modulus: usize) -> usize {
+    value.checked_rem(modulus).unwrap_or(0)
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct Record {
     bucket: u64,
@@ -54,10 +66,10 @@ fn populate(rows: usize, dimension_count: usize) -> Sources {
     let root = CellMap::new();
     for i in 0..rows {
         root.insert(
-            i as u64,
+            usize_u64(i),
             Arc::new(Record {
-                bucket: (i % buckets) as u64,
-                checksum: i as u64,
+                bucket: usize_u64(safe_mod(i, buckets)),
+                checksum: usize_u64(i),
                 generation: 0,
             }),
         );
@@ -68,10 +80,13 @@ fn populate(rows: usize, dimension_count: usize) -> Sources {
             let map = CellMap::new();
             for i in 0..rows {
                 map.insert(
-                    i as u64,
+                    usize_u64(i),
                     Arc::new(Dimension {
-                        bucket: (i % buckets) as u64,
-                        payload: ((source + 1) as u64).wrapping_mul(10_000) + i as u64,
+                        bucket: usize_u64(safe_mod(i, buckets)),
+                        payload: usize_u64(source)
+                            .saturating_add(1)
+                            .wrapping_mul(10_000)
+                            .wrapping_add(usize_u64(i)),
                     }),
                 );
             }
@@ -163,7 +178,8 @@ macro_rules! define_map_builder {
         fn $name(sources: &Sources) -> CellMap<u64, Arc<Record>, CellImmutable> {
             let plan = initial_plan(sources);
             seq!(N in 0..$depth {
-                join_dimension!(plan, sources.dimensions[N], N as u64 + 1);
+                let dimension = sources.dimensions.get(N).cloned().unwrap_or_else(CellMap::new);
+                join_dimension!(plan, dimension, usize_u64(N).saturating_add(1));
             });
             plan.materialize()
         }
@@ -180,65 +196,50 @@ type Builder = fn(&Sources) -> CellMap<u64, Arc<Record>, CellImmutable>;
 
 fn builder(depth: usize) -> Builder {
     match depth {
-        4 => build_depth_4,
         8 => build_depth_8,
         12 => build_depth_12,
         16 => build_depth_16,
         32 => build_depth_32,
-        _ => unreachable!("unsupported benchmark depth"),
+        _ => build_depth_4,
     }
 }
 
 fn mutate_root(sources: &Sources, tick: u64) {
-    let row = tick as usize % sources.rows;
+    let row = safe_mod(tick_index(tick), sources.rows);
     mutate_root_row(sources, row, tick);
 }
 
 fn mutate_root_row(sources: &Sources, row: usize, tick: u64) {
     sources.root.insert(
-        row as u64,
+        usize_u64(row),
         Arc::new(Record {
-            bucket: (row % sources.buckets) as u64,
+            bucket: usize_u64(safe_mod(row, sources.buckets)),
             checksum: black_box(tick.wrapping_mul(17)),
             generation: tick,
         }),
     );
 }
 
-fn record_value(record: &Option<Arc<Record>>) -> u64 {
-    record
-        .as_ref()
-        .map_or(0, |record| record.checksum ^ record.generation)
-}
-
-fn sum_pair((left, right): &(u64, u64)) -> u64 {
-    left.wrapping_add(*right).rotate_left(3)
-}
-
-fn mix_value(value: &u64) -> u64 {
-    value.wrapping_mul(0x9e37_79b9).rotate_left(7)
-}
-
-fn fold_value(value: &u64) -> u64 {
-    value.rotate_right(11) ^ 0xa076_1d64_78bd_642f
-}
-
-fn observe_value(value: &u64) {
-    black_box(value);
-}
-
 macro_rules! join_view_value {
     ($plan:ident, $view:expr) => {
         let $plan = $plan
+            .materialize()
             .join(
                 $view
                     .get(&0)
-                    .map(record_value as fn(&Option<Arc<Record>>) -> u64),
+                    .map(|record| {
+                        record
+                            .as_ref()
+                            .map_or(0, |record| record.checksum ^ record.generation)
+                    })
+                    .materialize(),
             )
-            .map(sum_pair as fn(&(u64, u64)) -> u64)
-            .map(mix_value as fn(&u64) -> u64)
-            .tap(observe_value as fn(&u64))
-            .map(fold_value as fn(&u64) -> u64);
+            .map(|(left, right)| left.wrapping_add(*right).rotate_left(3))
+            .map(|value| value.wrapping_mul(0x9e37_79b9).rotate_left(7))
+            .tap(|value| {
+                black_box(value);
+            })
+            .map(|value| value.rotate_right(11) ^ 0xa076_1d64_78bd_642f);
     };
 }
 
@@ -247,11 +248,13 @@ macro_rules! define_operator_builder {
         fn $name(
             views: &[CellMap<u64, Arc<Record>, CellImmutable>],
         ) -> Cell<u64, CellImmutable> {
-            let plan = views[0]
+            let first_view = views.first().cloned().unwrap_or_else(|| CellMap::new().lock());
+            let plan = first_view
                 .get(&0)
-                .map(record_value as fn(&Option<Arc<Record>>) -> u64);
+                .map(|record| record.as_ref().map_or(0, |record| record.checksum ^ record.generation));
             seq!(N in 1..$depth {
-                join_view_value!(plan, views[N]);
+                let view = views.get(N).cloned().unwrap_or_else(|| CellMap::new().lock());
+                join_view_value!(plan, view);
             });
             plan.materialize()
         }
@@ -268,22 +271,24 @@ type OperatorBuilder = fn(&[CellMap<u64, Arc<Record>, CellImmutable>]) -> Cell<u
 
 fn operator_builder(depth: usize) -> OperatorBuilder {
     match depth {
-        4 => operator_graph_depth_4,
         8 => operator_graph_depth_8,
         12 => operator_graph_depth_12,
         16 => operator_graph_depth_16,
         32 => operator_graph_depth_32,
-        _ => unreachable!("unsupported benchmark depth"),
+        _ => operator_graph_depth_4,
     }
 }
 
 fn mutate_dimension(sources: &Sources, source: usize, tick: u64) {
-    let row = tick as usize % sources.rows;
-    sources.dimensions[source].insert(
-        row as u64,
+    let row = safe_mod(tick_index(tick), sources.rows);
+    let Some(dimension) = sources.dimensions.get(source) else {
+        return;
+    };
+    dimension.insert(
+        usize_u64(row),
         Arc::new(Dimension {
-            bucket: (row % sources.buckets) as u64,
-            payload: black_box(tick.wrapping_mul(31).wrapping_add(source as u64)),
+            bucket: usize_u64(safe_mod(row, sources.buckets)),
+            payload: black_box(tick.wrapping_mul(31).wrapping_add(usize_u64(source))),
         }),
     );
 }
@@ -316,7 +321,7 @@ fn bench_deepest_source_updates(c: &mut Criterion) {
             let mut tick = 0u64;
             b.iter(|| {
                 tick = tick.wrapping_add(1);
-                mutate_dimension(&sources, depth - 1, tick);
+                mutate_dimension(&sources, depth.saturating_sub(1), tick);
                 black_box(&view);
             });
         });
@@ -336,7 +341,7 @@ fn bench_all_source_waves(c: &mut Criterion) {
                 tick = tick.wrapping_add(1);
                 mutate_root(&sources, tick);
                 for source in 0..depth {
-                    mutate_dimension(&sources, source, tick.wrapping_add(source as u64));
+                    mutate_dimension(&sources, source, tick.wrapping_add(usize_u64(source)));
                 }
                 black_box(&view);
             });

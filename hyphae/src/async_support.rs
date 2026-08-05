@@ -124,10 +124,10 @@ mod tests {
         let mut cx = Context::from_waker(&waker);
 
         // First poll should return the initial value
-        match Pin::new(&mut stream).poll_next(&mut cx) {
-            Poll::Ready(Some(value)) => assert_eq!(value, 42),
-            _ => panic!("Expected Ready with initial value"),
-        }
+        assert_eq!(
+            Pin::new(&mut stream).poll_next(&mut cx),
+            Poll::Ready(Some(42))
+        );
     }
 
     #[test]
@@ -145,10 +145,10 @@ mod tests {
         cell.set(1);
 
         // Should get the new value
-        match Pin::new(&mut stream).poll_next(&mut cx) {
-            Poll::Ready(Some(value)) => assert_eq!(value, 1),
-            _ => panic!("Expected Ready with new value"),
-        }
+        assert_eq!(
+            Pin::new(&mut stream).poll_next(&mut cx),
+            Poll::Ready(Some(1))
+        );
     }
 
     #[test]
@@ -167,13 +167,13 @@ mod tests {
         cell.set(2);
 
         // Should get both values
-        match Pin::new(&mut stream).poll_next(&mut cx) {
-            Poll::Ready(Some(value)) => assert_eq!(value, 1),
-            _ => panic!("Expected Ready"),
-        }
-        match Pin::new(&mut stream).poll_next(&mut cx) {
-            Poll::Ready(Some(value)) => assert_eq!(value, 2),
-            _ => panic!("Expected Ready"),
-        }
+        assert_eq!(
+            Pin::new(&mut stream).poll_next(&mut cx),
+            Poll::Ready(Some(1))
+        );
+        assert_eq!(
+            Pin::new(&mut stream).poll_next(&mut cx),
+            Poll::Ready(Some(2))
+        );
     }
 }

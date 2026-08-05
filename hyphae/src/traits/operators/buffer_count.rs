@@ -39,7 +39,7 @@ where
                     return;
                 }
                 buffer.push(value.as_ref().clone());
-                let len = buffer_len.fetch_add(1, Ordering::SeqCst) + 1;
+                let len = buffer_len.fetch_add(1, Ordering::SeqCst).saturating_add(1);
                 if len >= count {
                     let mut chunk = Vec::with_capacity(count);
                     for _ in 0..count {
@@ -177,7 +177,7 @@ mod tests {
             Signal::Complete => {
                 c.fetch_add(1, Ordering::SeqCst);
             }
-            _ => {}
+            Signal::Error(_) => {}
         });
 
         source.set(1);

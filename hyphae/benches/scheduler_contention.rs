@@ -76,7 +76,11 @@ fn bench_contention_independent(c: &mut Criterion) {
     let mut group = c.benchmark_group("contention/independent");
 
     for &n_threads in &THREAD_COUNTS {
-        group.throughput(Throughput::Elements(n_threads as u64 * OPS_PER_THREAD));
+        group.throughput(Throughput::Elements(
+            u64::try_from(n_threads)
+                .unwrap_or(u64::MAX)
+                .saturating_mul(OPS_PER_THREAD),
+        ));
         group.bench_function(format!("threads={n_threads}"), |b| {
             b.iter_custom(|iters| {
                 let mut total = Duration::ZERO;
@@ -88,15 +92,23 @@ fn bench_contention_independent(c: &mut Criterion) {
                         (0..n_threads).map(|_| Cell::new(0i64)).collect();
                     let guards: Vec<SubscriptionGuard> = sources
                         .iter()
-                        .map(|s| s.clone().map(|x| x + 1).materialize().subscribe(|_| {}))
+                        .map(|source| {
+                            source
+                                .clone()
+                                .map(|value| value.saturating_add(1))
+                                .materialize()
+                                .subscribe(|_| {})
+                        })
                         .collect();
 
-                    total += time_concurrent(n_threads, |t| {
-                        let s = &sources[t];
+                    total = total.saturating_add(time_concurrent(n_threads, |thread_index| {
+                        let Some(source) = sources.get(thread_index) else {
+                            return;
+                        };
                         for i in 0..OPS_PER_THREAD {
-                            batch(|| s.set(black_box(i as i64)));
+                            batch(|| source.set(black_box(i.cast_signed())));
                         }
-                    });
+                    }));
 
                     drop(guards);
                 }
@@ -112,7 +124,11 @@ fn bench_contention_shared_sink(c: &mut Criterion) {
     let mut group = c.benchmark_group("contention/shared_sink");
 
     for &n_threads in &THREAD_COUNTS {
-        group.throughput(Throughput::Elements(n_threads as u64 * OPS_PER_THREAD));
+        group.throughput(Throughput::Elements(
+            u64::try_from(n_threads)
+                .unwrap_or(u64::MAX)
+                .saturating_mul(OPS_PER_THREAD),
+        ));
         group.bench_function(format!("threads={n_threads}"), |b| {
             b.iter_custom(|iters| {
                 let mut total = Duration::ZERO;
@@ -128,7 +144,7 @@ fn bench_contention_shared_sink(c: &mut Criterion) {
                         (0..n_threads).map(|_| Cell::new(0i64)).collect();
                     let solves = Arc::new(AtomicU64::new(0));
                     let counter = solves.clone();
-                    let sink = join_vec(sources.iter().cloned().map(|s| s.lock()).collect())
+                    let sink = join_vec(sources.iter().cloned().map(hyphae::Cell::lock).collect())
                         .materialize()
                         .map(move |v: &Vec<i64>| {
                             counter.fetch_add(1, Ordering::Relaxed);
@@ -137,12 +153,14 @@ fn bench_contention_shared_sink(c: &mut Criterion) {
                         .materialize();
                     let guard = sink.subscribe(|_| {});
 
-                    total += time_concurrent(n_threads, |t| {
-                        let s = &sources[t];
+                    total = total.saturating_add(time_concurrent(n_threads, |thread_index| {
+                        let Some(source) = sources.get(thread_index) else {
+                            return;
+                        };
                         for i in 0..OPS_PER_THREAD {
-                            batch(|| s.set(black_box(i as i64)));
+                            batch(|| source.set(black_box(i.cast_signed())));
                         }
-                    });
+                    }));
 
                     black_box(solves.load(Ordering::Relaxed));
                     drop(guard);

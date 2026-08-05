@@ -16,7 +16,7 @@
 //! No mutex on the subscriber list during fanout, no per-emission allocation
 //! beyond what the in-place state mutation already needs. Compared to
 //! materialize-then-clone-cell — where each shared consumer would walk the
-//! full per-key cell + diffs_cell pipeline — this saves the per-share-point
+//! full per-key cell + `diffs_cell` pipeline — this saves the per-share-point
 //! `CellMap` allocation and most of its wiring.
 //!
 //! # Lifecycle
@@ -28,11 +28,8 @@
 //! `SharedMapQuery` does not reactivate — hold the handle (or one
 //! materialized leaf) for as long as you want the shared work to run.
 
-use std::{
-    collections::HashMap,
-    hash::Hash,
-    sync::{Arc, Mutex},
-};
+use parking_lot::Mutex;
+use std::{collections::HashMap, hash::Hash, sync::Arc};
 
 use uuid::Uuid;
 
@@ -109,7 +106,7 @@ where
     /// before downstream callbacks fire so that any concurrent late-binding
     /// install sees a consistent state.
     fn apply_diff(&self, diff: &MapDiff<K, V>) {
-        let mut state = self.state.lock().expect("share state poisoned");
+        let mut state = self.state.lock();
         Self::apply_diff_into(&mut state, diff);
     }
 
@@ -140,8 +137,10 @@ where
     }
 
     fn snapshot_initial(&self) -> MapDiff<K, V> {
-        let state = self.state.lock().expect("share state poisoned");
-        let entries: Vec<(K, V)> = state.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let entries: Vec<(K, V)> = {
+            let state = self.state.lock();
+            state.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        };
         MapDiff::Initial { entries }
     }
 }
@@ -216,7 +215,7 @@ where
         //   2. Synthesize an Initial from our state snapshot and deliver it
         //      to the new `sink` so it sees a coherent starting state.
         let upstream_take = {
-            let mut slot = self.inner.upstream.lock().expect("share upstream poisoned");
+            let mut slot = self.inner.upstream.lock();
             slot.take()
         };
 
@@ -236,11 +235,7 @@ where
                 }
             });
             let guards = install_fn(fanout);
-            let mut slot = self
-                .inner
-                .upstream_guards
-                .lock()
-                .expect("share upstream_guards poisoned");
+            let mut slot = self.inner.upstream_guards.lock();
             slot.extend(guards);
         } else {
             // Replay current state to the late-binding subscriber, then
@@ -258,20 +253,14 @@ where
 
         // Guard whose Drop removes this subscriber and, if last, releases all
         // upstream guards.
-        let weak = Arc::downgrade(&self.inner);
+        let inner = Arc::clone(&self.inner);
         vec![SubscriptionGuard::from_callback(move || {
-            let Some(inner) = weak.upgrade() else {
-                return;
-            };
             let remaining = inner.remove_subscriber(id);
             if remaining == 0 {
                 // Drain upstream guards outside any other lock: dropping a
                 // guard may itself acquire locks.
                 let drained: Vec<SubscriptionGuard> = {
-                    let mut slot = inner
-                        .upstream_guards
-                        .lock()
-                        .expect("share upstream_guards poisoned");
+                    let mut slot = inner.upstream_guards.lock();
                     std::mem::take(&mut *slot)
                 };
                 drop(drained);

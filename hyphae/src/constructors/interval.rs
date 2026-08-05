@@ -17,6 +17,7 @@ use crate::{
 /// **Performance note:** if you only need notification (not the current tick
 /// count via `.get()`), prefer [`interval_source`] — it skips the per-tick
 /// `ArcSwap` drop on the stored value.
+#[must_use]
 pub fn interval(duration: Duration) -> Cell<u64, CellImmutable> {
     let cell = Cell::<u64, CellMutable>::new(0);
 
@@ -41,6 +42,7 @@ pub fn interval(duration: Duration) -> Cell<u64, CellImmutable> {
 /// `.get()` of the current tick count). Most existing callers that just
 /// `subscribe` or use the cell as a notifier in `.sample` can migrate to
 /// this variant for a per-tick saving.
+#[must_use]
 pub fn interval_source(duration: Duration) -> Source<u64> {
     let source = Source::<u64>::new();
 
@@ -84,6 +86,7 @@ pub fn interval_source(duration: Duration) -> Source<u64> {
 ///     }
 /// });
 /// ```
+#[must_use]
 pub fn interval_precise(duration: Duration) -> Cell<u64, CellImmutable> {
     let cell = Cell::<u64, CellMutable>::new(0);
 
@@ -100,6 +103,7 @@ pub fn interval_precise(duration: Duration) -> Cell<u64, CellImmutable> {
 }
 
 /// Like [`interval_precise`] but returns a [`Source`] instead of a [`Cell`].
+#[must_use]
 pub fn interval_precise_source(duration: Duration) -> Source<u64> {
     let source = Source::<u64>::new();
 
@@ -140,6 +144,7 @@ impl Default for IntervalTick {
 ///
 /// **Performance note:** prefer [`interval_precise_with_elapsed_source`] when
 /// consumers only need notification.
+#[must_use]
 pub fn interval_precise_with_elapsed(duration: Duration) -> Cell<IntervalTick, CellImmutable> {
     let cell = Cell::<IntervalTick, CellMutable>::new(IntervalTick::default());
 
@@ -160,6 +165,7 @@ pub fn interval_precise_with_elapsed(duration: Duration) -> Cell<IntervalTick, C
 }
 
 /// Like [`interval_precise_with_elapsed`] but returns a [`Source`] instead of a [`Cell`].
+#[must_use]
 pub fn interval_precise_with_elapsed_source(duration: Duration) -> Source<IntervalTick> {
     let source = Source::<IntervalTick>::new();
 

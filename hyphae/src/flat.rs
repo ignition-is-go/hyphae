@@ -14,7 +14,9 @@
 /// // flat!(|a, b, c, d| ...) expands to |(((a, b), c), d)| ...
 /// let sum = a
 ///     .join(b)
+///     .materialize()
 ///     .join(c)
+///     .materialize()
 ///     .join(d)
 ///     .map(flat!(|a, b, c, d| a + b + c + d))
 ///     .materialize();

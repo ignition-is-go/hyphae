@@ -80,28 +80,47 @@ pub struct PassReport {
     pub per_cell: Vec<(Uuid, u32)>,
 }
 
+struct PassGuard;
+
+impl Drop for PassGuard {
+    fn drop(&mut self) {
+        PASS.with(|p| {
+            let mut p = p.borrow_mut();
+            p.depth = p.depth.saturating_sub(1);
+            if p.depth == 0 {
+                let per_cell = p.fires.drain().collect();
+                p.last = Some(PassReport { per_cell });
+            }
+        });
+    }
+}
+
 impl PassReport {
     /// Total fanouts across all cells in the pass.
+    #[must_use]
     pub fn total_fires(&self) -> u64 {
-        self.per_cell.iter().map(|&(_, n)| n as u64).sum()
+        self.per_cell.iter().map(|&(_, n)| u64::from(n)).sum()
     }
 
     /// Fanouts beyond the first per cell — the coalesceable re-fires. A cell
     /// that fired once contributes 0; a cell that fired 4× contributes 3.
+    #[must_use]
     pub fn total_refires(&self) -> u64 {
         self.per_cell
             .iter()
-            .map(|&(_, n)| n.saturating_sub(1) as u64)
+            .map(|&(_, n)| u64::from(n.saturating_sub(1)))
             .sum()
     }
 
     /// Number of distinct cells that fired at least once this pass.
-    pub fn cells_fired(&self) -> usize {
+    #[must_use]
+    pub const fn cells_fired(&self) -> usize {
         self.per_cell.len()
     }
 
     /// Cells that fired more than once, most re-firing first — the ones that
     /// coalescing collapses. This is where a `4:2:1` harmonic shows up directly.
+    #[must_use]
     pub fn refiring_cells(&self) -> Vec<(Uuid, u32)> {
         let mut v: Vec<_> = self
             .per_cell
@@ -116,12 +135,19 @@ impl PassReport {
     /// Coalesceable fraction: `total_refires / total_fires`, in `0.0..=1.0`
     /// (`0.0` when nothing fired). The share of this pass's fanouts that a
     /// glitch-free coalesced drain would eliminate.
+    #[must_use]
     pub fn coalesceable_fraction(&self) -> f64 {
+        fn u64_to_f64(value: u64) -> f64 {
+            let high = u32::try_from(value >> 32).unwrap_or(u32::MAX);
+            let low = u32::try_from(value & u64::from(u32::MAX)).unwrap_or(u32::MAX);
+            f64::from(high).mul_add(4_294_967_296.0, f64::from(low))
+        }
+
         let total = self.total_fires();
         if total == 0 {
             0.0
         } else {
-            self.total_refires() as f64 / total as f64
+            u64_to_f64(self.total_refires()) / u64_to_f64(total)
         }
     }
 }
@@ -139,32 +165,20 @@ impl PassReport {
 pub fn pass<R>(f: impl FnOnce() -> R) -> R {
     PASS.with(|p| {
         let mut p = p.borrow_mut();
-        p.depth += 1;
+        p.depth = p.depth.saturating_add(1);
         if p.depth == 1 {
             p.fires.clear();
         }
     });
-    // Guard seals the report and restores depth even if `f` unwinds.
-    struct Guard;
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            PASS.with(|p| {
-                let mut p = p.borrow_mut();
-                p.depth -= 1;
-                if p.depth == 0 {
-                    let per_cell = p.fires.drain().collect();
-                    p.last = Some(PassReport { per_cell });
-                }
-            });
-        }
-    }
-    let _guard = Guard;
+    // The guard seals the report and restores depth even if `f` unwinds.
+    let _guard = PassGuard;
     f()
 }
 
 /// Take the most recently completed pass's report, if one has been sealed since
 /// the last take. The read clears it, so a second call returns `None` until the
 /// next [`pass`] completes.
+#[must_use]
 pub fn take_report() -> Option<PassReport> {
     PASS.with(|p| p.borrow_mut().last.take())
 }
@@ -176,7 +190,8 @@ pub(crate) fn record_fire(id: Uuid) {
     PASS.with(|p| {
         let mut p = p.borrow_mut();
         if p.depth > 0 {
-            *p.fires.entry(id).or_insert(0) += 1;
+            let count = p.fires.entry(id).or_insert(0);
+            *count = count.saturating_add(1);
         }
     });
 }

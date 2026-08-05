@@ -136,9 +136,9 @@ mod tests {
         source.insert_many(vec![("a".to_string(), 1), ("b".to_string(), 2)]);
         let seen: Vec<_> = rx.try_iter().collect();
         assert_eq!(seen.len(), 2);
-        match seen.last().unwrap() {
-            MapDiff::Batch { changes } => assert_eq!(changes.len(), 2),
-            _ => panic!("expected batch diff from group_by"),
-        }
+        assert!(matches!(
+            seen.last(),
+            Some(MapDiff::Batch { changes }) if changes.len() == 2
+        ));
     }
 }

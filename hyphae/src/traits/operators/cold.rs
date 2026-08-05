@@ -21,7 +21,7 @@ use std::{
 
 use super::CellValue;
 use crate::{
-    pipeline::{Empty, Pipeline, PipelineInstall, PipelineSeed, Seedness},
+    pipeline::{Empty, Pipeline, PipelineInstall, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -32,17 +32,6 @@ pub struct ColdPipeline<S, T, Sd = crate::pipeline::Definite> {
     source: S,
     _t: PhantomData<fn(T)>,
     _sd: PhantomData<fn(Sd)>,
-}
-
-impl<S, T, Sd> PipelineSeed<Arc<T>> for ColdPipeline<S, T, Sd>
-where
-    S: PipelineInstall<T> + Send + Sync + 'static,
-    Sd: Seedness,
-    T: CellValue,
-{
-    fn seed(&self) -> Arc<T> {
-        unreachable!("a cold Empty pipeline has no seed")
-    }
 }
 
 impl<S, T, Sd> PipelineInstall<Arc<T>> for ColdPipeline<S, T, Sd>
@@ -108,7 +97,7 @@ mod tests {
     #[test]
     fn test_cold_starts_as_none() {
         let source = Cell::new(42u64);
-        let cold = source.clone().cold().materialize();
+        let cold = source.cold().materialize();
         assert_eq!(cold.get(), None);
     }
 

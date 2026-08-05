@@ -19,6 +19,8 @@ use hyphae::{
     Cell, FilterExt, JoinExt, MapExt, Materialize, Mutable, Signal, SwitchMapExt, Watchable, batch,
 };
 
+static SCHEDULER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// The scheduler's tick queue is a single process-wide structure (see
 /// `hyphae::scheduler`'s cross-thread docs) — correct for one real server
 /// process, but it means `cargo test`'s default of running every `#[test]`
@@ -29,8 +31,9 @@ fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
     // the group threshold high (waves stay sequential at rest), so parallelism
     // tests must lower it to actually exercise concurrent same-height groups.
     hyphae::scheduler::set_wave_threshold_for_test(4);
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    SCHEDULER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Subscribe to `cell`, counting Value emits and recording the last one.
@@ -43,7 +46,7 @@ fn count_and_record<M: Send + Sync + 'static>(
     let guard = cell.subscribe(move |sig| {
         if let Signal::Value(v) = sig {
             f.fetch_add(1, Ordering::SeqCst);
-            *l.lock().unwrap() = **v;
+            *l.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = **v;
         }
     });
     std::mem::forget(guard);
@@ -56,7 +59,9 @@ fn record_last<M: Send + Sync + 'static>(cell: &Cell<i64, M>) -> Arc<Mutex<i64>>
     let sink = slot.clone();
     let guard = cell.subscribe(move |sig| {
         if let Signal::Value(v) = sig {
-            *sink.lock().unwrap() = **v;
+            *sink
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = **v;
         }
     });
     // Keep the subscription alive for the lifetime of the slot.
@@ -69,41 +74,57 @@ fn diamond_synchronous_solves_twice_batched_once() {
     let _serial = scheduler_test_serial();
     // s ─┬─> a = s + 1 ─┐
     //    └─> b = s * 10 ┴─> j = (a, b) ─> k = a + b  (the "solve")
-    let s = Cell::new(0i64);
-    let a = s.clone().map(|x| x + 1).materialize();
-    let b = s.clone().map(|x| x * 10).materialize();
-    let j = a.join(b);
+    let source = Cell::new(0i64);
+    let branch_a = source
+        .clone()
+        .map(|value| value.saturating_add(1))
+        .materialize();
+    let branch_b = source
+        .clone()
+        .map(|value| value.saturating_mul(10))
+        .materialize();
+    let joined = branch_a.join(branch_b);
 
-    let solves = Arc::new(AtomicUsize::new(0));
-    let counter = solves.clone();
-    let k = j
-        .map(move |(x, y)| {
+    let solve_count = Arc::new(AtomicUsize::new(0));
+    let counter = solve_count.clone();
+    let result = joined
+        .map(move |(left, right)| {
             counter.fetch_add(1, Ordering::SeqCst);
-            x + y
+            left.saturating_add(*right)
         })
         .materialize();
-    let last = record_last(&k);
+    let last = record_last(&result);
 
     // Synchronous: the shared source reaches the sink via both diamond legs,
     // so the sink re-solves twice for one source change.
-    solves.store(0, Ordering::SeqCst);
-    s.set(5);
+    solve_count.store(0, Ordering::SeqCst);
+    source.set(5);
     assert_eq!(
-        solves.load(Ordering::SeqCst),
+        solve_count.load(Ordering::SeqCst),
         2,
         "synchronous diamond re-solves once per leg"
     );
-    assert_eq!(*last.lock().unwrap(), (5 + 1) + (5 * 10));
+    assert_eq!(
+        *last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        56
+    );
 
     // Batched: coalesced to a single settled solve, same final value.
-    solves.store(0, Ordering::SeqCst);
-    batch(|| s.set(9));
+    solve_count.store(0, Ordering::SeqCst);
+    batch(|| source.set(9));
     assert_eq!(
-        solves.load(Ordering::SeqCst),
+        solve_count.load(Ordering::SeqCst),
         1,
         "batched diamond solves once"
     );
-    assert_eq!(*last.lock().unwrap(), (9 + 1) + (9 * 10));
+    assert_eq!(
+        *last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        100
+    );
 }
 
 #[test]
@@ -113,25 +134,30 @@ fn unequal_diamond_settles_in_height_order() {
     // Short leg: s ─────────────────────────────  (height 0)
     //            j = (c, s)   height 3 ; without height ordering the short leg
     //            would fire j early with a stale c.
-    let s = Cell::new(0i64);
-    let a = s.clone().map(|x| x + 1).materialize();
-    let c = a.clone().map(|x| x * 2).materialize();
-    let j = c.join(s.clone());
+    let source = Cell::new(0i64);
+    let first_leg = source
+        .clone()
+        .map(|value| value.saturating_add(1))
+        .materialize();
+    let long_leg = first_leg.map(|value| value.saturating_mul(2)).materialize();
+    let joined = long_leg.join(source.clone());
 
     let solves = Arc::new(AtomicUsize::new(0));
     let counter = solves.clone();
     // Encode both inputs into one i64 so a stale `c` would be observable:
     // value = c * 1000 + s.
-    let k = j
-        .map(move |(cv, sv)| {
+    let encoded = joined
+        .map(move |(long_value, source_value)| {
             counter.fetch_add(1, Ordering::SeqCst);
-            cv * 1000 + sv
+            long_value
+                .saturating_mul(1000)
+                .saturating_add(*source_value)
         })
         .materialize();
-    let last = record_last(&k);
+    let last = record_last(&encoded);
 
     solves.store(0, Ordering::SeqCst);
-    batch(|| s.set(7));
+    batch(|| source.set(7));
 
     // c settles to (7 + 1) * 2 = 16 before j pops, so the sink sees (16, 7).
     assert_eq!(
@@ -140,8 +166,10 @@ fn unequal_diamond_settles_in_height_order() {
         "unequal diamond still solves once under batch"
     );
     assert_eq!(
-        *last.lock().unwrap(),
-        16 * 1000 + 7,
+        *last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        16_007,
         "join settled with the long-leg value, not a stale short-leg glitch"
     );
 }
@@ -156,25 +184,37 @@ fn diamond_with_unequal_branch_heights_solves_once() {
     // `a` reaches j three levels early. It must NOT fire j before the long
     // branch settles `d` — j is enqueued at its *own* height (4), not at a's,
     // so the drain still puts every branch below j regardless of their heights.
-    let s = Cell::new(0i64);
-    let a = s.clone().map(|x| x + 1).materialize(); // h1
-    let b = s.clone().map(|x| x + 100).materialize(); // h1
-    let c = b.clone().map(|x| x + 1000).materialize(); // h2
-    let d = c.clone().map(|x| x + 10000).materialize(); // h3
-    let j = a.join(d); // h4
+    let source = Cell::new(0i64);
+    let short_leg = source
+        .clone()
+        .map(|value| value.saturating_add(1))
+        .materialize(); // h1
+    let long_leg_one = source
+        .clone()
+        .map(|value| value.saturating_add(100))
+        .materialize(); // h1
+    let long_leg_two = long_leg_one
+        .map(|value| value.saturating_add(1000))
+        .materialize(); // h2
+    let long_leg_three = long_leg_two
+        .map(|value| value.saturating_add(10000))
+        .materialize(); // h3
+    let joined = short_leg.join(long_leg_three); // h4
 
     let solves = Arc::new(AtomicUsize::new(0));
     let counter = solves.clone();
-    let k = j
-        .map(move |(x, y)| {
+    let encoded = joined
+        .map(move |(short_value, long_value)| {
             counter.fetch_add(1, Ordering::SeqCst);
-            x * 1_000_000 + y
+            short_value
+                .saturating_mul(1_000_000)
+                .saturating_add(*long_value)
         })
         .materialize();
-    let last = record_last(&k);
+    let last = record_last(&encoded);
 
     solves.store(0, Ordering::SeqCst);
-    batch(|| s.set(7));
+    batch(|| source.set(7));
     assert_eq!(
         solves.load(Ordering::SeqCst),
         1,
@@ -182,7 +222,12 @@ fn diamond_with_unequal_branch_heights_solves_once() {
     );
     // a = 8 ; d = 7 + 100 + 1000 + 10000 = 11107. A correct d proves j waited
     // for the tall branch even though a arrived first.
-    assert_eq!(*last.lock().unwrap(), 8 * 1_000_000 + 11107);
+    assert_eq!(
+        *last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        8_011_107
+    );
 }
 
 #[test]
@@ -195,46 +240,60 @@ fn filtered_diamond_does_not_wait_for_a_suppressed_branch() {
     // The failure this guards against: a barrier that waits for "both inputs"
     // would block forever on odd `s`, because the filtered branch never
     // notifies. Height ordering doesn't count arrivals, so it can't.
-    let s = Cell::new(0i64); // even seed, so b materializes with a value
-    let a = s.clone().map(|x| x + 1).materialize();
-    let b = s
+    let source = Cell::new(0i64); // even seed, so b materializes with a value
+    let always_branch = source
         .clone()
-        .filter(|x| x % 2 == 0)
-        .map(|x| x * 10)
+        .map(|value| value.saturating_add(1))
         .materialize();
-    let j = a.join(b);
+    let filtered_branch = source
+        .clone()
+        .filter(|value| value.rem_euclid(2) == 0)
+        .map(|value| value.saturating_mul(10))
+        .materialize();
+    let joined = always_branch.join(filtered_branch);
 
-    let solves = Arc::new(AtomicUsize::new(0));
-    let counter = solves.clone();
-    let k = j
-        .map(move |(x, y)| {
+    let solve_count = Arc::new(AtomicUsize::new(0));
+    let counter = solve_count.clone();
+    let result = joined
+        .map(move |(always, filtered)| {
             counter.fetch_add(1, Ordering::SeqCst);
-            *x + (*y).unwrap_or(0)
+            always.saturating_add((*filtered).unwrap_or(0))
         })
         .materialize();
-    let last = record_last(&k);
+    let last = record_last(&result);
 
     // Odd source: b is filtered out — only a arrives. The batch must settle the
     // join from the single live branch and return, not hang waiting for b.
-    solves.store(0, Ordering::SeqCst);
-    batch(|| s.set(3));
+    solve_count.store(0, Ordering::SeqCst);
+    batch(|| source.set(3));
     assert_eq!(
-        solves.load(Ordering::SeqCst),
+        solve_count.load(Ordering::SeqCst),
         1,
         "join settles from the one live branch"
     );
-    assert_eq!(*last.lock().unwrap(), 3 + 1, "a updated, b held at 0");
+    assert_eq!(
+        *last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        4,
+        "a updated, b held at 0"
+    );
 
     // Even source: both branches emit — synchronous would solve twice, batch
     // coalesces to a single settled solve.
-    solves.store(0, Ordering::SeqCst);
-    batch(|| s.set(4));
+    solve_count.store(0, Ordering::SeqCst);
+    batch(|| source.set(4));
     assert_eq!(
-        solves.load(Ordering::SeqCst),
+        solve_count.load(Ordering::SeqCst),
         1,
         "both branches live, still one settled solve"
     );
-    assert_eq!(*last.lock().unwrap(), (4 + 1) + (4 * 10));
+    assert_eq!(
+        *last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        45
+    );
 }
 
 #[test]
@@ -246,10 +305,14 @@ fn switch_map_rewire_and_taller_inner_update_in_one_batch() {
     // topology epoch and lifts the result's own height mid-drain.
     let in0 = Cell::new(0i64).map(|x| *x).materialize(); // immutable inner, h1
     let in1_src = Cell::new(0i64);
-    let in1 = in1_src.clone().map(|x| x + 1).map(|x| x * 2).materialize(); // h2
+    let in1 = in1_src
+        .clone()
+        .map(|value| value.saturating_add(1))
+        .map(|value| value.saturating_mul(2))
+        .materialize(); // h2
 
     let sel = Cell::new(0i64);
-    let (in0c, in1c) = (in0.clone(), in1.clone());
+    let (in0c, in1c) = (in0, in1);
     let result = sel
         .clone()
         .switch_map(move |&i| if i == 0 { in0c.clone() } else { in1c.clone() })
@@ -261,8 +324,10 @@ fn switch_map_rewire_and_taller_inner_update_in_one_batch() {
         in1_src.set(5);
     });
     assert_eq!(
-        *last.lock().unwrap(),
-        (5 + 1) * 2,
+        *last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        12,
         "settled to inner 1's value"
     );
 }
@@ -282,9 +347,9 @@ fn switch_map_old_inner_firing_during_switch_is_glitch_free() {
         let in1_src = Cell::new(0i64);
         let in1 = in1_src
             .clone()
-            .map(|x| x + 1)
-            .map(|x| x * 2)
-            .map(|x| x + 100)
+            .map(|value| value.saturating_add(1))
+            .map(|value| value.saturating_mul(2))
+            .map(|value| value.saturating_add(100))
             .materialize(); // taller inner, h3
 
         let sel = Cell::new(0i64);
@@ -303,7 +368,9 @@ fn switch_map_old_inner_firing_during_switch_is_glitch_free() {
         });
 
         assert_eq!(
-            *last.lock().unwrap(),
+            *last
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
             112,
             "trial {trial}: result settled to the switched-in inner"
         );
@@ -319,7 +386,7 @@ fn switch_map_old_inner_firing_during_switch_is_glitch_free() {
 fn batch_returns_closure_value_and_nests() {
     let _serial = scheduler_test_serial();
     let s = Cell::new(0i64);
-    let doubled = s.clone().map(|x| x * 2).materialize();
+    let doubled = s.clone().map(|value| value.saturating_mul(2)).materialize();
     let last = record_last(&doubled);
 
     // `batch` returns the closure's value.
@@ -331,5 +398,10 @@ fn batch_returns_closure_value_and_nests() {
     });
     assert_eq!(out, 99);
     // Last write wins within the tick: doubled settles from s = 21.
-    assert_eq!(*last.lock().unwrap(), 42);
+    assert_eq!(
+        *last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        42
+    );
 }

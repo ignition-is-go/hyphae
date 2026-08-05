@@ -37,15 +37,28 @@
 //! arm into the same same-height source wave via the public API, so the source
 //! wave is what this harness stresses.
 #![cfg(feature = "scheduler")]
-#![allow(clippy::needless_range_loop)] // deliberate parallel-vec indexing
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use hyphae::{
     BufferCountExt, Cell, CellMutable, FirstExt, Gettable, LastExt, Materialize, Mutable,
     PairwiseExt, Signal, SkipExt, SkipWhileExt, TakeExt, TakeUntilExt, TakeWhileExt, Watchable,
     WindowExt, batch, scheduler::no_coalesce,
 };
+
+const WIDE: usize = 16;
+const ITERS: i64 = 2_000;
+const BURST: i64 = 32;
+const ORDER_ITERS: usize = 2_000;
+const BUFFER_COUNT: usize = 4;
+const WINDOW_COUNT: usize = 4;
+static SCHEDULER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn to_i64(value: usize) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
 
 /// The scheduler's tick queue is a single process-wide structure, so `#[test]`
 /// fns (which `cargo test` runs as concurrent threads) would otherwise smear
@@ -55,24 +68,15 @@ fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
     // the group threshold high (waves stay sequential at rest), so parallelism
     // tests must lower it to actually exercise concurrent same-height groups.
     hyphae::scheduler::set_wave_threshold_for_test(4);
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    SCHEDULER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Number of independent operator instances driven per wide wave. Strictly
-/// greater than the scheduler's PARALLEL_WAVE_THRESHOLD (8), so every batch
+/// greater than the scheduler's `PARALLEL_WAVE_THRESHOLD` (8), so every batch
 /// below forces a genuinely parallel wave, never the small-wave sequential
 /// fallback.
-const WIDE: usize = 16;
-/// Sets driven per Template-B instance (well past every operator's boundary).
-const ITERS: i64 = 2_000;
-
-/// Events fired at one `no_coalesce` source inside a SINGLE batch for the
-/// Template-C order tests — comfortably over the parallel-wave threshold.
-const BURST: i64 = 32;
-/// Batches of `BURST` events for the Template-C order tests.
-const ORDER_ITERS: usize = 2_000;
-
 // ---------------------------------------------------------------------------
 // Template B — wide independent same-height waves. Expected: PASS.
 // ---------------------------------------------------------------------------
@@ -83,7 +87,7 @@ fn take_wide_independent_wave_each_instance_exact() {
 
     let sources: Vec<Cell<i64, CellMutable>> = (0..WIDE).map(|_| Cell::new(0i64)).collect();
     // Distinct caps so the boundary lands at a different point per instance.
-    let counts: Vec<usize> = (0..WIDE).map(|k| k + 2).collect();
+    let counts: Vec<usize> = (0..WIDE).map(|k| k.saturating_add(2)).collect();
     let cells: Vec<_> = sources
         .iter()
         .zip(&counts)
@@ -98,7 +102,7 @@ fn take_wide_independent_wave_each_instance_exact() {
         let rr = r.clone();
         guards.push(cell.subscribe(move |sig| {
             if let Signal::Value(v) = sig {
-                rr.lock().unwrap().push(**v);
+                rr.lock().push(**v);
             }
         }));
     }
@@ -112,17 +116,16 @@ fn take_wide_independent_wave_each_instance_exact() {
         });
     }
 
-    for k in 0..WIDE {
+    for (index, ((count, cell), received)) in counts.iter().zip(&cells).zip(&recv).enumerate() {
         // take(c): the synchronous subscribe-time emit (value 0) is the 1st of
         // c, then values 1..=c-1 land — exactly [0, 1, ..., c-1], then complete.
-        let expected: Vec<i64> = (0..counts[k] as i64).collect();
+        let expected: Vec<i64> = (0..to_i64(*count)).collect();
         assert_eq!(
-            *recv[k].lock().unwrap(),
+            *received.lock(),
             expected,
-            "take instance {k} (count {}) settled wrong under the wide parallel wave",
-            counts[k]
+            "take instance {index} (count {count}) settled wrong under the wide parallel wave"
         );
-        assert!(cells[k].is_complete(), "take instance {k} never completed");
+        assert!(cell.is_complete(), "take instance {index} never completed");
     }
     drop(guards);
 }
@@ -132,7 +135,7 @@ fn take_while_wide_independent_wave_each_instance_exact() {
     let _serial = scheduler_test_serial();
 
     let sources: Vec<Cell<i64, CellMutable>> = (0..WIDE).map(|_| Cell::new(0i64)).collect();
-    let thresholds: Vec<i64> = (0..WIDE).map(|k| k as i64 + 3).collect();
+    let thresholds: Vec<i64> = (0..WIDE).map(|k| to_i64(k).saturating_add(3)).collect();
     let cells: Vec<_> = sources
         .iter()
         .zip(&thresholds)
@@ -150,7 +153,7 @@ fn take_while_wide_independent_wave_each_instance_exact() {
                 // Empty-materialized: payload is Option<i64>; the initial
                 // subscribe replay is None. Only collect real values.
                 if let Some(x) = **v {
-                    rr.lock().unwrap().push(x);
+                    rr.lock().push(x);
                 }
             }
         }));
@@ -164,23 +167,24 @@ fn take_while_wide_independent_wave_each_instance_exact() {
         });
     }
 
-    for k in 0..WIDE {
+    for (index, ((threshold, cell), received)) in
+        thresholds.iter().zip(&cells).zip(&recv).enumerate()
+    {
         // take_while(x < th): passes 0..th-1, then completes at th and freezes.
-        let expected: Vec<i64> = (0..thresholds[k]).collect();
+        let expected: Vec<i64> = (0..*threshold).collect();
         assert_eq!(
-            *recv[k].lock().unwrap(),
+            *received.lock(),
             expected,
-            "take_while instance {k} (th {}) settled wrong under the wide parallel wave",
-            thresholds[k]
+            "take_while instance {index} (th {threshold}) settled wrong under the wide parallel wave"
         );
         assert_eq!(
-            cells[k].get(),
-            Some(thresholds[k] - 1),
-            "take_while instance {k} froze on the wrong last-passing value"
+            cell.get(),
+            Some(threshold.saturating_sub(1)),
+            "take_while instance {index} froze on the wrong last-passing value"
         );
         assert!(
-            cells[k].is_complete(),
-            "take_while instance {k} never completed"
+            cell.is_complete(),
+            "take_while instance {index} never completed"
         );
     }
     drop(guards);
@@ -213,7 +217,7 @@ fn take_until_wide_independent_wave_each_instance_exact() {
         }
     });
     // Post-stop source waves must be ignored by every instance.
-    for i in ITERS + 1..=ITERS + 50 {
+    for i in ITERS.saturating_add(1)..=ITERS.saturating_add(50) {
         batch(|| {
             for s in &sources {
                 s.set(i);
@@ -221,15 +225,15 @@ fn take_until_wide_independent_wave_each_instance_exact() {
         });
     }
 
-    for k in 0..WIDE {
+    for (index, cell) in cells.iter().enumerate() {
         assert_eq!(
-            cells[k].get(),
+            cell.get(),
             ITERS,
-            "take_until instance {k} did not freeze at the pre-stop value under the wide wave"
+            "take_until instance {index} did not freeze at the pre-stop value under the wide wave"
         );
         assert!(
-            cells[k].is_complete(),
-            "take_until instance {k} never completed"
+            cell.is_complete(),
+            "take_until instance {index} never completed"
         );
     }
 }
@@ -239,7 +243,7 @@ fn skip_wide_independent_wave_each_instance_exact() {
     let _serial = scheduler_test_serial();
 
     let sources: Vec<Cell<i64, CellMutable>> = (0..WIDE).map(|_| Cell::new(0i64)).collect();
-    let skips: Vec<usize> = (0..WIDE).map(|k| k + 1).collect();
+    let skips: Vec<usize> = (0..WIDE).map(|k| k.saturating_add(1)).collect();
     let cells: Vec<_> = sources
         .iter()
         .zip(&skips)
@@ -256,7 +260,7 @@ fn skip_wide_independent_wave_each_instance_exact() {
             if let Signal::Value(v) = sig
                 && let Some(x) = (**v)
             {
-                rr.lock().unwrap().push(x);
+                rr.lock().push(x);
             }
         }));
     }
@@ -269,16 +273,15 @@ fn skip_wide_independent_wave_each_instance_exact() {
         });
     }
 
-    for k in 0..WIDE {
+    for (index, (skip, received)) in skips.iter().zip(&recv).enumerate() {
         // skip(n): the synchronous subscribe-time emit (value 0) is the 1st of
         // n skips, so the first passed value is n; passes [n, n+1, ..., ITERS].
-        let n = skips[k] as i64;
+        let n = to_i64(*skip);
         let expected: Vec<i64> = (n..=ITERS).collect();
         assert_eq!(
-            *recv[k].lock().unwrap(),
+            *received.lock(),
             expected,
-            "skip instance {k} (n {}) settled wrong under the wide parallel wave",
-            skips[k]
+            "skip instance {index} (n {skip}) settled wrong under the wide parallel wave"
         );
     }
     drop(guards);
@@ -289,7 +292,7 @@ fn skip_while_wide_independent_wave_each_instance_exact() {
     let _serial = scheduler_test_serial();
 
     let sources: Vec<Cell<i64, CellMutable>> = (0..WIDE).map(|_| Cell::new(0i64)).collect();
-    let thresholds: Vec<i64> = (0..WIDE).map(|k| k as i64 + 1).collect();
+    let thresholds: Vec<i64> = (0..WIDE).map(|k| to_i64(k).saturating_add(1)).collect();
     let cells: Vec<_> = sources
         .iter()
         .zip(&thresholds)
@@ -306,7 +309,7 @@ fn skip_while_wide_independent_wave_each_instance_exact() {
             if let Signal::Value(v) = sig
                 && let Some(x) = (**v)
             {
-                rr.lock().unwrap().push(x);
+                rr.lock().push(x);
             }
         }));
     }
@@ -319,15 +322,15 @@ fn skip_while_wide_independent_wave_each_instance_exact() {
         });
     }
 
-    for k in 0..WIDE {
+    for (index, (threshold, received)) in thresholds.iter().zip(&recv).enumerate() {
         // skip_while(x < th): skips 0..th-1 (gate closed), then value th opens
         // the gate permanently — passes [th, th+1, ..., ITERS].
-        let th = thresholds[k];
+        let th = *threshold;
         let expected: Vec<i64> = (th..=ITERS).collect();
         assert_eq!(
-            *recv[k].lock().unwrap(),
+            *received.lock(),
             expected,
-            "skip_while instance {k} (th {th}) settled wrong under the wide parallel wave"
+            "skip_while instance {index} (th {th}) settled wrong under the wide parallel wave"
         );
     }
     drop(guards);
@@ -351,7 +354,7 @@ fn first_wide_independent_wave_each_instance_exact() {
         let rr = r.clone();
         guards.push(cell.subscribe(move |sig| {
             if let Signal::Value(v) = sig {
-                rr.lock().unwrap().push(**v);
+                rr.lock().push(**v);
             }
         }));
     }
@@ -366,13 +369,13 @@ fn first_wide_independent_wave_each_instance_exact() {
         });
     }
 
-    for k in 0..WIDE {
+    for (index, (cell, received)) in cells.iter().zip(&recv).enumerate() {
         assert_eq!(
-            *recv[k].lock().unwrap(),
+            *received.lock(),
             vec![0i64],
-            "first instance {k} emitted more than the initial value under the wide wave"
+            "first instance {index} emitted more than the initial value under the wide wave"
         );
-        assert!(cells[k].is_complete(), "first instance {k} never completed");
+        assert!(cell.is_complete(), "first instance {index} never completed");
     }
     drop(guards);
 }
@@ -397,7 +400,7 @@ fn last_wide_independent_wave_each_instance_exact() {
             if let Signal::Value(v) = sig
                 && let Some(x) = (**v)
             {
-                rr.lock().unwrap().push(x);
+                rr.lock().push(x);
             }
         }));
     }
@@ -416,18 +419,18 @@ fn last_wide_independent_wave_each_instance_exact() {
         }
     });
 
-    for k in 0..WIDE {
+    for (index, (cell, received)) in cells.iter().zip(&recv).enumerate() {
         assert_eq!(
-            *recv[k].lock().unwrap(),
+            *received.lock(),
             vec![ITERS],
-            "last instance {k} emitted the wrong most-recent value under the wide wave"
+            "last instance {index} emitted the wrong most-recent value under the wide wave"
         );
         assert_eq!(
-            cells[k].get(),
+            cell.get(),
             Some(ITERS),
-            "last instance {k} settled wrong"
+            "last instance {index} settled wrong"
         );
-        assert!(cells[k].is_complete(), "last instance {k} never completed");
+        assert!(cell.is_complete(), "last instance {index} never completed");
     }
     drop(guards);
 }
@@ -457,7 +460,7 @@ fn pairwise_no_coalesce_burst_keeps_pairs_in_order() {
         if let Signal::Value(v) = sig
             && let Some(pair) = (**v)
         {
-            r.lock().unwrap().push(pair);
+            r.lock().push(pair);
         }
     });
 
@@ -466,17 +469,17 @@ fn pairwise_no_coalesce_burst_keeps_pairs_in_order() {
     // (v-1, v) for every emitted v — no per-batch wraparound to special-case.
     let mut next = 1i64;
     for it in 0..ORDER_ITERS {
-        received.lock().unwrap().clear();
+        received.lock().clear();
         let lo = next;
         batch(|| {
             for _ in 0..BURST {
                 src.set(next);
-                next += 1;
+                next = next.saturating_add(1);
             }
         });
-        let hi = next - 1;
-        let expected: Vec<(i64, i64)> = (lo..=hi).map(|x| (x - 1, x)).collect();
-        let got = received.lock().unwrap().clone();
+        let hi = next.saturating_sub(1);
+        let expected: Vec<(i64, i64)> = (lo..=hi).map(|x| (x.saturating_sub(1), x)).collect();
+        let got = received.lock().clone();
         assert_eq!(
             got, expected,
             "iter {it}: pairwise produced REORDERED pairs under the parallel no_coalesce wave"
@@ -489,11 +492,9 @@ fn pairwise_no_coalesce_burst_keeps_pairs_in_order() {
 fn buffer_count_no_coalesce_burst_keeps_chunks_in_order() {
     let _serial = scheduler_test_serial();
 
-    const COUNT: usize = 4; // BURST is a multiple of COUNT -> no cross-batch remainder.
-
     let (src, buffered) = no_coalesce(|| {
         let src = Cell::<i64, CellMutable>::new(0);
-        let buffered = src.clone().buffer_count(COUNT).materialize();
+        let buffered = src.clone().buffer_count(BUFFER_COUNT).materialize();
         (src, buffered)
     });
 
@@ -501,25 +502,25 @@ fn buffer_count_no_coalesce_burst_keeps_chunks_in_order() {
     let r = received.clone();
     let guard = buffered.subscribe(move |sig| {
         if let Signal::Value(v) = sig {
-            r.lock().unwrap().push((**v).clone());
+            r.lock().push((**v).clone());
         }
     });
 
     let mut next = 1i64;
     for it in 0..ORDER_ITERS {
-        received.lock().unwrap().clear();
+        received.lock().clear();
         let lo = next;
         batch(|| {
             for _ in 0..BURST {
                 src.set(next);
-                next += 1;
+                next = next.saturating_add(1);
             }
         });
-        let hi = next - 1;
+        let hi = next.saturating_sub(1);
         // Contiguous values chunked into non-overlapping groups of COUNT.
         let vals: Vec<i64> = (lo..=hi).collect();
-        let expected: Vec<Vec<i64>> = vals.chunks(COUNT).map(|c| c.to_vec()).collect();
-        let got = received.lock().unwrap().clone();
+        let expected: Vec<Vec<i64>> = vals.chunks(BUFFER_COUNT).map(<[i64]>::to_vec).collect();
+        let got = received.lock().clone();
         assert_eq!(
             got, expected,
             "iter {it}: buffer_count produced REORDERED/torn chunks under the parallel no_coalesce wave"
@@ -532,11 +533,9 @@ fn buffer_count_no_coalesce_burst_keeps_chunks_in_order() {
 fn window_no_coalesce_burst_keeps_windows_in_order() {
     let _serial = scheduler_test_serial();
 
-    const COUNT: i64 = 4;
-
     let (src, windowed) = no_coalesce(|| {
         let src = Cell::<i64, CellMutable>::new(0);
-        let windowed = src.clone().window(COUNT as usize).materialize();
+        let windowed = src.clone().window(WINDOW_COUNT).materialize();
         (src, windowed)
     });
 
@@ -544,7 +543,7 @@ fn window_no_coalesce_burst_keeps_windows_in_order() {
     let r = received.clone();
     let guard = windowed.subscribe(move |sig| {
         if let Signal::Value(v) = sig {
-            r.lock().unwrap().push((**v).clone());
+            r.lock().push((**v).clone());
         }
     });
 
@@ -552,22 +551,25 @@ fn window_no_coalesce_burst_keeps_windows_in_order() {
     // x the window is the last COUNT of that history.
     let mut next = 1i64;
     for it in 0..ORDER_ITERS {
-        received.lock().unwrap().clear();
+        received.lock().clear();
         let lo = next;
         batch(|| {
             for _ in 0..BURST {
                 src.set(next);
-                next += 1;
+                next = next.saturating_add(1);
             }
         });
-        let hi = next - 1;
+        let hi = next.saturating_sub(1);
         let expected: Vec<Vec<i64>> = (lo..=hi)
             .map(|x| {
-                let low = (x + 1 - COUNT).max(0);
+                let low = x
+                    .saturating_add(1)
+                    .saturating_sub(to_i64(WINDOW_COUNT))
+                    .max(0);
                 (low..=x).collect()
             })
             .collect();
-        let got = received.lock().unwrap().clone();
+        let got = received.lock().clone();
         assert_eq!(
             got, expected,
             "iter {it}: window produced REORDERED/torn windows under the parallel no_coalesce wave"

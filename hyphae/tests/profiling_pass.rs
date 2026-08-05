@@ -11,6 +11,8 @@ use hyphae::{
     profiling::{pass, take_report},
 };
 
+static SCHEDULER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// `tick_active()` (whether a `batch()` is open) is a process-wide flag under
 /// the `scheduler` feature (see `hyphae::scheduler`'s cross-thread docs), so
 /// the synchronous-path test below needs no OTHER test's `batch()` call open
@@ -22,8 +24,9 @@ fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
     // the group threshold high (waves stay sequential at rest), so parallelism
     // tests must lower it to actually exercise concurrent same-height groups.
     hyphae::scheduler::set_wave_threshold_for_test(4);
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    SCHEDULER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 #[test]
@@ -32,9 +35,9 @@ fn pass_reports_a_synchronous_diamond_refire() {
     // s ─┬─> a = s + 1 ─┐
     //    └─> b = s * 10 ┴─> sink = a + b
     let s = Cell::new(0i64);
-    let a = s.clone().map(|x| x + 1).materialize();
-    let b = s.clone().map(|x| x * 10).materialize();
-    let sink = a.join(b).map(|(x, y)| x + y).materialize();
+    let a = s.clone().map(|x| x.saturating_add(1)).materialize();
+    let b = s.clone().map(|x| x.saturating_mul(10)).materialize();
+    let sink = a.join(b).map(|(x, y)| x.saturating_add(*y)).materialize();
     let guard = sink.subscribe(|_| {});
     std::mem::forget(guard);
 
@@ -43,7 +46,9 @@ fn pass_reports_a_synchronous_diamond_refire() {
     pass(|| {
         s.set(5);
     });
-    let report = take_report().expect("a pass just completed");
+    let report = take_report();
+    assert!(report.is_some(), "a pass just completed");
+    let Some(report) = report else { return };
 
     assert!(
         report.total_refires() >= 1,
@@ -79,7 +84,11 @@ fn no_pass_no_report() {
     let _serial = scheduler_test_serial();
     // Fanouts outside any pass are not tallied.
     let s = Cell::new(0i64);
-    let guard = s.clone().map(|x| x + 1).materialize().subscribe(|_| {});
+    let guard = s
+        .clone()
+        .map(|x| x.saturating_add(1))
+        .materialize()
+        .subscribe(|_| {});
     std::mem::forget(guard);
     let _ = take_report(); // drain any prior
     s.set(1);
@@ -93,9 +102,9 @@ fn batch_collapses_the_refire_the_pass_measures() {
 
     let _serial = scheduler_test_serial();
     let s = Cell::new(0i64);
-    let a = s.clone().map(|x| x + 1).materialize();
-    let b = s.clone().map(|x| x * 10).materialize();
-    let sink = a.join(b).map(|(x, y)| x + y).materialize();
+    let a = s.clone().map(|x| x.saturating_add(1)).materialize();
+    let b = s.clone().map(|x| x.saturating_mul(10)).materialize();
+    let sink = a.join(b).map(|(x, y)| x.saturating_add(*y)).materialize();
     let guard = sink.subscribe(|_| {});
     std::mem::forget(guard);
 
@@ -103,7 +112,9 @@ fn batch_collapses_the_refire_the_pass_measures() {
     // most once, so the re-fire the synchronous pass saw is gone. This is the
     // A/B: identical metric, before (>=1) and after (0).
     pass(|| batch(|| s.set(5)));
-    let report = take_report().expect("a pass just completed");
+    let report = take_report();
+    assert!(report.is_some(), "a pass just completed");
+    let Some(report) = report else { return };
 
     assert_eq!(
         report.total_refires(),

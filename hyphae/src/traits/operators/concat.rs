@@ -47,13 +47,14 @@ where
             if let Some(output) = weak.upgrade() {
                 match signal {
                     Signal::Value(_) if first_skip.swap(false, Ordering::SeqCst) => {}
-                    Signal::Value(_) => output.notify(signal.clone()),
+                    Signal::Value(_) | Signal::Error(_) => output.notify(signal.clone()),
                     Signal::Complete => {
                         let mut switched = switched_on_complete.lock();
                         if *switched {
                             return;
                         }
                         *switched = true;
+                        drop(switched);
                         let weak_second = output.downgrade();
                         let second_skip = AtomicBool::new(true);
                         let guard = second.install(Arc::new(move |signal| {
@@ -67,12 +68,13 @@ where
                         }));
                         output.own_keyed(root_key, guard);
                     }
-                    Signal::Error(_) => output.notify(signal.clone()),
                 }
             }
         }));
         let switched = switched.lock();
-        if *switched {
+        let did_switch = *switched;
+        drop(switched);
+        if did_switch {
             drop(first_guard);
         } else {
             output.own_keyed(root_key, first_guard);

@@ -25,6 +25,14 @@ const DEPTH: usize = 64;
 const ROWS: usize = 100;
 const DIMENSIONS: usize = 4;
 
+fn usize_u64(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
+}
+
+fn safe_mod(value: usize, modulus: usize) -> usize {
+    value.checked_rem(modulus).unwrap_or(0)
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct Record {
     bucket: u64,
@@ -48,10 +56,10 @@ fn populate() -> Sources {
     let root = CellMap::new();
     for row in 0..ROWS {
         root.insert(
-            row as u64,
+            usize_u64(row),
             Arc::new(Record {
-                bucket: (row % buckets) as u64,
-                checksum: row as u64,
+                bucket: usize_u64(safe_mod(row, buckets)),
+                checksum: usize_u64(row),
                 generation: 0,
             }),
         );
@@ -62,10 +70,13 @@ fn populate() -> Sources {
             let map = CellMap::new();
             for row in 0..ROWS {
                 map.insert(
-                    row as u64,
+                    usize_u64(row),
                     Arc::new(Dimension {
-                        bucket: (row % buckets) as u64,
-                        payload: ((source + 1) as u64).wrapping_mul(10_000) + row as u64,
+                        bucket: usize_u64(safe_mod(row, buckets)),
+                        payload: usize_u64(source)
+                            .saturating_add(1)
+                            .wrapping_mul(10_000)
+                            .wrapping_add(usize_u64(row)),
                     }),
                 );
             }
@@ -145,58 +156,71 @@ fn build_view(sources: &Sources) -> CellMap<u64, Arc<Record>, CellImmutable> {
                 }),
             ))
         });
-    join_dimension!(plan, sources.dimensions[0], 1);
-    join_dimension!(plan, sources.dimensions[1], 2);
-    join_dimension!(plan, sources.dimensions[2], 3);
-    join_dimension!(plan, sources.dimensions[3], 4);
+    let dimension = sources
+        .dimensions
+        .first()
+        .cloned()
+        .unwrap_or_else(CellMap::new);
+    join_dimension!(plan, dimension, 1);
+    let dimension = sources
+        .dimensions
+        .get(1)
+        .cloned()
+        .unwrap_or_else(CellMap::new);
+    join_dimension!(plan, dimension, 2);
+    let dimension = sources
+        .dimensions
+        .get(2)
+        .cloned()
+        .unwrap_or_else(CellMap::new);
+    join_dimension!(plan, dimension, 3);
+    let dimension = sources
+        .dimensions
+        .get(3)
+        .cloned()
+        .unwrap_or_else(CellMap::new);
+    join_dimension!(plan, dimension, 4);
     plan.materialize()
-}
-
-fn record_value(record: &Option<Arc<Record>>) -> u64 {
-    record
-        .as_ref()
-        .map_or(0, |record| record.checksum ^ record.generation)
-}
-
-fn sum_pair((left, right): &(u64, u64)) -> u64 {
-    left.wrapping_add(*right).rotate_left(3)
-}
-
-fn mix_value(value: &u64) -> u64 {
-    value.wrapping_mul(0x9e37_79b9).rotate_left(7)
-}
-
-fn fold_value(value: &u64) -> u64 {
-    value.rotate_right(11) ^ 0xa076_1d64_78bd_642f
-}
-
-fn observe_value(value: &u64) {
-    black_box(value);
 }
 
 macro_rules! join_view_value {
     ($plan:ident, $view:expr) => {
         let $plan = $plan
+            .materialize()
             .join(
                 $view
                     .get(&0)
-                    .map(record_value as fn(&Option<Arc<Record>>) -> u64),
+                    .map(|record| {
+                        record
+                            .as_ref()
+                            .map_or(0, |record| record.checksum ^ record.generation)
+                    })
+                    .materialize(),
             )
-            .map(sum_pair as fn(&(u64, u64)) -> u64)
-            .map(mix_value as fn(&u64) -> u64)
-            .tap(observe_value as fn(&u64))
-            .map(fold_value as fn(&u64) -> u64);
+            .map(|(left, right)| left.wrapping_add(*right).rotate_left(3))
+            .map(|value| value.wrapping_mul(0x9e37_79b9).rotate_left(7))
+            .tap(|value| {
+                black_box(value);
+            })
+            .map(|value| value.rotate_right(11) ^ 0xa076_1d64_78bd_642f);
     };
 }
 
 fn build_operator_graph(
     views: &[CellMap<u64, Arc<Record>, CellImmutable>],
 ) -> Cell<u64, CellImmutable> {
-    let plan = views[0]
-        .get(&0)
-        .map(record_value as fn(&Option<Arc<Record>>) -> u64);
+    let first_view = views
+        .first()
+        .cloned()
+        .unwrap_or_else(|| CellMap::new().lock());
+    let plan = first_view.get(&0).map(|record| {
+        record
+            .as_ref()
+            .map_or(0, |record| record.checksum ^ record.generation)
+    });
     seq!(N in 1..64 {
-        join_view_value!(plan, views[N]);
+        let view = views.get(N).cloned().unwrap_or_else(|| CellMap::new().lock());
+        join_view_value!(plan, view);
     });
     plan.materialize()
 }

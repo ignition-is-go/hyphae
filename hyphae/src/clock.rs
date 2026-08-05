@@ -77,7 +77,7 @@ pub struct TickGuard {
 
 impl TickGuard {
     /// Detach the guard: ticks continue for the process lifetime.
-    pub fn leak(self) {
+    pub const fn leak(self) {
         std::mem::forget(self);
     }
 }
@@ -108,6 +108,7 @@ pub struct MonotonicClock {
 }
 
 impl MonotonicClock {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -133,6 +134,7 @@ pub struct IntervalTickSource {
 
 impl IntervalTickSource {
     /// A tick source firing every `period`, stamped with a [`MonotonicClock`].
+    #[must_use]
     pub fn new(period: Duration) -> Self {
         Self {
             period,
@@ -142,13 +144,15 @@ impl IntervalTickSource {
     }
 
     /// Enable sub-millisecond precision (native only; ignored on wasm).
-    pub fn precise(mut self) -> Self {
+    #[must_use]
+    pub const fn precise(mut self) -> Self {
         self.precise = true;
         self
     }
 
     /// Stamp ticks with an injected clock (e.g. a PTP-disciplined one) instead
     /// of the default monotonic clock.
+    #[must_use]
     pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
         self.clock = clock;
         self

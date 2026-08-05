@@ -39,7 +39,7 @@ where
             Signal::Complete
                 if left_complete.fetch_or(LEFT_COMPLETE, Ordering::SeqCst) == RIGHT_COMPLETE =>
             {
-                left_callback(&Signal::Complete)
+                left_callback(&Signal::Complete);
             }
             Signal::Complete => {}
             Signal::Error(error) => left_callback(&Signal::Error(error.clone())),
@@ -51,7 +51,7 @@ where
             Signal::Complete
                 if complete.fetch_or(RIGHT_COMPLETE, Ordering::SeqCst) == LEFT_COMPLETE =>
             {
-                callback(&Signal::Complete)
+                callback(&Signal::Complete);
             }
             Signal::Complete => {}
             Signal::Error(error) => callback(&Signal::Error(error.clone())),

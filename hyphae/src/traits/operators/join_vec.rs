@@ -44,26 +44,32 @@ where
             let latest = latest.clone();
             let completed = completed.clone();
             let weak = derived.downgrade();
-            let guard = source.activate(Arc::new(move |signal| match signal {
-                Signal::Value(value) => {
-                    let mut latest = latest.lock();
-                    latest[index] = value.as_ref().clone();
-                    if let Some(derived) = weak.upgrade() {
-                        derived.notify(Signal::value(latest.clone()));
+            let source_callback: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
+                Arc::new(move |signal| match signal {
+                    Signal::Value(value) => {
+                        let mut latest = latest.lock();
+                        if let Some(slot) = latest.get_mut(index) {
+                            *slot = value.as_ref().clone();
+                        }
+                        if let Some(derived) = weak.upgrade() {
+                            derived.notify(Signal::value(latest.clone()));
+                        }
                     }
-                }
-                Signal::Complete if completed.fetch_add(1, Ordering::SeqCst) + 1 == count => {
-                    if let Some(derived) = weak.upgrade() {
-                        derived.notify(Signal::Complete);
+                    Signal::Complete
+                        if completed.fetch_add(1, Ordering::SeqCst).saturating_add(1) == count =>
+                    {
+                        if let Some(derived) = weak.upgrade() {
+                            derived.notify(Signal::Complete);
+                        }
                     }
-                }
-                Signal::Complete => {}
-                Signal::Error(error) => {
-                    if let Some(derived) = weak.upgrade() {
-                        derived.notify(Signal::Error(error.clone()));
+                    Signal::Complete => {}
+                    Signal::Error(error) => {
+                        if let Some(derived) = weak.upgrade() {
+                            derived.notify(Signal::Error(error.clone()));
+                        }
                     }
-                }
-            }));
+                });
+            let guard = source.activate(&source_callback);
             derived.own(guard);
         }
         derived.subscribe(move |signal| callback(signal))
@@ -85,6 +91,7 @@ where
 {
 }
 
+#[must_use]
 pub fn join_vec<T, P>(sources: Vec<P>) -> impl crate::Materialize<Vec<T>, Definite>
 where
     T: CellValue,

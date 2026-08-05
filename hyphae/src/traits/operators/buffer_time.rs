@@ -121,14 +121,13 @@ mod tests {
         });
 
         assert!(
-            rx.recv_timeout(Duration::from_millis(200))
-                .expect("expected initial emission")
-                .is_empty()
+            matches!(rx.recv_timeout(Duration::from_millis(200)), Ok(emitted) if emitted.is_empty()),
+            "expected an empty initial emission"
         );
         source.set(1);
         source.set(2);
         source.set(3);
-        let deadline = Instant::now() + Duration::from_millis(1000);
+        let deadline = Instant::now() + Duration::from_secs(1);
         loop {
             if let Ok(emitted) = rx.recv_timeout(Duration::from_millis(20))
                 && emitted == vec![1, 2, 3]
@@ -154,14 +153,13 @@ mod tests {
         });
 
         assert!(
-            rx.recv_timeout(Duration::from_millis(200))
-                .expect("expected initial emission")
-                .is_empty()
+            matches!(rx.recv_timeout(Duration::from_millis(200)), Ok(emitted) if emitted.is_empty()),
+            "expected an empty initial emission"
         );
         source.set(1);
         source.set(2);
         source.complete();
-        let deadline = Instant::now() + Duration::from_millis(1000);
+        let deadline = Instant::now() + Duration::from_secs(1);
         loop {
             if let Ok(emitted) = rx.recv_timeout(Duration::from_millis(20))
                 && emitted == vec![1, 2]

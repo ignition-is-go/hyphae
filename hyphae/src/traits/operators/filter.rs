@@ -16,7 +16,7 @@ use std::{marker::PhantomData, sync::Arc};
 
 use super::CellValue;
 use crate::{
-    pipeline::{Definite, Empty, Pipeline, PipelineInstall, PipelineSeed, Seedness},
+    pipeline::{Definite, Empty, Pipeline, PipelineInstall, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -31,18 +31,6 @@ pub struct FilterPipeline<S, T, P, Sd = Definite> {
     predicate: Arc<P>,
     _t: PhantomData<fn(T)>,
     _sd: PhantomData<fn(Sd)>,
-}
-
-impl<S, T, P, Sd> PipelineSeed<T> for FilterPipeline<S, T, P, Sd>
-where
-    S: PipelineInstall<T> + Send + Sync + 'static,
-    Sd: Seedness,
-    T: CellValue,
-    P: Fn(&T) -> bool + Send + Sync + 'static,
-{
-    fn seed(&self) -> T {
-        unreachable!("a filtered Empty pipeline has no seed")
-    }
 }
 
 impl<S, T, P, Sd> PipelineInstall<T> for FilterPipeline<S, T, P, Sd>

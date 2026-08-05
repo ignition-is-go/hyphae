@@ -149,11 +149,7 @@ mod tests {
         let right = CellMap::<String, i32>::new();
         let joined = left
             .clone()
-            .multi_left_join_by(
-                right.clone(),
-                |_k, _v| Vec::<String>::new(),
-                |k, _v| k.clone(),
-            )
+            .multi_left_join_by(right, |_k, _v| Vec::<String>::new(), |k, _v| k.clone())
             .materialize();
 
         left.insert("l1".to_string(), 1);
@@ -173,10 +169,13 @@ mod tests {
         left.insert("l1".to_string(), "g1".to_string());
         right.insert("r1".to_string(), ("g1".to_string(), 10));
 
-        let (left_val, right_vals) = joined.get_value(&"l1".to_string()).unwrap();
-        assert_eq!(left_val, "g1");
-        assert_eq!(right_vals.len(), 1);
-        assert_eq!(right_vals[0].0, "g1");
+        assert!(matches!(
+            joined.get_value(&"l1".to_string()),
+            Some((left_val, right_vals))
+                if left_val == "g1"
+                    && right_vals.len() == 1
+                    && right_vals.first().is_some_and(|right| right.0 == "g1")
+        ));
     }
 
     #[test]
@@ -193,8 +192,10 @@ mod tests {
         right.insert("r2".to_string(), ("g2".to_string(), 20));
         right.insert("r3".to_string(), ("g3".to_string(), 30));
 
-        let (_, right_vals) = joined.get_value(&"l1".to_string()).unwrap();
-        assert_eq!(right_vals.len(), 2);
+        assert!(matches!(
+            joined.get_value(&"l1".to_string()),
+            Some((_, right_vals)) if right_vals.len() == 2
+        ));
     }
 
     #[test]
@@ -209,8 +210,10 @@ mod tests {
         left.insert("l1".to_string(), vec!["g1".to_string(), "g1".to_string()]);
         right.insert("r1".to_string(), ("g1".to_string(), 10));
 
-        let (_, right_vals) = joined.get_value(&"l1".to_string()).unwrap();
-        assert_eq!(right_vals.len(), 1);
+        assert!(matches!(
+            joined.get_value(&"l1".to_string()),
+            Some((_, right_vals)) if right_vals.len() == 1
+        ));
     }
 
     #[test]
@@ -223,13 +226,22 @@ mod tests {
             .materialize();
 
         left.insert("l1".to_string(), vec!["g1".to_string(), "g2".to_string()]);
-        assert_eq!(joined.get_value(&"l1".to_string()).unwrap().1.len(), 0);
+        assert!(matches!(
+            joined.get_value(&"l1".to_string()),
+            Some((_, rights)) if rights.is_empty()
+        ));
 
         right.insert("r1".to_string(), ("g1".to_string(), 10));
-        assert_eq!(joined.get_value(&"l1".to_string()).unwrap().1.len(), 1);
+        assert!(matches!(
+            joined.get_value(&"l1".to_string()),
+            Some((_, rights)) if rights.len() == 1
+        ));
 
         right.insert("r2".to_string(), ("g2".to_string(), 20));
-        assert_eq!(joined.get_value(&"l1".to_string()).unwrap().1.len(), 2);
+        assert!(matches!(
+            joined.get_value(&"l1".to_string()),
+            Some((_, rights)) if rights.len() == 2
+        ));
     }
 
     #[test]
@@ -243,10 +255,16 @@ mod tests {
 
         left.insert("l1".to_string(), vec!["g1".to_string()]);
         right.insert("r1".to_string(), ("g1".to_string(), 10));
-        assert_eq!(joined.get_value(&"l1".to_string()).unwrap().1.len(), 1);
+        assert!(matches!(
+            joined.get_value(&"l1".to_string()),
+            Some((_, rights)) if rights.len() == 1
+        ));
 
         right.remove(&"r1".to_string());
-        assert_eq!(joined.get_value(&"l1".to_string()).unwrap().1.len(), 0);
+        assert!(matches!(
+            joined.get_value(&"l1".to_string()),
+            Some((_, rights)) if rights.is_empty()
+        ));
     }
 
     #[test]
@@ -262,12 +280,18 @@ mod tests {
         right.insert("r2".to_string(), ("g2".to_string(), 20));
 
         left.insert("l1".to_string(), vec!["g1".to_string()]);
-        assert_eq!(joined.get_value(&"l1".to_string()).unwrap().1.len(), 1);
+        assert!(matches!(
+            joined.get_value(&"l1".to_string()),
+            Some((_, rights)) if rights.len() == 1
+        ));
 
         left.insert("l1".to_string(), vec!["g2".to_string()]);
-        let (_, rights) = joined.get_value(&"l1".to_string()).unwrap();
-        assert_eq!(rights.len(), 1);
-        assert_eq!(rights[0].0, "g2");
+        assert!(matches!(
+            joined.get_value(&"l1".to_string()),
+            Some((_, rights))
+                if rights.len() == 1
+                    && rights.first().is_some_and(|right| right.0 == "g2")
+        ));
     }
 
     #[test]

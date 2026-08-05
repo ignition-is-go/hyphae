@@ -22,8 +22,8 @@
 //!
 //! * `merge_map` (`concurrent_merge_maps_complete_exactly_once`): completion
 //!   fires when the outer completes AND all inners complete, decided by a
-//!   non-atomic check-then-act across an `AtomicBool` (outer_complete) and an
-//!   `AtomicUsize` (active_inners). When the final inner's complete and the
+//!   non-atomic check-then-act across an `AtomicBool` (`outer_complete`) and an
+//!   `AtomicUsize` (`active_inners`). When the final inner's complete and the
 //!   outer's complete land in the same parallel wave, both sides can observe
 //!   the other's flag already set and BOTH call `notify(Complete)` — a
 //!   duplicate terminal. Observed via a `no_coalesce` output (coalescing would
@@ -43,9 +43,11 @@
 #![cfg(feature = "scheduler")]
 
 use std::sync::{
-    Arc, Mutex,
+    Arc,
     atomic::{AtomicUsize, Ordering},
 };
+
+use parking_lot::Mutex;
 
 use hyphae::{
     Cell, Gettable, Materialize, MergeExt, MergeMapExt, Mutable, Signal, SwitchMapExt, Watchable,
@@ -57,6 +59,14 @@ use hyphae::{
 /// over.
 const WIDTH: usize = 8;
 const ITERATIONS: i64 = 3_000;
+static SCHEDULER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn iteration_value(iteration: i64, index: usize, offset: i64) -> i64 {
+    iteration
+        .saturating_mul(1000)
+        .saturating_add(i64::try_from(index).unwrap_or(i64::MAX).saturating_mul(2))
+        .saturating_add(offset)
+}
 
 /// The scheduler's tick queue is process-wide, so `cargo test`'s default of
 /// running every `#[test]` in a binary concurrently would let these batches
@@ -66,8 +76,9 @@ fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
     // the group threshold high (waves stay sequential at rest), so parallelism
     // tests must lower it to actually exercise concurrent same-height groups.
     hyphae::scheduler::set_wave_threshold_for_test(4);
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    SCHEDULER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 // ============================================================================
@@ -88,26 +99,26 @@ fn concurrent_merges_never_drop_or_duplicate_and_complete_once() {
     let mut guards = Vec::new();
 
     for _ in 0..WIDTH {
-        let (l, r, m) = no_coalesce(|| {
-            let l = Cell::new(0i64);
-            let r = Cell::new(0i64);
-            let m = l.clone().merge(r.clone()).materialize();
-            (l, r, m)
+        let (left, right, merged) = no_coalesce(|| {
+            let left = Cell::new(0i64);
+            let right = Cell::new(0i64);
+            let merged = left.clone().merge(right.clone()).materialize();
+            (left, right, merged)
         });
 
         let got = Arc::new(Mutex::new(Vec::<i64>::new()));
         let done = Arc::new(AtomicUsize::new(0));
-        let (g, d) = (got.clone(), done.clone());
-        let guard = m.subscribe(move |sig| match sig {
-            Signal::Value(v) => g.lock().unwrap().push(**v),
+        let (received_buffer, completion_count) = (got.clone(), done.clone());
+        let guard = merged.subscribe(move |signal| match signal {
+            Signal::Value(value) => received_buffer.lock().push(**value),
             Signal::Complete => {
-                d.fetch_add(1, Ordering::SeqCst);
+                completion_count.fetch_add(1, Ordering::SeqCst);
             }
             Signal::Error(_) => {}
         });
 
-        lefts.push(l);
-        rights.push(r);
+        lefts.push(left);
+        rights.push(right);
         received.push(got);
         completes.push(done);
         guards.push(guard);
@@ -116,29 +127,27 @@ fn concurrent_merges_never_drop_or_duplicate_and_complete_once() {
     for it in 1..=ITERATIONS {
         // Drop any construction-time / prior-iteration emissions.
         for buf in &received {
-            buf.lock().unwrap().clear();
+            buf.lock().clear();
         }
 
         // 2 * WIDTH height-0 sets in one batch → a forced parallel wave; each
         // merge's left and right forward into its single output concurrently.
         batch(|| {
-            #[allow(clippy::needless_range_loop)]
-            for i in 0..WIDTH {
-                let base = it * 1000 + (i as i64) * 2;
-                lefts[i].set(base);
-                rights[i].set(base + 1);
+            for (index, (left, right)) in lefts.iter().zip(&rights).enumerate() {
+                let base = iteration_value(it, index, 0);
+                left.set(base);
+                right.set(base.saturating_add(1));
             }
         });
 
-        #[allow(clippy::needless_range_loop)]
-        for i in 0..WIDTH {
-            let base = it * 1000 + (i as i64) * 2;
-            let mut got = received[i].lock().unwrap().clone();
+        for (index, buffer) in received.iter().enumerate() {
+            let base = iteration_value(it, index, 0);
+            let mut got = buffer.lock().clone();
             got.sort_unstable();
             assert_eq!(
                 got,
-                vec![base, base + 1],
-                "merge dropped/duplicated/mis-forwarded an emission at iteration {it}, merge {i}"
+                vec![base, base.saturating_add(1)],
+                "merge dropped/duplicated/mis-forwarded an emission at iteration {it}, merge {index}"
             );
         }
     }
@@ -147,19 +156,17 @@ fn concurrent_merges_never_drop_or_duplicate_and_complete_once() {
     // in one batch (2 * WIDTH height-0 completes). Each merge's two source
     // completes race the AtomicU8 two-must-complete flag concurrently.
     batch(|| {
-        #[allow(clippy::needless_range_loop)]
-        for i in 0..WIDTH {
-            lefts[i].complete();
-            rights[i].complete();
+        for (left, right) in lefts.iter().zip(&rights) {
+            left.complete();
+            right.complete();
         }
     });
-    #[allow(clippy::needless_range_loop)]
-    for i in 0..WIDTH {
+    for (index, complete) in completes.iter().enumerate() {
         assert_eq!(
-            completes[i].load(Ordering::SeqCst),
+            complete.load(Ordering::SeqCst),
             1,
-            "merge {i} fired Complete {} times (expected exactly 1)",
-            completes[i].load(Ordering::SeqCst)
+            "merge {index} fired Complete {} times (expected exactly 1)",
+            complete.load(Ordering::SeqCst)
         );
     }
 
@@ -188,20 +195,20 @@ fn concurrent_merge_maps_complete_exactly_once() {
             for _ in 0..WIDTH {
                 let outer = Cell::new(0i64);
                 let inner_src = Cell::new(0i64);
-                let ic = inner_src.clone();
+                let inner_for_merge = inner_src.clone();
                 // First (and only) inner is the `inner_src` cell itself, locked
                 // immutable — height 0, same as the outer, so completing both in
                 // one batch puts them in the same wide wave.
-                let mm = outer
+                let merged = outer
                     .clone()
-                    .merge_map(move |_: &i64| ic.clone().lock())
+                    .merge_map(move |_: &i64| inner_for_merge.clone().lock())
                     .materialize();
 
                 let done = Arc::new(AtomicUsize::new(0));
-                let d = done.clone();
-                let guard = mm.subscribe(move |sig| {
-                    if matches!(sig, Signal::Complete) {
-                        d.fetch_add(1, Ordering::SeqCst);
+                let completion_count = done.clone();
+                let guard = merged.subscribe(move |signal| {
+                    if matches!(signal, Signal::Complete) {
+                        completion_count.fetch_add(1, Ordering::SeqCst);
                     }
                 });
 
@@ -217,20 +224,18 @@ fn concurrent_merge_maps_complete_exactly_once() {
         // concurrently: the check-then-act across `outer_complete` and
         // `active_inners` can let both decide to fire.
         batch(|| {
-            #[allow(clippy::needless_range_loop)]
-            for i in 0..WIDTH {
-                outers[i].complete();
-                inner_srcs[i].complete();
+            for (outer, inner) in outers.iter().zip(&inner_srcs) {
+                outer.complete();
+                inner.complete();
             }
         });
 
-        #[allow(clippy::needless_range_loop)]
-        for i in 0..WIDTH {
+        for (index, complete) in completes.iter().enumerate() {
             assert_eq!(
-                completes[i].load(Ordering::SeqCst),
+                complete.load(Ordering::SeqCst),
                 1,
-                "merge_map fired Complete {} times at iteration {it}, unit {i} (expected exactly 1)",
-                completes[i].load(Ordering::SeqCst)
+                "merge_map fired Complete {} times at iteration {it}, unit {index} (expected exactly 1)",
+                complete.load(Ordering::SeqCst)
             );
         }
 
@@ -255,11 +260,11 @@ fn concurrent_switch_map_latest_inner_wins_same_height() {
         let mut old_srcs = Vec::new();
         let mut results = Vec::new();
 
-        for i in 0..WIDTH {
+        for index in 0..WIDTH {
             let sel = Cell::new(0i64); // starts on inner 0 (the old inner)
             let old_src = Cell::new(0i64);
-            let bval = it * 1000 + i as i64 + 500;
-            let new_src = Cell::new(bval);
+            let new_value = iteration_value(it, index, 500);
+            let new_src = Cell::new(new_value);
 
             // Both inners are bare locked sources at height 0 — the same height
             // as the selector, so selector-set and old-inner-set collide in one
@@ -268,7 +273,13 @@ fn concurrent_switch_map_latest_inner_wins_same_height() {
             let new = new_src.clone().lock();
             let result = sel
                 .clone()
-                .switch_map(move |&k| if k == 0 { old.clone() } else { new.clone() })
+                .switch_map(move |&selector| {
+                    if selector == 0 {
+                        old.clone()
+                    } else {
+                        new.clone()
+                    }
+                })
                 .materialize();
 
             sels.push(sel);
@@ -280,22 +291,19 @@ fn concurrent_switch_map_latest_inner_wins_same_height() {
         // new inner. 2 * WIDTH height-0 ops → parallel wave, so each unit's
         // old-inner emission races its selector's generation bump.
         batch(|| {
-            #[allow(clippy::needless_range_loop)]
-            for i in 0..WIDTH {
-                let aval = it * 1000 + i as i64; // old inner's stale value
-                old_srcs[i].set(aval);
-                sels[i].set(1); // switch to the new inner
+            for (index, (old_source, selector)) in old_srcs.iter().zip(&sels).enumerate() {
+                old_source.set(iteration_value(it, index, 0));
+                selector.set(1); // switch to the new inner
             }
         });
 
-        #[allow(clippy::needless_range_loop)]
-        for i in 0..WIDTH {
-            let bval = it * 1000 + i as i64 + 500;
+        for (index, result) in results.iter().enumerate() {
+            let new_value = iteration_value(it, index, 500);
             assert_eq!(
-                results[i].get(),
-                bval,
-                "switch_map settled on a STALE old-inner value at iteration {it}, unit {i} \
-                 (expected the switched-in inner's {bval})"
+                result.get(),
+                new_value,
+                "switch_map settled on a STALE old-inner value at iteration {it}, unit {index} \
+                 (expected the switched-in inner's {new_value})"
             );
         }
     }

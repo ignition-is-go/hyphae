@@ -26,7 +26,9 @@
 //! Operators that may swallow the initial value force `S = Empty`, and
 //! downstream operators (`map`, `tap`, ...) propagate `S` through the chain.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
@@ -52,12 +54,8 @@ mod sealed {
 pub trait Seedness: sealed::Sealed + Send + Sync + 'static {
     #[doc(hidden)]
     type Materialized<T: CellValue>: CellValue;
-
     #[doc(hidden)]
-    fn materialize<P, T>(pipeline: P) -> Cell<Self::Materialized<T>, CellImmutable>
-    where
-        P: PipelineInstall<T> + PipelineSeed<T>,
-        T: CellValue;
+    type Seed<T: CellValue>: Send + Sync + 'static;
 }
 
 /// Pipeline has a guaranteed initial value (`materialize → Cell<T>`).
@@ -71,35 +69,12 @@ impl sealed::Sealed for Empty {}
 #[allow(private_bounds)]
 impl Seedness for Definite {
     type Materialized<T: CellValue> = T;
-
-    fn materialize<P, T>(pipeline: P) -> Cell<T, CellImmutable>
-    where
-        P: PipelineInstall<T> + PipelineSeed<T>,
-        T: CellValue,
-    {
-        pipeline.materialize_definite()
-    }
+    type Seed<T: CellValue> = T;
 }
 #[allow(private_bounds)]
 impl Seedness for Empty {
     type Materialized<T: CellValue> = Option<T>;
-
-    fn materialize<P, T>(pipeline: P) -> Cell<Option<T>, CellImmutable>
-    where
-        P: PipelineInstall<T> + PipelineSeed<T>,
-        T: CellValue,
-    {
-        let cell = Cell::<Option<T>, CellMutable>::new(None);
-        let weak = cell.downgrade();
-        let callback: Arc<dyn Fn(&Signal<T>) + Send + Sync> = Arc::new(move |signal| {
-            if let Some(cell) = weak.upgrade() {
-                cell.notify(signal.map(|value| Some(value.clone())));
-            }
-        });
-        let guard = pipeline.install(callback);
-        cell.own(guard);
-        cell.lock()
-    }
+    type Seed<T: CellValue> = ();
 }
 
 /// Crate-private installer hook used by `materialize`.
@@ -109,6 +84,49 @@ impl Seedness for Empty {
 /// into the pipeline's output signal type and invokes the provided callback.
 pub(crate) trait PipelineInstall<T: CellValue>: Send + Sync + 'static {
     fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard;
+}
+
+pub(crate) trait PipelineMaterialize<T: CellValue, S: Seedness>: PipelineInstall<T> {
+    fn pipeline_seed(&self) -> S::Seed<T>;
+
+    fn materialize_pipeline(self) -> Cell<S::Materialized<T>, CellImmutable>
+    where
+        Self: Sized;
+}
+
+impl<P, T> PipelineMaterialize<T, Definite> for P
+where
+    P: PipelineInstall<T> + PipelineSeed<T>,
+    T: CellValue,
+{
+    fn pipeline_seed(&self) -> T {
+        self.seed()
+    }
+
+    fn materialize_pipeline(self) -> Cell<T, CellImmutable> {
+        self.materialize_definite()
+    }
+}
+
+impl<P, T> PipelineMaterialize<T, Empty> for P
+where
+    P: PipelineInstall<T>,
+    T: CellValue,
+{
+    fn pipeline_seed(&self) {}
+
+    fn materialize_pipeline(self) -> Cell<Option<T>, CellImmutable> {
+        let cell = Cell::<Option<T>, CellMutable>::new(None);
+        let weak = cell.downgrade();
+        let callback: Arc<dyn Fn(&Signal<T>) + Send + Sync> = Arc::new(move |signal| {
+            if let Some(cell) = weak.upgrade() {
+                cell.notify(signal.map(|value| Some(value.clone())));
+            }
+        });
+        let guard = self.install(callback);
+        cell.own(guard);
+        cell.lock()
+    }
 }
 
 enum SignalQueue<T> {
@@ -122,10 +140,15 @@ impl<T: CellValue> SignalQueue<T> {
         match self {
             Self::Empty => *self = Self::One(signal),
             Self::One(_) => {
-                let Self::One(first) = std::mem::replace(self, Self::Empty) else {
-                    unreachable!()
+                let previous = std::mem::replace(self, Self::Empty);
+                *self = match previous {
+                    Self::One(first) => Self::Many(vec![first, signal]),
+                    Self::Empty => Self::One(signal),
+                    Self::Many(mut signals) => {
+                        signals.push(signal);
+                        Self::Many(signals)
+                    }
                 };
-                *self = Self::Many(vec![first, signal]);
             }
             Self::Many(signals) => signals.push(signal),
         }
@@ -133,15 +156,14 @@ impl<T: CellValue> SignalQueue<T> {
 
     fn latest_value(&self) -> Option<(T, usize)> {
         match self {
-            Self::Empty => None,
             Self::One(Signal::Value(value)) => Some((value.as_ref().clone(), 1)),
-            Self::One(_) => None,
+            Self::Empty | Self::One(_) => None,
             Self::Many(signals) => signals
                 .iter()
                 .enumerate()
                 .rev()
                 .find_map(|(index, signal)| match signal {
-                    Signal::Value(value) => Some((value.as_ref().clone(), index + 1)),
+                    Signal::Value(value) => Some((value.as_ref().clone(), index.saturating_add(1))),
                     _ => None,
                 }),
         }
@@ -155,21 +177,23 @@ impl<T: CellValue> SignalQueue<T> {
             Self::Empty => {}
             Self::One(_) => *self = Self::Empty,
             Self::Many(signals) => {
-                let tail = signals.split_off(count.min(signals.len()));
-                *self = match tail.len() {
-                    0 => Self::Empty,
-                    1 => Self::One(tail.into_iter().next().expect("one queued signal")),
-                    _ => Self::Many(tail),
+                let mut tail = signals.split_off(count.min(signals.len()));
+                *self = if tail.is_empty() {
+                    Self::Empty
+                } else if tail.len() == 1 {
+                    Self::One(tail.remove(0))
+                } else {
+                    Self::Many(tail)
                 };
             }
         }
     }
 
-    fn take(&mut self) -> Self {
+    const fn take(&mut self) -> Self {
         std::mem::replace(self, Self::Empty)
     }
 
-    fn is_empty(&self) -> bool {
+    const fn is_empty(&self) -> bool {
         matches!(self, Self::Empty)
     }
 
@@ -205,42 +229,41 @@ pub(crate) struct PreparedInstall<T: CellValue> {
 }
 
 impl<T: CellValue> PreparedInstall<T> {
-    pub(crate) fn initial(&self) -> &T {
+    pub(crate) const fn initial(&self) -> &T {
         &self.initial
     }
 
     pub(crate) fn activate(
         self,
-        callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>,
+        callback: &Arc<dyn Fn(&Signal<T>) + Send + Sync>,
     ) -> SubscriptionGuard {
         let mut pending = {
-            let mut state = self
-                .state
-                .lock()
-                .expect("pipeline install capture poisoned");
-            let InstallCapture::Capturing(signals) = &mut *state else {
-                unreachable!("a prepared pipeline install is activated exactly once")
+            let mut state = self.state.lock();
+            let pending = match &mut *state {
+                InstallCapture::Capturing(signals) | InstallCapture::Activating(signals) => {
+                    signals.take()
+                }
+                InstallCapture::Live(_) => SignalQueue::Empty,
             };
-            let pending = signals.take();
             *state = InstallCapture::Activating(SignalQueue::Empty);
             pending
         };
 
         loop {
-            pending.deliver(&callback);
+            pending.deliver(callback);
             pending = {
-                let mut state = self
-                    .state
-                    .lock()
-                    .expect("pipeline install capture poisoned");
-                let InstallCapture::Activating(queued) = &mut *state else {
-                    unreachable!("prepared install remains activating while draining")
-                };
-                if queued.is_empty() {
-                    *state = InstallCapture::Live(callback.clone());
-                    break;
+                let mut state = self.state.lock();
+                match &mut *state {
+                    InstallCapture::Activating(queued) if queued.is_empty() => {
+                        *state = InstallCapture::Live(Arc::clone(callback));
+                        drop(state);
+                        break;
+                    }
+                    InstallCapture::Activating(queued) | InstallCapture::Capturing(queued) => {
+                        queued.take()
+                    }
+                    InstallCapture::Live(_) => break,
                 }
-                queued.take()
             };
         }
         self.guard
@@ -280,7 +303,7 @@ pub trait PipelineSeed<T: CellValue>: PipelineInstall<T> {
                 cell.notify(signal.clone());
             }
         });
-        let guard = prepared.activate(callback);
+        let guard = prepared.activate(&callback);
         cell.own(guard);
         cell.lock()
     }
@@ -302,7 +325,7 @@ where
     let capture = state.clone();
     let guard = pipeline.install(Arc::new(move |signal| {
         let live = {
-            let mut state = capture.lock().expect("pipeline install capture poisoned");
+            let mut state = capture.lock();
             match &mut *state {
                 InstallCapture::Capturing(signals) => {
                     signals.push(signal.clone());
@@ -321,30 +344,33 @@ where
     }));
 
     let captured_initial = {
-        let state = state.lock().expect("pipeline install capture poisoned");
-        let InstallCapture::Capturing(signals) = &*state else {
-            unreachable!("capture cannot be live before activation")
-        };
-        signals.latest_value()
+        let state = state.lock();
+        match &*state {
+            InstallCapture::Capturing(signals) | InstallCapture::Activating(signals) => {
+                signals.latest_value()
+            }
+            InstallCapture::Live(_) => None,
+        }
     };
 
-    let (initial, initial_boundary) = if let Some(captured) = captured_initial {
-        captured
-    } else {
+    let (initial, initial_boundary) = captured_initial.unwrap_or_else(|| {
         let fallback = pipeline.seed();
-        let state = state.lock().expect("pipeline install capture poisoned");
-        let InstallCapture::Capturing(signals) = &*state else {
-            unreachable!("capture cannot be live before activation")
-        };
-        signals.latest_value().unwrap_or((fallback, 0))
-    };
+        let state = state.lock();
+        match &*state {
+            InstallCapture::Capturing(signals) | InstallCapture::Activating(signals) => {
+                signals.latest_value().unwrap_or((fallback, 0))
+            }
+            InstallCapture::Live(_) => (fallback, 0),
+        }
+    });
 
     {
-        let mut state = state.lock().expect("pipeline install capture poisoned");
-        let InstallCapture::Capturing(signals) = &mut *state else {
-            unreachable!("capture cannot be live before activation")
-        };
-        signals.discard_prefix(initial_boundary);
+        let mut state = state.lock();
+        if let InstallCapture::Capturing(signals) | InstallCapture::Activating(signals) =
+            &mut *state
+        {
+            signals.discard_prefix(initial_boundary);
+        }
     }
 
     PreparedInstall {
@@ -376,7 +402,7 @@ where
 /// [`PipelineShareExt::share`].
 #[allow(private_bounds)]
 pub trait Pipeline<T: CellValue, S: Seedness = Definite>:
-    PipelineInstall<T> + PipelineSeed<T> + Sized + Send + Sync + 'static
+    PipelineInstall<T> + PipelineMaterialize<T, S> + Sized + Send + Sync + 'static
 {
 }
 
@@ -395,7 +421,7 @@ where
 {
     #[track_caller]
     fn materialize(self) -> Cell<S::Materialized<T>, CellImmutable> {
-        S::materialize(self)
+        self.materialize_pipeline()
     }
 }
 

@@ -1,8 +1,9 @@
+use parking_lot::Mutex;
 use std::{
     collections::HashMap,
     hash::Hash,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -56,7 +57,7 @@ impl<S: Eq + Hash + CellValue, R: CellValue> StateMachineBuilder<S, R> {
     }
 
     /// Define a valid transition from `from` to `to` with a handler.
-    /// The handler receives (from_state, to_state) and returns a value
+    /// The handler receives (`from_state`, `to_state`) and returns a value
     /// that is emitted downstream.
     pub fn on<F>(&mut self, from: S, to: S, handler: F) -> &mut Self
     where
@@ -145,7 +146,7 @@ where
                     return;
                 }
                 let current = {
-                    let mut guard = current_state.lock().expect("state_transition poisoned");
+                    let mut guard = current_state.lock();
                     let previous = guard.clone();
                     *guard = next.as_ref().clone();
                     previous
@@ -409,7 +410,7 @@ mod tests {
 
         // Create fresh cell since current state might be Loading in sm
         let source2 = Cell::new(State::Idle);
-        let a2 = allow.clone();
+        let a2 = allow;
         let sm2 = source2
             .clone()
             .state_transition(|sm| {

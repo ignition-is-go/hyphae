@@ -86,14 +86,16 @@
 //! // With flat!: |a, b, c, d| - clean and simple
 //! let sum = a
 //!     .join(b)
+//!     .materialize()
 //!     .join(c)
+//!     .materialize()
 //!     .join(d)
 //!     .map(flat!(|a, b, c, d| a + b + c + d))
 //!     .materialize();
 //! assert_eq!(sum.get(), 10);
 //! ```
 //!
-//! ## Map Queries vs CellMaps
+//! ## Map Queries vs `CellMaps`
 //!
 //! Pure [`CellMap`] operators (`inner_join`, `left_join`, `left_semi_join`,
 //! `multi_left_join`, `project`, `project_many`, `project_cell`, `select`,
@@ -114,7 +116,7 @@
 //! `Arc` bump referencing the same multicast cache) and then clone the cell
 //! map.
 //!
-//! ## CellMap Quick Start
+//! ## `CellMap` Quick Start
 //!
 //! ```rust
 //! use hyphae::{CellMap, MapQuery, traits::{InnerJoinExt, ProjectMapExt}};

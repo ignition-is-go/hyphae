@@ -120,7 +120,7 @@ fn timer_pipeline_subscribes_only_when_materialized() {
     let source = Cell::new(1i32);
     let pipeline = source
         .clone()
-        .delay(Duration::from_secs(60))
+        .delay(Duration::from_mins(1))
         .map(|value| value + 1);
 
     assert_eq!(source.subscriber_count(), 0);

@@ -47,51 +47,55 @@ where
         let left_latest = latest.clone();
         let left_completed = completed.clone();
         let left_weak = derived.downgrade();
-        let left_guard = left_prepared.activate(Arc::new(move |signal| match signal {
-            Signal::Value(value) => {
-                let mut latest = left_latest.lock();
-                latest.0 = value.as_ref().clone();
-                if let Some(derived) = left_weak.upgrade() {
-                    derived.notify(Signal::value(latest.clone()));
+        let left_callback: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
+            Arc::new(move |signal| match signal {
+                Signal::Value(value) => {
+                    let mut latest = left_latest.lock();
+                    latest.0 = value.as_ref().clone();
+                    if let Some(derived) = left_weak.upgrade() {
+                        derived.notify(Signal::value(latest.clone()));
+                    }
                 }
-            }
-            Signal::Complete => {
-                if left_completed.fetch_or(LEFT_COMPLETE, Ordering::SeqCst) == RIGHT_COMPLETE
-                    && let Some(derived) = left_weak.upgrade()
-                {
-                    derived.notify(Signal::Complete);
+                Signal::Complete => {
+                    if left_completed.fetch_or(LEFT_COMPLETE, Ordering::SeqCst) == RIGHT_COMPLETE
+                        && let Some(derived) = left_weak.upgrade()
+                    {
+                        derived.notify(Signal::Complete);
+                    }
                 }
-            }
-            Signal::Error(error) => {
-                if let Some(derived) = left_weak.upgrade() {
-                    derived.notify(Signal::Error(error.clone()));
+                Signal::Error(error) => {
+                    if let Some(derived) = left_weak.upgrade() {
+                        derived.notify(Signal::Error(error.clone()));
+                    }
                 }
-            }
-        }));
+            });
+        let left_guard = left_prepared.activate(&left_callback);
         derived.own(left_guard);
 
         let right_weak = derived.downgrade();
-        let right_guard = right_prepared.activate(Arc::new(move |signal| match signal {
-            Signal::Value(value) => {
-                let mut latest = latest.lock();
-                latest.1 = value.as_ref().clone();
-                if let Some(derived) = right_weak.upgrade() {
-                    derived.notify(Signal::value(latest.clone()));
+        let right_callback: Arc<dyn Fn(&Signal<U>) + Send + Sync> =
+            Arc::new(move |signal| match signal {
+                Signal::Value(value) => {
+                    let mut latest = latest.lock();
+                    latest.1 = value.as_ref().clone();
+                    if let Some(derived) = right_weak.upgrade() {
+                        derived.notify(Signal::value(latest.clone()));
+                    }
                 }
-            }
-            Signal::Complete => {
-                if completed.fetch_or(RIGHT_COMPLETE, Ordering::SeqCst) == LEFT_COMPLETE
-                    && let Some(derived) = right_weak.upgrade()
-                {
-                    derived.notify(Signal::Complete);
+                Signal::Complete => {
+                    if completed.fetch_or(RIGHT_COMPLETE, Ordering::SeqCst) == LEFT_COMPLETE
+                        && let Some(derived) = right_weak.upgrade()
+                    {
+                        derived.notify(Signal::Complete);
+                    }
                 }
-            }
-            Signal::Error(error) => {
-                if let Some(derived) = right_weak.upgrade() {
-                    derived.notify(Signal::Error(error.clone()));
+                Signal::Error(error) => {
+                    if let Some(derived) = right_weak.upgrade() {
+                        derived.notify(Signal::Error(error.clone()));
+                    }
                 }
-            }
-        }));
+            });
+        let right_guard = right_prepared.activate(&right_callback);
         derived.own(right_guard);
 
         derived.subscribe(move |signal| callback(signal))
@@ -160,7 +164,9 @@ mod tests {
         let d = Cell::new(4);
         let sum = a
             .join(b)
+            .materialize()
             .join(c)
+            .materialize()
             .join(d)
             .map(flat!(|a, b, c, d| a + b + c + d))
             .materialize();

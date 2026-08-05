@@ -14,7 +14,7 @@ use std::{
 
 use super::CellValue;
 use crate::{
-    pipeline::{Empty, Pipeline, PipelineInstall, PipelineSeed, Seedness},
+    pipeline::{Empty, Pipeline, PipelineInstall, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -25,17 +25,6 @@ pub struct SkipPipeline<S, T, Sd = crate::pipeline::Definite> {
     count: usize,
     _t: PhantomData<fn(T)>,
     _sd: PhantomData<fn(Sd)>,
-}
-
-impl<S, T, Sd> PipelineSeed<T> for SkipPipeline<S, T, Sd>
-where
-    S: PipelineInstall<T> + Send + Sync + 'static,
-    Sd: Seedness,
-    T: CellValue,
-{
-    fn seed(&self) -> T {
-        unreachable!("a skipped Empty pipeline has no seed")
-    }
 }
 
 impl<S, T, Sd> PipelineInstall<T> for SkipPipeline<S, T, Sd>
@@ -49,9 +38,8 @@ where
         let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
             Arc::new(move |signal: &Signal<T>| match signal {
                 Signal::Value(_) => {
-                    let prev = to_skip.try_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                        if n > 0 { Some(n - 1) } else { None }
-                    });
+                    let prev = to_skip
+                        .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1));
                     if prev.is_err() {
                         callback(signal);
                     }

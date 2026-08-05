@@ -7,7 +7,7 @@
 //! permanently mis-pair the two streams from that point on.
 //!
 //! Forcing the wave wide: 8 independent zip pairs driven in one `batch()` =
-//! 16 height-0 ops, over PARALLEL_WAVE_THRESHOLD (8). Each iteration sets one
+//! 16 height-0 ops, over `PARALLEL_WAVE_THRESHOLD` (8). Each iteration sets one
 //! exactly-known value on each side of every pair, so correct pairing is
 //! computable and checked strictly; a single mis-pair desyncs the indices and
 //! every later iteration's assert fails.
@@ -36,19 +36,17 @@ fn concurrent_zips_never_mispair_the_two_streams() {
 
     for it in 1..=ITERATIONS {
         batch(|| {
-            #[allow(clippy::needless_range_loop)]
-            for i in 0..PAIRS {
-                let base = it * 1000 + i as i64;
-                lefts[i].set(base);
-                rights[i].set(base + 500);
+            for (i, (left, right)) in lefts.iter().zip(&rights).enumerate() {
+                let base = it * 1000 + i64::try_from(i).unwrap_or(i64::MAX);
+                left.set(base);
+                right.set(base + 500);
             }
         });
 
-        #[allow(clippy::needless_range_loop)]
-        for i in 0..PAIRS {
-            let base = it * 1000 + i as i64;
+        for (i, output) in outputs.iter().enumerate() {
+            let base = it * 1000 + i64::try_from(i).unwrap_or(i64::MAX);
             assert_eq!(
-                outputs[i].get(),
+                output.get(),
                 (base, base + 500),
                 "zip mis-paired the streams at iteration {it}, pair {i}"
             );

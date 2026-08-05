@@ -1,21 +1,22 @@
-//! Integration tests for MapQuery type.
+//! Integration tests for `MapQuery` type.
 
 use crate::{
     CellMap, MapQuery, Materialize,
     traits::{CellValue, InnerJoinExt},
 };
 
+fn assert_query<K, V, Q: MapQuery<K, V>>(_: &Q)
+where
+    K: CellValue + std::hash::Hash + Eq,
+    V: CellValue,
+{
+}
+
 #[test]
 fn cell_map_is_map_query() {
     let m = CellMap::<String, i32>::new();
     m.insert("a".into(), 1);
 
-    fn assert_query<K, V, Q: MapQuery<K, V>>(_: &Q)
-    where
-        K: CellValue + std::hash::Hash + Eq,
-        V: CellValue,
-    {
-    }
     assert_query::<String, i32, _>(&m);
 }
 
@@ -195,7 +196,6 @@ fn project_many_plan_emits_multiple_rows_per_source() {
     src.insert("x".into(), 2);
 
     let mat = src
-        .clone()
         .project_many(|k, v| vec![(format!("a:{k}"), v * 10), (format!("b:{k}"), v * 100)])
         .materialize();
     assert_eq!(mat.get_value(&"a:x".to_string()), Some(20));
@@ -216,12 +216,18 @@ fn multi_left_join_plan_collects_matches_per_key() {
         .clone()
         .multi_left_join_by(r.clone(), |_k, v| v.clone(), |_k, v| v.0.clone())
         .materialize();
-    let (_, right_vals) = mat.get_value(&"l1".to_string()).unwrap();
-    assert_eq!(right_vals.len(), 2);
+    assert_eq!(
+        mat.get_value(&"l1".to_string())
+            .map(|(_, right_values)| right_values.len()),
+        Some(2)
+    );
 
     r.remove(&"r1".to_string());
-    let (_, right_vals) = mat.get_value(&"l1".to_string()).unwrap();
-    assert_eq!(right_vals, vec![("g2".to_string(), 20)]);
+    assert_eq!(
+        mat.get_value(&"l1".to_string())
+            .map(|(_, right_values)| right_values),
+        Some(vec![("g2".to_string(), 20)])
+    );
     l.insert("l1".into(), vec!["g1".into()]);
     assert_eq!(
         mat.get_value(&"l1".to_string()),
@@ -320,11 +326,9 @@ fn group_by_plan_groups_rows() {
     src.insert("b".into(), 1);
     src.insert("c".into(), 2);
 
-    let mat = src.clone().group_by(|_, v| *v).materialize();
-    let g1 = mat.get_value(&1).unwrap();
-    assert_eq!(g1.len(), 2);
-    let g2 = mat.get_value(&2).unwrap();
-    assert_eq!(g2, vec![2]);
+    let mat = src.group_by(|_, v| *v).materialize();
+    assert_eq!(mat.get_value(&1).map(|group| group.len()), Some(2));
+    assert_eq!(mat.get_value(&2), Some(vec![2]));
 }
 
 use crate::traits::SelectCellExt;
@@ -342,7 +346,6 @@ fn select_cell_plan_reacts_to_gate() {
 
     let gates_for_pred = gates.clone();
     let mat = values
-        .clone()
         .select_cell(move |key, _value| {
             gates_for_pred
                 .get(key)
@@ -374,7 +377,7 @@ fn shared_map_query_subscribes_upstream_once() {
 
     // Cloning the share doesn't subscribe.
     let s1 = shared.clone();
-    let s2 = shared.clone();
+    let s2 = shared;
 
     assert_eq!(
         DepNode::subscriber_count(&src.diffs().materialize()),

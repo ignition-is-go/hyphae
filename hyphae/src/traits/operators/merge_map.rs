@@ -56,7 +56,7 @@ where
                 match signal {
                     Signal::Value(_) => c.notify(signal.clone()),
                     Signal::Complete => {
-                        let remaining = ai.fetch_sub(1, Ordering::SeqCst) - 1;
+                        let remaining = ai.fetch_sub(1, Ordering::SeqCst).saturating_sub(1);
                         if remaining == 0
                             && oc.load(Ordering::SeqCst)
                             && !ce.swap(true, Ordering::SeqCst)
@@ -77,7 +77,7 @@ where
         let first = Arc::new(AtomicBool::new(true));
         let oc2 = outer_complete.clone();
         let ai2 = active_inners.clone();
-        let ce2 = completed_emitted.clone();
+        let ce2 = completed_emitted;
         let outer_guard = self.source.install(Arc::new(move |signal| {
             match signal {
                 Signal::Value(outer_value) => {
@@ -104,7 +104,8 @@ where
                             match signal {
                                 Signal::Value(_) => c.notify(signal.clone()),
                                 Signal::Complete => {
-                                    let remaining = ai_inner.fetch_sub(1, Ordering::SeqCst) - 1;
+                                    let remaining =
+                                        ai_inner.fetch_sub(1, Ordering::SeqCst).saturating_sub(1);
                                     if remaining == 0
                                         && oc_inner.load(Ordering::SeqCst)
                                         && !ce_inner.swap(true, Ordering::SeqCst)
@@ -203,7 +204,7 @@ mod tests {
     fn test_merge_map_merges() {
         let source = Cell::new(1u64);
         let merged = source
-            .merge_map(|v| Cell::new(*v).map(|x| x * 10))
+            .merge_map(|v| Cell::new(*v).map(|x| x * 10).materialize())
             .materialize();
 
         assert_eq!(merged.get(), 10);
