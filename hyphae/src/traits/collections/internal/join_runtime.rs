@@ -4,9 +4,11 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 
 use crate::{cell_map::MapDiff, subscription::SubscriptionGuard, traits::CellValue};
+
+use super::ordered_set::OrderedSet;
 
 struct JoinState<LK, LV, RK, RV, JK, OK, OV>
 where
@@ -20,29 +22,32 @@ where
 {
     left_rows: FxHashMap<LK, LV>,
     left_join_keys: FxHashMap<LK, JK>,
-    join_to_left: FxHashMap<JK, FxHashSet<LK>>,
+    join_to_left: FxHashMap<JK, Vec<LK>>,
     right_rows: FxHashMap<RK, RV>,
     right_join_keys: FxHashMap<RK, JK>,
-    join_to_right: FxHashMap<JK, FxHashSet<RK>>,
-    left_output_keys: FxHashMap<LK, FxHashSet<OK>>,
+    join_to_right: FxHashMap<JK, Vec<RK>>,
+    left_output_keys: FxHashMap<LK, OrderedSet<OK>>,
     output_cache: FxHashMap<OK, OV>,
+    parallel_active: bool,
     scratch: JoinScratch<LK, RK, RV, JK, OK, OV>,
 }
 
 struct JoinScratch<LK, RK, RV, JK, OK, OV> {
-    impacted: FxHashSet<LK>,
-    changed_join_keys: FxHashSet<JK>,
+    impacted: OrderedSet<LK>,
+    changed_join_keys: OrderedSet<JK>,
     right_rows: Vec<(RK, RV)>,
     desired_rows: FxHashMap<OK, OV>,
+    desired_order: OrderedSet<OK>,
 }
 
 impl<LK, RK, RV, JK, OK, OV> Default for JoinScratch<LK, RK, RV, JK, OK, OV> {
     fn default() -> Self {
         Self {
-            impacted: FxHashSet::default(),
-            changed_join_keys: FxHashSet::default(),
+            impacted: OrderedSet::default(),
+            changed_join_keys: OrderedSet::default(),
             right_rows: Vec::new(),
             desired_rows: FxHashMap::default(),
+            desired_order: OrderedSet::default(),
         }
     }
 }
@@ -67,26 +72,30 @@ where
             join_to_right: FxHashMap::default(),
             left_output_keys: FxHashMap::default(),
             output_cache: FxHashMap::default(),
+            parallel_active: false,
             scratch: JoinScratch::default(),
         }
     }
 }
 
-fn add_index_member<I, M>(index: &mut FxHashMap<I, FxHashSet<M>>, index_key: I, member: M)
+fn add_index_member<I, M>(index: &mut FxHashMap<I, Vec<M>>, index_key: I, member: M)
 where
     I: Hash + Eq + CellValue,
     M: Hash + Eq + CellValue,
 {
-    index.entry(index_key).or_default().insert(member);
+    let members = index.entry(index_key).or_default();
+    if !members.contains(&member) {
+        members.push(member);
+    }
 }
 
-fn remove_index_member<I, M>(index: &mut FxHashMap<I, FxHashSet<M>>, index_key: &I, member: &M)
+fn remove_index_member<I, M>(index: &mut FxHashMap<I, Vec<M>>, index_key: &I, member: &M)
 where
     I: Hash + Eq + CellValue,
     M: Hash + Eq + CellValue,
 {
     if let Some(members) = index.get_mut(index_key) {
-        members.remove(member);
+        members.retain(|candidate| candidate != member);
         if members.is_empty() {
             index.remove(index_key);
         }
@@ -98,7 +107,7 @@ fn upsert_left<LK, LV, RK, RV, JK, OK, OV, FL>(
     left_key: LK,
     left_value: LV,
     left_join_key: &FL,
-    impacted: &mut FxHashSet<LK>,
+    impacted: &mut OrderedSet<LK>,
 ) where
     LK: Hash + Eq + CellValue,
     LV: CellValue,
@@ -109,23 +118,26 @@ fn upsert_left<LK, LV, RK, RV, JK, OK, OV, FL>(
     OV: CellValue,
     FL: Fn(&LK, &LV) -> JK,
 {
-    if let Some(previous_join_key) = state.left_join_keys.remove(&left_key) {
-        remove_index_member(&mut state.join_to_left, &previous_join_key, &left_key);
-    }
-
     let join_key = left_join_key(&left_key, &left_value);
-    state.left_rows.insert(left_key.clone(), left_value);
-    state
+    match state
         .left_join_keys
-        .insert(left_key.clone(), join_key.clone());
-    add_index_member(&mut state.join_to_left, join_key, left_key.clone());
+        .insert(left_key.clone(), join_key.clone())
+    {
+        Some(previous_join_key) if previous_join_key != join_key => {
+            remove_index_member(&mut state.join_to_left, &previous_join_key, &left_key);
+            add_index_member(&mut state.join_to_left, join_key, left_key.clone());
+        }
+        Some(_) => {}
+        None => add_index_member(&mut state.join_to_left, join_key, left_key.clone()),
+    }
+    state.left_rows.insert(left_key.clone(), left_value);
     impacted.insert(left_key);
 }
 
 fn remove_left<LK, LV, RK, RV, JK, OK, OV>(
     state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV>,
     left_key: &LK,
-    impacted: &mut FxHashSet<LK>,
+    impacted: &mut OrderedSet<LK>,
 ) where
     LK: Hash + Eq + CellValue,
     LV: CellValue,
@@ -147,7 +159,7 @@ fn apply_left_diff<LK, LV, RK, RV, JK, OK, OV, FL>(
     state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV>,
     diff: &MapDiff<LK, LV>,
     left_join_key: &FL,
-    impacted: &mut FxHashSet<LK>,
+    impacted: &mut OrderedSet<LK>,
 ) where
     LK: Hash + Eq + CellValue,
     LV: CellValue,
@@ -195,7 +207,7 @@ fn upsert_right<LK, LV, RK, RV, JK, OK, OV, FR>(
     right_key: RK,
     right_value: RV,
     right_join_key: &FR,
-    changed_join_keys: &mut FxHashSet<JK>,
+    changed_join_keys: &mut OrderedSet<JK>,
 ) where
     LK: Hash + Eq + CellValue,
     LV: CellValue,
@@ -206,24 +218,35 @@ fn upsert_right<LK, LV, RK, RV, JK, OK, OV, FR>(
     OV: CellValue,
     FR: Fn(&RK, &RV) -> JK,
 {
-    if let Some(previous_join_key) = state.right_join_keys.remove(&right_key) {
-        remove_index_member(&mut state.join_to_right, &previous_join_key, &right_key);
-        changed_join_keys.insert(previous_join_key);
-    }
-
     let join_key = right_join_key(&right_key, &right_value);
-    state.right_rows.insert(right_key.clone(), right_value);
-    state
+    match state
         .right_join_keys
-        .insert(right_key.clone(), join_key.clone());
-    add_index_member(&mut state.join_to_right, join_key.clone(), right_key);
+        .insert(right_key.clone(), join_key.clone())
+    {
+        Some(previous_join_key) if previous_join_key != join_key => {
+            remove_index_member(&mut state.join_to_right, &previous_join_key, &right_key);
+            changed_join_keys.insert(previous_join_key);
+            add_index_member(
+                &mut state.join_to_right,
+                join_key.clone(),
+                right_key.clone(),
+            );
+        }
+        Some(_) => {}
+        None => add_index_member(
+            &mut state.join_to_right,
+            join_key.clone(),
+            right_key.clone(),
+        ),
+    }
+    state.right_rows.insert(right_key, right_value);
     changed_join_keys.insert(join_key);
 }
 
 fn remove_right<LK, LV, RK, RV, JK, OK, OV>(
     state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV>,
     right_key: &RK,
-    changed_join_keys: &mut FxHashSet<JK>,
+    changed_join_keys: &mut OrderedSet<JK>,
 ) where
     LK: Hash + Eq + CellValue,
     LV: CellValue,
@@ -244,8 +267,8 @@ fn apply_right_diff<LK, LV, RK, RV, JK, OK, OV, FR>(
     state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV>,
     diff: &MapDiff<RK, RV>,
     right_join_key: &FR,
-    impacted: &mut FxHashSet<LK>,
-    changed_join_keys: &mut FxHashSet<JK>,
+    impacted: &mut OrderedSet<LK>,
+    changed_join_keys: &mut OrderedSet<JK>,
 ) where
     LK: Hash + Eq + CellValue,
     LV: CellValue,
@@ -260,7 +283,7 @@ fn apply_right_diff<LK, LV, RK, RV, JK, OK, OV, FR>(
         state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV>,
         diff: &MapDiff<RK, RV>,
         right_join_key: &FR,
-        changed_join_keys: &mut FxHashSet<JK>,
+        changed_join_keys: &mut OrderedSet<JK>,
     ) where
         LK: Hash + Eq + CellValue,
         LV: CellValue,
@@ -344,6 +367,7 @@ where
         let mut current_output_keys = state.left_output_keys.remove(&left_key).unwrap_or_default();
 
         scratch.desired_rows.clear();
+        scratch.desired_order.clear();
         if let Some(left_value) = state.left_rows.get(&left_key) {
             scratch.right_rows.clear();
             if let Some(right_keys) = state
@@ -364,6 +388,7 @@ where
             for (output_key, output_value) in
                 compute_rows(&left_key, left_value, &scratch.right_rows)
             {
+                scratch.desired_order.insert(output_key.clone());
                 scratch.desired_rows.insert(output_key, output_value);
             }
         }
@@ -382,7 +407,10 @@ where
             }
         });
 
-        for (output_key, new_value) in scratch.desired_rows.drain() {
+        for output_key in scratch.desired_order.drain() {
+            let Some(new_value) = scratch.desired_rows.remove(&output_key) else {
+                continue;
+            };
             current_output_keys.insert(output_key.clone());
             match state.output_cache.entry(output_key.clone()) {
                 Entry::Occupied(mut entry) => {
@@ -418,6 +446,92 @@ where
 /// This covers left joins, semi joins, and key-equal inner joins. Their output
 /// shape does not need the general runtime's per-left output-key set or
 /// temporary desired-row map.
+const PARALLEL_JOIN_WORK_ENTER: usize = 65_536;
+const PARALLEL_JOIN_WORK_EXIT: usize = 49_152;
+
+fn commit_keyed_value<LK, LV, RK, RV, JK, OV>(
+    state: &mut JoinState<LK, LV, RK, RV, JK, LK, OV>,
+    left_key: LK,
+    desired_value: Option<OV>,
+    changes: &mut Vec<MapDiff<LK, OV>>,
+) where
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    OV: CellValue,
+{
+    match (state.output_cache.entry(left_key.clone()), desired_value) {
+        (Entry::Occupied(mut entry), Some(new_value)) => {
+            if entry.get() != &new_value {
+                let old_value = entry.insert(new_value.clone());
+                changes.push(MapDiff::Update {
+                    key: left_key,
+                    old_value,
+                    new_value,
+                });
+            }
+        }
+        (Entry::Occupied(entry), None) => {
+            let (key, old_value) = entry.remove_entry();
+            changes.push(MapDiff::Remove { key, old_value });
+        }
+        (Entry::Vacant(entry), Some(new_value)) => {
+            entry.insert(new_value.clone());
+            changes.push(MapDiff::Insert {
+                key: left_key,
+                value: new_value,
+            });
+        }
+        (Entry::Vacant(_), None) => {}
+    }
+}
+
+#[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
+fn compute_keyed_parallel<LK, LV, RK, RV, JK, OV, FO>(
+    pool: &rayon::ThreadPool,
+    state: &JoinState<LK, LV, RK, RV, JK, LK, OV>,
+    impacted: &[LK],
+    compute_value: &FO,
+) -> Vec<(LK, Option<OV>)>
+where
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    OV: CellValue,
+    FO: Fn(&LK, &LV, &[(RK, RV)]) -> Option<OV> + Sync,
+{
+    use rayon::prelude::*;
+
+    pool.install(|| {
+        impacted
+            .par_iter()
+            .map_init(Vec::<(RK, RV)>::new, |right_rows, left_key| {
+                right_rows.clear();
+                let desired = state.left_rows.get(left_key).and_then(|left_value| {
+                    if let Some(right_keys) = state
+                        .left_join_keys
+                        .get(left_key)
+                        .and_then(|join_key| state.join_to_right.get(join_key))
+                    {
+                        right_rows.extend(right_keys.iter().filter_map(|right_key| {
+                            state
+                                .right_rows
+                                .get(right_key)
+                                .map(|right_value| (right_key.clone(), right_value.clone()))
+                        }));
+                    }
+                    compute_value(left_key, left_value, right_rows)
+                });
+                (left_key.clone(), desired)
+            })
+            .collect()
+    })
+}
+
 fn recompute_keyed_impacted<LK, LV, RK, RV, JK, OV, FO>(
     state: &mut JoinState<LK, LV, RK, RV, JK, LK, OV>,
     scratch: &mut JoinScratch<LK, RK, RV, JK, LK, OV>,
@@ -430,11 +544,36 @@ where
     RV: CellValue,
     JK: Hash + Eq + CellValue,
     OV: CellValue,
-    FO: Fn(&LK, &LV, &[(RK, RV)]) -> Option<OV>,
+    FO: Fn(&LK, &LV, &[(RK, RV)]) -> Option<OV> + Sync,
 {
     let mut changes = Vec::new();
+    let impacted: Vec<LK> = scratch.impacted.drain().collect();
+    let estimated_work = impacted.iter().fold(0_usize, |work, left_key| {
+        let fanout = state
+            .left_join_keys
+            .get(left_key)
+            .and_then(|join_key| state.join_to_right.get(join_key))
+            .map_or(0, Vec::len);
+        work.saturating_add(fanout.saturating_add(1))
+    });
+    state.parallel_active = if state.parallel_active {
+        estimated_work >= PARALLEL_JOIN_WORK_EXIT
+    } else {
+        estimated_work >= PARALLEL_JOIN_WORK_ENTER
+    };
 
-    for left_key in scratch.impacted.drain() {
+    #[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
+    if state.parallel_active
+        && let Some(pool) = crate::executor::worker_pool()
+    {
+        let desired = compute_keyed_parallel(pool, state, &impacted, compute_value);
+        for (left_key, desired_value) in desired {
+            commit_keyed_value(state, left_key, desired_value, &mut changes);
+        }
+        return changes;
+    }
+
+    for left_key in impacted {
         scratch.right_rows.clear();
         let desired_value = state.left_rows.get(&left_key).and_then(|left_value| {
             if let Some(right_keys) = state
@@ -454,30 +593,7 @@ where
             compute_value(&left_key, left_value, &scratch.right_rows)
         });
 
-        match (state.output_cache.entry(left_key.clone()), desired_value) {
-            (Entry::Occupied(mut entry), Some(new_value)) => {
-                if entry.get() != &new_value {
-                    let old_value = entry.insert(new_value.clone());
-                    changes.push(MapDiff::Update {
-                        key: left_key,
-                        old_value,
-                        new_value,
-                    });
-                }
-            }
-            (Entry::Occupied(entry), None) => {
-                let (key, old_value) = entry.remove_entry();
-                changes.push(MapDiff::Remove { key, old_value });
-            }
-            (Entry::Vacant(entry), Some(new_value)) => {
-                entry.insert(new_value.clone());
-                changes.push(MapDiff::Insert {
-                    key: left_key,
-                    value: new_value,
-                });
-            }
-            (Entry::Vacant(_), None) => {}
-        }
+        commit_keyed_value(state, left_key, desired_value, &mut changes);
     }
 
     changes

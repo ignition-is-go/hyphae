@@ -202,6 +202,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
     use super::*;
     use crate::CellMap;
 
@@ -246,5 +248,32 @@ mod tests {
         source.insert("a".to_string(), -1);
         assert_eq!(mapped.get_value(&"mapped:a".to_string()), Some(-2));
         assert_eq!(filtered.get_value(&"positive:a".to_string()), None);
+    }
+
+    #[test]
+    fn map_entries_rejects_duplicate_output_keys() {
+        let source = CellMap::<u64, u64>::new();
+        source.insert_many(vec![(1, 10), (2, 20)]);
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            source.map_entries(|_, value| (0, *value)).materialize()
+        }));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn map_entries_allows_atomic_output_key_swaps() {
+        let source = CellMap::<u64, u64>::new();
+        source.insert_many(vec![(1, 2), (2, 1)]);
+        let output = source
+            .clone()
+            .map_entries(|_, value| (*value, *value))
+            .materialize();
+
+        source.insert_many(vec![(1, 1), (2, 2)]);
+
+        assert_eq!(output.get_value(&1), Some(1));
+        assert_eq!(output.get_value(&2), Some(2));
     }
 }

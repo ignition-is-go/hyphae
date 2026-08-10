@@ -1033,6 +1033,112 @@ mod tests {
         assert_eq!(output.get_value(&2), Some(30));
     }
 
+    #[test]
+    fn joined_projection_preserves_right_insertion_order() {
+        let left = CellMap::<u64, u64>::new();
+        let right = CellMap::<u64, u64>::new();
+        let output = left
+            .clone()
+            .left_join_by(right.clone(), |_, group| *group, |_, group| *group)
+            .map_joined_values(|_, _, matches| {
+                matches.iter().map(|(key, _)| *key).collect::<Vec<_>>()
+            })
+            .materialize();
+
+        left.insert(1, 7);
+        right.insert_many(vec![(30, 7), (10, 7), (20, 7)]);
+        assert_eq!(output.get_value(&1), Some(vec![30, 10, 20]));
+
+        right.insert(10, 7);
+        assert_eq!(output.get_value(&1), Some(vec![30, 10, 20]));
+
+        right.remove(&10);
+        right.insert(10, 7);
+        assert_eq!(output.get_value(&1), Some(vec![30, 20, 10]));
+    }
+
+    #[test]
+    fn right_changes_publish_impacted_left_rows_in_insertion_order() {
+        let left = CellMap::<u64, u64>::new();
+        let right = CellMap::<u64, u64>::new();
+        let output = left
+            .clone()
+            .left_join_by(right.clone(), |_, group| *group, |_, group| *group)
+            .map_joined_values(|_, _, matches| matches.len())
+            .materialize();
+
+        left.insert_many(vec![(9, 7), (3, 7), (7, 7)]);
+        let (tx, rx) = mpsc::channel::<MapDiff<u64, usize>>();
+        let _guard = output.subscribe_diffs(move |diff| {
+            let _ = tx.send(diff.clone());
+        });
+
+        right.insert(1, 7);
+
+        let diff = rx.try_iter().last();
+        assert!(diff.is_some(), "right insert must publish");
+        let keys: Vec<u64> = match diff {
+            Some(MapDiff::Batch { changes }) => changes
+                .iter()
+                .filter_map(|change| match change {
+                    MapDiff::Update { key, .. } => Some(*key),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        assert_eq!(keys, vec![9, 3, 7]);
+    }
+
+    #[cfg(feature = "scheduler")]
+    #[test]
+    fn large_parallel_join_batch_settles_synchronously_in_input_order() {
+        const ROWS: u64 = 10_000;
+
+        let left = CellMap::<u64, (u64, u64)>::new();
+        let right1 = CellMap::<u64, (u64, u64)>::new();
+        let right2 = CellMap::<u64, (u64, u64)>::new();
+        right1.insert_many((0..8).map(|key| (key, (1, key))).collect());
+        right2.insert_many((0..8).map(|key| (key, (1, key))).collect());
+
+        let output = left
+            .clone()
+            .left_join_by(right1, |_, row| row.0, |_, row| row.0)
+            .map_joined_values(|_, row, matches| {
+                (
+                    row.0,
+                    row.1 + u64::try_from(matches.len()).unwrap_or(u64::MAX),
+                )
+            })
+            .left_join_by(right2, |_, row| row.0, |_, row| row.0)
+            .map_joined_values(|_, row, matches| {
+                row.1 + u64::try_from(matches.len()).unwrap_or(u64::MAX)
+            })
+            .materialize();
+
+        let (tx, rx) = mpsc::channel::<MapDiff<u64, u64>>();
+        let _guard = output.subscribe_diffs(move |diff| {
+            let _ = tx.send(diff.clone());
+        });
+
+        left.insert_many((0..ROWS).map(|key| (key, (1, key))).collect());
+
+        assert_eq!(output.get_value(&(ROWS - 1)), Some(ROWS - 1 + 16));
+        let diff = rx.try_iter().last();
+        assert!(diff.is_some());
+        let keys: Vec<u64> = match diff {
+            Some(MapDiff::Batch { changes }) => changes
+                .iter()
+                .filter_map(|change| match change {
+                    MapDiff::Insert { key, .. } => Some(*key),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        assert_eq!(keys, (0..ROWS).collect::<Vec<_>>());
+    }
+
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
     struct UserId(String);
 

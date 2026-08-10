@@ -224,7 +224,7 @@ fn bench_rekey_between_joins(c: &mut Criterion) {
 
 fn bench_two_join_batches(c: &mut Criterion) {
     let mut group = c.benchmark_group("compiled_query/two_join_region/batch");
-    for batch_size in [1_u64, 10, 100, 1_000] {
+    for batch_size in [1_u64, 10, 100, 1_000, 10_000] {
         let source = source_rows();
         let first = dimensions(17);
         let second = dimensions(19);
