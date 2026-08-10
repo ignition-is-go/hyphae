@@ -46,8 +46,14 @@ type DiffSubscriber<K, V> = Arc<dyn Fn(&MapDiff<K, V>) + Send + Sync>;
 /// Type-erased one-shot installer for the wrapped upstream plan. `MapQuery`'s
 /// `install` consumes `self`, so we wrap a one-shot `FnOnce` in a slot and
 /// take it on the first downstream install.
-type UpstreamInstall<K, V> =
-    Box<dyn FnOnce(BoxedMapDiffSink<K, V>) -> Vec<SubscriptionGuard> + Send + Sync>;
+type UpstreamInstall<K, V> = Box<
+    dyn FnOnce(
+            &mut super::compiler::CompileContext,
+            BoxedMapDiffSink<K, V>,
+        ) -> Vec<SubscriptionGuard>
+        + Send
+        + Sync,
+>;
 
 pub(crate) struct SharedMapQueryInner<K, V>
 where
@@ -194,7 +200,7 @@ where
     /// `query.share()` at the call site.
     pub fn new<Q: MapQuery<Key = K, Value = V>>(q: Q) -> Self {
         let upstream: UpstreamInstall<K, V> =
-            Box::new(move |sink| q.install(move |diff| sink(diff)));
+            Box::new(move |cx, sink| q.install(cx, move |diff| sink(diff)));
         Self {
             inner: Arc::new(SharedMapQueryInner {
                 upstream: Mutex::new(Some(upstream)),
@@ -211,7 +217,11 @@ where
     K: CellValue + Hash + Eq,
     V: CellValue,
 {
-    fn install<Sink>(self, sink: Sink) -> Vec<SubscriptionGuard>
+    fn install<Sink>(
+        self,
+        cx: &mut super::compiler::CompileContext,
+        sink: Sink,
+    ) -> Vec<SubscriptionGuard>
     where
         Sink: MapDiffSink<K, V>,
     {
@@ -250,7 +260,7 @@ where
                     cb(diff);
                 }
             });
-            let guards = install_fn(fanout);
+            let guards = install_fn(cx, fanout);
             let mut slot = self.inner.upstream_guards.lock();
             slot.extend(guards);
         } else {

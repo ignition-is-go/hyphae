@@ -632,6 +632,7 @@ where
 /// output cell map; multiple plan stages share that output rather than each
 /// allocating their own.
 pub fn install_join_runtime_via_query<LK, LV, RK, RV, JK, OK, OV, L, R, FL, FR, FO, Sink>(
+    cx: &mut crate::map_query::compiler::CompileContext,
     left: L,
     right: R,
     left_join_key: FL,
@@ -727,8 +728,8 @@ where
         }
     };
 
-    let mut guards = left.install(left_sink);
-    guards.extend(right.install(right_sink));
+    let mut guards = left.install(cx, left_sink);
+    guards.extend(right.install(cx, right_sink));
     guards
 }
 
@@ -1238,6 +1239,7 @@ where
 
 /// Install the zero-or-one-output, left-key-preserving join runtime.
 pub fn install_keyed_join_runtime_via_query<LK, LV, RK, RV, JK, OV, L, R, FL, FR, FO, Sink>(
+    cx: &mut crate::map_query::compiler::CompileContext,
     left: L,
     right: R,
     left_join_key: FL,
@@ -1316,8 +1318,8 @@ where
         }
     };
 
-    let mut guards = left.install(left_sink);
-    guards.extend(right.install(right_sink));
+    let mut guards = left.install(cx, left_sink);
+    guards.extend(right.install(cx, right_sink));
     guards
 }
 
@@ -1352,6 +1354,7 @@ pub fn install_two_keyed_join_runtime_via_query<
     FM2,
     Sink,
 >(
+    cx: &mut crate::map_query::compiler::CompileContext,
     left: L,
     right1: R1,
     right2: R2,
@@ -1650,8 +1653,8 @@ where
         }
     };
 
-    let mut guards = left.install(left_sink);
-    guards.extend(right1.install(right1_sink));
-    guards.extend(right2.install(right2_sink));
+    let mut guards = left.install(cx, left_sink);
+    guards.extend(right1.install(cx, right1_sink));
+    guards.extend(right2.install(cx, right2_sink));
     guards
 }

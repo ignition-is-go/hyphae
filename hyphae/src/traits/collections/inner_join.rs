@@ -61,11 +61,16 @@ where
     LV: CellValue,
     RV: CellValue,
 {
-    fn install<Sink>(self, sink: Sink) -> Vec<SubscriptionGuard>
+    fn install<Sink>(
+        self,
+        cx: &mut crate::map_query::compiler::CompileContext,
+        sink: Sink,
+    ) -> Vec<SubscriptionGuard>
     where
         Sink: MapDiffSink<K, (LV, RV)>,
     {
         install_keyed_join_runtime_via_query::<K, LV, K, RV, K, (LV, RV), _, _, _, _, _, _>(
+            cx,
             self.left,
             self.right,
             |k: &K, _: &LV| k.clone(),
@@ -150,11 +155,16 @@ where
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
     FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
 {
-    fn install<Sink>(self, sink: Sink) -> Vec<SubscriptionGuard>
+    fn install<Sink>(
+        self,
+        cx: &mut crate::map_query::compiler::CompileContext,
+        sink: Sink,
+    ) -> Vec<SubscriptionGuard>
     where
         Sink: MapDiffSink<(LK, RK), (LV, RV)>,
     {
         install_join_runtime_via_query::<LK, LV, RK, RV, JK, (LK, RK), (LV, RV), _, _, _, _, _, _>(
+            cx,
             self.left,
             self.right,
             self.left_key,

@@ -231,6 +231,7 @@ where
 /// `SelectPlan`) whose materialization shares one output cell map. Chains of
 /// plans compose without intermediate [`CellMap`](crate::CellMap) allocations.
 pub fn install_map_runtime_via_query<SK, SV, OK, OV, S, FO, Sink>(
+    cx: &mut crate::map_query::compiler::CompileContext,
     source: S,
     compute_rows: FO,
     sink: Sink,
@@ -265,5 +266,5 @@ where
         }
     };
 
-    source.install(upstream_sink)
+    source.install(cx, upstream_sink)
 }

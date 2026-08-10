@@ -80,11 +80,16 @@ where
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
     FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
 {
-    fn install<Sink>(self, sink: Sink) -> Vec<SubscriptionGuard>
+    fn install<Sink>(
+        self,
+        cx: &mut crate::map_query::compiler::CompileContext,
+        sink: Sink,
+    ) -> Vec<SubscriptionGuard>
     where
         Sink: MapDiffSink<LK, LV>,
     {
         install_keyed_join_runtime_via_query::<LK, LV, RK, RV, JK, LV, _, _, _, _, _, _>(
+            cx,
             self.left,
             self.right,
             self.left_key,

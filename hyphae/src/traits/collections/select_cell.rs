@@ -80,7 +80,11 @@ where
         + 'static,
     F: Fn(&K, &V) -> W + Send + Sync + 'static,
 {
-    fn install<Sink>(self, sink: Sink) -> Vec<SubscriptionGuard>
+    fn install<Sink>(
+        self,
+        cx: &mut crate::map_query::compiler::CompileContext,
+        sink: Sink,
+    ) -> Vec<SubscriptionGuard>
     where
         Sink: MapDiffSink<K, V>,
     {
@@ -100,7 +104,7 @@ where
                 })
                 .materialize()
         });
-        inner_plan.install(sink)
+        inner_plan.install(cx, sink)
     }
 }
 

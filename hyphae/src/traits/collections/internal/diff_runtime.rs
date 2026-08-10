@@ -145,6 +145,7 @@ where
 /// build the downstream change set, and forwards a single `Batch` per
 /// upstream emission to `sink`. No intermediate `CellMap` is allocated.
 pub fn install_diff_runtime_via_query<SK, SV, OK, OV, S, ST, FS, Sink>(
+    cx: &mut crate::map_query::compiler::CompileContext,
     source: S,
     initial_state: ST,
     apply_atomic: FS,
@@ -179,7 +180,7 @@ where
         }
     };
 
-    source.install(upstream_sink)
+    source.install(cx, upstream_sink)
 }
 
 /// Sink-driven grouped runtime for [`MapQuery`] plan nodes.
@@ -187,6 +188,7 @@ where
 /// Used by `CountByPlan` and `GroupByPlan` to install grouping machinery
 /// into a downstream sink without materializing an intermediate `CellMap`.
 pub fn install_grouped_runtime_via_query<SK, SV, GK, GS, OV, S, FG, FI, FU, FR, FM, FE, Sink>(
+    cx: &mut crate::map_query::compiler::CompileContext,
     source: S,
     ops: GroupedOps<SK, SV, GK, GS, OV, FG, FI, FU, FR, FM, FE>,
     sink: Sink,
@@ -208,6 +210,7 @@ where
 {
     let ops = Arc::new(ops);
     install_diff_runtime_via_query::<SK, SV, GK, OV, S, GroupedState<SK, GK, GS>, _, _>(
+        cx,
         source,
         GroupedState::<SK, GK, GS>::default(),
         move |state: &mut GroupedState<SK, GK, GS>,

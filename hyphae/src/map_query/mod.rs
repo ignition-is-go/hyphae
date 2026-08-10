@@ -26,6 +26,8 @@ pub(crate) mod properties;
 pub(crate) mod reactive_map_impl;
 pub mod share;
 
+pub(crate) mod compiler;
+
 pub use share::{MapQueryShareExt, SharedMapQuery};
 
 /// Statically typed downstream diff consumer used while compiling a query.
@@ -60,7 +62,7 @@ where
     /// Consumes `self`: a plan can only be materialized once, and its
     /// owned source(s) need to move into the resulting subscription
     /// closures so chained plans compose without cloning.
-    fn install<S>(self, sink: S) -> Vec<SubscriptionGuard>
+    fn install<S>(self, cx: &mut compiler::CompileContext, sink: S) -> Vec<SubscriptionGuard>
     where
         S: MapDiffSink<K, V>;
 }
@@ -122,7 +124,8 @@ pub trait MapQuery: MapQueryInstall<Self::Key, Self::Value> + properties::PlanPr
             out.apply_diff_owned(diff.clone());
         };
 
-        let guards = self.install(sink);
+        let mut cx = compiler::CompileContext::default();
+        let guards = self.install(&mut cx, sink);
         for g in guards {
             output.own(g);
         }

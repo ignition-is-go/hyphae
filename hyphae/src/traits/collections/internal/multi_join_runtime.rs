@@ -433,6 +433,7 @@ where
 
 /// Install the one-output, left-key-preserving multi-join runtime.
 pub fn install_keyed_multi_join_runtime_via_query<LK, LV, RK, RV, JK, OV, L, R, FL, FR, FO, Sink>(
+    cx: &mut crate::map_query::compiler::CompileContext,
     left: L,
     right: R,
     left_join_keys_fn: FL,
@@ -511,7 +512,7 @@ where
         }
     };
 
-    let mut guards = left.install(left_sink);
-    guards.extend(right.install(right_sink));
+    let mut guards = left.install(cx, left_sink);
+    guards.extend(right.install(cx, right_sink));
     guards
 }

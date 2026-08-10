@@ -13,7 +13,7 @@
 //! ...) provide their own `MapQuery` impls and inherit the default
 //! `materialize`.
 
-use std::{hash::Hash, marker::PhantomData};
+use std::{hash::Hash, marker::PhantomData, sync::Arc};
 
 use super::properties::{ByMapKey, ExactlyOne, PlanProperties};
 use super::{MapDiffSink, MapQuery, MapQueryInstall};
@@ -25,31 +25,54 @@ use crate::{
     traits::{CellValue, reactive_map::ReactiveMap},
 };
 
-impl<M> MapQueryInstall<M::Key, M::Value> for M
+fn install_reactive_source<M, S>(
+    source: &M,
+    identity: super::compiler::SourceIdentity,
+    cx: &mut super::compiler::CompileContext,
+    sink: S,
+) -> Vec<SubscriptionGuard>
 where
     M: ReactiveMap + Clone,
     M::Key: CellValue + Hash + Eq,
     M::Value: CellValue,
+    S: MapDiffSink<M::Key, M::Value>,
 {
-    fn install<S>(self, sink: S) -> Vec<SubscriptionGuard>
+    cx.intern_root(identity);
+    let keepalive = source.clone();
+    let guard = source.subscribe_diffs_reactive(move |diff| {
+        let _ = &keepalive;
+        sink(diff);
+    });
+    vec![guard]
+}
+
+impl<K, V, M> MapQueryInstall<K, V> for CellMap<K, V, M>
+where
+    K: CellValue + Hash + Eq,
+    V: CellValue,
+    M: Clone + Send + Sync + 'static,
+{
+    fn install<S>(self, cx: &mut super::compiler::CompileContext, sink: S) -> Vec<SubscriptionGuard>
     where
-        S: MapDiffSink<M::Key, M::Value>,
+        S: MapDiffSink<K, V>,
     {
-        // `subscribe_diffs_reactive` borrows `&self`, so we need `self` to
-        // outlive the call. We also need to keep the source alive across the
-        // subscription lifetime so the underlying inner map doesn't drop
-        // while the callback is registered. Cheap clone (`Arc` bump for
-        // CellMap; same for BoundedInput) lets us do both: keep one copy
-        // for the subscribe call, capture the other into the closure.
-        let keepalive = self.clone();
-        let guard = self.subscribe_diffs_reactive(move |diff| {
-            // Hold `keepalive` across calls. The reference is otherwise
-            // unused — its purpose is purely to extend the source's
-            // lifetime to match the subscription's.
-            let _ = &keepalive;
-            sink(diff);
-        });
-        vec![guard]
+        let identity = super::compiler::SourceIdentity::from_ptr(Arc::as_ptr(&self.inner));
+        install_reactive_source(&self, identity, cx, sink)
+    }
+}
+
+impl<PK, K, V> MapQueryInstall<K, V> for NestedMap<PK, K, V>
+where
+    PK: CellValue + Hash + Eq,
+    K: CellValue + Hash + Eq,
+    V: CellValue,
+{
+    fn install<S>(self, cx: &mut super::compiler::CompileContext, sink: S) -> Vec<SubscriptionGuard>
+    where
+        S: MapDiffSink<K, V>,
+    {
+        let identity = self.query_source_identity();
+        install_reactive_source(&self, identity, cx, sink)
     }
 }
 

@@ -51,12 +51,17 @@ where
     OV: CellValue,
     F: Fn(&SK, &SV) -> Vec<(LK, OV)> + Send + Sync + 'static,
 {
-    fn install<Sink>(self, sink: Sink) -> Vec<SubscriptionGuard>
+    fn install<Sink>(
+        self,
+        cx: &mut crate::map_query::compiler::CompileContext,
+        sink: Sink,
+    ) -> Vec<SubscriptionGuard>
     where
         Sink: MapDiffSink<(SK, LK), OV>,
     {
         let f = self.f;
         install_map_runtime_via_query(
+            cx,
             self.source,
             move |source_key, value| {
                 f(source_key, value)

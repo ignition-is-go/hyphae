@@ -79,7 +79,11 @@ where
     FL: Fn(&LK, &LV) -> Vec<JK> + Send + Sync + 'static,
     FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
 {
-    fn install<Sink>(self, sink: Sink) -> Vec<SubscriptionGuard>
+    fn install<Sink>(
+        self,
+        cx: &mut crate::map_query::compiler::CompileContext,
+        sink: Sink,
+    ) -> Vec<SubscriptionGuard>
     where
         Sink: MapDiffSink<LK, (LV, Vec<RV>)>,
     {
@@ -97,6 +101,7 @@ where
             _,
             _,
         >(
+            cx,
             self.left,
             self.right,
             self.left_keys,

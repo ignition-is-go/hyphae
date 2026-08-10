@@ -64,11 +64,15 @@ where
     U: CellValue,
     F: Fn(&K, &V) -> U + Send + Sync + 'static,
 {
-    fn install<Sink>(self, sink: Sink) -> Vec<SubscriptionGuard>
+    fn install<Sink>(
+        self,
+        cx: &mut crate::map_query::compiler::CompileContext,
+        sink: Sink,
+    ) -> Vec<SubscriptionGuard>
     where
         Sink: MapDiffSink<K, U>,
     {
-        install_map_values_runtime(self.source, self.f, sink)
+        install_map_values_runtime(cx, self.source, self.f, sink)
     }
 }
 
@@ -107,11 +111,15 @@ where
     U: CellValue,
     F: Fn(&K, &V) -> Option<U> + Send + Sync + 'static,
 {
-    fn install<Sink>(self, sink: Sink) -> Vec<SubscriptionGuard>
+    fn install<Sink>(
+        self,
+        cx: &mut crate::map_query::compiler::CompileContext,
+        sink: Sink,
+    ) -> Vec<SubscriptionGuard>
     where
         Sink: MapDiffSink<K, U>,
     {
-        install_filter_map_values_runtime(self.source, self.f, sink)
+        install_filter_map_values_runtime(cx, self.source, self.f, sink)
     }
 }
 

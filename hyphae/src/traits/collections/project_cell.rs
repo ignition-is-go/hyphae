@@ -74,7 +74,11 @@ where
     W: Watchable<Option<(K2, V2)>> + Gettable<Option<(K2, V2)>> + Clone + Send + Sync + 'static,
     F: Fn(&K, &V) -> W + Send + Sync + 'static,
 {
-    fn install<Sink>(self, sink: Sink) -> Vec<SubscriptionGuard>
+    fn install<Sink>(
+        self,
+        cx: &mut crate::map_query::compiler::CompileContext,
+        sink: Sink,
+    ) -> Vec<SubscriptionGuard>
     where
         Sink: MapDiffSink<K2, V2>,
     {
@@ -105,6 +109,7 @@ where
 
         let mapper = self.mapper;
         install_map_values_cell_via_query::<K, V, Option<(K2, V2)>, S, W, _, _>(
+            cx,
             self.source,
             move |k, v| (mapper)(k, v),
             intermediate_sink,

@@ -109,6 +109,10 @@ where
     K: Hash + Eq + CellValue,
     V: CellValue,
 {
+    pub(crate) fn query_source_identity(&self) -> crate::map_query::compiler::SourceIdentity {
+        crate::map_query::compiler::SourceIdentity::from_ptr(Arc::as_ptr(&self.source_inner))
+    }
+
     /// Create a new `NestedMap` by grouping `source` entries via `fk`.
     pub fn new<M: Send + Sync + 'static>(
         source: &CellMap<K, V, M>,

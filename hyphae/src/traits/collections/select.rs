@@ -55,12 +55,17 @@ where
     V: CellValue,
     F: Fn(&K, &V) -> bool + Send + Sync + 'static,
 {
-    fn install<Sink>(self, sink: Sink) -> Vec<SubscriptionGuard>
+    fn install<Sink>(
+        self,
+        cx: &mut crate::map_query::compiler::CompileContext,
+        sink: Sink,
+    ) -> Vec<SubscriptionGuard>
     where
         Sink: MapDiffSink<K, V>,
     {
         let predicate = self.predicate;
         install_filter_map_values_runtime(
+            cx,
             self.source,
             move |key, value| predicate(key, value).then(|| value.clone()),
             sink,

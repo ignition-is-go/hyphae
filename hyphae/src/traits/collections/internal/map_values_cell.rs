@@ -172,6 +172,7 @@ where
 /// step lives in [`crate::traits::collections::project_cell`] as a follow-on
 /// stage on top of this primitive.
 pub fn install_map_values_cell_via_query<K, V, U, S, W, F, Sink>(
+    cx: &mut crate::map_query::compiler::CompileContext,
     source: S,
     mapper: F,
     sink: Sink,
@@ -210,7 +211,7 @@ where
         }
     };
 
-    source.install(upstream_sink)
+    source.install(cx, upstream_sink)
 }
 
 #[cfg(test)]
@@ -290,7 +291,9 @@ mod tests {
         factors.insert("b".to_string(), 2);
 
         let (sink, state, _diffs) = capturing_sink::<String, i32>();
+        let mut cx = crate::map_query::compiler::CompileContext::default();
         let _guards = install_map_values_cell_via_query(
+            &mut cx,
             values,
             {
                 let factors = factors.clone();
@@ -341,7 +344,9 @@ mod tests {
             let _ = tx.send(diff.clone());
         };
 
+        let mut cx = crate::map_query::compiler::CompileContext::default();
         let _guards = install_map_values_cell_via_query(
+            &mut cx,
             source.clone(),
             |_: &String, v: &i32| Cell::new(*v * 10).lock(),
             sink,

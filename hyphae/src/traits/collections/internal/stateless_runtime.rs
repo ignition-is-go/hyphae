@@ -111,6 +111,7 @@ where
 }
 
 pub fn install_map_values_runtime<K, V, U, S, F, Sink>(
+    cx: &mut crate::map_query::compiler::CompileContext,
     source: S,
     f: F,
     sink: Sink,
@@ -128,10 +129,11 @@ where
             sink(&mapped);
         }
     };
-    source.install(upstream_sink)
+    source.install(cx, upstream_sink)
 }
 
 pub fn install_filter_map_values_runtime<K, V, U, S, F, Sink>(
+    cx: &mut crate::map_query::compiler::CompileContext,
     source: S,
     f: F,
     sink: Sink,
@@ -149,7 +151,7 @@ where
             sink(&mapped);
         }
     };
-    source.install(upstream_sink)
+    source.install(cx, upstream_sink)
 }
 
 #[cfg(test)]

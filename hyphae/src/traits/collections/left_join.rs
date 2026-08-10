@@ -47,11 +47,15 @@ where
     P: MapQuery<Key = K, Value = V>,
     Rel: Send + Sync + 'static,
 {
-    fn install<Sink>(self, sink: Sink) -> Vec<SubscriptionGuard>
+    fn install<Sink>(
+        self,
+        cx: &mut crate::map_query::compiler::CompileContext,
+        sink: Sink,
+    ) -> Vec<SubscriptionGuard>
     where
         Sink: MapDiffSink<K, V>,
     {
-        self.plan.install(sink)
+        self.plan.install(cx, sink)
     }
 }
 
@@ -219,11 +223,16 @@ where
     FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
     F: Fn(&LK, &LV, &[(RK, RV)]) -> OV + Send + Sync + 'static,
 {
-    fn install<Sink>(self, sink: Sink) -> Vec<SubscriptionGuard>
+    fn install<Sink>(
+        self,
+        cx: &mut crate::map_query::compiler::CompileContext,
+        sink: Sink,
+    ) -> Vec<SubscriptionGuard>
     where
         Sink: MapDiffSink<LK, OV>,
     {
         install_keyed_join_runtime_via_query(
+            cx,
             self.join.left,
             self.join.right,
             self.join.left_key,
@@ -267,11 +276,16 @@ where
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
     FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
 {
-    fn install<Sink>(self, sink: Sink) -> Vec<SubscriptionGuard>
+    fn install<Sink>(
+        self,
+        cx: &mut crate::map_query::compiler::CompileContext,
+        sink: Sink,
+    ) -> Vec<SubscriptionGuard>
     where
         Sink: MapDiffSink<LK, (LV, Vec<RV>)>,
     {
         install_keyed_join_runtime_via_query::<LK, LV, RK, RV, JK, (LV, Vec<RV>), _, _, _, _, _, _>(
+            cx,
             self.left,
             self.right,
             self.left_key,
@@ -533,12 +547,17 @@ where
     FL2: Fn(&LK, &MV) -> JK2 + Send + Sync + 'static,
     FR2: Fn(&RK2, &RV2) -> JK2 + Send + Sync + 'static,
 {
-    fn install<Sink>(self, sink: Sink) -> Vec<SubscriptionGuard>
+    fn install<Sink>(
+        self,
+        cx: &mut crate::map_query::compiler::CompileContext,
+        sink: Sink,
+    ) -> Vec<SubscriptionGuard>
     where
         Sink: MapDiffSink<LK, (MV, Vec<RV2>)>,
     {
         let map_first = self.map_first;
         install_two_keyed_join_runtime_via_query(
+            cx,
             self.left,
             self.right1,
             self.right2,
@@ -652,7 +671,11 @@ where
     FR2: Fn(&RK2, &RV2) -> JK2 + Send + Sync + 'static,
     FM2: JoinProjection<LK, MV, RK2, RV2, OV>,
 {
-    fn install<Sink>(self, sink: Sink) -> Vec<SubscriptionGuard>
+    fn install<Sink>(
+        self,
+        cx: &mut crate::map_query::compiler::CompileContext,
+        sink: Sink,
+    ) -> Vec<SubscriptionGuard>
     where
         Sink: MapDiffSink<LK, OV>,
     {
@@ -660,6 +683,7 @@ where
         let map_first = plan.map_first;
         let map_second = self.map_second;
         install_two_keyed_join_runtime_via_query(
+            cx,
             plan.left,
             plan.right1,
             plan.right2,
