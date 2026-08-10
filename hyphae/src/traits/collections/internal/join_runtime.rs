@@ -42,6 +42,21 @@ pub(super) struct RelationIndex<RK, RV, JK> {
     pub(super) join_to_rows: FxHashMap<JK, Vec<RK>>,
 }
 
+impl<RK, RV, JK> Clone for RelationIndex<RK, RV, JK>
+where
+    RK: Clone,
+    RV: Clone,
+    JK: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            rows: self.rows.clone(),
+            row_join_keys: self.row_join_keys.clone(),
+            join_to_rows: self.join_to_rows.clone(),
+        }
+    }
+}
+
 impl<RK, RV, JK> Default for RelationIndex<RK, RV, JK> {
     fn default() -> Self {
         Self {

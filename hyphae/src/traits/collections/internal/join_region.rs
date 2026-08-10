@@ -9,12 +9,12 @@
 use std::{
     any::TypeId,
     collections::hash_map::Entry,
-    hash::Hash,
+    hash::{Hash, Hasher},
     marker::PhantomData,
     sync::{Arc, Mutex},
 };
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHasher};
 
 use crate::{
     cell_map::MapDiff,
@@ -385,7 +385,7 @@ where
 }
 
 /// Keep a stage's relationship index private to that stage.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct OwnedIndex;
 
 /// Share the physical relationship index for raw roots bearing `Rel`.
@@ -405,7 +405,7 @@ where
     RV: CellValue,
     JK: Hash + Eq + CellValue,
 {
-    type Storage: RelationIndexStorage<RK, RV, JK>;
+    type Storage: RelationIndexStorage<RK, RV, JK> + Clone;
     type Binding: Clone + Send + Sync + 'static;
 
     fn prepare(cx: &CompileContext, shareable: bool) -> (Self::Storage, Option<Self::Binding>);
@@ -427,11 +427,11 @@ where
     RV: CellValue,
     JK: Hash + Eq + CellValue,
 {
-    type Storage = RelationIndex<RK, RV, JK>;
+    type Storage = DeferredPhysical<RelationIndex<RK, RV, JK>>;
     type Binding = ();
 
     fn prepare(_: &CompileContext, _: bool) -> (Self::Storage, Option<Self::Binding>) {
-        (RelationIndex::default(), None)
+        (DeferredPhysical::default(), None)
     }
 
     fn maintains(_: Option<&Self::Binding>) -> bool {
@@ -651,9 +651,9 @@ pub(super) struct StageRuntimeState<
     join_to_left: FxHashMap<JK, Vec<K>>,
     right: RI,
     output_cache: FxHashMap<K, O>,
-    left_key: LeftKey,
-    right_key: RightKeyFn,
-    project: Project,
+    left_key: Arc<LeftKey>,
+    right_key: Arc<RightKeyFn>,
+    project: Arc<Project>,
     _right_types: PhantomData<fn() -> (RK, RV)>,
 }
 
@@ -777,9 +777,9 @@ where
             join_to_left: FxHashMap::default(),
             right,
             output_cache: FxHashMap::default(),
-            left_key,
-            right_key,
-            project,
+            left_key: Arc::new(left_key),
+            right_key: Arc::new(right_key),
+            project: Arc::new(project),
             _right_types: PhantomData,
         }
     }
@@ -868,7 +868,7 @@ where
     ) -> Vec<MapDiff<K, O>> {
         let mut changed_join_keys = OrderedSet::default();
         if maintain {
-            let right_key = &self.right_key;
+            let right_key = self.right_key.as_ref();
             self.right.write(|index| {
                 let mut pending: Vec<_> = changes.iter().rev().collect();
                 while let Some(change) = pending.pop() {
@@ -914,6 +914,11 @@ where
             while let Some(change) = pending.pop() {
                 match change {
                     MapDiff::Initial { entries } => {
+                        // Observers run after the one maintaining shard has
+                        // replaced the shared physical index. Include their
+                        // complete local dependency set as well as new keys so
+                        // buckets removed by Initial are invalidated.
+                        changed_join_keys.extend(self.join_to_left.keys().cloned());
                         changed_join_keys.extend(
                             entries.iter().filter_map(|(key, value)| {
                                 self.right_key.right_join_key(key, value)
@@ -956,7 +961,7 @@ where
     }
 
     fn upsert_left(&mut self, key: K, value: I, impacted: &mut OrderedSet<K>) {
-        let join_key = (self.left_key)(&key, &value);
+        let join_key = (self.left_key.as_ref())(&key, &value);
         match self.left_join_keys.insert(key.clone(), join_key.clone()) {
             Some(old_join_key) if old_join_key != join_key => {
                 remove_index_member(&mut self.join_to_left, &old_join_key, &key);
@@ -1120,6 +1125,404 @@ where
             vec![MapDiff::Batch { changes: output }]
         } else {
             output
+        }
+    }
+}
+
+/// Construct an empty runtime with the same immutable stage configuration and
+/// physical relationship indexes. This recursive contract keeps the complete
+/// heterogeneous spine statically typed on stable Rust.
+pub(super) trait EmptyShardRuntime {
+    fn empty_shard(&self) -> Self;
+}
+
+impl EmptyShardRuntime for JNil {
+    fn empty_shard(&self) -> Self {
+        Self
+    }
+}
+
+impl<K, I, RK, RV, JK, O, LeftKey, RightKeyFn, Project, RI, Tail> EmptyShardRuntime
+    for JCons<StageRuntimeState<K, I, RK, RV, JK, O, LeftKey, RightKeyFn, Project, RI>, Tail>
+where
+    K: Hash + Eq + CellValue,
+    I: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    O: CellValue,
+    RI: RelationIndexStorage<RK, RV, JK> + Clone,
+    Tail: EmptyShardRuntime,
+{
+    fn empty_shard(&self) -> Self {
+        Self {
+            head: StageRuntimeState {
+                left_rows: FxHashMap::default(),
+                left_join_keys: FxHashMap::default(),
+                join_to_left: FxHashMap::default(),
+                right: self.head.right.clone(),
+                output_cache: FxHashMap::default(),
+                left_key: Arc::clone(&self.head.left_key),
+                right_key: Arc::clone(&self.head.right_key),
+                project: Arc::clone(&self.head.project),
+                _right_types: PhantomData,
+            },
+            tail: self.tail.empty_shard(),
+        }
+    }
+}
+
+/// Snapshot access is deliberately anchored at the typed head input rather
+/// than using type erasure or stage-number dispatch.
+pub(super) trait HeadInputSnapshot<K, Input> {
+    fn head_input(&self, key: &K) -> Option<Input>;
+}
+
+impl<K, Input, Head, Tail> HeadInputSnapshot<K, Input> for JCons<Head, Tail>
+where
+    K: Hash + Eq + CellValue,
+    Input: CellValue,
+    // All executable heads in this module are StageRuntimeState; the method is
+    // supplied below by the private typed accessor trait.
+    Head: ExecutableStage<Key = K, Input = Input> + HeadRows<K, Input>,
+{
+    fn head_input(&self, key: &K) -> Option<Input> {
+        self.head.head_row(key)
+    }
+}
+
+pub(super) trait HeadRows<K, Input> {
+    fn head_row(&self, key: &K) -> Option<Input>;
+}
+
+impl<K, I, RK, RV, JK, O, LeftKey, RightKeyFn, Project, RI> HeadRows<K, I>
+    for StageRuntimeState<K, I, RK, RV, JK, O, LeftKey, RightKeyFn, Project, RI>
+where
+    K: Hash + Eq + CellValue,
+    I: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    O: CellValue,
+{
+    fn head_row(&self, key: &K) -> Option<I> {
+        self.left_rows.get(key).cloned()
+    }
+}
+
+/// Dual-mode whole-region executor. Tiny events use the original single
+/// runtime without extra hashing. Promotion is one-way; afterwards every map
+/// key owns one persistent shard for the entire heterogeneous stage spine.
+struct RegionRouter<Runtime, K, Input> {
+    sequential: Option<Runtime>,
+    shards: Option<Vec<Runtime>>,
+    key_sequence: FxHashMap<K, u64>,
+    next_sequence: u64,
+    shard_count: usize,
+    promotion_work: usize,
+    _input: PhantomData<fn() -> Input>,
+}
+
+const DEFAULT_PROMOTION_WORK: usize = 8_192;
+
+#[allow(clippy::missing_const_for_fn)]
+fn configured_shards() -> usize {
+    #[cfg(feature = "scheduler")]
+    {
+        return crate::executor::configured_worker_threads().max(1);
+    }
+    #[cfg(not(feature = "scheduler"))]
+    1
+}
+
+const fn configured_promotion_work() -> usize {
+    DEFAULT_PROMOTION_WORK
+}
+
+fn diff_work<K, V>(diff: &MapDiff<K, V>) -> usize {
+    match diff {
+        MapDiff::Initial { entries } => entries.len(),
+        MapDiff::Batch { changes } => changes.iter().map(diff_work).sum(),
+        _ => 1,
+    }
+}
+
+const fn diff_key<K, V>(diff: &MapDiff<K, V>) -> Option<&K> {
+    match diff {
+        MapDiff::Insert { key, .. } | MapDiff::Update { key, .. } | MapDiff::Remove { key, .. } => {
+            Some(key)
+        }
+        MapDiff::Initial { .. } | MapDiff::Batch { .. } => None,
+    }
+}
+
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::items_after_statements
+)]
+impl<Runtime, K, Input> RegionRouter<Runtime, K, Input>
+where
+    K: Hash + Eq + CellValue,
+    Input: CellValue,
+    Runtime: RuntimeStages<K, Input> + EmptyShardRuntime + HeadInputSnapshot<K, Input>,
+{
+    fn new(runtime: Runtime) -> Self {
+        Self {
+            sequential: Some(runtime),
+            shards: None,
+            key_sequence: FxHashMap::default(),
+            next_sequence: 0,
+            shard_count: configured_shards(),
+            promotion_work: configured_promotion_work(),
+            _input: PhantomData,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_config(runtime: Runtime, shard_count: usize, promotion_work: usize) -> Self {
+        Self {
+            sequential: Some(runtime),
+            shards: None,
+            key_sequence: FxHashMap::default(),
+            next_sequence: 0,
+            shard_count: shard_count.max(1),
+            promotion_work: promotion_work.max(1),
+            _input: PhantomData,
+        }
+    }
+
+    fn shard_for(key: &K, count: usize) -> usize {
+        let mut hasher = FxHasher::default();
+        key.hash(&mut hasher);
+        let count = u64::try_from(count.max(1)).unwrap_or(1);
+        let index = hasher.finish().checked_rem(count).unwrap_or(0);
+        usize::try_from(index).unwrap_or(0)
+    }
+
+    fn remember(&mut self, diff: &MapDiff<K, Input>) {
+        match diff {
+            MapDiff::Initial { entries } => {
+                self.key_sequence.clear();
+                self.next_sequence = 0;
+                for (key, _) in entries {
+                    self.key_sequence.insert(key.clone(), self.next_sequence);
+                    self.next_sequence += 1;
+                }
+            }
+            MapDiff::Insert { key, .. } | MapDiff::Update { key, .. } => {
+                if !self.key_sequence.contains_key(key) {
+                    self.key_sequence.insert(key.clone(), self.next_sequence);
+                    self.next_sequence += 1;
+                }
+            }
+            MapDiff::Remove { key, .. } => {
+                self.key_sequence.remove(key);
+            }
+            MapDiff::Batch { changes } => changes.iter().for_each(|change| self.remember(change)),
+        }
+    }
+
+    fn merge_order(&self, diff: &MapDiff<K, Input>) -> FxHashMap<K, u64> {
+        let mut order = FxHashMap::default();
+        let mut next = self.next_sequence;
+        fn visit<K: Hash + Eq + Clone, V>(
+            diff: &MapDiff<K, V>,
+            existing: &FxHashMap<K, u64>,
+            order: &mut FxHashMap<K, u64>,
+            next: &mut u64,
+        ) {
+            match diff {
+                MapDiff::Initial { entries } => {
+                    // Every old row may disappear. Overlapping rows retain
+                    // their old ordinal, matching StageRuntime impacted order.
+                    order.extend(
+                        existing
+                            .iter()
+                            .map(|(key, sequence)| (key.clone(), *sequence)),
+                    );
+                    for (key, _) in entries {
+                        if !order.contains_key(key) {
+                            order.insert(key.clone(), *next);
+                            *next += 1;
+                        }
+                    }
+                }
+                MapDiff::Insert { key, .. }
+                | MapDiff::Update { key, .. }
+                | MapDiff::Remove { key, .. } => {
+                    if !order.contains_key(key) {
+                        let sequence = existing.get(key).copied().unwrap_or_else(|| {
+                            let value = *next;
+                            *next += 1;
+                            value
+                        });
+                        order.insert(key.clone(), sequence);
+                    }
+                }
+                MapDiff::Batch { changes } => changes
+                    .iter()
+                    .for_each(|change| visit(change, existing, order, next)),
+            }
+        }
+        visit(diff, &self.key_sequence, &mut order, &mut next);
+        order
+    }
+
+    fn promote(&mut self) {
+        if self.shards.is_some() {
+            return;
+        }
+        let count = self.shard_count.max(1);
+        let sequential = self
+            .sequential
+            .take()
+            .expect("sequential runtime exists before promotion");
+        let mut shards: Vec<_> = (0..count).map(|_| sequential.empty_shard()).collect();
+        // Replay in stable source order. Outputs are intentionally discarded.
+        let mut keys: Vec<_> = self.key_sequence.iter().collect();
+        keys.sort_by_key(|(_, sequence)| **sequence);
+        for (key, _) in keys {
+            if let Some(value) = sequential.head_input(key) {
+                let shard = Self::shard_for(key, count);
+                let _ = shards[shard].apply_left_diff(&MapDiff::Insert {
+                    key: key.clone(),
+                    value,
+                });
+            }
+        }
+        self.shards = Some(shards);
+    }
+
+    fn order_changes<Output: CellValue>(
+        order: &FxHashMap<K, u64>,
+        changes: &mut [MapDiff<K, Output>],
+    ) {
+        changes.sort_by_key(|change| {
+            diff_key(change)
+                .and_then(|key| order.get(key))
+                .copied()
+                .unwrap_or(u64::MAX)
+        });
+    }
+
+    fn route_diff(
+        diff: &MapDiff<K, Input>,
+        shard_count: usize,
+        routed: &mut [Vec<MapDiff<K, Input>>],
+    ) {
+        match diff {
+            MapDiff::Batch { changes } => {
+                for change in changes {
+                    Self::route_diff(change, shard_count, routed);
+                }
+            }
+            MapDiff::Initial { entries } => {
+                let mut partitioned = vec![Vec::new(); shard_count];
+                for (key, value) in entries {
+                    partitioned[Self::shard_for(key, shard_count)]
+                        .push((key.clone(), value.clone()));
+                }
+                for (id, entries) in partitioned.into_iter().enumerate() {
+                    routed[id].push(MapDiff::Initial { entries });
+                }
+            }
+            other => {
+                let key = diff_key(other).expect("non-container diff has a key");
+                routed[Self::shard_for(key, shard_count)].push(other.clone());
+            }
+        }
+    }
+
+    fn extend_flat<Output: CellValue>(
+        output: &mut Vec<MapDiff<K, Output>>,
+        changes: Vec<MapDiff<K, Output>>,
+    ) {
+        for change in changes {
+            match change {
+                MapDiff::Batch { changes } => Self::extend_flat(output, changes),
+                leaf => output.push(leaf),
+            }
+        }
+    }
+
+    fn apply_left(&mut self, diff: &MapDiff<K, Input>) -> Vec<MapDiff<K, Runtime::Output>> {
+        if self.shards.is_none() && (self.shard_count <= 1 || diff_work(diff) < self.promotion_work)
+        {
+            self.remember(diff);
+            return self
+                .sequential
+                .as_mut()
+                .expect("sequential mode")
+                .apply_left_diff(diff);
+        }
+        if self.shards.is_none() {
+            // A large first Initial has no old rows, so promotion naturally
+            // skips replay; other events replay the head snapshot exactly once.
+            self.promote();
+        }
+        let order = self.merge_order(diff);
+        let preserve_batch = matches!(diff, MapDiff::Batch { .. });
+        let shards = self.shards.as_mut().expect("promoted");
+        let mut routed = vec![Vec::new(); shards.len()];
+        Self::route_diff(diff, shards.len(), &mut routed);
+        let mut output = Vec::new();
+        for (shard, changes) in shards.iter_mut().zip(routed) {
+            if changes.is_empty() {
+                continue;
+            }
+            let produced = if preserve_batch {
+                shard.apply_left_diff(&MapDiff::Batch { changes })
+            } else {
+                // A non-batch source has exactly one routed event per shard
+                // (Initial deliberately includes empty partitions).
+                shard.apply_left_diff(&changes[0])
+            };
+            Self::extend_flat(&mut output, produced);
+        }
+        Self::order_changes(&order, &mut output);
+        self.remember(diff);
+        if preserve_batch {
+            vec![MapDiff::Batch { changes: output }]
+        } else {
+            output
+        }
+    }
+
+    fn apply_right<Location, RK, RV>(
+        &mut self,
+        diff: &MapDiff<RK, RV>,
+        maintain: bool,
+    ) -> Vec<MapDiff<K, Runtime::Output>>
+    where
+        RK: Hash + Eq + CellValue,
+        RV: CellValue,
+        Runtime: RightRoot<Location, K, Input, RK, RV>,
+    {
+        if self.shards.is_none() && self.shard_count > 1 && diff_work(diff) >= self.promotion_work {
+            self.promote();
+        }
+        if let Some(shards) = self.shards.as_mut() {
+            let order = &self.key_sequence;
+            let mut output = Vec::new();
+            for (id, shard) in shards.iter_mut().enumerate() {
+                Self::extend_flat(
+                    &mut output,
+                    shard.apply_right_root_diff_policy(diff, maintain && id == 0),
+                );
+            }
+            Self::order_changes(order, &mut output);
+            if matches!(diff, MapDiff::Batch { .. }) {
+                vec![MapDiff::Batch { changes: output }]
+            } else {
+                output
+            }
+        } else {
+            self.sequential
+                .as_mut()
+                .expect("sequential mode")
+                .apply_right_root_diff_policy(diff, maintain)
         }
     }
 }
@@ -1497,7 +1900,7 @@ where
     fn install<Sink>(
         self,
         cx: &mut CompileContext,
-        state: &Arc<Mutex<Runtime>>,
+        state: &Arc<Mutex<RegionRouter<Runtime, K, Input>>>,
         sink: &Arc<Sink>,
     ) -> Vec<SubscriptionGuard>
     where
@@ -1514,7 +1917,7 @@ where
     fn install<Sink>(
         self,
         _cx: &mut CompileContext,
-        _state: &Arc<Mutex<Runtime>>,
+        _state: &Arc<Mutex<RegionRouter<Runtime, K, Input>>>,
         _sink: &Arc<Sink>,
     ) -> Vec<SubscriptionGuard>
     where
@@ -1538,6 +1941,8 @@ where
     Binding: Clone + Send + Sync + 'static,
     Runtime: RuntimeStages<K, Input, Output = Output>
         + RightRoot<Location, K, Input, RK, RV>
+        + EmptyShardRuntime
+        + HeadInputSnapshot<K, Input>
         + Send
         + 'static,
     Right: MapQuery<Key = RK, Value = RV>,
@@ -1546,7 +1951,7 @@ where
     fn install<Sink>(
         self,
         cx: &mut CompileContext,
-        state: &Arc<Mutex<Runtime>>,
+        state: &Arc<Mutex<RegionRouter<Runtime, K, Input>>>,
         sink: &Arc<Sink>,
     ) -> Vec<SubscriptionGuard>
     where
@@ -1561,7 +1966,7 @@ where
                 let mut runtime = right_state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                runtime.apply_right_root_diff_policy(diff, maintain)
+                runtime.apply_right::<Location, RK, RV>(diff, maintain)
             };
             for change in &changes {
                 right_sink(change);
@@ -1581,7 +1986,10 @@ where
     Left: MapQuery<Key = K, Value = Input> + PlanProperties<OutputPartition = ByMapKey<K>>,
     Stages: StageList<K, Input> + SplitStages<K, Input, Here> + Send + Sync + 'static,
     Stages::Output: CellValue,
-    Stages::Runtime: RuntimeStages<K, Input, Output = Stages::Output> + Send,
+    Stages::Runtime: RuntimeStages<K, Input, Output = Stages::Output>
+        + EmptyShardRuntime
+        + HeadInputSnapshot<K, Input>
+        + Send,
     Stages::Rights: InstallRights<Stages::Runtime, K, Input, Stages::Output>,
 {
     fn build_into<Sink>(self, cx: &mut CompileContext, sink: Sink) -> Vec<SubscriptionGuard>
@@ -1589,7 +1997,7 @@ where
         Sink: MapDiffSink<K, Stages::Output>,
     {
         let (runtime, rights) = self.stages.split(cx);
-        let state = Arc::new(Mutex::new(runtime));
+        let state = Arc::new(Mutex::new(RegionRouter::new(runtime)));
         let sink = Arc::new(sink);
 
         // Register every right root before the left root. CompileContext then
@@ -1606,7 +2014,7 @@ where
                     let mut runtime = left_state
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    runtime.apply_left_diff(diff)
+                    runtime.apply_left(diff)
                 };
                 for change in &changes {
                     left_sink(change);
@@ -1625,7 +2033,10 @@ where
     Left: MapQuery<Key = K, Value = Input> + PlanProperties<OutputPartition = ByMapKey<K>>,
     Stages: StageList<K, Input> + SplitStages<K, Input, Here> + Send + Sync + 'static,
     Stages::Output: CellValue,
-    Stages::Runtime: RuntimeStages<K, Input, Output = Stages::Output> + Send,
+    Stages::Runtime: RuntimeStages<K, Input, Output = Stages::Output>
+        + EmptyShardRuntime
+        + HeadInputSnapshot<K, Input>
+        + Send,
     Stages::Rights: InstallRights<Stages::Runtime, K, Input, Stages::Output>,
 {
     type Key = K;
@@ -2470,5 +2881,127 @@ mod tests {
             JoinRegion::new(left, JNil.push(first).push(second)).build_into(&mut cx, |_| {});
         assert_eq!(cx.physical_relationship_count(), 0);
         drop(guards);
+    }
+
+    #[test]
+    fn region_router_promotes_three_stage_spine_deterministically_for_three_and_eight_shards() {
+        let make_runtime = || {
+            let first = StageRuntimeState::with_index(
+                |_: &u32, value: &i32| *value % 3,
+                crate::traits::RequiredRightKey(|_: &u8, value: &i32| *value % 3),
+                DirectProject(|_: &u32, left: &i32, rights: &[(u8, i32)]| {
+                    *left + rights.iter().map(|(_, value)| *value).sum::<i32>()
+                }),
+                DeferredPhysical::default(),
+            );
+            let second = StageRuntimeState::with_index(
+                |_: &u32, value: &i32| *value % 5,
+                crate::traits::RequiredRightKey(|_: &u16, value: &i32| *value % 5),
+                DirectProject(|_: &u32, left: &i32, rights: &[(u16, i32)]| {
+                    *left + rights.iter().map(|(_, value)| *value).sum::<i32>()
+                }),
+                DeferredPhysical::default(),
+            );
+            let third = StageRuntimeState::with_index(
+                |_: &u32, value: &i32| *value % 7,
+                crate::traits::RequiredRightKey(|_: &u32, value: &i32| *value % 7),
+                DirectProject(|_: &u32, left: &i32, rights: &[(u32, i32)]| {
+                    *left + rights.iter().map(|(_, value)| *value).sum::<i32>()
+                }),
+                DeferredPhysical::default(),
+            );
+            JCons {
+                head: first,
+                tail: JCons {
+                    head: second,
+                    tail: JCons {
+                        head: third,
+                        tail: JNil,
+                    },
+                },
+            }
+        };
+
+        for shard_count in [3, 8] {
+            let initial = MapDiff::Initial {
+                entries: vec![(9, 9), (2, 2), (7, 7), (1, 1)],
+            };
+            let mut sequential = make_runtime();
+            let expected = sequential.apply_left_diff(&initial);
+            let mut router = RegionRouter::with_config(make_runtime(), shard_count, 1);
+            assert_eq!(router.apply_left(&initial), expected);
+
+            let right = MapDiff::Insert {
+                key: 40_u16,
+                value: 5_i32,
+            };
+            let expected = <_ as RightRoot<There<Here>, u32, i32, u16, i32>>::apply_right_root_diff(
+                &mut sequential,
+                &right,
+            );
+            assert_eq!(
+                router.apply_right::<There<Here>, _, _>(&right, true),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn region_router_promotes_from_live_batch_without_intermediate_outputs() {
+        let make_runtime = || JCons {
+            head: StageRuntimeState::with_index(
+                |_: &u32, value: &i32| *value % 2,
+                crate::traits::RequiredRightKey(|_: &u8, value: &i32| *value % 2),
+                DirectProject(|_: &u32, left: &i32, _: &[(u8, i32)]| *left),
+                DeferredPhysical::default(),
+            ),
+            tail: JCons {
+                head: StageRuntimeState::with_index(
+                    |_: &u32, value: &i32| *value % 3,
+                    crate::traits::RequiredRightKey(|_: &u16, value: &i32| *value % 3),
+                    DirectProject(|_: &u32, left: &i32, _: &[(u16, i32)]| *left),
+                    DeferredPhysical::default(),
+                ),
+                tail: JCons {
+                    head: StageRuntimeState::with_index(
+                        |_: &u32, value: &i32| *value % 5,
+                        crate::traits::RequiredRightKey(|_: &u32, value: &i32| *value % 5),
+                        DirectProject(|_: &u32, left: &i32, _: &[(u32, i32)]| *left),
+                        DeferredPhysical::default(),
+                    ),
+                    tail: JNil,
+                },
+            },
+        };
+        let first = MapDiff::Insert { key: 10, value: 10 };
+        let batch = MapDiff::Batch {
+            changes: vec![
+                MapDiff::Update {
+                    key: 10,
+                    old_value: 10,
+                    new_value: 11,
+                },
+                MapDiff::Insert { key: 3, value: 3 },
+                MapDiff::Update {
+                    key: 3,
+                    old_value: 3,
+                    new_value: 4,
+                },
+                MapDiff::Batch {
+                    changes: vec![MapDiff::Insert { key: 8, value: 8 }],
+                },
+            ],
+        };
+        let mut sequential = make_runtime();
+        let mut router = RegionRouter::with_config(make_runtime(), 3, 2);
+        assert_eq!(
+            router.apply_left(&first),
+            sequential.apply_left_diff(&first)
+        );
+        assert_eq!(
+            router.apply_left(&batch),
+            sequential.apply_left_diff(&batch)
+        );
+        assert!(router.shards.is_some());
     }
 }

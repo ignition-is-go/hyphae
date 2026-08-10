@@ -48,3 +48,14 @@ static WORKER_POOL: LazyLock<Option<rayon::ThreadPool>> = LazyLock::new(|| {
 pub fn worker_pool() -> Option<&'static rayon::ThreadPool> {
     WORKER_POOL.as_ref()
 }
+
+/// Return the configured worker count without constructing the lazy pool.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn configured_worker_threads() -> usize {
+    *WORKER_THREADS
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) const fn configured_worker_threads() -> usize {
+    1
+}
