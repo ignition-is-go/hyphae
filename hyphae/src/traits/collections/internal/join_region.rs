@@ -1027,6 +1027,27 @@ where
     }
 }
 
+fn batch_has_unique_atomic_keys<K, V>(changes: &[MapDiff<K, V>]) -> bool
+where
+    K: Hash + Eq + Clone,
+{
+    fn visit<K: Hash + Eq + Clone, V>(
+        diff: &MapDiff<K, V>,
+        seen: &mut rustc_hash::FxHashSet<K>,
+    ) -> bool {
+        match diff {
+            MapDiff::Insert { key, .. }
+            | MapDiff::Update { key, .. }
+            | MapDiff::Remove { key, .. } => seen.insert(key.clone()),
+            MapDiff::Batch { changes } => changes.iter().all(|change| visit(change, seen)),
+            MapDiff::Initial { .. } => false,
+        }
+    }
+
+    let mut seen = rustc_hash::FxHashSet::default();
+    changes.iter().all(|change| visit(change, &mut seen))
+}
+
 /// The statically dispatched execution contract for one join stage.
 ///
 /// All row types are associated types so a heterogeneous stage list can thread
@@ -1070,10 +1091,18 @@ where
     type RightKey = RK;
     type RightValue = RV;
 
+    #[allow(clippy::use_self)] // Explicitly select the inherent per-member kernel.
     fn apply_left_diff(&mut self, diff: &MapDiff<K, I>) -> Vec<MapDiff<K, O>> {
-        match diff {
-            MapDiff::Batch { changes } => self.apply_left_batch(changes),
-            _ => self.apply_left_diff(diff),
+        // The bulk kernel is semantics-preserving only when every flattened
+        // member is atomic and owns a distinct key. Repeated keys and Initial
+        // are observable state transitions and must be recomputed member by
+        // member (Insert -> Update -> Remove is three logical events).
+        if let MapDiff::Batch { changes } = diff
+            && batch_has_unique_atomic_keys(changes)
+        {
+            self.apply_left_batch(changes)
+        } else {
+            StageRuntimeState::apply_left_diff(self, diff)
         }
     }
 
@@ -1127,6 +1156,25 @@ where
             output
         }
     }
+}
+
+/// Statically estimated cost of executing one input member through a typed
+/// stage spine. The constants keep the routing decision monomorphized.
+pub(super) trait RuntimeStageCost {
+    const COST_UNITS: usize;
+}
+
+impl RuntimeStageCost for JNil {
+    const COST_UNITS: usize = 1;
+}
+
+impl<Head, Tail> RuntimeStageCost for JCons<Head, Tail>
+where
+    Tail: RuntimeStageCost,
+{
+    // Frozen four-join measurements: routing/cloning is about six units and a
+    // stage index lookup/projection/cache commit is about 24 units.
+    const COST_UNITS: usize = 24_usize.saturating_add(Tail::COST_UNITS);
 }
 
 /// Construct an empty runtime with the same immutable stage configuration and
@@ -1220,11 +1268,18 @@ struct RegionRouter<Runtime, K, Input> {
     next_sequence: u64,
     shard_count: usize,
     promotion_work: usize,
+    parallel_active: bool,
     test_config: bool,
+    #[cfg(test)]
+    last_left_workers: Vec<String>,
     _input: PhantomData<fn() -> Input>,
 }
 
 const DEFAULT_PROMOTION_WORK: usize = 8_192;
+// Criterion interval runs on frozen 10k/four-stage batches put crossover near
+// 120k cost units. The wide band prevents alternating batch sizes oscillating.
+const PARALLEL_REGION_WORK_ENTER: usize = 160_000;
+const PARALLEL_REGION_WORK_EXIT: usize = 96_000;
 
 #[allow(clippy::missing_const_for_fn)]
 fn configured_shards() -> usize {
@@ -1260,13 +1315,18 @@ const fn diff_key<K, V>(diff: &MapDiff<K, V>) -> Option<&K> {
     clippy::arithmetic_side_effects,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::items_after_statements
+    clippy::items_after_statements,
+    clippy::too_many_lines
 )]
 impl<Runtime, K, Input> RegionRouter<Runtime, K, Input>
 where
     K: Hash + Eq + CellValue,
     Input: CellValue,
-    Runtime: RuntimeStages<K, Input> + EmptyShardRuntime + HeadInputSnapshot<K, Input>,
+    Runtime: RuntimeStages<K, Input>
+        + EmptyShardRuntime
+        + HeadInputSnapshot<K, Input>
+        + RuntimeStageCost
+        + Send,
 {
     fn new(runtime: Runtime) -> Self {
         Self {
@@ -1276,7 +1336,10 @@ where
             next_sequence: 0,
             shard_count: configured_shards(),
             promotion_work: configured_promotion_work(),
+            parallel_active: false,
             test_config: false,
+            #[cfg(test)]
+            last_left_workers: Vec::new(),
             _input: PhantomData,
         }
     }
@@ -1290,7 +1353,10 @@ where
             next_sequence: 0,
             shard_count: shard_count.max(1),
             promotion_work: promotion_work.max(1),
+            parallel_active: false,
             test_config: true,
+            #[cfg(test)]
+            last_left_workers: Vec::new(),
             _input: PhantomData,
         }
     }
@@ -1415,27 +1481,32 @@ where
     fn route_diff(
         diff: &MapDiff<K, Input>,
         shard_count: usize,
-        routed: &mut [Vec<MapDiff<K, Input>>],
+        next_ordinal: &mut u64,
+        routed: &mut [Vec<(u64, MapDiff<K, Input>)>],
     ) {
         match diff {
             MapDiff::Batch { changes } => {
                 for change in changes {
-                    Self::route_diff(change, shard_count, routed);
+                    Self::route_diff(change, shard_count, next_ordinal, routed);
                 }
             }
             MapDiff::Initial { entries } => {
+                let ordinal = *next_ordinal;
+                *next_ordinal = next_ordinal.saturating_add(1);
                 let mut partitioned = vec![Vec::new(); shard_count];
                 for (key, value) in entries {
                     partitioned[Self::shard_for(key, shard_count)]
                         .push((key.clone(), value.clone()));
                 }
                 for (id, entries) in partitioned.into_iter().enumerate() {
-                    routed[id].push(MapDiff::Initial { entries });
+                    routed[id].push((ordinal, MapDiff::Initial { entries }));
                 }
             }
             other => {
+                let ordinal = *next_ordinal;
+                *next_ordinal = next_ordinal.saturating_add(1);
                 let key = diff_key(other).expect("non-container diff has a key");
-                routed[Self::shard_for(key, shard_count)].push(other.clone());
+                routed[Self::shard_for(key, shard_count)].push((ordinal, other.clone()));
             }
         }
     }
@@ -1454,14 +1525,28 @@ where
 
     fn apply_left(&mut self, diff: &MapDiff<K, Input>) -> Vec<MapDiff<K, Runtime::Output>> {
         if self.shards.is_none() && self.shard_count <= 1 && !self.test_config {
+            if matches!(diff, MapDiff::Initial { .. }) {
+                let order = self.merge_order(diff);
+                let mut output = self
+                    .sequential
+                    .as_mut()
+                    .expect("sequential mode")
+                    .apply_left_diff(diff);
+                Self::order_changes(&order, &mut output);
+                self.remember(diff);
+                return output;
+            }
+            self.remember(diff);
             return self
                 .sequential
                 .as_mut()
                 .expect("sequential mode")
                 .apply_left_diff(diff);
         }
-        if self.shards.is_none() && (self.shard_count <= 1 || diff_work(diff) < self.promotion_work)
-        {
+        let estimated_work = diff_work(diff).saturating_mul(Runtime::COST_UNITS);
+        let promotion_warranted =
+            diff_work(diff) >= self.promotion_work || estimated_work >= PARALLEL_REGION_WORK_ENTER;
+        if self.shards.is_none() && (self.shard_count <= 1 || !promotion_warranted) {
             if matches!(diff, MapDiff::Initial { .. }) {
                 let order = self.merge_order(diff);
                 let mut output = self
@@ -1481,30 +1566,138 @@ where
                 .apply_left_diff(diff);
         }
         if self.shards.is_none() {
-            // A large first Initial has no old rows, so promotion naturally
-            // skips replay; other events replay the head snapshot exactly once.
             self.promote();
         }
+
         let order = self.merge_order(diff);
         let preserve_batch = matches!(diff, MapDiff::Batch { .. });
+        let unique_batch = match diff {
+            MapDiff::Batch { changes } => batch_has_unique_atomic_keys(changes),
+            _ => false,
+        };
         let shards = self.shards.as_mut().expect("promoted");
         let mut routed = vec![Vec::new(); shards.len()];
-        Self::route_diff(diff, shards.len(), &mut routed);
-        let mut output = Vec::new();
-        for (shard, changes) in shards.iter_mut().zip(routed) {
-            if changes.is_empty() {
-                continue;
-            }
-            let produced = if preserve_batch {
-                shard.apply_left_diff(&MapDiff::Batch { changes })
+        let mut next_ordinal = 0;
+        Self::route_diff(diff, shards.len(), &mut next_ordinal, &mut routed);
+
+        let hysteresis_wants_parallel = if self.parallel_active {
+            estimated_work >= PARALLEL_REGION_WORK_EXIT
+        } else {
+            estimated_work >= PARALLEL_REGION_WORK_ENTER
+        };
+        let shard_work: Vec<_> = routed
+            .iter()
+            .map(|changes| {
+                changes.iter().fold(0_usize, |work, (_, change)| {
+                    work.saturating_add(diff_work(change))
+                })
+            })
+            .collect();
+        let active_shards = shard_work.iter().filter(|work| **work != 0).count();
+        let max_shard_work = shard_work.iter().copied().max().unwrap_or(0);
+        let balanced = active_shards > 1
+            && max_shard_work.saturating_mul(4) <= diff_work(diff).saturating_mul(3);
+        #[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
+        let resources_available =
+            hysteresis_wants_parallel && balanced && crate::executor::worker_pool().is_some();
+        #[cfg(not(all(feature = "scheduler", not(target_arch = "wasm32"))))]
+        let resources_available = false;
+        self.parallel_active = hysteresis_wants_parallel && balanced && resources_available;
+        let run_parallel = self.parallel_active;
+
+        let process = |(shard_id, (shard, changes)): (
+            usize,
+            (&mut Runtime, Vec<(u64, MapDiff<K, Input>)>),
+        )| {
+            let mut tagged = Vec::new();
+            if unique_batch && !changes.is_empty() {
+                let batch = MapDiff::Batch {
+                    changes: changes.into_iter().map(|(_, change)| change).collect(),
+                };
+                let mut flat = Vec::new();
+                Self::extend_flat(&mut flat, shard.apply_left_diff(&batch));
+                for (local, change) in flat.into_iter().enumerate() {
+                    let ordinal = diff_key(&change)
+                        .and_then(|key| order.get(key))
+                        .copied()
+                        .unwrap_or(u64::MAX);
+                    tagged.push((ordinal, local, shard_id, change));
+                }
             } else {
-                // A non-batch source has exactly one routed event per shard
-                // (Initial deliberately includes empty partitions).
-                shard.apply_left_diff(&changes[0])
+                for (ordinal, change) in changes {
+                    let mut flat = Vec::new();
+                    Self::extend_flat(&mut flat, shard.apply_left_diff(&change));
+                    for (local, output) in flat.into_iter().enumerate() {
+                        tagged.push((ordinal, local, shard_id, output));
+                    }
+                }
+            }
+            let worker = if cfg!(test) {
+                std::thread::current().name().map(str::to_owned)
+            } else {
+                None
             };
-            Self::extend_flat(&mut output, produced);
+            (tagged, worker)
+        };
+
+        #[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
+        let per_shard = if run_parallel {
+            if let Some(pool) = crate::executor::worker_pool() {
+                use rayon::prelude::*;
+                pool.install(|| {
+                    shards
+                        .par_iter_mut()
+                        .zip(routed.into_par_iter())
+                        .enumerate()
+                        .map(process)
+                        .collect::<Vec<_>>()
+                })
+            } else {
+                shards
+                    .iter_mut()
+                    .zip(routed)
+                    .enumerate()
+                    .map(process)
+                    .collect()
+            }
+        } else {
+            shards
+                .iter_mut()
+                .zip(routed)
+                .enumerate()
+                .map(process)
+                .collect()
+        };
+        #[cfg(not(all(feature = "scheduler", not(target_arch = "wasm32"))))]
+        let per_shard: Vec<_> = {
+            let _ = run_parallel;
+            shards
+                .iter_mut()
+                .zip(routed)
+                .enumerate()
+                .map(process)
+                .collect()
+        };
+
+        #[cfg(test)]
+        {
+            self.last_left_workers = per_shard
+                .iter()
+                .filter_map(|(_, worker)| worker.clone())
+                .collect();
         }
-        Self::order_changes(&order, &mut output);
+        let mut tagged: Vec<_> = per_shard
+            .into_iter()
+            .flat_map(|(changes, _)| changes)
+            .collect();
+        tagged.sort_by_key(|(ordinal, local, shard, change)| {
+            let key_order = diff_key(change)
+                .and_then(|key| order.get(key))
+                .copied()
+                .unwrap_or(u64::MAX);
+            (*ordinal, key_order, *local, *shard)
+        });
+        let output = tagged.into_iter().map(|(_, _, _, change)| change).collect();
         self.remember(diff);
         if preserve_batch {
             vec![MapDiff::Batch { changes: output }]
@@ -2017,6 +2210,7 @@ where
         + RightRoot<Location, K, Input, RK, RV>
         + EmptyShardRuntime
         + HeadInputSnapshot<K, Input>
+        + RuntimeStageCost
         + Send
         + 'static,
     Right: MapQuery<Key = RK, Value = RV>,
@@ -2063,6 +2257,7 @@ where
     Stages::Runtime: RuntimeStages<K, Input, Output = Stages::Output>
         + EmptyShardRuntime
         + HeadInputSnapshot<K, Input>
+        + RuntimeStageCost
         + Send,
     Stages::Rights: InstallRights<Stages::Runtime, K, Input, Stages::Output>,
 {
@@ -2110,6 +2305,7 @@ where
     Stages::Runtime: RuntimeStages<K, Input, Output = Stages::Output>
         + EmptyShardRuntime
         + HeadInputSnapshot<K, Input>
+        + RuntimeStageCost
         + Send,
     Stages::Rights: InstallRights<Stages::Runtime, K, Input, Stages::Output>,
 {
@@ -2120,7 +2316,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map_query::properties::ExactlyOne;
+    use crate::{
+        map_query::properties::ExactlyOne, pipeline::Materialize as _,
+        traits::watchable::Gettable as _,
+    };
 
     #[derive(Clone)]
     struct Source;
@@ -3083,6 +3282,11 @@ mod tests {
                 },
                 MapDiff::Insert { key: 3, value: 3 },
                 MapDiff::Update {
+                    key: 10,
+                    old_value: 11,
+                    new_value: 12,
+                },
+                MapDiff::Update {
                     key: 3,
                     old_value: 3,
                     new_value: 4,
@@ -3092,18 +3296,23 @@ mod tests {
                 },
             ],
         };
-        let mut sequential = RegionRouter::with_config(make_runtime(), 1, 1);
-        let mut router = RegionRouter::with_config(make_runtime(), 3, 2);
-        assert_eq!(router.apply_left(&first), sequential.apply_left(&first));
-        assert_eq!(router.apply_left(&batch), sequential.apply_left(&batch));
-        let replacement = MapDiff::Initial {
-            entries: vec![(8, 80), (10, 110), (99, 99)],
-        };
-        assert_eq!(
-            router.apply_left(&replacement),
-            sequential.apply_left(&replacement)
-        );
-        assert!(router.shards.is_some());
+        for shard_count in [3, 8] {
+            let mut sequential = RegionRouter::with_config(make_runtime(), 1, 1);
+            let mut router = RegionRouter::with_config(make_runtime(), shard_count, 2);
+            assert_eq!(router.apply_left(&first), sequential.apply_left(&first));
+            let expected = sequential.apply_left(&batch);
+            let actual = router.apply_left(&batch);
+            assert_eq!(actual, expected);
+            assert!(matches!(actual.as_slice(), [MapDiff::Batch { .. }]));
+            let replacement = MapDiff::Initial {
+                entries: vec![(8, 80), (10, 110), (99, 99)],
+            };
+            assert_eq!(
+                router.apply_left(&replacement),
+                sequential.apply_left(&replacement)
+            );
+            assert!(router.shards.is_some());
+        }
     }
 
     #[test]
@@ -3235,6 +3444,274 @@ mod tests {
         assert!(
             !changes.is_empty(),
             "old-only join bucket must be invalidated"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::as_conversions)]
+    fn materialized_region_preserves_repeated_and_interleaved_batch_members() {
+        let left = crate::CellMap::<u32, i32>::new();
+        let right = crate::CellMap::<u8, i32>::new();
+        let stage = JoinStage::new(
+            right,
+            (|_: &u32, value: &i32| *value) as fn(&u32, &i32) -> i32,
+            crate::traits::RequiredRightKey((|_: &u8, value: &i32| *value) as fn(&u8, &i32) -> i32),
+            DirectProject(
+                (|_: &u32, left: &i32, _: &[(u8, i32)]| *left)
+                    as fn(&u32, &i32, &[(u8, i32)]) -> i32,
+            ),
+        );
+        let output = JoinRegion::new(left.clone(), JNil.push(stage)).materialize();
+        let emitted = output.diffs().materialize();
+
+        left.apply_batch(
+            (0..7_000)
+                .map(|key| MapDiff::Insert {
+                    key,
+                    value: i32::try_from(key).unwrap_or(i32::MAX),
+                })
+                .collect(),
+        );
+        left.apply_batch(vec![
+            MapDiff::Insert {
+                key: 10_000,
+                value: 1,
+            },
+            MapDiff::Insert {
+                key: 20_000,
+                value: 7,
+            },
+            MapDiff::Update {
+                key: 10_000,
+                old_value: 1,
+                new_value: 2,
+            },
+            MapDiff::Remove {
+                key: 10_000,
+                old_value: 2,
+            },
+        ]);
+
+        assert_eq!(
+            emitted.get(),
+            MapDiff::Batch {
+                changes: vec![
+                    MapDiff::Insert {
+                        key: 10_000,
+                        value: 1
+                    },
+                    MapDiff::Insert {
+                        key: 20_000,
+                        value: 7
+                    },
+                    MapDiff::Update {
+                        key: 10_000,
+                        old_value: 1,
+                        new_value: 2,
+                    },
+                    MapDiff::Remove {
+                        key: 10_000,
+                        old_value: 2,
+                    },
+                ],
+            }
+        );
+        assert_eq!(output.get_value(&10_000), None);
+        assert_eq!(output.get_value(&20_000), Some(7));
+    }
+
+    #[allow(clippy::as_conversions)]
+    fn identity_runtime() -> JCons<
+        StageRuntimeState<
+            u32,
+            i32,
+            u8,
+            i32,
+            i32,
+            i32,
+            fn(&u32, &i32) -> i32,
+            crate::traits::RequiredRightKey<fn(&u8, &i32) -> i32>,
+            DirectProject<fn(&u32, &i32, &[(u8, i32)]) -> i32>,
+        >,
+        JNil,
+    > {
+        JCons {
+            head: StageRuntimeState::new(
+                (|_: &u32, value: &i32| *value) as fn(&u32, &i32) -> i32,
+                crate::traits::RequiredRightKey(
+                    (|_: &u8, value: &i32| *value) as fn(&u8, &i32) -> i32,
+                ),
+                DirectProject(
+                    (|_: &u32, left: &i32, _: &[(u8, i32)]| *left)
+                        as fn(&u32, &i32, &[(u8, i32)]) -> i32,
+                ),
+            ),
+            tail: JNil,
+        }
+    }
+
+    fn insert_batch(count: u32) -> MapDiff<u32, i32> {
+        MapDiff::Batch {
+            changes: (0..count)
+                .map(|key| MapDiff::Insert {
+                    key,
+                    value: i32::try_from(key).unwrap_or(i32::MAX),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn production_sequential_and_promoted_initial_replacement_match_exactly() {
+        let mut sequential = RegionRouter::new(identity_runtime());
+        sequential.shard_count = 1;
+        let mut promoted = RegionRouter::new(identity_runtime());
+        promoted.shard_count = 3;
+        promoted.promotion_work = 1;
+
+        let old = MapDiff::Initial {
+            entries: vec![(40, 40), (10, 10), (30, 30), (20, 20)],
+        };
+        assert_eq!(sequential.apply_left(&old), promoted.apply_left(&old));
+        let replacement = MapDiff::Initial {
+            // 40 and 20 are old-only, 10 overlaps, 50 and 5 are new.
+            entries: vec![(10, 100), (50, 50), (5, 5)],
+        };
+        assert_eq!(
+            sequential.apply_left(&replacement),
+            promoted.apply_left(&replacement)
+        );
+    }
+
+    #[test]
+    fn region_parallel_policy_has_measured_hysteresis() {
+        let mut router = RegionRouter::with_config(identity_runtime(), 4, 8_192);
+        let _ = router.apply_left(&insert_batch(7_000));
+        assert!(
+            router.parallel_active,
+            "large typed work enters parallel mode"
+        );
+        let _ = router.apply_left(&MapDiff::Batch {
+            changes: (0..5_000)
+                .map(|key| MapDiff::Update {
+                    key,
+                    old_value: i32::try_from(key).unwrap_or(i32::MAX),
+                    new_value: i32::try_from(key).unwrap_or(i32::MAX).saturating_add(1),
+                })
+                .collect(),
+        });
+        assert!(router.parallel_active, "work inside the band stays active");
+        let _ = router.apply_left(&MapDiff::Batch {
+            changes: (0_i32..7_000)
+                .map(|step| MapDiff::Update {
+                    key: 0,
+                    old_value: step,
+                    new_value: step.saturating_add(1),
+                })
+                .collect(),
+        });
+        assert!(!router.parallel_active, "skew disables active mode");
+        let _ = router.apply_left(&MapDiff::Batch {
+            changes: (0..7_000)
+                .map(|key| MapDiff::Update {
+                    key,
+                    old_value: i32::try_from(key).unwrap_or(i32::MAX),
+                    new_value: i32::try_from(key).unwrap_or(i32::MAX).saturating_add(2),
+                })
+                .collect(),
+        });
+        assert!(router.parallel_active, "balanced work re-enters");
+        let _ = router.apply_left(&MapDiff::Batch {
+            changes: (0..3_000)
+                .map(|key| MapDiff::Update {
+                    key,
+                    old_value: i32::try_from(key).unwrap_or(i32::MAX).saturating_add(1),
+                    new_value: i32::try_from(key).unwrap_or(i32::MAX).saturating_add(2),
+                })
+                .collect(),
+        });
+        assert!(
+            !router.parallel_active,
+            "work below exit leaves parallel mode"
+        );
+    }
+
+    #[test]
+    fn typed_stage_cost_promotes_deeper_plan_at_equal_row_count() {
+        let stage = || identity_runtime().head;
+        let three = JCons {
+            head: stage(),
+            tail: JCons {
+                head: stage(),
+                tail: JCons {
+                    head: stage(),
+                    tail: JNil,
+                },
+            },
+        };
+        let eight = JCons {
+            head: stage(),
+            tail: JCons {
+                head: stage(),
+                tail: JCons {
+                    head: stage(),
+                    tail: JCons {
+                        head: stage(),
+                        tail: JCons {
+                            head: stage(),
+                            tail: JCons {
+                                head: stage(),
+                                tail: JCons {
+                                    head: stage(),
+                                    tail: JCons {
+                                        head: stage(),
+                                        tail: JNil,
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        };
+        let rows = insert_batch(2_000);
+        let mut shallow = RegionRouter::with_config(three, 4, 8_192);
+        let mut deep = RegionRouter::with_config(eight, 4, 8_192);
+        let _ = shallow.apply_left(&rows);
+        let _ = deep.apply_left(&rows);
+        assert!(shallow.shards.is_none());
+        assert!(deep.shards.is_some());
+    }
+
+    #[test]
+    #[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
+    fn balanced_large_left_batch_uses_dedicated_workers_but_tiny_stays_caller_thread() {
+        if crate::executor::configured_worker_threads() <= 1 {
+            return;
+        }
+        let mut router = RegionRouter::with_config(identity_runtime(), 4, 1);
+        let _ = router.apply_left(&insert_batch(7_000));
+        let workers: rustc_hash::FxHashSet<_> = router
+            .last_left_workers
+            .iter()
+            .filter(|name| name.starts_with("hyphae-worker-"))
+            .collect();
+        assert!(
+            workers.len() > 1,
+            "balanced work must span dedicated workers"
+        );
+
+        let _ = router.apply_left(&MapDiff::Update {
+            key: 0,
+            old_value: 0,
+            new_value: 1,
+        });
+        assert!(
+            router
+                .last_left_workers
+                .iter()
+                .all(|name| !name.starts_with("hyphae-worker-")),
+            "tiny work must stay on the caller"
         );
     }
 }
