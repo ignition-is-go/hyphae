@@ -83,6 +83,10 @@ name = "cell_map_chains"
 harness = false
 
 [[bench]]
+name = "compiled_map_queries"
+harness = false
+
+[[bench]]
 name = "view_chains"
 harness = false
 
