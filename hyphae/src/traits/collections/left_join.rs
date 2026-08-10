@@ -1034,6 +1034,123 @@ mod tests {
     }
 
     #[test]
+    fn coordinated_two_join_region_repartitions_updates_between_joins() {
+        let left = CellMap::<u64, (u64, i32)>::new();
+        let right1 = CellMap::<u64, (u64, u64, i32)>::new();
+        let right2 = CellMap::<u64, (u64, i32)>::new();
+        let output = left
+            .clone()
+            .left_join_by(right1.clone(), |_, row| row.0, |_, row| row.0)
+            .map_joined_values(|_, left, matches| {
+                let next_relation = matches.first().map_or(0, |(_, row)| row.1);
+                let subtotal = left.1 + matches.iter().map(|(_, row)| row.2).sum::<i32>();
+                (next_relation, subtotal)
+            })
+            .left_join_by(right2.clone(), |_, row| row.0, |_, row| row.0)
+            .map_joined_values(|_, middle, matches| {
+                middle.1 + matches.iter().map(|(_, row)| row.1).sum::<i32>()
+            })
+            .materialize();
+
+        right2.insert_many(vec![(21, (20, 5)), (31, (30, 7))]);
+        right1.insert(11, (10, 20, 3));
+        left.insert(1, (10, 100));
+        assert_eq!(output.get_value(&1), Some(108));
+
+        // Updating the first relation changes the intermediate join key. The
+        // row must leave its old second-stage shard and enter the new one.
+        right1.insert(11, (10, 30, 4));
+        assert_eq!(output.get_value(&1), Some(111));
+
+        // Moving both sides of the first join exercises route removal and
+        // reinsertion while preserving the final map key.
+        right1.insert(11, (40, 20, 9));
+        assert_eq!(output.get_value(&1), Some(100));
+        left.insert(1, (40, 100));
+        assert_eq!(output.get_value(&1), Some(114));
+    }
+
+    #[test]
+    fn coordinated_two_join_matches_reference_across_mixed_root_updates() {
+        use std::collections::HashMap;
+
+        let left = CellMap::<u64, (u64, i64)>::new();
+        let right1 = CellMap::<u64, (u64, i64)>::new();
+        let right2 = CellMap::<u64, (u64, i64)>::new();
+        let output = left
+            .clone()
+            .left_join_by(right1.clone(), |_, row| row.0, |_, row| row.0)
+            .map_joined_values(|_, left, matches| {
+                let subtotal = left.1 + matches.iter().map(|(_, row)| row.1).sum::<i64>();
+                (u64::try_from(subtotal.rem_euclid(8)).unwrap_or(0), subtotal)
+            })
+            .left_join_by(right2.clone(), |_, row| row.0, |_, row| row.0)
+            .map_joined_values(|_, middle, matches| {
+                middle.1 + matches.iter().map(|(_, row)| row.1).sum::<i64>()
+            })
+            .materialize();
+
+        let mut left_reference = HashMap::new();
+        let mut right1_reference = HashMap::new();
+        let mut right2_reference = HashMap::new();
+        let mut random = 0x9e37_79b9_7f4a_7c15_u64;
+
+        for _ in 0..512 {
+            random = random
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let key = (random >> 16) % 16;
+            let relation = (random >> 32) % 8;
+            let value = i64::try_from((random >> 48) % 31).unwrap_or(0) - 15;
+            match random % 6 {
+                0 => {
+                    left.insert(key, (relation, value));
+                    left_reference.insert(key, (relation, value));
+                }
+                1 => {
+                    right1.insert(key, (relation, value));
+                    right1_reference.insert(key, (relation, value));
+                }
+                2 => {
+                    right2.insert(key, (relation, value));
+                    right2_reference.insert(key, (relation, value));
+                }
+                3 => {
+                    left.remove(&key);
+                    left_reference.remove(&key);
+                }
+                4 => {
+                    right1.remove(&key);
+                    right1_reference.remove(&key);
+                }
+                _ => {
+                    right2.remove(&key);
+                    right2_reference.remove(&key);
+                }
+            }
+
+            for candidate in 0..16 {
+                let expected = left_reference.get(&candidate).map(|left_row| {
+                    let subtotal = left_row.1
+                        + right1_reference
+                            .values()
+                            .filter(|row| row.0 == left_row.0)
+                            .map(|row| row.1)
+                            .sum::<i64>();
+                    let second_relation = u64::try_from(subtotal.rem_euclid(8)).unwrap_or(0);
+                    subtotal
+                        + right2_reference
+                            .values()
+                            .filter(|row| row.0 == second_relation)
+                            .map(|row| row.1)
+                            .sum::<i64>()
+                });
+                assert_eq!(output.get_value(&candidate), expected);
+            }
+        }
+    }
+
+    #[test]
     fn joined_projection_preserves_right_insertion_order() {
         let left = CellMap::<u64, u64>::new();
         let right = CellMap::<u64, u64>::new();
