@@ -1261,6 +1261,7 @@ where
     FO: Fn(&LK, &LV, &[(RK, RV)]) -> Option<OV> + Send + Sync + 'static,
     Sink: crate::map_query::MapDiffSink<LK, OV>,
 {
+    let relation = cx.take_relation_hint();
     let state = Arc::new(Mutex::new(
         JoinState::<LK, LV, RK, RV, JK, LK, OV>::default(),
     ));
@@ -1319,7 +1320,11 @@ where
     };
 
     let mut guards = left.install(cx, left_sink);
-    guards.extend(right.install(cx, right_sink));
+    if let Some(relation) = relation {
+        guards.extend(cx.with_root_relation(relation, |cx| right.install(cx, right_sink)));
+    } else {
+        guards.extend(right.install(cx, right_sink));
+    }
     guards
 }
 

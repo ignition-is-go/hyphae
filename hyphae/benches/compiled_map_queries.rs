@@ -204,10 +204,7 @@ fn bench_repeated_relation_four_join(c: &mut Criterion) {
         |b| {
             b.iter(|| {
                 right_generation = right_generation.wrapping_add(1);
-                shared_dimension.insert(
-                    0,
-                    updated_dimension(0, black_box(right_generation)),
-                );
+                shared_dimension.insert(0, updated_dimension(0, black_box(right_generation)));
                 black_box(output.get_value(&0));
             });
         },

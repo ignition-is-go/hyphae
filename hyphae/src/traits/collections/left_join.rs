@@ -55,7 +55,7 @@ where
     where
         Sink: MapDiffSink<K, V>,
     {
-        self.plan.install(cx, sink)
+        cx.with_relation_hint::<Rel, _>(|cx| self.plan.install(cx, sink))
     }
 }
 

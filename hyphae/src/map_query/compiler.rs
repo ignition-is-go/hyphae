@@ -38,13 +38,22 @@ struct RootKey {
     value: TypeId,
 }
 
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+struct RelationshipKey {
+    source: SourceIdentity,
+    relation: TypeId,
+}
+
 type Activation = Box<dyn FnOnce() -> Vec<SubscriptionGuard>>;
 
 /// Setup-time state shared by every node in one materialization.
 #[derive(Default)]
 pub struct CompileContext {
     roots: HashMap<RootKey, RootRequirement>,
+    relationships: HashMap<RelationshipKey, usize>,
     activations: Vec<Activation>,
+    relation_hint: Option<TypeId>,
+    active_root_relation: Option<TypeId>,
 }
 
 impl CompileContext {
@@ -68,6 +77,16 @@ impl CompileContext {
             key: TypeId::of::<M::Key>(),
             value: TypeId::of::<M::Value>(),
         };
+        if let Some(relation) = self.active_root_relation {
+            let uses = self
+                .relationships
+                .entry(RelationshipKey {
+                    source: identity,
+                    relation,
+                })
+                .or_default();
+            *uses = uses.saturating_add(1);
+        }
         if let Some(requirement) = self.roots.get_mut(&root_key) {
             requirement.uses = requirement.uses.saturating_add(1);
             let ordinal = requirement.ordinal;
@@ -139,6 +158,31 @@ impl CompileContext {
         self.activations.push(activation);
     }
 
+    pub(crate) fn with_relation_hint<Rel, T>(&mut self, compile: impl FnOnce(&mut Self) -> T) -> T
+    where
+        Rel: 'static,
+    {
+        let previous = self.relation_hint.replace(TypeId::of::<Rel>());
+        let result = compile(self);
+        self.relation_hint = previous;
+        result
+    }
+
+    pub(crate) const fn take_relation_hint(&mut self) -> Option<TypeId> {
+        self.relation_hint.take()
+    }
+
+    pub(crate) fn with_root_relation<T>(
+        &mut self,
+        relation: TypeId,
+        compile: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let previous = self.active_root_relation.replace(relation);
+        let result = compile(self);
+        self.active_root_relation = previous;
+        result
+    }
+
     #[cfg(test)]
     pub(crate) fn root_count(&self) -> usize {
         self.roots.len()
@@ -152,6 +196,17 @@ impl CompileContext {
             .map(|(_, root)| root.uses)
             .sum()
     }
+
+    #[cfg(test)]
+    pub(crate) fn relationship_use_count<Rel: 'static>(&self, identity: SourceIdentity) -> usize {
+        self.relationships
+            .get(&RelationshipKey {
+                source: identity,
+                relation: TypeId::of::<Rel>(),
+            })
+            .copied()
+            .unwrap_or_default()
+    }
 }
 
 #[cfg(test)]
@@ -160,8 +215,39 @@ mod tests {
     use crate::{
         CellMap,
         map_query::MapQueryInstall,
-        traits::{LeftJoinExt, MapValuesExt},
+        traits::{ForeignKeyRelation, IdFor, LeftJoinExt, MapValuesExt},
     };
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct Parent;
+
+    #[derive(Clone, Debug, Eq, Hash, PartialEq)]
+    struct ParentId(u64);
+
+    impl IdFor<Parent> for ParentId {
+        type MapKey = Self;
+
+        fn map_key(&self) -> Self::MapKey {
+            self.clone()
+        }
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct Child {
+        parent: ParentId,
+    }
+
+    struct ParentChildren;
+
+    impl ForeignKeyRelation for ParentChildren {
+        type Parent = Parent;
+        type Child = Child;
+        type ForeignKey = ParentId;
+
+        fn foreign_key(child: &Self::Child) -> Option<Self::ForeignKey> {
+            Some(child.parent.clone())
+        }
+    }
 
     #[test]
     fn repeated_physical_root_is_interned_once() {
@@ -192,5 +278,26 @@ mod tests {
         guards.extend(cx.activate());
         assert_eq!(guards.len(), 2);
         drop(guards);
+    }
+
+    #[test]
+    fn relationship_identity_is_scoped_to_each_join_right_root() {
+        let parents = CellMap::<ParentId, Parent>::new();
+        let children = CellMap::<u64, Child>::new();
+        let children_identity = SourceIdentity::from_ptr(Arc::as_ptr(&children.inner));
+        let plan = parents
+            .left_join_fk::<ParentChildren, _>(children.clone())
+            .map_joined_values(|_, parent, _| parent.clone())
+            .left_join_fk::<ParentChildren, _>(children);
+
+        let mut cx = CompileContext::default();
+        let mut guards = plan.install(&mut cx, |_| {});
+
+        assert_eq!(
+            cx.relationship_use_count::<ParentChildren>(children_identity),
+            2
+        );
+        guards.extend(cx.activate());
+        assert_eq!(guards.len(), 2);
     }
 }
