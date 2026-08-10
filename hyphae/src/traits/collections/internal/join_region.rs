@@ -1220,6 +1220,7 @@ struct RegionRouter<Runtime, K, Input> {
     next_sequence: u64,
     shard_count: usize,
     promotion_work: usize,
+    test_config: bool,
     _input: PhantomData<fn() -> Input>,
 }
 
@@ -1228,11 +1229,10 @@ const DEFAULT_PROMOTION_WORK: usize = 8_192;
 #[allow(clippy::missing_const_for_fn)]
 fn configured_shards() -> usize {
     #[cfg(feature = "scheduler")]
-    {
-        return crate::executor::configured_worker_threads().max(1);
-    }
+    let count = crate::executor::configured_worker_threads().max(1);
     #[cfg(not(feature = "scheduler"))]
-    1
+    let count = 1;
+    count
 }
 
 const fn configured_promotion_work() -> usize {
@@ -1276,6 +1276,7 @@ where
             next_sequence: 0,
             shard_count: configured_shards(),
             promotion_work: configured_promotion_work(),
+            test_config: false,
             _input: PhantomData,
         }
     }
@@ -1289,6 +1290,7 @@ where
             next_sequence: 0,
             shard_count: shard_count.max(1),
             promotion_work: promotion_work.max(1),
+            test_config: true,
             _input: PhantomData,
         }
     }
@@ -1326,7 +1328,7 @@ where
 
     fn merge_order(&self, diff: &MapDiff<K, Input>) -> FxHashMap<K, u64> {
         let mut order = FxHashMap::default();
-        let mut next = self.next_sequence;
+        let mut next = 0;
         fn visit<K: Hash + Eq + Clone, V>(
             diff: &MapDiff<K, V>,
             existing: &FxHashMap<K, u64>,
@@ -1342,6 +1344,13 @@ where
                             .iter()
                             .map(|(key, sequence)| (key.clone(), *sequence)),
                     );
+                    *next = (*next).max(
+                        existing
+                            .values()
+                            .copied()
+                            .max()
+                            .map_or(0, |value| value.saturating_add(1)),
+                    );
                     for (key, _) in entries {
                         if !order.contains_key(key) {
                             order.insert(key.clone(), *next);
@@ -1353,12 +1362,8 @@ where
                 | MapDiff::Update { key, .. }
                 | MapDiff::Remove { key, .. } => {
                     if !order.contains_key(key) {
-                        let sequence = existing.get(key).copied().unwrap_or_else(|| {
-                            let value = *next;
-                            *next += 1;
-                            value
-                        });
-                        order.insert(key.clone(), sequence);
+                        order.insert(key.clone(), *next);
+                        *next += 1;
                     }
                 }
                 MapDiff::Batch { changes } => changes
@@ -1448,8 +1453,26 @@ where
     }
 
     fn apply_left(&mut self, diff: &MapDiff<K, Input>) -> Vec<MapDiff<K, Runtime::Output>> {
+        if self.shards.is_none() && self.shard_count <= 1 && !self.test_config {
+            return self
+                .sequential
+                .as_mut()
+                .expect("sequential mode")
+                .apply_left_diff(diff);
+        }
         if self.shards.is_none() && (self.shard_count <= 1 || diff_work(diff) < self.promotion_work)
         {
+            if matches!(diff, MapDiff::Initial { .. }) {
+                let order = self.merge_order(diff);
+                let mut output = self
+                    .sequential
+                    .as_mut()
+                    .expect("sequential mode")
+                    .apply_left_diff(diff);
+                Self::order_changes(&order, &mut output);
+                self.remember(diff);
+                return output;
+            }
             self.remember(diff);
             return self
                 .sequential
@@ -1490,6 +1513,17 @@ where
         }
     }
 
+    fn right_leaves<'a, RK, RV>(diff: &'a MapDiff<RK, RV>, leaves: &mut Vec<&'a MapDiff<RK, RV>>) {
+        if let MapDiff::Batch { changes } = diff {
+            for change in changes {
+                Self::right_leaves(change, leaves);
+            }
+        } else {
+            leaves.push(diff);
+        }
+    }
+
+    #[allow(clippy::branches_sharing_code)]
     fn apply_right<Location, RK, RV>(
         &mut self,
         diff: &MapDiff<RK, RV>,
@@ -1500,29 +1534,69 @@ where
         RV: CellValue,
         Runtime: RightRoot<Location, K, Input, RK, RV>,
     {
+        if self.shards.is_none() && self.shard_count <= 1 && !self.test_config {
+            return self
+                .sequential
+                .as_mut()
+                .expect("sequential mode")
+                .apply_right_root_diff_policy(diff, maintain);
+        }
         if self.shards.is_none() && self.shard_count > 1 && diff_work(diff) >= self.promotion_work {
             self.promote();
         }
         if let Some(shards) = self.shards.as_mut() {
             let order = &self.key_sequence;
+            let preserve_batch = matches!(diff, MapDiff::Batch { .. });
+            let mut leaves = Vec::new();
+            Self::right_leaves(diff, &mut leaves);
             let mut output = Vec::new();
-            for (id, shard) in shards.iter_mut().enumerate() {
-                Self::extend_flat(
-                    &mut output,
-                    shard.apply_right_root_diff_policy(diff, maintain && id == 0),
-                );
+            // Advance the shared physical index one source member at a time.
+            // Every observer shard therefore reads the same snapshot that the
+            // sequential runtime used for this phase before the next member.
+            for leaf in leaves {
+                let mut phase = Vec::new();
+                for (id, shard) in shards.iter_mut().enumerate() {
+                    Self::extend_flat(
+                        &mut phase,
+                        shard.apply_right_root_diff_policy(leaf, maintain && id == 0),
+                    );
+                }
+                Self::order_changes(order, &mut phase);
+                output.extend(phase);
             }
-            Self::order_changes(order, &mut output);
-            if matches!(diff, MapDiff::Batch { .. }) {
+            if preserve_batch {
                 vec![MapDiff::Batch { changes: output }]
             } else {
                 output
             }
         } else {
-            self.sequential
-                .as_mut()
-                .expect("sequential mode")
-                .apply_right_root_diff_policy(diff, maintain)
+            if !matches!(diff, MapDiff::Batch { .. }) {
+                return self
+                    .sequential
+                    .as_mut()
+                    .expect("sequential mode")
+                    .apply_right_root_diff_policy(diff, maintain);
+            }
+            let order = &self.key_sequence;
+            let preserve_batch = true;
+            let mut leaves = Vec::new();
+            Self::right_leaves(diff, &mut leaves);
+            let runtime = self.sequential.as_mut().expect("sequential mode");
+            let mut output = Vec::new();
+            for leaf in leaves {
+                let mut phase = Vec::new();
+                Self::extend_flat(
+                    &mut phase,
+                    runtime.apply_right_root_diff_policy(leaf, maintain),
+                );
+                Self::order_changes(order, &mut phase);
+                output.extend(phase);
+            }
+            if preserve_batch {
+                vec![MapDiff::Batch { changes: output }]
+            } else {
+                output
+            }
         }
     }
 }
@@ -2926,8 +3000,8 @@ mod tests {
             let initial = MapDiff::Initial {
                 entries: vec![(9, 9), (2, 2), (7, 7), (1, 1)],
             };
-            let mut sequential = make_runtime();
-            let expected = sequential.apply_left_diff(&initial);
+            let mut sequential = RegionRouter::with_config(make_runtime(), 1, 1);
+            let expected = sequential.apply_left(&initial);
             let mut router = RegionRouter::with_config(make_runtime(), shard_count, 1);
             assert_eq!(router.apply_left(&initial), expected);
 
@@ -2935,12 +3009,38 @@ mod tests {
                 key: 40_u16,
                 value: 5_i32,
             };
-            let expected = <_ as RightRoot<There<Here>, u32, i32, u16, i32>>::apply_right_root_diff(
-                &mut sequential,
-                &right,
-            );
+            let expected = sequential.apply_right::<There<Here>, _, _>(&right, true);
             assert_eq!(
                 router.apply_right::<There<Here>, _, _>(&right, true),
+                expected
+            );
+
+            let first_right = MapDiff::Batch {
+                changes: vec![
+                    MapDiff::Insert {
+                        key: 3_u8,
+                        value: 3_i32,
+                    },
+                    MapDiff::Update {
+                        key: 3,
+                        old_value: 3,
+                        new_value: 6,
+                    },
+                ],
+            };
+            let expected = sequential.apply_right::<Here, _, _>(&first_right, true);
+            assert_eq!(
+                router.apply_right::<Here, _, _>(&first_right, true),
+                expected
+            );
+
+            let distant_right = MapDiff::Insert {
+                key: 7_u32,
+                value: 7_i32,
+            };
+            let expected = sequential.apply_right::<There<There<Here>>, _, _>(&distant_right, true);
+            assert_eq!(
+                router.apply_right::<There<There<Here>>, _, _>(&distant_right, true),
                 expected
             );
         }
@@ -2992,16 +3092,149 @@ mod tests {
                 },
             ],
         };
-        let mut sequential = make_runtime();
+        let mut sequential = RegionRouter::with_config(make_runtime(), 1, 1);
         let mut router = RegionRouter::with_config(make_runtime(), 3, 2);
+        assert_eq!(router.apply_left(&first), sequential.apply_left(&first));
+        assert_eq!(router.apply_left(&batch), sequential.apply_left(&batch));
+        let replacement = MapDiff::Initial {
+            entries: vec![(8, 80), (10, 110), (99, 99)],
+        };
         assert_eq!(
-            router.apply_left(&first),
-            sequential.apply_left_diff(&first)
-        );
-        assert_eq!(
-            router.apply_left(&batch),
-            sequential.apply_left_diff(&batch)
+            router.apply_left(&replacement),
+            sequential.apply_left(&replacement)
         );
         assert!(router.shards.is_some());
+    }
+
+    #[test]
+    fn region_router_optional_right_rekeys_after_promotion() {
+        let make_runtime = || JCons {
+            head: StageRuntimeState::with_index(
+                |_: &u32, value: &i32| *value % 3,
+                crate::traits::OptionalRightKey(|_: &u8, value: &(Option<i32>, i32)| value.0),
+                DirectProject(|_: &u32, left: &i32, rights: &[(u8, (Option<i32>, i32))]| {
+                    *left + rights.iter().map(|(_, value)| value.1).sum::<i32>()
+                }),
+                DeferredPhysical::default(),
+            ),
+            tail: JCons {
+                head: StageRuntimeState::with_index(
+                    |_: &u32, value: &i32| *value % 5,
+                    crate::traits::RequiredRightKey(|_: &u16, value: &i32| *value % 5),
+                    DirectProject(|_: &u32, left: &i32, _: &[(u16, i32)]| *left),
+                    DeferredPhysical::default(),
+                ),
+                tail: JCons {
+                    head: StageRuntimeState::with_index(
+                        |_: &u32, value: &i32| *value % 7,
+                        crate::traits::RequiredRightKey(|_: &u32, value: &i32| *value % 7),
+                        DirectProject(|_: &u32, left: &i32, _: &[(u32, i32)]| *left),
+                        DeferredPhysical::default(),
+                    ),
+                    tail: JNil,
+                },
+            },
+        };
+        let initial = MapDiff::Initial {
+            entries: vec![(1, 1), (2, 2), (4, 4), (8, 8)],
+        };
+        let mut sequential = RegionRouter::with_config(make_runtime(), 1, 1);
+        let mut sharded = RegionRouter::with_config(make_runtime(), 3, 1);
+        assert_eq!(
+            sharded.apply_left(&initial),
+            sequential.apply_left(&initial)
+        );
+        let events = [
+            MapDiff::Insert {
+                key: 9_u8,
+                value: (Some(1), 10),
+            },
+            MapDiff::Update {
+                key: 9,
+                old_value: (Some(1), 10),
+                new_value: (None, 10),
+            },
+            MapDiff::Update {
+                key: 9,
+                old_value: (None, 10),
+                new_value: (Some(2), 11),
+            },
+        ];
+        for event in &events {
+            assert_eq!(
+                sharded.apply_right::<Here, _, _>(event, true),
+                sequential.apply_right::<Here, _, _>(event, true),
+            );
+        }
+    }
+
+    #[test]
+    fn region_router_initial_replacement_writes_shared_index_once_and_invalidates_old_bucket() {
+        #[derive(Clone)]
+        struct CountingIndex {
+            inner: DeferredPhysical<RelationIndex<u32, i32, u32>>,
+            writes: Arc<std::sync::atomic::AtomicUsize>,
+        }
+        impl RelationIndexStorage<u32, i32, u32> for CountingIndex {
+            type Read<'a> = parking_lot::RwLockReadGuard<'a, RelationIndex<u32, i32, u32>>;
+            fn acquire_read(&self) -> Self::Read<'_> {
+                self.inner.acquire_read()
+            }
+            fn write<T>(
+                &mut self,
+                write: impl FnOnce(&mut RelationIndex<u32, i32, u32>) -> T,
+            ) -> T {
+                self.writes
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.inner.write(write)
+            }
+        }
+        let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let index = CountingIndex {
+            inner: DeferredPhysical::default(),
+            writes: Arc::clone(&writes),
+        };
+        let make_stage = |storage: CountingIndex| {
+            StageRuntimeState::with_index(
+                |_: &u32, value: &i32| value.unsigned_abs(),
+                crate::traits::RequiredRightKey(|_: &u32, value: &i32| value.unsigned_abs()),
+                DirectProject(|_: &u32, left: &i32, rights: &[(u32, i32)]| {
+                    *left + rights.iter().map(|(_, value)| *value).sum::<i32>()
+                }),
+                storage,
+            )
+        };
+        let runtime = JCons {
+            head: make_stage(index.clone()),
+            tail: JCons {
+                head: make_stage(index.clone()),
+                tail: JCons {
+                    head: make_stage(index),
+                    tail: JNil,
+                },
+            },
+        };
+        let mut router = RegionRouter::with_config(runtime, 3, 1);
+        let _ = router.apply_left(&MapDiff::Initial {
+            entries: vec![(1, 1), (2, 1), (3, 2)],
+        });
+        let _ = router.apply_right::<Here, _, _>(
+            &MapDiff::Initial {
+                entries: vec![(10, 1)],
+            },
+            true,
+        );
+        assert_eq!(writes.load(std::sync::atomic::Ordering::Relaxed), 1);
+        let changes = router.apply_right::<Here, _, _>(
+            &MapDiff::Initial {
+                entries: vec![(20, 2)],
+            },
+            true,
+        );
+        assert_eq!(writes.load(std::sync::atomic::Ordering::Relaxed), 2);
+        assert!(
+            !changes.is_empty(),
+            "old-only join bucket must be invalidated"
+        );
     }
 }
