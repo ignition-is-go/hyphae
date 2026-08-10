@@ -2,17 +2,27 @@
 
 //! Static type substrate for an arbitrary-length left-join region.
 //!
-//! This module deliberately contains no installer yet.  It describes a join
-//! region without tuples (and therefore without tuple-arity limits), while
-//! keeping every stage and projection statically dispatched.
+//! A join region is described and installed without tuples (and therefore
+//! without tuple-arity limits), while every stage, right-root entry, and
+//! projection remains statically dispatched.
 
-use std::{collections::hash_map::Entry, hash::Hash, marker::PhantomData};
+use std::{
+    collections::hash_map::Entry,
+    hash::Hash,
+    marker::PhantomData,
+    sync::{Arc, Mutex},
+};
 
 use rustc_hash::FxHashMap;
 
 use crate::{
     cell_map::MapDiff,
-    map_query::properties::{ByMapKey, Partition, PlanProperties, ZeroOrOne},
+    map_query::{
+        BuildQueryRuntime, MapDiffSink, MapQuery, compile_runtime_into,
+        compiler::CompileContext,
+        properties::{ByMapKey, Partition, PlanProperties, ZeroOrOne},
+    },
+    subscription::SubscriptionGuard,
     traits::{CellValue, RightJoinKey},
 };
 
@@ -727,6 +737,226 @@ where
     type OutputPartition = ByMapKey<K>;
 }
 
+/// Consumes the declarative stages into an executable state spine and a
+/// parallel spine of right plans. `Location` is the statically typed direct
+/// entry point of the next right root into the completed runtime spine.
+trait SplitStages<K, Input, Location>
+where
+    K: Hash + Eq + CellValue,
+    Input: CellValue,
+{
+    type Runtime: RuntimeStages<K, Input>;
+    type Rights;
+
+    fn split(self) -> (Self::Runtime, Self::Rights);
+}
+
+struct RightPlan<Right, Tail, Location, RK, RV> {
+    right: Right,
+    tail: Tail,
+    _types: PhantomData<fn() -> (Location, RK, RV)>,
+}
+
+impl<K, Input, Location> SplitStages<K, Input, Location> for JNil
+where
+    K: Hash + Eq + CellValue,
+    Input: CellValue,
+{
+    type Runtime = Self;
+    type Rights = Self;
+
+    fn split(self) -> (Self::Runtime, Self::Rights) {
+        (Self, Self)
+    }
+}
+
+impl<Right, Tail, K, Input, RK, RV, JK, Output, LeftKey, RightKeyFn, Project, Location>
+    SplitStages<K, Input, Location>
+    for JCons<JoinStage<Right, K, Input, RK, RV, JK, Output, LeftKey, RightKeyFn, Project>, Tail>
+where
+    K: Hash + Eq + CellValue,
+    Input: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    Output: CellValue,
+    LeftKey: Fn(&K, &Input) -> JK + Send + Sync + 'static,
+    RightKeyFn: RightJoinKey<RK, RV, JK>,
+    Project: StageProject<K, Input, RK, RV, Output>,
+    Right: MapQuery<Key = RK, Value = RV>,
+    Tail: SplitStages<K, Output, There<Location>>,
+{
+    type Runtime = JCons<
+        StageRuntimeState<K, Input, RK, RV, JK, Output, LeftKey, RightKeyFn, Project>,
+        Tail::Runtime,
+    >;
+    type Rights = RightPlan<Right, Tail::Rights, Location, RK, RV>;
+
+    fn split(self) -> (Self::Runtime, Self::Rights) {
+        let JoinStage {
+            right,
+            left_key,
+            right_key,
+            project,
+            _types: _,
+        } = self.head;
+        let (tail_runtime, tail_rights) = self.tail.split();
+        (
+            JCons {
+                head: StageRuntimeState::new(left_key, right_key, project),
+                tail: tail_runtime,
+            },
+            RightPlan {
+                right,
+                tail: tail_rights,
+                _types: PhantomData,
+            },
+        )
+    }
+}
+
+/// Installs right roots in stage order. Each callback enters the shared state
+/// at its own `Here`/`There` location and emits only changes at the end of the
+/// complete runtime spine.
+trait InstallRights<Runtime, K, Input, Output>
+where
+    K: Hash + Eq + CellValue,
+    Input: CellValue,
+    Output: CellValue,
+    Runtime: RuntimeStages<K, Input, Output = Output>,
+{
+    fn install<Sink>(
+        self,
+        cx: &mut CompileContext,
+        state: &Arc<Mutex<Runtime>>,
+        sink: &Arc<Sink>,
+    ) -> Vec<SubscriptionGuard>
+    where
+        Sink: MapDiffSink<K, Output>;
+}
+
+impl<Runtime, K, Input, Output> InstallRights<Runtime, K, Input, Output> for JNil
+where
+    K: Hash + Eq + CellValue,
+    Input: CellValue,
+    Output: CellValue,
+    Runtime: RuntimeStages<K, Input, Output = Output>,
+{
+    fn install<Sink>(
+        self,
+        _cx: &mut CompileContext,
+        _state: &Arc<Mutex<Runtime>>,
+        _sink: &Arc<Sink>,
+    ) -> Vec<SubscriptionGuard>
+    where
+        Sink: MapDiffSink<K, Output>,
+    {
+        Vec::new()
+    }
+}
+
+impl<Runtime, K, Input, Output, Right, Tail, Location, RK, RV>
+    InstallRights<Runtime, K, Input, Output> for RightPlan<Right, Tail, Location, RK, RV>
+where
+    K: Hash + Eq + CellValue,
+    Input: CellValue,
+    Output: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    Runtime: RuntimeStages<K, Input, Output = Output>
+        + RightRoot<Location, K, Input, RK, RV>
+        + Send
+        + 'static,
+    Right: MapQuery<Key = RK, Value = RV>,
+    Tail: InstallRights<Runtime, K, Input, Output>,
+{
+    fn install<Sink>(
+        self,
+        cx: &mut CompileContext,
+        state: &Arc<Mutex<Runtime>>,
+        sink: &Arc<Sink>,
+    ) -> Vec<SubscriptionGuard>
+    where
+        Sink: MapDiffSink<K, Output>,
+    {
+        let right_state = Arc::clone(state);
+        let right_sink = Arc::clone(sink);
+        let callback = move |diff: &MapDiff<RK, RV>| {
+            let changes = {
+                let mut runtime = right_state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                runtime.apply_right_root_diff(diff)
+            };
+            for change in &changes {
+                right_sink(change);
+            }
+        };
+        let mut guards = compile_runtime_into(self.right, cx, callback);
+        guards.extend(self.tail.install(cx, state, sink));
+        guards
+    }
+}
+
+impl<Left, Stages, K, Input> BuildQueryRuntime<K, Stages::Output>
+    for JoinRegion<Left, Stages, K, Input>
+where
+    K: Hash + Eq + CellValue,
+    Input: CellValue,
+    Left: MapQuery<Key = K, Value = Input> + PlanProperties<OutputPartition = ByMapKey<K>>,
+    Stages: StageList<K, Input> + SplitStages<K, Input, Here> + Send + Sync + 'static,
+    Stages::Output: CellValue,
+    Stages::Runtime: RuntimeStages<K, Input, Output = Stages::Output> + Send,
+    Stages::Rights: InstallRights<Stages::Runtime, K, Input, Stages::Output>,
+{
+    fn build_into<Sink>(self, cx: &mut CompileContext, sink: Sink) -> Vec<SubscriptionGuard>
+    where
+        Sink: MapDiffSink<K, Stages::Output>,
+    {
+        let (runtime, rights) = self.stages.split();
+        let state = Arc::new(Mutex::new(runtime));
+        let sink = Arc::new(sink);
+
+        // Register every right root before the left root. CompileContext then
+        // activates their initial snapshots in this same order, so the first
+        // left snapshot observes all right indexes fully populated.
+        let mut guards = rights.install(cx, &state, &sink);
+        let left_state = state;
+        let left_sink = sink;
+        guards.extend(compile_runtime_into(
+            self.left,
+            cx,
+            move |diff: &MapDiff<K, Input>| {
+                let changes = {
+                    let mut runtime = left_state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    runtime.apply_left_diff(diff)
+                };
+                for change in &changes {
+                    left_sink(change);
+                }
+            },
+        ));
+        guards
+    }
+}
+
+#[allow(private_bounds)]
+impl<Left, Stages, K, Input> MapQuery for JoinRegion<Left, Stages, K, Input>
+where
+    K: Hash + Eq + CellValue,
+    Input: CellValue,
+    Left: MapQuery<Key = K, Value = Input> + PlanProperties<OutputPartition = ByMapKey<K>>,
+    Stages: StageList<K, Input> + SplitStages<K, Input, Here> + Send + Sync + 'static,
+    Stages::Output: CellValue,
+    Stages::Runtime: RuntimeStages<K, Input, Output = Stages::Output> + Send,
+    Stages::Rights: InstallRights<Stages::Runtime, K, Input, Stages::Output>,
+{
+    type Key = K;
+    type Value = Stages::Output;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1275,5 +1505,180 @@ mod tests {
             runtime.apply_left_diff(&MapDiff::Insert { key: 1, value: 42 }),
             vec![MapDiff::Insert { key: 1, value: 42 }]
         );
+    }
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn explicit_three_stage_region_materializes_and_tears_down_all_roots() {
+        use crate::traits::{DepNode, RequiredRightKey};
+
+        let left = crate::CellMap::<u32, u32>::new();
+        let right1 = crate::CellMap::<u8, (u32, i32)>::new();
+        let right2 = crate::CellMap::<u16, (u32, &'static str)>::new();
+        let right3 = crate::CellMap::<u64, (u32, bool)>::new();
+
+        right1.insert(1, (7, 10));
+        right2.insert(3, (7, "a"));
+        right3.insert(5, (7, true));
+        left.insert(100, 7);
+
+        let stages = JNil
+            .push(
+                JoinStage::<_, u32, u32, u8, (u32, i32), u32, _, _, _, _>::new(
+                    right1.clone(),
+                    |_: &u32, value: &u32| *value,
+                    RequiredRightKey(|_: &u8, value: &(u32, i32)| value.0),
+                    DirectProject(|_: &u32, left: &u32, rights: &[(u8, (u32, i32))]| {
+                        (
+                            *left,
+                            rights.iter().map(|(_, value)| value.1).collect::<Vec<_>>(),
+                        )
+                    }),
+                ),
+            )
+            .push(JoinStage::<
+                _,
+                u32,
+                (u32, Vec<i32>),
+                u16,
+                (u32, &'static str),
+                u32,
+                _,
+                _,
+                _,
+                _,
+            >::new(
+                right2.clone(),
+                |_: &u32, value: &(u32, Vec<i32>)| value.0,
+                RequiredRightKey(|_: &u16, value: &(u32, &'static str)| value.0),
+                DirectProject(
+                    |_: &u32, left: &(u32, Vec<i32>), rights: &[(u16, (u32, &'static str))]| {
+                        (
+                            left.0,
+                            left.1.clone(),
+                            rights.iter().map(|(_, value)| value.1).collect::<Vec<_>>(),
+                        )
+                    },
+                ),
+            ))
+            .push(JoinStage::<
+                _,
+                u32,
+                (u32, Vec<i32>, Vec<&'static str>),
+                u64,
+                (u32, bool),
+                u32,
+                _,
+                _,
+                _,
+                _,
+            >::new(
+                right3.clone(),
+                |_: &u32, value: &(u32, Vec<i32>, Vec<&'static str>)| value.0,
+                RequiredRightKey(|_: &u64, value: &(u32, bool)| value.0),
+                DirectProject(
+                    |_: &u32,
+                     left: &(u32, Vec<i32>, Vec<&'static str>),
+                     rights: &[(u64, (u32, bool))]| {
+                        (
+                            left.0,
+                            left.1.clone(),
+                            left.2.clone(),
+                            rights.iter().map(|(_, value)| value.1).collect::<Vec<_>>(),
+                        )
+                    },
+                ),
+            ));
+
+        let output = JoinRegion::new(left.clone(), stages).materialize();
+        assert_eq!(left.inner.diffs_cell.subscriber_count(), 1);
+        assert_eq!(right1.inner.diffs_cell.subscriber_count(), 1);
+        assert_eq!(right2.inner.diffs_cell.subscriber_count(), 1);
+        assert_eq!(right3.inner.diffs_cell.subscriber_count(), 1);
+        assert_eq!(
+            output.get_value(&100),
+            Some((7, vec![10], vec!["a"], vec![true]))
+        );
+
+        // Exercise every right root and the left root after installation.
+        right1.insert(2, (7, 20));
+        right1.insert(1, (7, 11));
+        right2.insert(4, (7, "b"));
+        right2.remove(&3);
+        right3.insert(6, (7, false));
+        assert_eq!(
+            output.get_value(&100),
+            Some((7, vec![11, 20], vec!["b"], vec![true, false]))
+        );
+        left.insert(100, 8);
+        right1.insert(8, (8, 80));
+        right2.insert(8, (8, "eight"));
+        right3.insert(8, (8, false));
+        assert_eq!(
+            output.get_value(&100),
+            Some((8, vec![80], vec!["eight"], vec![false]))
+        );
+
+        drop(output);
+        assert_eq!(left.inner.diffs_cell.subscriber_count(), 0);
+        assert_eq!(right1.inner.diffs_cell.subscriber_count(), 0);
+        assert_eq!(right2.inner.diffs_cell.subscriber_count(), 0);
+        assert_eq!(right3.inner.diffs_cell.subscriber_count(), 0);
+    }
+
+    #[test]
+    #[allow(clippy::trivially_copy_pass_by_ref)]
+    fn explicit_eight_stage_region_materialization_smoke() {
+        use crate::traits::RequiredRightKey;
+
+        type Right = crate::CellMap<u8, (u32, u32)>;
+        type Stage = JoinStage<
+            Right,
+            u32,
+            u32,
+            u8,
+            (u32, u32),
+            u32,
+            u32,
+            fn(&u32, &u32) -> u32,
+            RequiredRightKey<fn(&u8, &(u32, u32)) -> u32>,
+            DirectProject<fn(&u32, &u32, &[(u8, (u32, u32))]) -> u32>,
+        >;
+
+        fn left_key(_: &u32, _: &u32) -> u32 {
+            0
+        }
+        fn right_key(_: &u8, right: &(u32, u32)) -> u32 {
+            right.0
+        }
+        fn project(_: &u32, left: &u32, rights: &[(u8, (u32, u32))]) -> u32 {
+            left + rights.iter().map(|(_, right)| right.1).sum::<u32>()
+        }
+        fn stage(right: Right) -> Stage {
+            Stage::new(
+                right,
+                left_key,
+                RequiredRightKey(right_key),
+                DirectProject(project),
+            )
+        }
+        fn right() -> Right {
+            let right = Right::new();
+            right.insert(1, (0, 1));
+            right
+        }
+
+        let left = crate::CellMap::<u32, u32>::new();
+        left.insert(1, 0);
+        let stages = JNil
+            .push(stage(right()))
+            .push(stage(right()))
+            .push(stage(right()))
+            .push(stage(right()))
+            .push(stage(right()))
+            .push(stage(right()))
+            .push(stage(right()))
+            .push(stage(right()));
+        let output = JoinRegion::new(left, stages).materialize();
+        assert_eq!(output.get_value(&1), Some(8));
     }
 }
