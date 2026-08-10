@@ -17,7 +17,7 @@ pub use group_by::GroupByExt;
 pub use inner_join::InnerJoinExt;
 pub use left_join::{
     DirectJoinProjection, JoinProjection, JoinedValuesPlan, LeftJoinExt, LeftJoinPlan,
-    TupleJoinProjection, TwoLeftJoinMappedPlan, TwoLeftJoinPlan,
+    RelationPlan, TupleJoinProjection, TwoLeftJoinMappedPlan, TwoLeftJoinPlan,
 };
 pub use left_semi_join::LeftSemiJoinExt;
 pub use map_values::{FilterMapValuesPlan, MapValuesExt, MapValuesPlan};

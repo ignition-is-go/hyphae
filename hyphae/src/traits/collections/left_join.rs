@@ -20,6 +20,40 @@ use crate::{
 
 use super::map_values::MapValuesPlan;
 
+/// A query node carrying the semantic identity of a typed relationship.
+#[doc(hidden)]
+pub struct RelationPlan<P, Rel> {
+    plan: P,
+    _relation: PhantomData<fn() -> Rel>,
+}
+
+impl<K, V, P, Rel> MapQueryInstall<K, V> for RelationPlan<P, Rel>
+where
+    K: Hash + Eq + CellValue,
+    V: CellValue,
+    P: MapQuery<Key = K, Value = V>,
+    Rel: Send + Sync + 'static,
+{
+    fn install<Sink>(self, sink: Sink) -> Vec<SubscriptionGuard>
+    where
+        Sink: MapDiffSink<K, V>,
+    {
+        self.plan.install(sink)
+    }
+}
+
+#[allow(private_bounds)]
+impl<K, V, P, Rel> MapQuery for RelationPlan<P, Rel>
+where
+    K: Hash + Eq + CellValue,
+    V: CellValue,
+    P: MapQuery<Key = K, Value = V>,
+    Rel: Send + Sync + 'static,
+{
+    type Key = K;
+    type Value = V;
+}
+
 /// Plan node for [`LeftJoinExt::left_join`], [`LeftJoinExt::left_join_fk`],
 /// and [`LeftJoinExt::left_join_by`].
 ///
@@ -245,6 +279,36 @@ where
             join: self,
             projection,
             _output: PhantomData,
+        }
+    }
+}
+
+impl<L, R, LK, LV, RK, RV, JK, FL, FR, Rel>
+    RelationPlan<LeftJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>, Rel>
+where
+    L: MapQuery<Key = LK, Value = LV>,
+    R: MapQuery<Key = RK, Value = RV>,
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
+    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    Rel: Send + Sync + 'static,
+{
+    /// Project a relationship-typed join without erasing its marker.
+    pub fn map_joined_values<OV, F>(
+        self,
+        projection: F,
+    ) -> RelationPlan<JoinedValuesPlan<L, R, LK, LV, RK, RV, JK, OV, FL, FR, F>, Rel>
+    where
+        OV: CellValue,
+        F: Fn(&LK, &LV, &[(RK, RV)]) -> OV + Send + Sync + 'static,
+    {
+        RelationPlan {
+            plan: self.plan.map_joined_values(projection),
+            _relation: PhantomData,
         }
     }
 }
@@ -761,30 +825,36 @@ where
     fn left_join_fk<Rel, R>(
         self,
         right: R,
-    ) -> LeftJoinPlan<
-        Self,
-        R,
-        K,
-        V,
-        R::Key,
-        Rel::Child,
-        Option<K>,
-        impl Fn(&K, &V) -> Option<K> + Send + Sync + 'static,
-        impl Fn(&R::Key, &Rel::Child) -> Option<K> + Send + Sync + 'static,
+    ) -> RelationPlan<
+        LeftJoinPlan<
+            Self,
+            R,
+            K,
+            V,
+            R::Key,
+            Rel::Child,
+            Option<K>,
+            impl Fn(&K, &V) -> Option<K> + Send + Sync + 'static,
+            impl Fn(&R::Key, &Rel::Child) -> Option<K> + Send + Sync + 'static,
+        >,
+        Rel,
     >
     where
         Rel: ForeignKeyRelation,
         R: MapQuery<Value = Rel::Child>,
         Rel::ForeignKey: IdFor<Rel::Parent, MapKey = K>,
     {
-        LeftJoinPlan {
-            left: self,
-            right,
-            left_key: |k: &K, _: &V| Some(k.clone()),
-            right_key: |_: &R::Key, rv: &Rel::Child| {
-                Rel::foreign_key(rv).map(|foreign_key| foreign_key.map_key())
+        RelationPlan {
+            plan: LeftJoinPlan {
+                left: self,
+                right,
+                left_key: |k: &K, _: &V| Some(k.clone()),
+                right_key: |_: &R::Key, rv: &Rel::Child| {
+                    Rel::foreign_key(rv).map(|foreign_key| foreign_key.map_key())
+                },
+                _types: PhantomData,
             },
-            _types: PhantomData,
+            _relation: PhantomData,
         }
     }
 
