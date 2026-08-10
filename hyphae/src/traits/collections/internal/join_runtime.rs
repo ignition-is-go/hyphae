@@ -90,7 +90,7 @@ where
     JK: Send + Sync + 'static,
 {
     type Read<'a>
-        = std::sync::MutexGuard<'a, RelationIndex<RK, RV, JK>>
+        = parking_lot::RwLockReadGuard<'a, RelationIndex<RK, RV, JK>>
     where
         Self: 'a;
 

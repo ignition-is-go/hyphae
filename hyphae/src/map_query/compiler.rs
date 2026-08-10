@@ -138,11 +138,11 @@ where
     fn bind(&self, key: RelationshipKey, indexes: &mut HashMap<RelationshipKey, Box<dyn Any>>) {
         let (index, maintains_index) = indexes
             .get(&key)
-            .and_then(|index| index.downcast_ref::<Arc<Mutex<T>>>())
+            .and_then(|index| index.downcast_ref::<Arc<parking_lot::RwLock<T>>>())
             .cloned()
             .map_or_else(
                 || {
-                    let index = Arc::new(Mutex::new(T::default()));
+                    let index = Arc::new(parking_lot::RwLock::new(T::default()));
                     indexes.insert(key, Box::new(Arc::clone(&index)));
                     (index, true)
                 },
@@ -158,7 +158,7 @@ where
 /// A typed direct handle populated when the owning right subtree resolves to
 /// its physical source during compilation.
 pub struct DeferredPhysical<T> {
-    inner: Arc<OnceLock<Arc<Mutex<T>>>>,
+    inner: Arc<OnceLock<Arc<parking_lot::RwLock<T>>>>,
     maintains_index: Arc<AtomicBool>,
 }
 
@@ -184,20 +184,17 @@ impl<T> DeferredPhysical<T>
 where
     T: Default,
 {
-    pub(crate) fn acquire_read(&self) -> std::sync::MutexGuard<'_, T> {
+    pub(crate) fn acquire_read(&self) -> parking_lot::RwLockReadGuard<'_, T> {
         self.inner
-            .get_or_init(|| Arc::new(Mutex::new(T::default())))
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_or_init(|| Arc::new(parking_lot::RwLock::new(T::default())))
+            .read()
     }
 
     pub(crate) fn write<R>(&self, write: impl FnOnce(&mut T) -> R) -> R {
         let index = self
             .inner
-            .get_or_init(|| Arc::new(Mutex::new(T::default())));
-        let mut index = index
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .get_or_init(|| Arc::new(parking_lot::RwLock::new(T::default())));
+        let mut index = index.write();
         write(&mut index)
     }
 
@@ -431,6 +428,70 @@ mod tests {
         fn foreign_key(child: &Self::Child) -> Option<Self::ForeignKey> {
             Some(child.parent.clone())
         }
+    }
+
+    #[test]
+    fn deferred_physical_admits_two_readers_while_writer_waits() {
+        use std::{
+            sync::{Barrier, mpsc},
+            thread,
+            time::Duration,
+        };
+
+        let index = DeferredPhysical::<usize>::default();
+        let readers_release = Arc::new(Barrier::new(3));
+        let (reader_acquired_tx, reader_acquired_rx) = mpsc::channel();
+        let readers: Vec<_> = (0..2)
+            .map(|_| {
+                let index = index.clone();
+                let readers_release = Arc::clone(&readers_release);
+                let reader_acquired_tx = reader_acquired_tx.clone();
+                thread::spawn(move || {
+                    let _read = index.acquire_read();
+                    assert!(reader_acquired_tx.send(()).is_ok());
+                    readers_release.wait();
+                })
+            })
+            .collect();
+        drop(reader_acquired_tx);
+
+        assert_eq!(
+            reader_acquired_rx.recv_timeout(Duration::from_secs(1)),
+            Ok(())
+        );
+        assert_eq!(
+            reader_acquired_rx.recv_timeout(Duration::from_secs(1)),
+            Ok(())
+        );
+
+        let (writer_attempting_tx, writer_attempting_rx) = mpsc::channel();
+        let (writer_acquired_tx, writer_acquired_rx) = mpsc::channel();
+        let writer = thread::spawn(move || {
+            assert!(writer_attempting_tx.send(()).is_ok());
+            index.write(|value| {
+                *value += 1;
+                assert!(writer_acquired_tx.send(()).is_ok());
+            });
+        });
+        assert_eq!(
+            writer_attempting_rx.recv_timeout(Duration::from_secs(1)),
+            Ok(())
+        );
+        assert!(
+            writer_acquired_rx
+                .recv_timeout(Duration::from_millis(50))
+                .is_err()
+        );
+
+        readers_release.wait();
+        assert_eq!(
+            writer_acquired_rx.recv_timeout(Duration::from_secs(1)),
+            Ok(())
+        );
+        for reader in readers {
+            assert!(reader.join().is_ok());
+        }
+        assert!(writer.join().is_ok());
     }
 
     #[test]
