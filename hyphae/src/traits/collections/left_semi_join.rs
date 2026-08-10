@@ -7,6 +7,8 @@
 
 use std::{hash::Hash, marker::PhantomData};
 
+use super::left_join::RelationPlan;
+
 use crate::{
     map_query::{
         BuildQueryRuntime, MapDiffSink, MapQuery,
@@ -159,13 +161,29 @@ where
     /// Keeps left rows that have at least one matching right row. Unmatched
     /// left rows are excluded. Output contains only left data.
     #[allow(clippy::type_complexity)]
-    fn left_semi_join_fk<Rel, R>(self, right: R) -> impl MapQuery<Key = K, Value = V>
+    fn left_semi_join_fk<Rel, R>(
+        self,
+        right: R,
+    ) -> RelationPlan<
+        LeftSemiJoinPlan<
+            Self,
+            R,
+            K,
+            V,
+            R::Key,
+            Rel::Child,
+            Option<K>,
+            impl Fn(&K, &V) -> Option<K> + Send + Sync + 'static,
+            impl Fn(&R::Key, &Rel::Child) -> Option<K> + Send + Sync + 'static,
+        >,
+        Rel,
+    >
     where
         Rel: ForeignKeyRelation,
         R: MapQuery<Value = Rel::Child>,
         Rel::ForeignKey: IdFor<Rel::Parent, MapKey = K>,
     {
-        LeftSemiJoinPlan {
+        RelationPlan::<_, Rel>::new(LeftSemiJoinPlan {
             left: self,
             right,
             left_key: |k: &K, _: &V| Some(k.clone()),
@@ -173,7 +191,7 @@ where
                 Rel::foreign_key(rv).map(|foreign_key| foreign_key.map_key())
             },
             _types: PhantomData,
-        }
+        })
     }
 
     /// Left semi join using explicit key extractors.

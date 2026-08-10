@@ -7,6 +7,8 @@
 
 use std::{hash::Hash, marker::PhantomData};
 
+use super::left_join::RelationPlan;
+
 use crate::{
     map_query::{
         BuildQueryRuntime, MapDiffSink, MapQuery,
@@ -234,13 +236,26 @@ where
     fn inner_join_fk<Rel, R>(
         self,
         right: R,
-    ) -> impl MapQuery<Key = (K, R::Key), Value = (V, Rel::Child)>
+    ) -> RelationPlan<
+        InnerJoinByPairPlan<
+            Self,
+            R,
+            K,
+            V,
+            R::Key,
+            Rel::Child,
+            Option<K>,
+            impl Fn(&K, &V) -> Option<K> + Send + Sync + 'static,
+            impl Fn(&R::Key, &Rel::Child) -> Option<K> + Send + Sync + 'static,
+        >,
+        Rel,
+    >
     where
         Rel: ForeignKeyRelation,
         R: MapQuery<Value = Rel::Child>,
         Rel::ForeignKey: IdFor<Rel::Parent, MapKey = K>,
     {
-        InnerJoinByPairPlan {
+        RelationPlan::<_, Rel>::new(InnerJoinByPairPlan {
             left: self,
             right,
             left_key: |k: &K, _: &V| Some(k.clone()),
@@ -248,7 +263,7 @@ where
                 Rel::foreign_key(rv).map(|foreign_key| foreign_key.map_key())
             },
             _types: PhantomData,
-        }
+        })
     }
 
     /// Inner join using explicit key extractors.
@@ -450,6 +465,22 @@ mod tests {
         fn foreign_key(post: &Post) -> Option<UserId> {
             Some(post.user_id.clone())
         }
+    }
+
+    #[test]
+    fn inner_join_fk_retains_relationship_partition_identity() {
+        fn assert_relation_partition<P>(_: &P)
+        where
+            P: crate::map_query::properties::PlanProperties<
+                    OutputPartition = crate::map_query::properties::ByRelation<UserPosts>,
+                >,
+        {
+        }
+
+        let users = CellMap::<String, User>::new();
+        let posts = CellMap::<String, Post>::new();
+        let plan = users.inner_join_fk::<UserPosts, _>(posts);
+        assert_relation_partition(&plan);
     }
 
     #[test]

@@ -30,6 +30,15 @@ pub struct RelationPlan<P, Rel> {
     _relation: PhantomData<fn() -> Rel>,
 }
 
+impl<P, Rel> RelationPlan<P, Rel> {
+    pub(crate) const fn new(plan: P) -> Self {
+        Self {
+            plan,
+            _relation: PhantomData,
+        }
+    }
+}
+
 impl<P, Rel> PlanProperties for RelationPlan<P, Rel>
 where
     P: PlanProperties,
