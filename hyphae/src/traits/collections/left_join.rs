@@ -15,8 +15,13 @@ use crate::{
     subscription::SubscriptionGuard,
     traits::{
         CellValue, ForeignKeyRelation, IdFor, OptionalRightKey, RequiredRightKey, RightJoinKey,
-        collections::internal::join_runtime::{
-            install_keyed_join_runtime_via_query, install_two_keyed_join_runtime_via_query,
+        collections::internal::{
+            join_region::{
+                DirectProject, JCons, JNil, JoinRegion, JoinStage, StageProject, collect_matches,
+            },
+            join_runtime::{
+                install_keyed_join_runtime_via_query, install_two_keyed_join_runtime_via_query,
+            },
         },
     },
 };
@@ -141,6 +146,19 @@ pub trait JoinProjection<LK, LV, RK, RV, OV>:
     join_projection_private::Sealed + Send + Sync + 'static
 {
     fn project(&self, key: &LK, left: &LV, rights: &[(RK, RV)]) -> OV;
+}
+
+/// Adapts a recognized public join projection to a join-region stage.
+#[doc(hidden)]
+pub struct JoinProjectionProject<P>(pub P);
+
+impl<LK, LV, RK, RV, OV, P> StageProject<LK, LV, RK, RV, OV> for JoinProjectionProject<P>
+where
+    P: JoinProjection<LK, LV, RK, RV, OV>,
+{
+    fn project(&self, key: &LK, left: &LV, rights: &[(RK, RV)]) -> Option<OV> {
+        Some(self.0.project(key, left, rights))
+    }
 }
 
 /// Adapter for the ordinary `map_values(|key, (left, rights)| ...)` surface.
@@ -777,6 +795,144 @@ where
             map_second: DirectJoinProjection(f),
             _types: PhantomData,
         }
+    }
+}
+
+#[allow(private_bounds)]
+impl<L, R1, R2, LK, LV, RK1, RV1, JK1, MV, RK2, RV2, JK2, OV, FL1, FR1, FM1, FL2, FR2, FM2>
+    TwoLeftJoinMappedPlan<
+        TwoLeftJoinPlan<
+            L,
+            R1,
+            R2,
+            LK,
+            LV,
+            RK1,
+            RV1,
+            JK1,
+            MV,
+            RK2,
+            RV2,
+            JK2,
+            FL1,
+            FR1,
+            FM1,
+            FL2,
+            FR2,
+        >,
+        LK,
+        MV,
+        RK2,
+        RV2,
+        OV,
+        FM2,
+    >
+where
+    L: MapQuery<Key = LK, Value = LV> + PreservesMapKey<LK>,
+    R1: MapQuery<Key = RK1, Value = RV1>,
+    R2: MapQuery<Key = RK2, Value = RV2>,
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK1: Hash + Eq + CellValue,
+    RV1: CellValue,
+    JK1: Hash + Eq + CellValue,
+    MV: CellValue,
+    RK2: Hash + Eq + CellValue,
+    RV2: CellValue,
+    JK2: Hash + Eq + CellValue,
+    OV: CellValue,
+    FL1: Fn(&LK, &LV) -> JK1 + Send + Sync + 'static,
+    FR1: RightJoinKey<RK1, RV1, JK1>,
+    FM1: JoinProjection<LK, LV, RK1, RV1, MV>,
+    FL2: Fn(&LK, &MV) -> JK2 + Send + Sync + 'static,
+    FR2: RightJoinKey<RK2, RV2, JK2>,
+    FM2: JoinProjection<LK, MV, RK2, RV2, OV>,
+{
+    /// Promote a proven two-stage region and append its third left join.
+    #[allow(clippy::type_complexity)]
+    pub fn left_join_by<R3, RK3, RV3, JK3, FL3, FR3>(
+        self,
+        right: R3,
+        left_key: FL3,
+        right_key: FR3,
+    ) -> JoinRegion<
+        L,
+        JCons<
+            JoinStage<R1, LK, LV, RK1, RV1, JK1, MV, FL1, FR1, JoinProjectionProject<FM1>>,
+            JCons<
+                JoinStage<R2, LK, MV, RK2, RV2, JK2, OV, FL2, FR2, JoinProjectionProject<FM2>>,
+                JCons<
+                    JoinStage<
+                        R3,
+                        LK,
+                        OV,
+                        RK3,
+                        RV3,
+                        JK3,
+                        (OV, Vec<RV3>),
+                        FL3,
+                        RequiredRightKey<FR3>,
+                        DirectProject<fn(&LK, &OV, &[(RK3, RV3)]) -> (OV, Vec<RV3>)>,
+                    >,
+                    JNil,
+                >,
+            >,
+        >,
+        LK,
+        LV,
+    >
+    where
+        R3: MapQuery<Key = RK3, Value = RV3>,
+        RK3: Hash + Eq + CellValue,
+        RV3: CellValue,
+        JK3: Hash + Eq + CellValue,
+        FL3: Fn(&LK, &OV) -> JK3 + Send + Sync + 'static,
+        FR3: Fn(&RK3, &RV3) -> JK3 + Send + Sync + 'static,
+    {
+        let Self {
+            plan, map_second, ..
+        } = self;
+        let TwoLeftJoinPlan {
+            left,
+            right1,
+            right2,
+            left_key1,
+            right_key1,
+            map_first,
+            left_key2,
+            right_key2,
+            ..
+        } = plan;
+        let third_project: DirectProject<fn(&LK, &OV, &[(RK3, RV3)]) -> (OV, Vec<RV3>)> =
+            DirectProject(collect_matches::<LK, OV, RK3, RV3>);
+        JoinRegion::new(
+            left,
+            JCons {
+                head: JoinStage::new(
+                    right1,
+                    left_key1,
+                    right_key1,
+                    JoinProjectionProject(map_first),
+                ),
+                tail: JCons {
+                    head: JoinStage::new(
+                        right2,
+                        left_key2,
+                        right_key2,
+                        JoinProjectionProject(map_second),
+                    ),
+                    tail: JCons {
+                        head: JoinStage::new(
+                            right,
+                            left_key,
+                            RequiredRightKey(right_key),
+                            third_project,
+                        ),
+                        tail: JNil,
+                    },
+                },
+            },
+        )
     }
 }
 

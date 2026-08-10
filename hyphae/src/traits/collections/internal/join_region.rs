@@ -23,7 +23,7 @@ use crate::{
         properties::{ByMapKey, Partition, PlanProperties, ZeroOrOne},
     },
     subscription::SubscriptionGuard,
-    traits::{CellValue, RightJoinKey},
+    traits::{CellValue, RequiredRightKey, RightJoinKey},
 };
 
 use super::ordered_set::OrderedSet;
@@ -71,6 +71,125 @@ where
         JCons {
             head: self.head,
             tail: self.tail.push(stage),
+        }
+    }
+}
+
+/// Type information exposed by the final stage in a non-empty stage list.
+#[doc(hidden)]
+pub trait LastStage {
+    type Input: CellValue;
+    type RightKey: Hash + Eq + CellValue;
+    type RightValue: CellValue;
+}
+
+impl<Right, K, Input, RK, RV, JK, Output, FL, FR, Project> LastStage
+    for JCons<JoinStage<Right, K, Input, RK, RV, JK, Output, FL, FR, Project>, JNil>
+where
+    Input: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+{
+    type Input = Input;
+    type RightKey = RK;
+    type RightValue = RV;
+}
+
+impl<Head, TailHead, TailTail> LastStage for JCons<Head, JCons<TailHead, TailTail>>
+where
+    JCons<TailHead, TailTail>: LastStage,
+{
+    type Input = <JCons<TailHead, TailTail> as LastStage>::Input;
+    type RightKey = <JCons<TailHead, TailTail> as LastStage>::RightKey;
+    type RightValue = <JCons<TailHead, TailTail> as LastStage>::RightValue;
+}
+
+/// Replace the final stage projection while preserving the stage spine.
+#[doc(hidden)]
+pub trait ReplaceLastProject<F, Output> {
+    type Stages;
+
+    fn replace_last_project(self, project: F) -> Self::Stages;
+}
+
+impl<Right, K, Input, RK, RV, JK, OldOutput, FL, FR, OldProject, F, Output>
+    ReplaceLastProject<F, Output>
+    for JCons<JoinStage<Right, K, Input, RK, RV, JK, OldOutput, FL, FR, OldProject>, JNil>
+{
+    type Stages =
+        JCons<JoinStage<Right, K, Input, RK, RV, JK, Output, FL, FR, DirectProject<F>>, JNil>;
+
+    fn replace_last_project(self, project: F) -> Self::Stages {
+        let JoinStage {
+            right,
+            left_key,
+            right_key,
+            ..
+        } = self.head;
+        JCons {
+            head: JoinStage::new(right, left_key, right_key, DirectProject(project)),
+            tail: JNil,
+        }
+    }
+}
+
+impl<Head, TailHead, TailTail, F, Output> ReplaceLastProject<F, Output>
+    for JCons<Head, JCons<TailHead, TailTail>>
+where
+    JCons<TailHead, TailTail>: ReplaceLastProject<F, Output>,
+{
+    type Stages = JCons<Head, <JCons<TailHead, TailTail> as ReplaceLastProject<F, Output>>::Stages>;
+
+    fn replace_last_project(self, project: F) -> Self::Stages {
+        JCons {
+            head: self.head,
+            tail: self.tail.replace_last_project(project),
+        }
+    }
+}
+
+/// Map the successful output of the final stage without adding a plan node.
+#[doc(hidden)]
+pub trait MapLast<F, Output> {
+    type Stages;
+
+    fn map_last(self, map: F) -> Self::Stages;
+}
+
+impl<Right, K, Input, RK, RV, JK, Intermediate, FL, FR, Project, F, Output> MapLast<F, Output>
+    for JCons<JoinStage<Right, K, Input, RK, RV, JK, Intermediate, FL, FR, Project>, JNil>
+{
+    type Stages = JCons<
+        JoinStage<Right, K, Input, RK, RV, JK, Output, FL, FR, ThenMap<Project, F, Intermediate>>,
+        JNil,
+    >;
+
+    fn map_last(self, map: F) -> Self::Stages {
+        let JoinStage {
+            right,
+            left_key,
+            right_key,
+            project,
+            ..
+        } = self.head;
+        JCons {
+            head: JoinStage::new(right, left_key, right_key, ThenMap::new(project, map)),
+            tail: JNil,
+        }
+    }
+}
+
+impl<Head, TailHead, TailTail, F, Output> MapLast<F, Output>
+    for JCons<Head, JCons<TailHead, TailTail>>
+where
+    JCons<TailHead, TailTail>: MapLast<F, Output>,
+{
+    type Stages = JCons<Head, <JCons<TailHead, TailTail> as MapLast<F, Output>>::Stages>;
+
+    fn map_last(self, map: F) -> Self::Stages {
+        JCons {
+            head: self.head,
+            tail: self.tail.map_last(map),
         }
     }
 }
@@ -144,6 +263,22 @@ where
 
 /// Adapt a projection which consumes the indexed right matches directly.
 pub struct DirectProject<F>(pub F);
+
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn collect_matches<K, Input, RK, RV>(
+    _: &K,
+    input: &Input,
+    rights: &[(RK, RV)],
+) -> (Input, Vec<RV>)
+where
+    Input: Clone,
+    RV: Clone,
+{
+    (
+        input.clone(),
+        rights.iter().map(|(_, value)| value.clone()).collect(),
+    )
+}
 
 impl<K, Input, RightKey, RightValue, Output, F> StageProject<K, Input, RightKey, RightValue, Output>
     for DirectProject<F>
@@ -422,6 +557,33 @@ where
         self.recompute_impacted(&mut impacted)
     }
 
+    fn apply_left_batch(&mut self, changes: &[MapDiff<K, I>]) -> Vec<MapDiff<K, O>> {
+        let mut impacted = OrderedSet::default();
+        let mut pending: Vec<_> = changes.iter().rev().collect();
+        while let Some(change) = pending.pop() {
+            match change {
+                MapDiff::Initial { entries } => {
+                    impacted.extend(self.left_rows.keys().cloned());
+                    self.left_rows.clear();
+                    self.left_join_keys.clear();
+                    self.join_to_left.clear();
+                    for (key, value) in entries {
+                        self.upsert_left(key.clone(), value.clone(), &mut impacted);
+                    }
+                }
+                MapDiff::Insert { key, value }
+                | MapDiff::Update {
+                    key,
+                    new_value: value,
+                    ..
+                } => self.upsert_left(key.clone(), value.clone(), &mut impacted),
+                MapDiff::Remove { key, .. } => self.remove_left(key, &mut impacted),
+                MapDiff::Batch { changes } => pending.extend(changes.iter().rev()),
+            }
+        }
+        self.recompute_impacted(&mut impacted)
+    }
+
     /// Apply one right event and return changes for every affected left row.
     pub(super) fn apply_right_diff(&mut self, diff: &MapDiff<RK, RV>) -> Vec<MapDiff<K, O>> {
         if let MapDiff::Batch { changes } = diff {
@@ -457,6 +619,39 @@ where
             }
         }
 
+        let mut impacted = OrderedSet::default();
+        for join_key in changed_join_keys.drain() {
+            if let Some(left_keys) = self.join_to_left.get(&join_key) {
+                impacted.extend(left_keys.iter().cloned());
+            }
+        }
+        self.recompute_impacted(&mut impacted)
+    }
+
+    fn apply_right_batch(&mut self, changes: &[MapDiff<RK, RV>]) -> Vec<MapDiff<K, O>> {
+        let mut changed_join_keys = OrderedSet::default();
+        let mut pending: Vec<_> = changes.iter().rev().collect();
+        while let Some(change) = pending.pop() {
+            match change {
+                MapDiff::Initial { entries } => {
+                    changed_join_keys.extend(self.right_join_keys.values().cloned());
+                    self.right_rows.clear();
+                    self.right_join_keys.clear();
+                    self.join_to_right.clear();
+                    for (key, value) in entries {
+                        self.upsert_right(key.clone(), value.clone(), &mut changed_join_keys);
+                    }
+                }
+                MapDiff::Insert { key, value }
+                | MapDiff::Update {
+                    key,
+                    new_value: value,
+                    ..
+                } => self.upsert_right(key.clone(), value.clone(), &mut changed_join_keys),
+                MapDiff::Remove { key, .. } => self.remove_right(key, &mut changed_join_keys),
+                MapDiff::Batch { changes } => pending.extend(changes.iter().rev()),
+            }
+        }
         let mut impacted = OrderedSet::default();
         for join_key in changed_join_keys.drain() {
             if let Some(left_keys) = self.join_to_left.get(&join_key) {
@@ -603,11 +798,17 @@ where
     type RightValue = RV;
 
     fn apply_left_diff(&mut self, diff: &MapDiff<K, I>) -> Vec<MapDiff<K, O>> {
-        self.apply_left_diff(diff)
+        match diff {
+            MapDiff::Batch { changes } => self.apply_left_batch(changes),
+            _ => self.apply_left_diff(diff),
+        }
     }
 
     fn apply_right_diff(&mut self, diff: &MapDiff<RK, RV>) -> Vec<MapDiff<K, O>> {
-        self.apply_right_diff(diff)
+        match diff {
+            MapDiff::Batch { changes } => self.apply_right_batch(changes),
+            _ => self.apply_right_diff(diff),
+        }
     }
 }
 
@@ -644,12 +845,17 @@ where
     type Output = Tail::Output;
 
     fn apply_left_diff(&mut self, diff: &MapDiff<K, Input>) -> Vec<MapDiff<K, Self::Output>> {
+        let preserve_batch = matches!(diff, MapDiff::Batch { .. });
         let head_changes = self.head.apply_left_diff(diff);
         let mut output = Vec::new();
         for change in &head_changes {
             output.extend(self.tail.apply_left_diff(change));
         }
-        output
+        if preserve_batch {
+            vec![MapDiff::Batch { changes: output }]
+        } else {
+            output
+        }
     }
 }
 
@@ -684,12 +890,17 @@ where
     Tail: RuntimeStages<K, Head::Output>,
 {
     fn apply_right_root_diff(&mut self, diff: &MapDiff<RK, RV>) -> Vec<MapDiff<K, Self::Output>> {
+        let preserve_batch = matches!(diff, MapDiff::Batch { .. });
         let head_changes = self.head.apply_right_diff(diff);
         let mut output = Vec::new();
         for change in &head_changes {
             output.extend(self.tail.apply_left_diff(change));
         }
-        output
+        if preserve_batch {
+            vec![MapDiff::Batch { changes: output }]
+        } else {
+            output
+        }
     }
 }
 
@@ -722,6 +933,104 @@ impl<Left, Stages, K, Input> JoinRegion<Left, Stages, K, Input> {
             stages,
             _types: PhantomData,
         }
+    }
+}
+
+impl<Left, Stages, K, Input, Current> JoinRegion<Left, Stages, K, Input>
+where
+    K: Hash + Eq + CellValue,
+    Input: CellValue,
+    Stages: StageList<K, Input, Output = Current>,
+    Current: CellValue,
+{
+    /// Fuse a key-preserving projection into the final join stage.
+    pub fn map_values<Output, F>(
+        self,
+        map: F,
+    ) -> JoinRegion<Left, <Stages as MapLast<F, Output>>::Stages, K, Input>
+    where
+        Output: CellValue,
+        F: Fn(&K, &Current) -> Output + Send + Sync + 'static,
+        Stages: MapLast<F, Output>,
+    {
+        JoinRegion::new(self.left, self.stages.map_last(map))
+    }
+
+    /// Project the indexed matches of the final join directly.
+    pub fn map_joined_values<Output, F>(
+        self,
+        project: F,
+    ) -> JoinRegion<Left, <Stages as ReplaceLastProject<F, Output>>::Stages, K, Input>
+    where
+        Output: CellValue,
+        Stages: LastStage + ReplaceLastProject<F, Output>,
+        F: Fn(
+                &K,
+                &<Stages as LastStage>::Input,
+                &[(
+                    <Stages as LastStage>::RightKey,
+                    <Stages as LastStage>::RightValue,
+                )],
+            ) -> Output
+            + Send
+            + Sync
+            + 'static,
+    {
+        JoinRegion::new(self.left, self.stages.replace_last_project(project))
+    }
+
+    /// Append another ad-hoc left join to this physical region.
+    #[allow(clippy::type_complexity)]
+    pub fn left_join_by<R, RK, RV, JK, FL, FR>(
+        self,
+        right: R,
+        left_key: FL,
+        right_key: FR,
+    ) -> JoinRegion<
+        Left,
+        <Stages as Push<
+            JoinStage<
+                R,
+                K,
+                Current,
+                RK,
+                RV,
+                JK,
+                (Current, Vec<RV>),
+                FL,
+                RequiredRightKey<FR>,
+                DirectProject<fn(&K, &Current, &[(RK, RV)]) -> (Current, Vec<RV>)>,
+            >,
+        >>::Output,
+        K,
+        Input,
+    >
+    where
+        R: MapQuery<Key = RK, Value = RV>,
+        RK: Hash + Eq + CellValue,
+        RV: CellValue,
+        JK: Hash + Eq + CellValue,
+        FL: Fn(&K, &Current) -> JK + Send + Sync + 'static,
+        FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+        Stages: Push<
+            JoinStage<
+                R,
+                K,
+                Current,
+                RK,
+                RV,
+                JK,
+                (Current, Vec<RV>),
+                FL,
+                RequiredRightKey<FR>,
+                DirectProject<fn(&K, &Current, &[(RK, RV)]) -> (Current, Vec<RV>)>,
+            >,
+        >,
+    {
+        let project: DirectProject<fn(&K, &Current, &[(RK, RV)]) -> (Current, Vec<RV>)> =
+            DirectProject(collect_matches::<K, Current, RK, RV>);
+        let stage = JoinStage::new(right, left_key, RequiredRightKey(right_key), project);
+        JoinRegion::new(self.left, self.stages.push(stage))
     }
 }
 

@@ -15,9 +15,14 @@ mod select_cell;
 pub use count_by::CountByExt;
 pub use group_by::GroupByExt;
 pub use inner_join::InnerJoinExt;
+#[doc(hidden)]
+pub use internal::join_region::{
+    CollectProject, DirectProject, JCons, JNil, JoinRegion, JoinStage, LastStage, MapLast, Push,
+    ReplaceLastProject, StageList, ThenMap,
+};
 pub use left_join::{
-    DirectJoinProjection, JoinProjection, JoinedValuesPlan, LeftJoinExt, LeftJoinPlan,
-    RelationPlan, TupleJoinProjection, TwoLeftJoinMappedPlan, TwoLeftJoinPlan,
+    DirectJoinProjection, JoinProjection, JoinProjectionProject, JoinedValuesPlan, LeftJoinExt,
+    LeftJoinPlan, RelationPlan, TupleJoinProjection, TwoLeftJoinMappedPlan, TwoLeftJoinPlan,
 };
 pub use left_semi_join::LeftSemiJoinExt;
 pub use map_values::{FilterMapValuesPlan, MapValuesExt, MapValuesPlan};
