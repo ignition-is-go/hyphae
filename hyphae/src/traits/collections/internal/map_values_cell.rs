@@ -292,7 +292,7 @@ mod tests {
 
         let (sink, state, _diffs) = capturing_sink::<String, i32>();
         let mut cx = crate::map_query::compiler::CompileContext::default();
-        let _guards = install_map_values_cell_via_query(
+        let mut guards = install_map_values_cell_via_query(
             &mut cx,
             values,
             {
@@ -307,6 +307,8 @@ mod tests {
             },
             sink,
         );
+        guards.extend(cx.activate());
+        assert!(!guards.is_empty());
 
         assert_eq!(
             state
@@ -345,12 +347,14 @@ mod tests {
         };
 
         let mut cx = crate::map_query::compiler::CompileContext::default();
-        let _guards = install_map_values_cell_via_query(
+        let mut guards = install_map_values_cell_via_query(
             &mut cx,
             source.clone(),
             |_: &String, v: &i32| Cell::new(*v * 10).lock(),
             sink,
         );
+        guards.extend(cx.activate());
+        assert!(!guards.is_empty());
 
         // Drain the initial empty diff emitted on subscription.
         let _ = rx.try_iter().count();

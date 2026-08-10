@@ -67,6 +67,13 @@ fn updated_row(key: u64, generation: u64) -> Arc<Row> {
     })
 }
 
+fn updated_dimension(key: u64, generation: u64) -> Arc<Dimension> {
+    Arc::new(Dimension {
+        relation: key % 64,
+        payload: key.saturating_mul(31).wrapping_add(generation),
+    })
+}
+
 fn fold_matches(row: &Row, matches: &[Arc<Dimension>], salt: u64) -> Arc<Row> {
     let payload = matches.iter().fold(row.payload, |acc, dimension| {
         acc.rotate_left(5) ^ dimension.payload.wrapping_add(salt)
@@ -175,7 +182,7 @@ fn bench_repeated_relation_four_join(c: &mut Criterion) {
         )
         .map_joined_values(|_key, row, matches| fold_indexed_matches(row, matches, 3))
         .left_join_by(
-            shared_dimension,
+            shared_dimension.clone(),
             |_key, row| row.relation,
             |_key, dimension| dimension.relation,
         )
@@ -190,6 +197,21 @@ fn bench_repeated_relation_four_join(c: &mut Criterion) {
             black_box(output.get_value(&0));
         });
     });
+
+    let mut right_generation = 0_u64;
+    c.bench_function(
+        "compiled_query/repeated_relation_four_join/repeated_right_single",
+        |b| {
+            b.iter(|| {
+                right_generation = right_generation.wrapping_add(1);
+                shared_dimension.insert(
+                    0,
+                    updated_dimension(0, black_box(right_generation)),
+                );
+                black_box(output.get_value(&0));
+            });
+        },
+    );
 }
 
 fn bench_rekey_between_joins(c: &mut Criterion) {

@@ -37,13 +37,8 @@ where
     M::Value: CellValue,
     S: MapDiffSink<M::Key, M::Value>,
 {
-    cx.intern_root(identity);
-    let keepalive = source.clone();
-    let guard = source.subscribe_diffs_reactive(move |diff| {
-        let _ = &keepalive;
-        sink(diff);
-    });
-    vec![guard]
+    cx.register_root(source, identity, sink);
+    Vec::new()
 }
 
 impl<K, V, M> MapQueryInstall<K, V> for CellMap<K, V, M>

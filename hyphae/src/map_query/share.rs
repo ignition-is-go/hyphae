@@ -260,9 +260,31 @@ where
                     cb(diff);
                 }
             });
+            let activation_start = cx.activation_count();
             let guards = install_fn(cx, fanout);
             let mut slot = self.inner.upstream_guards.lock();
             slot.extend(guards);
+            drop(slot);
+
+            // Root activation is deliberately deferred until the entire outer
+            // plan has compiled. Preserve share ownership by wrapping the
+            // upstream activations: their guards belong to the share point,
+            // not whichever downstream materialization happened to compile it
+            // first.
+            let upstream_activations = cx.take_activations_since(activation_start);
+            if !upstream_activations.is_empty() {
+                let weak = Arc::downgrade(&self.inner);
+                cx.push_activation(Box::new(move || {
+                    let guards: Vec<SubscriptionGuard> = upstream_activations
+                        .into_iter()
+                        .flat_map(|activate| activate())
+                        .collect();
+                    if let Some(inner) = weak.upgrade() {
+                        inner.upstream_guards.lock().extend(guards);
+                    }
+                    Vec::new()
+                }));
+            }
         } else {
             // Replay current state to the late-binding subscriber, then
             // register so it picks up subsequent diffs. Order matters: if we

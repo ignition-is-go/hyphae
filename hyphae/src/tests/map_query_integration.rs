@@ -127,6 +127,38 @@ fn inner_join_chain_installs_one_subscription_per_root() {
     assert_eq!(mat.get_value(&"k".to_string()), Some(((99, 2), 3)));
 }
 
+#[test]
+fn repeated_root_is_activated_once_and_fans_out_to_both_joins() {
+    use crate::traits::{DepNode, MapValuesExt};
+
+    let left = CellMap::<String, i32>::new();
+    let repeated = CellMap::<String, i32>::new();
+    left.insert("k".into(), 1);
+    repeated.insert("k".into(), 10);
+    let initial = DepNode::subscriber_count(&repeated.inner.diffs_cell);
+
+    let output = left
+        .left_join(repeated.clone())
+        .map_values(|_, (value, matches)| (*value, matches.len()))
+        .left_join(repeated.clone())
+        .materialize();
+
+    assert_eq!(
+        DepNode::subscriber_count(&repeated.inner.diffs_cell),
+        initial + 1
+    );
+    assert_eq!(output.get_value(&"k".to_string()), Some(((1, 1), vec![10])));
+
+    repeated.insert("k".into(), 20);
+    assert_eq!(output.get_value(&"k".to_string()), Some(((1, 1), vec![20])));
+
+    drop(output);
+    assert_eq!(
+        DepNode::subscriber_count(&repeated.inner.diffs_cell),
+        initial
+    );
+}
+
 use crate::traits::LeftJoinExt;
 
 #[test]

@@ -125,7 +125,8 @@ pub trait MapQuery: MapQueryInstall<Self::Key, Self::Value> + properties::PlanPr
         };
 
         let mut cx = compiler::CompileContext::default();
-        let guards = self.install(&mut cx, sink);
+        let mut guards = self.install(&mut cx, sink);
+        guards.extend(cx.activate());
         for g in guards {
             output.own(g);
         }
