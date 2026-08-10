@@ -1589,4 +1589,51 @@ mod tests {
             Some((name, matches)) if name == "ALICE" && matches.len() == 1
         ));
     }
+
+    #[test]
+    fn repeated_fk_relationship_reuses_index_and_updates_every_join() {
+        let users = CellMap::<String, User>::new();
+        let posts = CellMap::<String, Post>::new();
+        let joined = users
+            .clone()
+            .left_join_fk::<UserPosts, _>(posts.clone())
+            .map_joined_values(|_, user, first_posts| (user.clone(), first_posts.len()))
+            .left_join_fk::<UserPosts, _>(posts.clone())
+            .map_joined_values(|_, first, second_posts| (first.1, second_posts.len()))
+            .materialize();
+
+        users.insert(
+            "u1".to_string(),
+            User {
+                name: "Alice".to_string(),
+            },
+        );
+        users.insert(
+            "u2".to_string(),
+            User {
+                name: "Bob".to_string(),
+            },
+        );
+        posts.insert(
+            "p1".to_string(),
+            Post {
+                user_id: UserId("u1".to_string()),
+                title: "First".to_string(),
+            },
+        );
+
+        assert_eq!(joined.get_value(&"u1".to_string()), Some((1, 1)));
+        assert_eq!(joined.get_value(&"u2".to_string()), Some((0, 0)));
+
+        posts.insert(
+            "p1".to_string(),
+            Post {
+                user_id: UserId("u2".to_string()),
+                title: "Moved".to_string(),
+            },
+        );
+
+        assert_eq!(joined.get_value(&"u1".to_string()), Some((0, 0)));
+        assert_eq!(joined.get_value(&"u2".to_string()), Some((1, 1)));
+    }
 }

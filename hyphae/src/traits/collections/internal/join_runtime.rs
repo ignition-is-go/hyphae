@@ -68,6 +68,7 @@ where
     }
 }
 
+#[allow(clippy::use_self)]
 impl<RK, RV, JK> RelationIndexStorage<RK, RV, JK>
     for crate::map_query::compiler::DeferredPhysical<RelationIndex<RK, RV, JK>>
 where
@@ -411,6 +412,68 @@ fn apply_right_diff<LK, LV, RK, RV, JK, OK, OV, FR>(
 
     apply_one(state, diff, right_join_key, changed_join_keys);
 
+    for join_key in changed_join_keys.drain() {
+        if let Some(left_keys) = state.join_to_left.get(&join_key) {
+            impacted.extend(left_keys.iter().cloned());
+        }
+    }
+}
+
+fn observe_shared_right_diff<LK, LV, RK, RV, JK, OK, OV, FR>(
+    state: &JoinState<LK, LV, RK, RV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
+    diff: &MapDiff<RK, RV>,
+    right_join_key: &FR,
+    impacted: &mut OrderedSet<LK>,
+    changed_join_keys: &mut OrderedSet<JK>,
+) where
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    OK: Hash + Eq + CellValue,
+    OV: CellValue,
+    FR: Fn(&RK, &RV) -> JK,
+{
+    fn collect<RK, RV, JK, FR>(
+        diff: &MapDiff<RK, RV>,
+        right_join_key: &FR,
+        changed_join_keys: &mut OrderedSet<JK>,
+    ) where
+        RK: Hash + Eq + CellValue,
+        RV: CellValue,
+        JK: Hash + Eq + CellValue,
+        FR: Fn(&RK, &RV) -> JK,
+    {
+        match diff {
+            MapDiff::Initial { entries } => {
+                for (key, value) in entries {
+                    changed_join_keys.insert(right_join_key(key, value));
+                }
+            }
+            MapDiff::Insert { key, value } => {
+                changed_join_keys.insert(right_join_key(key, value));
+            }
+            MapDiff::Remove { key, old_value } => {
+                changed_join_keys.insert(right_join_key(key, old_value));
+            }
+            MapDiff::Update {
+                key,
+                old_value,
+                new_value,
+            } => {
+                changed_join_keys.insert(right_join_key(key, old_value));
+                changed_join_keys.insert(right_join_key(key, new_value));
+            }
+            MapDiff::Batch { changes } => {
+                for change in changes {
+                    collect(change, right_join_key, changed_join_keys);
+                }
+            }
+        }
+    }
+
+    collect(diff, right_join_key, changed_join_keys);
     for join_key in changed_join_keys.drain() {
         if let Some(left_keys) = state.join_to_left.get(&join_key) {
             impacted.extend(left_keys.iter().cloned());
@@ -1395,6 +1458,9 @@ where
     Sink: crate::map_query::MapDiffSink<LK, OV>,
     RI: RelationIndexStorage<RK, RV, JK>,
 {
+    let shared_index = relationship_binding
+        .as_ref()
+        .map(|(_, index)| index.clone());
     let state = Arc::new(Mutex::new(
         JoinState::<LK, LV, RK, RV, JK, LK, OV, RI>::with_right(right_index),
     ));
@@ -1432,18 +1498,32 @@ where
         let right_join_key = right_join_key;
         let compute_value = compute_value;
         let sink = sink;
+        let shared_index = shared_index;
         move |diff: &MapDiff<RK, RV>| {
             let mut state = state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let mut scratch = std::mem::take(&mut state.scratch);
-            apply_right_diff(
-                &mut state,
-                diff,
-                right_join_key.as_ref(),
-                &mut scratch.impacted,
-                &mut scratch.changed_join_keys,
-            );
+            if shared_index
+                .as_ref()
+                .is_none_or(crate::map_query::compiler::DeferredPhysical::maintains_index)
+            {
+                apply_right_diff(
+                    &mut state,
+                    diff,
+                    right_join_key.as_ref(),
+                    &mut scratch.impacted,
+                    &mut scratch.changed_join_keys,
+                );
+            } else {
+                observe_shared_right_diff(
+                    &state,
+                    diff,
+                    right_join_key.as_ref(),
+                    &mut scratch.impacted,
+                    &mut scratch.changed_join_keys,
+                );
+            }
             let changes =
                 recompute_keyed_impacted(&mut state, &mut scratch, compute_value.as_ref());
             state.scratch = scratch;

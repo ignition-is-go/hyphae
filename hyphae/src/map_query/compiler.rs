@@ -2,7 +2,10 @@ use std::{
     any::{Any, TypeId},
     collections::HashMap,
     hash::Hash,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use crate::{
@@ -59,16 +62,22 @@ where
     T: Default + Send + Sync + 'static,
 {
     fn bind(&self, key: RelationshipKey, indexes: &mut HashMap<RelationshipKey, Box<dyn Any>>) {
-        let index = indexes
+        let (index, maintains_index) = indexes
             .get(&key)
             .and_then(|index| index.downcast_ref::<Arc<Mutex<T>>>())
             .cloned()
-            .unwrap_or_else(|| {
-                let index = Arc::new(Mutex::new(T::default()));
-                indexes.insert(key, Box::new(Arc::clone(&index)));
-                index
-            });
+            .map_or_else(
+                || {
+                    let index = Arc::new(Mutex::new(T::default()));
+                    indexes.insert(key, Box::new(Arc::clone(&index)));
+                    (index, true)
+                },
+                |index| (index, false),
+            );
         let _already_bound = self.slot.inner.set(index).is_err();
+        self.slot
+            .maintains_index
+            .store(maintains_index, Ordering::Release);
     }
 }
 
@@ -76,12 +85,14 @@ where
 /// its physical source during compilation.
 pub struct DeferredPhysical<T> {
     inner: Arc<OnceLock<Arc<Mutex<T>>>>,
+    maintains_index: Arc<AtomicBool>,
 }
 
 impl<T> Clone for DeferredPhysical<T> {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
+            maintains_index: Arc::clone(&self.maintains_index),
         }
     }
 }
@@ -90,6 +101,7 @@ impl<T> Default for DeferredPhysical<T> {
     fn default() -> Self {
         Self {
             inner: Arc::new(OnceLock::new()),
+            maintains_index: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -108,7 +120,7 @@ where
         read(&index)
     }
 
-    pub(crate) fn write<R>(&mut self, write: impl FnOnce(&mut T) -> R) -> R {
+    pub(crate) fn write<R>(&self, write: impl FnOnce(&mut T) -> R) -> R {
         let index = self
             .inner
             .get_or_init(|| Arc::new(Mutex::new(T::default())));
@@ -116,6 +128,10 @@ where
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         write(&mut index)
+    }
+
+    pub(crate) fn maintains_index(&self) -> bool {
+        self.maintains_index.load(Ordering::Acquire)
     }
 }
 
@@ -248,6 +264,7 @@ impl CompileContext {
         self.relation_hint.take()
     }
 
+    #[allow(clippy::unused_self)]
     pub(crate) fn prepare_relationship_index<T>(&self) -> DeferredPhysical<T> {
         DeferredPhysical::default()
     }
@@ -393,5 +410,25 @@ mod tests {
         assert_eq!(cx.physical_relationship_count(), 1);
         guards.extend(cx.activate());
         assert_eq!(guards.len(), 2);
+    }
+
+    #[test]
+    fn repeated_relationship_assigns_exactly_one_index_maintainer() {
+        let source = CellMap::<u64, u64>::new();
+        let identity = SourceIdentity::from_ptr(Arc::as_ptr(&source.inner));
+        let mut cx = CompileContext::default();
+        let first = cx.prepare_relationship_index::<Vec<u64>>();
+        let second = cx.prepare_relationship_index::<Vec<u64>>();
+
+        cx.with_root_relation_index(TypeId::of::<ParentChildren>(), first.clone(), |cx| {
+            cx.register_root(&source, identity, |_| {});
+        });
+        cx.with_root_relation_index(TypeId::of::<ParentChildren>(), second.clone(), |cx| {
+            cx.register_root(&source, identity, |_| {});
+        });
+
+        assert!(first.maintains_index());
+        assert!(!second.maintains_index());
+        assert_eq!(cx.physical_relationship_count(), 1);
     }
 }

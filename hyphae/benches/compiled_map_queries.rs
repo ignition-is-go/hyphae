@@ -10,7 +10,7 @@ use std::sync::Arc;
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use hyphae::{
     CellMap, MapQuery,
-    traits::{LeftJoinExt, MapEntriesExt, MapValuesExt, SelectExt},
+    traits::{ForeignKeyRelation, IdFor, LeftJoinExt, MapEntriesExt, MapValuesExt, SelectExt},
 };
 
 const ROWS: u64 = 1_000;
@@ -26,6 +26,27 @@ struct Row {
 struct Dimension {
     relation: u64,
     payload: u64,
+}
+
+struct BenchmarkParent;
+struct BenchmarkDimensions;
+
+impl IdFor<BenchmarkParent> for u64 {
+    type MapKey = Self;
+
+    fn map_key(&self) -> Self::MapKey {
+        *self
+    }
+}
+
+impl ForeignKeyRelation for BenchmarkDimensions {
+    type Parent = BenchmarkParent;
+    type Child = Arc<Dimension>;
+    type ForeignKey = u64;
+
+    fn foreign_key(dimension: &Self::Child) -> Option<Self::ForeignKey> {
+        Some(dimension.relation)
+    }
 }
 
 fn source_rows() -> CellMap<u64, Arc<Row>> {
@@ -211,6 +232,33 @@ fn bench_repeated_relation_four_join(c: &mut Criterion) {
     );
 }
 
+fn bench_repeated_typed_relation_four_join(c: &mut Criterion) {
+    let source = source_rows();
+    let shared_dimension = dimensions(9);
+    let output = source
+        .left_join_fk::<BenchmarkDimensions, _>(shared_dimension.clone())
+        .map_joined_values(|_key, row, matches| fold_indexed_matches(row, matches, 1))
+        .left_join_fk::<BenchmarkDimensions, _>(shared_dimension.clone())
+        .map_joined_values(|_key, row, matches| fold_indexed_matches(row, matches, 2))
+        .left_join_fk::<BenchmarkDimensions, _>(shared_dimension.clone())
+        .map_joined_values(|_key, row, matches| fold_indexed_matches(row, matches, 3))
+        .left_join_fk::<BenchmarkDimensions, _>(shared_dimension.clone())
+        .map_joined_values(|_key, row, matches| fold_indexed_matches(row, matches, 4))
+        .materialize();
+
+    let mut generation = 0_u64;
+    c.bench_function(
+        "compiled_query/repeated_typed_relation_four_join/repeated_right_single",
+        |b| {
+            b.iter(|| {
+                generation = generation.wrapping_add(1);
+                shared_dimension.insert(0, updated_dimension(0, black_box(generation)));
+                black_box(output.get_value(&0));
+            });
+        },
+    );
+}
+
 fn bench_rekey_between_joins(c: &mut Criterion) {
     let source = source_rows();
     let first = dimensions(11);
@@ -287,6 +335,7 @@ criterion_group!(
     bench_projection_region,
     bench_two_join_region,
     bench_repeated_relation_four_join,
+    bench_repeated_typed_relation_four_join,
     bench_rekey_between_joins,
     bench_two_join_batches,
 );
