@@ -12,9 +12,13 @@ use crate::{
     subscription::SubscriptionGuard,
     traits::{
         CellValue, ForeignKeyRelation, IdFor,
-        collections::internal::join_runtime::install_keyed_join_runtime_via_query,
+        collections::internal::join_runtime::{
+            install_keyed_join_runtime_via_query, install_two_keyed_join_runtime_via_query,
+        },
     },
 };
+
+use super::map_values::MapValuesPlan;
 
 /// Plan node for [`LeftJoinExt::left_join`], [`LeftJoinExt::left_join_fk`],
 /// and [`LeftJoinExt::left_join_by`].
@@ -93,6 +97,377 @@ where
     type Value = (LV, Vec<RV>);
 }
 
+/// A statically recognized `left_join -> map_values -> left_join` region.
+///
+/// The named shape lets installation coordinate all three roots through one
+/// state machine instead of installing two independent join runtimes.
+pub struct TwoLeftJoinPlan<
+    L,
+    R1,
+    R2,
+    LK,
+    LV,
+    RK1,
+    RV1,
+    JK1,
+    MV,
+    RK2,
+    RV2,
+    JK2,
+    FL1,
+    FR1,
+    FM1,
+    FL2,
+    FR2,
+> where
+    L: MapQuery<Key = LK, Value = LV>,
+    R1: MapQuery<Key = RK1, Value = RV1>,
+    R2: MapQuery<Key = RK2, Value = RV2>,
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK1: Hash + Eq + CellValue,
+    RV1: CellValue,
+    JK1: Hash + Eq + CellValue,
+    MV: CellValue,
+    RK2: Hash + Eq + CellValue,
+    RV2: CellValue,
+    JK2: Hash + Eq + CellValue,
+    FL1: Fn(&LK, &LV) -> JK1 + Send + Sync + 'static,
+    FR1: Fn(&RK1, &RV1) -> JK1 + Send + Sync + 'static,
+    FM1: Fn(&LK, &(LV, Vec<RV1>)) -> MV + Send + Sync + 'static,
+    FL2: Fn(&LK, &MV) -> JK2 + Send + Sync + 'static,
+    FR2: Fn(&RK2, &RV2) -> JK2 + Send + Sync + 'static,
+{
+    left: L,
+    right1: R1,
+    right2: R2,
+    left_key1: FL1,
+    right_key1: FR1,
+    map_first: FM1,
+    left_key2: FL2,
+    right_key2: FR2,
+    #[allow(clippy::type_complexity)]
+    _types: PhantomData<fn() -> (LK, LV, RK1, RV1, JK1, MV, RK2, RV2, JK2)>,
+}
+
+/// Final projection attached to a coordinated two-left-join region.
+pub struct TwoLeftJoinMappedPlan<P, LK, MV, RK2, RV2, OV, F>
+where
+    P: MapQuery<Key = LK, Value = (MV, Vec<RV2>)>,
+    LK: Hash + Eq + CellValue,
+    MV: CellValue,
+    RK2: Hash + Eq + CellValue,
+    RV2: CellValue,
+    OV: CellValue,
+    F: Fn(&LK, &(MV, Vec<RV2>)) -> OV + Send + Sync + 'static,
+{
+    plan: P,
+    map_second: F,
+    _types: PhantomData<fn() -> (LK, MV, RK2, RV2, OV)>,
+}
+
+impl<L, R1, R2, LK, LV, RK1, RV1, JK1, MV, RK2, RV2, JK2, FL1, FR1, FM1, FL2, FR2>
+    MapQueryInstall<LK, (MV, Vec<RV2>)>
+    for TwoLeftJoinPlan<
+        L,
+        R1,
+        R2,
+        LK,
+        LV,
+        RK1,
+        RV1,
+        JK1,
+        MV,
+        RK2,
+        RV2,
+        JK2,
+        FL1,
+        FR1,
+        FM1,
+        FL2,
+        FR2,
+    >
+where
+    L: MapQuery<Key = LK, Value = LV>,
+    R1: MapQuery<Key = RK1, Value = RV1>,
+    R2: MapQuery<Key = RK2, Value = RV2>,
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK1: Hash + Eq + CellValue,
+    RV1: CellValue,
+    JK1: Hash + Eq + CellValue,
+    MV: CellValue,
+    RK2: Hash + Eq + CellValue,
+    RV2: CellValue,
+    JK2: Hash + Eq + CellValue,
+    FL1: Fn(&LK, &LV) -> JK1 + Send + Sync + 'static,
+    FR1: Fn(&RK1, &RV1) -> JK1 + Send + Sync + 'static,
+    FM1: Fn(&LK, &(LV, Vec<RV1>)) -> MV + Send + Sync + 'static,
+    FL2: Fn(&LK, &MV) -> JK2 + Send + Sync + 'static,
+    FR2: Fn(&RK2, &RV2) -> JK2 + Send + Sync + 'static,
+{
+    fn install<Sink>(self, sink: Sink) -> Vec<SubscriptionGuard>
+    where
+        Sink: MapDiffSink<LK, (MV, Vec<RV2>)>,
+    {
+        let map_first = self.map_first;
+        install_two_keyed_join_runtime_via_query(
+            self.left,
+            self.right1,
+            self.right2,
+            self.left_key1,
+            self.right_key1,
+            move |key, left, rights: &[(RK1, RV1)]| {
+                let joined = (
+                    left.clone(),
+                    rights.iter().map(|(_, value)| value.clone()).collect(),
+                );
+                map_first(key, &joined)
+            },
+            self.left_key2,
+            self.right_key2,
+            |_key, middle, rights: &[(RK2, RV2)]| {
+                (
+                    middle.clone(),
+                    rights.iter().map(|(_, value)| value.clone()).collect(),
+                )
+            },
+            sink,
+        )
+    }
+}
+
+#[allow(private_bounds)]
+impl<L, R1, R2, LK, LV, RK1, RV1, JK1, MV, RK2, RV2, JK2, FL1, FR1, FM1, FL2, FR2> MapQuery
+    for TwoLeftJoinPlan<
+        L,
+        R1,
+        R2,
+        LK,
+        LV,
+        RK1,
+        RV1,
+        JK1,
+        MV,
+        RK2,
+        RV2,
+        JK2,
+        FL1,
+        FR1,
+        FM1,
+        FL2,
+        FR2,
+    >
+where
+    L: MapQuery<Key = LK, Value = LV>,
+    R1: MapQuery<Key = RK1, Value = RV1>,
+    R2: MapQuery<Key = RK2, Value = RV2>,
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK1: Hash + Eq + CellValue,
+    RV1: CellValue,
+    JK1: Hash + Eq + CellValue,
+    MV: CellValue,
+    RK2: Hash + Eq + CellValue,
+    RV2: CellValue,
+    JK2: Hash + Eq + CellValue,
+    FL1: Fn(&LK, &LV) -> JK1 + Send + Sync + 'static,
+    FR1: Fn(&RK1, &RV1) -> JK1 + Send + Sync + 'static,
+    FM1: Fn(&LK, &(LV, Vec<RV1>)) -> MV + Send + Sync + 'static,
+    FL2: Fn(&LK, &MV) -> JK2 + Send + Sync + 'static,
+    FR2: Fn(&RK2, &RV2) -> JK2 + Send + Sync + 'static,
+{
+    type Key = LK;
+    type Value = (MV, Vec<RV2>);
+}
+
+impl<L, R1, R2, LK, LV, RK1, RV1, JK1, MV, RK2, RV2, JK2, OV, FL1, FR1, FM1, FL2, FR2, FM2>
+    MapQueryInstall<LK, OV>
+    for TwoLeftJoinMappedPlan<
+        TwoLeftJoinPlan<
+            L,
+            R1,
+            R2,
+            LK,
+            LV,
+            RK1,
+            RV1,
+            JK1,
+            MV,
+            RK2,
+            RV2,
+            JK2,
+            FL1,
+            FR1,
+            FM1,
+            FL2,
+            FR2,
+        >,
+        LK,
+        MV,
+        RK2,
+        RV2,
+        OV,
+        FM2,
+    >
+where
+    L: MapQuery<Key = LK, Value = LV>,
+    R1: MapQuery<Key = RK1, Value = RV1>,
+    R2: MapQuery<Key = RK2, Value = RV2>,
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK1: Hash + Eq + CellValue,
+    RV1: CellValue,
+    JK1: Hash + Eq + CellValue,
+    MV: CellValue,
+    RK2: Hash + Eq + CellValue,
+    RV2: CellValue,
+    JK2: Hash + Eq + CellValue,
+    OV: CellValue,
+    FL1: Fn(&LK, &LV) -> JK1 + Send + Sync + 'static,
+    FR1: Fn(&RK1, &RV1) -> JK1 + Send + Sync + 'static,
+    FM1: Fn(&LK, &(LV, Vec<RV1>)) -> MV + Send + Sync + 'static,
+    FL2: Fn(&LK, &MV) -> JK2 + Send + Sync + 'static,
+    FR2: Fn(&RK2, &RV2) -> JK2 + Send + Sync + 'static,
+    FM2: Fn(&LK, &(MV, Vec<RV2>)) -> OV + Send + Sync + 'static,
+{
+    fn install<Sink>(self, sink: Sink) -> Vec<SubscriptionGuard>
+    where
+        Sink: MapDiffSink<LK, OV>,
+    {
+        let plan = self.plan;
+        let map_first = plan.map_first;
+        let map_second = self.map_second;
+        install_two_keyed_join_runtime_via_query(
+            plan.left,
+            plan.right1,
+            plan.right2,
+            plan.left_key1,
+            plan.right_key1,
+            move |key, left, rights: &[(RK1, RV1)]| {
+                let joined = (
+                    left.clone(),
+                    rights.iter().map(|(_, value)| value.clone()).collect(),
+                );
+                map_first(key, &joined)
+            },
+            plan.left_key2,
+            plan.right_key2,
+            move |key, middle, rights: &[(RK2, RV2)]| {
+                let joined = (
+                    middle.clone(),
+                    rights.iter().map(|(_, value)| value.clone()).collect(),
+                );
+                map_second(key, &joined)
+            },
+            sink,
+        )
+    }
+}
+
+#[allow(private_bounds)]
+impl<P, LK, MV, RK2, RV2, OV, F> MapQuery for TwoLeftJoinMappedPlan<P, LK, MV, RK2, RV2, OV, F>
+where
+    P: MapQuery<Key = LK, Value = (MV, Vec<RV2>)>,
+    LK: Hash + Eq + CellValue,
+    MV: CellValue,
+    RK2: Hash + Eq + CellValue,
+    RV2: CellValue,
+    OV: CellValue,
+    F: Fn(&LK, &(MV, Vec<RV2>)) -> OV + Send + Sync + 'static,
+    Self: MapQueryInstall<LK, OV>,
+{
+    type Key = LK;
+    type Value = OV;
+}
+
+impl<L, R1, R2, LK, LV, RK1, RV1, JK1, MV, RK2, RV2, JK2, FL1, FR1, FM1, FL2, FR2>
+    TwoLeftJoinPlan<L, R1, R2, LK, LV, RK1, RV1, JK1, MV, RK2, RV2, JK2, FL1, FR1, FM1, FL2, FR2>
+where
+    L: MapQuery<Key = LK, Value = LV>,
+    R1: MapQuery<Key = RK1, Value = RV1>,
+    R2: MapQuery<Key = RK2, Value = RV2>,
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK1: Hash + Eq + CellValue,
+    RV1: CellValue,
+    JK1: Hash + Eq + CellValue,
+    MV: CellValue,
+    RK2: Hash + Eq + CellValue,
+    RV2: CellValue,
+    JK2: Hash + Eq + CellValue,
+    FL1: Fn(&LK, &LV) -> JK1 + Send + Sync + 'static,
+    FR1: Fn(&RK1, &RV1) -> JK1 + Send + Sync + 'static,
+    FM1: Fn(&LK, &(LV, Vec<RV1>)) -> MV + Send + Sync + 'static,
+    FL2: Fn(&LK, &MV) -> JK2 + Send + Sync + 'static,
+    FR2: Fn(&RK2, &RV2) -> JK2 + Send + Sync + 'static,
+{
+    /// Attach the final key-preserving projection without breaking the
+    /// coordinated physical region apart.
+    pub fn map_values<OV, F>(self, f: F) -> TwoLeftJoinMappedPlan<Self, LK, MV, RK2, RV2, OV, F>
+    where
+        OV: CellValue,
+        F: Fn(&LK, &(MV, Vec<RV2>)) -> OV + Send + Sync + 'static,
+    {
+        TwoLeftJoinMappedPlan {
+            plan: self,
+            map_second: f,
+            _types: PhantomData,
+        }
+    }
+}
+
+impl<L, R1, LK, LV, RK1, RV1, JK1, MV, FL1, FR1, FM1>
+    MapValuesPlan<LeftJoinPlan<L, R1, LK, LV, RK1, RV1, JK1, FL1, FR1>, LK, (LV, Vec<RV1>), MV, FM1>
+where
+    L: MapQuery<Key = LK, Value = LV>,
+    R1: MapQuery<Key = RK1, Value = RV1>,
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK1: Hash + Eq + CellValue,
+    RV1: CellValue,
+    JK1: Hash + Eq + CellValue,
+    MV: CellValue,
+    FL1: Fn(&LK, &LV) -> JK1 + Send + Sync + 'static,
+    FR1: Fn(&RK1, &RV1) -> JK1 + Send + Sync + 'static,
+    FM1: Fn(&LK, &(LV, Vec<RV1>)) -> MV + Send + Sync + 'static,
+{
+    /// Extend a recognized join/projection region with a second left join.
+    pub fn left_join_by<R2, RK2, RV2, JK2, FL2, FR2>(
+        self,
+        right: R2,
+        left_key: FL2,
+        right_key: FR2,
+    ) -> TwoLeftJoinPlan<L, R1, R2, LK, LV, RK1, RV1, JK1, MV, RK2, RV2, JK2, FL1, FR1, FM1, FL2, FR2>
+    where
+        R2: MapQuery<Key = RK2, Value = RV2>,
+        RK2: Hash + Eq + CellValue,
+        RV2: CellValue,
+        JK2: Hash + Eq + CellValue,
+        FL2: Fn(&LK, &MV) -> JK2 + Send + Sync + 'static,
+        FR2: Fn(&RK2, &RV2) -> JK2 + Send + Sync + 'static,
+    {
+        let LeftJoinPlan {
+            left,
+            right: right1,
+            left_key: left_key1,
+            right_key: right_key1,
+            ..
+        } = self.source;
+        TwoLeftJoinPlan {
+            left,
+            right1,
+            right2: right,
+            left_key1,
+            right_key1,
+            map_first: self.f,
+            left_key2: left_key,
+            right_key2: right_key,
+            _types: PhantomData,
+        }
+    }
+}
+
 /// Left-join operators returning [`MapQuery`] plan nodes.
 ///
 /// All three methods consume `self` and return uncompiled plan nodes; call
@@ -109,7 +484,20 @@ where
     /// key. Right matches are collected into a `Vec`; an empty `Vec` means no
     /// matching right rows were found.
     #[allow(clippy::type_complexity)]
-    fn left_join<R, RV>(self, right: R) -> impl MapQuery<Key = K, Value = (V, Vec<RV>)>
+    fn left_join<R, RV>(
+        self,
+        right: R,
+    ) -> LeftJoinPlan<
+        Self,
+        R,
+        K,
+        V,
+        K,
+        RV,
+        K,
+        impl Fn(&K, &V) -> K + Send + Sync + 'static,
+        impl Fn(&K, &RV) -> K + Send + Sync + 'static,
+    >
     where
         R: MapQuery<Key = K, Value = RV>,
         RV: CellValue,
@@ -130,7 +518,20 @@ where
     /// Right matches are collected into a `Vec`; an empty `Vec` means no
     /// matching right rows were found.
     #[allow(clippy::type_complexity)]
-    fn left_join_fk<Rel, R>(self, right: R) -> impl MapQuery<Key = K, Value = (V, Vec<Rel::Child>)>
+    fn left_join_fk<Rel, R>(
+        self,
+        right: R,
+    ) -> LeftJoinPlan<
+        Self,
+        R,
+        K,
+        V,
+        R::Key,
+        Rel::Child,
+        Option<K>,
+        impl Fn(&K, &V) -> Option<K> + Send + Sync + 'static,
+        impl Fn(&R::Key, &Rel::Child) -> Option<K> + Send + Sync + 'static,
+    >
     where
         Rel: ForeignKeyRelation,
         R: MapQuery<Value = Rel::Child>,
@@ -158,7 +559,7 @@ where
         right: R,
         left_key: FL,
         right_key: FR,
-    ) -> impl MapQuery<Key = K, Value = (V, Vec<RV>)>
+    ) -> LeftJoinPlan<Self, R, K, V, RK, RV, JK, FL, FR>
     where
         R: MapQuery<Key = RK, Value = RV>,
         RK: Hash + Eq + CellValue,
@@ -323,6 +724,73 @@ mod tests {
             seen.last(),
             Some(MapDiff::Batch { changes }) if !changes.is_empty()
         ));
+    }
+
+    #[test]
+    fn coordinated_two_join_region_tracks_every_root() {
+        let left = CellMap::<u64, (u64, i32)>::new();
+        let right1 = CellMap::<u64, (u64, i32)>::new();
+        let right2 = CellMap::<u64, (u64, i32)>::new();
+        let output = left
+            .clone()
+            .left_join_by(right1.clone(), |_, row| row.0, |_, row| row.0)
+            .map_values(|_, (left, matches)| {
+                (
+                    left.0,
+                    left.1 + matches.iter().map(|row| row.1).sum::<i32>(),
+                )
+            })
+            .left_join_by(right2.clone(), |_, row| row.0, |_, row| row.0)
+            .map_values(|_, (middle, matches)| {
+                middle.1 + matches.iter().map(|row| row.1).sum::<i32>()
+            })
+            .materialize();
+
+        left.insert(1, (7, 10));
+        assert_eq!(output.get_value(&1), Some(10));
+
+        right1.insert(11, (7, 3));
+        assert_eq!(output.get_value(&1), Some(13));
+
+        right2.insert(21, (7, 5));
+        assert_eq!(output.get_value(&1), Some(18));
+
+        right1.remove(&11);
+        assert_eq!(output.get_value(&1), Some(15));
+
+        right2.remove(&21);
+        assert_eq!(output.get_value(&1), Some(10));
+
+        left.remove(&1);
+        assert_eq!(output.get_value(&1), None);
+    }
+
+    #[test]
+    fn coordinated_two_join_region_preserves_batched_updates() {
+        let left = CellMap::<u64, (u64, i32)>::new();
+        let right1 = CellMap::<u64, (u64, i32)>::new();
+        let right2 = CellMap::<u64, (u64, i32)>::new();
+        let output = left
+            .clone()
+            .left_join_by(right1.clone(), |_, row| row.0, |_, row| row.0)
+            .map_values(|_, (left, matches)| {
+                (
+                    left.0,
+                    left.1 + matches.iter().map(|row| row.1).sum::<i32>(),
+                )
+            })
+            .left_join_by(right2.clone(), |_, row| row.0, |_, row| row.0)
+            .map_values(|_, (middle, matches)| {
+                middle.1 + matches.iter().map(|row| row.1).sum::<i32>()
+            })
+            .materialize();
+
+        left.insert_many(vec![(1, (7, 10)), (2, (8, 20))]);
+        right1.insert_many(vec![(11, (7, 3)), (12, (8, 4))]);
+        right2.insert_many(vec![(21, (7, 5)), (22, (8, 6))]);
+
+        assert_eq!(output.get_value(&1), Some(18));
+        assert_eq!(output.get_value(&2), Some(30));
     }
 
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]

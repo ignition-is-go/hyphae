@@ -700,3 +700,200 @@ where
     guards.extend(right.install(right_sink));
     guards
 }
+
+/// Install two consecutive left-key-preserving joins as one coordinated
+/// runtime. All three roots enter one state lock directly; intermediate rows
+/// are carried from the first join into the second without a subscriber or
+/// dynamically dispatched callback boundary.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::type_complexity
+)]
+pub fn install_two_keyed_join_runtime_via_query<
+    LK,
+    LV,
+    RK1,
+    RV1,
+    JK1,
+    MV,
+    RK2,
+    RV2,
+    JK2,
+    OV,
+    L,
+    R1,
+    R2,
+    FL1,
+    FR1,
+    FM1,
+    FL2,
+    FR2,
+    FM2,
+    Sink,
+>(
+    left: L,
+    right1: R1,
+    right2: R2,
+    left_join_key1: FL1,
+    right_join_key1: FR1,
+    map_first: FM1,
+    left_join_key2: FL2,
+    right_join_key2: FR2,
+    map_second: FM2,
+    sink: Sink,
+) -> Vec<SubscriptionGuard>
+where
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK1: Hash + Eq + CellValue,
+    RV1: CellValue,
+    JK1: Hash + Eq + CellValue,
+    MV: CellValue,
+    RK2: Hash + Eq + CellValue,
+    RV2: CellValue,
+    JK2: Hash + Eq + CellValue,
+    OV: CellValue,
+    L: crate::map_query::MapQuery<Key = LK, Value = LV>,
+    R1: crate::map_query::MapQuery<Key = RK1, Value = RV1>,
+    R2: crate::map_query::MapQuery<Key = RK2, Value = RV2>,
+    FL1: Fn(&LK, &LV) -> JK1 + Send + Sync + 'static,
+    FR1: Fn(&RK1, &RV1) -> JK1 + Send + Sync + 'static,
+    FM1: Fn(&LK, &LV, &[(RK1, RV1)]) -> MV + Send + Sync + 'static,
+    FL2: Fn(&LK, &MV) -> JK2 + Send + Sync + 'static,
+    FR2: Fn(&RK2, &RV2) -> JK2 + Send + Sync + 'static,
+    FM2: Fn(&LK, &MV, &[(RK2, RV2)]) -> OV + Send + Sync + 'static,
+    Sink: crate::map_query::MapDiffSink<LK, OV>,
+{
+    type FirstState<LK, LV, RK, RV, JK, MV> = JoinState<LK, LV, RK, RV, JK, LK, MV>;
+    type SecondState<LK, MV, RK, RV, JK, OV> = JoinState<LK, MV, RK, RV, JK, LK, OV>;
+
+    let state = Arc::new(Mutex::new((
+        FirstState::<LK, LV, RK1, RV1, JK1, MV>::default(),
+        SecondState::<LK, MV, RK2, RV2, JK2, OV>::default(),
+    )));
+    let left_join_key1 = Arc::new(left_join_key1);
+    let right_join_key1 = Arc::new(right_join_key1);
+    let map_first = Arc::new(map_first);
+    let left_join_key2 = Arc::new(left_join_key2);
+    let right_join_key2 = Arc::new(right_join_key2);
+    let map_second = Arc::new(map_second);
+    let sink = Arc::new(sink);
+
+    let propagate_first = {
+        let map_first = Arc::clone(&map_first);
+        let left_join_key2 = Arc::clone(&left_join_key2);
+        let map_second = Arc::clone(&map_second);
+        move |first: &mut FirstState<LK, LV, RK1, RV1, JK1, MV>,
+              second: &mut SecondState<LK, MV, RK2, RV2, JK2, OV>| {
+            let mut scratch1 = std::mem::take(&mut first.scratch);
+            let intermediate =
+                recompute_keyed_impacted(first, &mut scratch1, &|key, value, rights| {
+                    Some(map_first(key, value, rights))
+                });
+            first.scratch = scratch1;
+
+            let mut scratch2 = std::mem::take(&mut second.scratch);
+            for change in &intermediate {
+                apply_left_diff(
+                    second,
+                    change,
+                    left_join_key2.as_ref(),
+                    &mut scratch2.impacted,
+                );
+            }
+            let output = recompute_keyed_impacted(second, &mut scratch2, &|key, value, rights| {
+                Some(map_second(key, value, rights))
+            });
+            second.scratch = scratch2;
+            output
+        }
+    };
+    let propagate_first = Arc::new(propagate_first);
+
+    let left_sink = {
+        let state = Arc::clone(&state);
+        let left_join_key1 = Arc::clone(&left_join_key1);
+        let propagate_first = Arc::clone(&propagate_first);
+        let sink = Arc::clone(&sink);
+        move |diff: &MapDiff<LK, LV>| {
+            let changes = {
+                let mut state = state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let (first, second) = &mut *state;
+                let mut scratch = std::mem::take(&mut first.scratch);
+                apply_left_diff(first, diff, left_join_key1.as_ref(), &mut scratch.impacted);
+                first.scratch = scratch;
+                let changes = propagate_first(first, second);
+                drop(state);
+                changes
+            };
+            emit_changes(sink.as_ref(), changes);
+        }
+    };
+
+    let right1_sink = {
+        let state = Arc::clone(&state);
+        let right_join_key1 = Arc::clone(&right_join_key1);
+        let propagate_first = Arc::clone(&propagate_first);
+        let sink = Arc::clone(&sink);
+        move |diff: &MapDiff<RK1, RV1>| {
+            let changes = {
+                let mut state = state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let (first, second) = &mut *state;
+                let mut scratch = std::mem::take(&mut first.scratch);
+                apply_right_diff(
+                    first,
+                    diff,
+                    right_join_key1.as_ref(),
+                    &mut scratch.impacted,
+                    &mut scratch.changed_join_keys,
+                );
+                first.scratch = scratch;
+                let changes = propagate_first(first, second);
+                drop(state);
+                changes
+            };
+            emit_changes(sink.as_ref(), changes);
+        }
+    };
+
+    let right2_sink = {
+        let state = state;
+        let right_join_key2 = right_join_key2;
+        let map_second = map_second;
+        let sink = sink;
+        move |diff: &MapDiff<RK2, RV2>| {
+            let changes = {
+                let mut state = state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let second = &mut state.1;
+                let mut scratch = std::mem::take(&mut second.scratch);
+                apply_right_diff(
+                    second,
+                    diff,
+                    right_join_key2.as_ref(),
+                    &mut scratch.impacted,
+                    &mut scratch.changed_join_keys,
+                );
+                let changes =
+                    recompute_keyed_impacted(second, &mut scratch, &|key, value, rights| {
+                        Some(map_second(key, value, rights))
+                    });
+                second.scratch = scratch;
+                drop(state);
+                changes
+            };
+            emit_changes(sink.as_ref(), changes);
+        }
+    };
+
+    let mut guards = left.install(left_sink);
+    guards.extend(right1.install(right1_sink));
+    guards.extend(right2.install(right2_sink));
+    guards
+}

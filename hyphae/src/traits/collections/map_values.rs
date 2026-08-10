@@ -22,8 +22,8 @@ where
     U: CellValue,
     F: Fn(&K, &V) -> U + Send + Sync + 'static,
 {
-    source: S,
-    f: F,
+    pub(crate) source: S,
+    pub(crate) f: F,
     _types: PhantomData<fn() -> (K, V, U)>,
 }
 
@@ -105,7 +105,7 @@ where
     K: Hash + Eq + CellValue,
     V: CellValue,
 {
-    fn map_values<U, F>(self, f: F) -> impl MapQuery<Key = K, Value = U>
+    fn map_values<U, F>(self, f: F) -> MapValuesPlan<Self, K, V, U, F>
     where
         U: CellValue,
         F: Fn(&K, &V) -> U + Send + Sync + 'static,
@@ -117,7 +117,7 @@ where
         }
     }
 
-    fn filter_map_values<U, F>(self, f: F) -> impl MapQuery<Key = K, Value = U>
+    fn filter_map_values<U, F>(self, f: F) -> FilterMapValuesPlan<Self, K, V, U, F>
     where
         U: CellValue,
         F: Fn(&K, &V) -> Option<U> + Send + Sync + 'static,
