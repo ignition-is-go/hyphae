@@ -512,7 +512,9 @@ where
         }
     };
 
-    let mut guards = left.compile_into(cx, left_sink);
-    guards.extend(right.compile_into(cx, right_sink));
+    let mut guards = crate::map_query::compile_runtime_into(left, cx, left_sink);
+    guards.extend(crate::map_query::compile_runtime_into(
+        right, cx, right_sink,
+    ));
     guards
 }

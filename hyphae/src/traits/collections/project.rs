@@ -4,7 +4,7 @@ use std::{hash::Hash, marker::PhantomData};
 
 use crate::{
     map_query::{
-        CompileQuery, MapDiffSink, MapQuery,
+        BuildQueryRuntime, MapDiffSink, MapQuery,
         properties::{ExactlyOne, PlanProperties, Repartition, ZeroOrOne},
     },
     subscription::SubscriptionGuard,
@@ -62,7 +62,7 @@ where
     pub(crate) _types: PhantomData<fn() -> (SK, SV, OK, OV)>,
 }
 
-impl<S, SK, SV, OK, OV, F> CompileQuery<OK, OV> for ProjectPlan<S, SK, SV, OK, OV, F>
+impl<S, SK, SV, OK, OV, F> BuildQueryRuntime<OK, OV> for ProjectPlan<S, SK, SV, OK, OV, F>
 where
     S: MapQuery<Key = SK, Value = SV>,
     SK: Hash + Eq + CellValue,
@@ -71,7 +71,7 @@ where
     OV: CellValue,
     F: Fn(&SK, &SV) -> Option<(OK, OV)> + Send + Sync + 'static,
 {
-    fn compile_into<Sink>(
+    fn build_into<Sink>(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
         sink: Sink,
@@ -118,7 +118,7 @@ where
     pub(crate) _types: PhantomData<fn() -> (SK, SV, OK, OV)>,
 }
 
-impl<S, SK, SV, OK, OV, F> CompileQuery<OK, OV> for MapEntriesPlan<S, SK, SV, OK, OV, F>
+impl<S, SK, SV, OK, OV, F> BuildQueryRuntime<OK, OV> for MapEntriesPlan<S, SK, SV, OK, OV, F>
 where
     S: MapQuery<Key = SK, Value = SV>,
     SK: Hash + Eq + CellValue,
@@ -127,7 +127,7 @@ where
     OV: CellValue,
     F: Fn(&SK, &SV) -> (OK, OV) + Send + Sync + 'static,
 {
-    fn compile_into<Sink>(
+    fn build_into<Sink>(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
         sink: Sink,

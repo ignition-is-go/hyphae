@@ -10,7 +10,7 @@ use std::{hash::Hash, marker::PhantomData, sync::Arc};
 use super::ProjectCellExt;
 use crate::{
     map_query::{
-        CompileQuery, MapDiffSink, MapQuery,
+        BuildQueryRuntime, MapDiffSink, MapQuery,
         properties::{ByMapKey, PlanProperties, ZeroOrOne},
     },
     pipeline::{Materialize, Pipeline},
@@ -66,7 +66,7 @@ where
     type OutputPartition = ByMapKey<K>;
 }
 
-impl<S, K, V, W, F> CompileQuery<K, V> for SelectCellPlan<S, K, V, W, F>
+impl<S, K, V, W, F> BuildQueryRuntime<K, V> for SelectCellPlan<S, K, V, W, F>
 where
     S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
@@ -80,7 +80,7 @@ where
         + 'static,
     F: Fn(&K, &V) -> W + Send + Sync + 'static,
 {
-    fn compile_into<Sink>(
+    fn build_into<Sink>(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
         sink: Sink,
@@ -104,7 +104,7 @@ where
                 })
                 .materialize()
         });
-        inner_plan.compile_into(cx, sink)
+        crate::map_query::compile_runtime_into(inner_plan, cx, sink)
     }
 }
 

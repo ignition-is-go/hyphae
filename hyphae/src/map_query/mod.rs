@@ -42,28 +42,127 @@ impl<K, V, F> MapDiffSink<K, V> for F where F: Fn(&MapDiff<K, V>) + Send + Sync 
 /// Explicitly erased sink used only by the opt-in shared query boundary.
 pub(crate) type BoxedMapDiffSink<K, V> = Arc<dyn Fn(&MapDiff<K, V>) + Send + Sync>;
 
+/// Internal builder implemented by each sealed plan node. Builders compose
+/// statically and are consumed into a concrete [`QueryRuntime`] by
+/// [`CompileQuery::compile`].
+pub(crate) trait BuildQueryRuntime<K, V>: Sized + Send + Sync + 'static
+where
+    K: CellValue + Hash + Eq,
+    V: CellValue,
+{
+    fn build_into<S>(self, cx: &mut compiler::CompileContext, sink: S) -> Vec<SubscriptionGuard>
+    where
+        S: MapDiffSink<K, V>;
+
+    /// Stable identity is available only at an untransformed physical source.
+    /// Operator nodes intentionally inherit `None`: sharing relationship state
+    /// across filtered or projected inputs would conflate distinct semantics.
+    fn raw_source_identity(&self) -> Option<compiler::SourceIdentity> {
+        None
+    }
+}
+
+/// Concrete runtime produced by compiling a query plan.
+///
+/// The runtime retains its exact plan type, so connecting roots does not erase
+/// operator stages behind a trait object. Only the root registry and explicit
+/// share boundaries erase callbacks.
+pub(crate) trait QueryRuntime: Sized + Send + Sync + 'static {
+    type Key: CellValue + Hash + Eq;
+    type Value: CellValue;
+
+    /// Connect this runtime to its output without activating roots. This is
+    /// used by nested compilation and shared-query ownership boundaries.
+    fn connect<S>(self, cx: &mut compiler::CompileContext, sink: S) -> Vec<SubscriptionGuard>
+    where
+        S: MapDiffSink<Self::Key, Self::Value>;
+
+    /// Connect the completed runtime, then activate all registered roots.
+    fn install_roots<S>(self, cx: &mut compiler::CompileContext, sink: S) -> Vec<SubscriptionGuard>
+    where
+        S: MapDiffSink<Self::Key, Self::Value>,
+    {
+        let mut guards = self.connect(cx, sink);
+        guards.extend(cx.activate());
+        guards
+    }
+}
+
+/// Plan-specific runtime wrapper. `P` remains concrete through materialization.
+pub(crate) struct PlanRuntime<P, K, V> {
+    plan: P,
+    _types: PhantomData<fn() -> (K, V)>,
+}
+
+impl<P, K, V> QueryRuntime for PlanRuntime<P, K, V>
+where
+    P: BuildQueryRuntime<K, V>,
+    K: CellValue + Hash + Eq,
+    V: CellValue,
+{
+    type Key = K;
+    type Value = V;
+
+    fn connect<S>(self, cx: &mut compiler::CompileContext, sink: S) -> Vec<SubscriptionGuard>
+    where
+        S: MapDiffSink<K, V>,
+    {
+        self.plan.build_into(cx, sink)
+    }
+}
+
 /// Crate-private compiler hook used by [`MapQuery::materialize`].
 ///
-/// `compile_into` consumes the plan node, constructs its concrete runtime,
-/// and registers root entry points. Root subscriptions activate only after
-/// the complete plan has compiled.
-///
-/// This is separate from [`MapQuery`] so that the public trait stays minimal
-/// and cannot be accidentally used to subscribe without materializing.
+/// Compilation consumes a plan and exposes its concrete associated runtime.
+/// Root activation remains a distinct runtime operation after the whole plan
+/// has registered its entry points.
 pub(crate) trait CompileQuery<K, V>: Sized + Send + Sync + 'static
 where
     K: CellValue + Hash + Eq,
     V: CellValue,
 {
-    /// Compile this plan's diff propagation into `sink`, returning any guards
-    /// constructed before root activation.
-    ///
-    /// Consumes `self`: a plan can only be materialized once, and its
-    /// owned source(s) need to move into the resulting subscription
-    /// closures so chained plans compose without cloning.
-    fn compile_into<S>(self, cx: &mut compiler::CompileContext, sink: S) -> Vec<SubscriptionGuard>
-    where
-        S: MapDiffSink<K, V>;
+    type Runtime: QueryRuntime<Key = K, Value = V>;
+
+    fn compile(self, _cx: &mut compiler::CompileContext) -> Self::Runtime;
+
+    fn raw_source_identity(&self) -> Option<compiler::SourceIdentity>;
+}
+
+impl<P, K, V> CompileQuery<K, V> for P
+where
+    P: BuildQueryRuntime<K, V>,
+    K: CellValue + Hash + Eq,
+    V: CellValue,
+{
+    type Runtime = PlanRuntime<P, K, V>;
+
+    fn compile(self, _cx: &mut compiler::CompileContext) -> Self::Runtime {
+        PlanRuntime {
+            plan: self,
+            _types: PhantomData,
+        }
+    }
+
+    fn raw_source_identity(&self) -> Option<compiler::SourceIdentity> {
+        BuildQueryRuntime::raw_source_identity(self)
+    }
+}
+
+/// Compile a child plan and connect its concrete runtime without activating
+/// roots. Activation occurs once, at the outer materialization boundary.
+pub(crate) fn compile_runtime_into<Q, K, V, S>(
+    query: Q,
+    cx: &mut compiler::CompileContext,
+    sink: S,
+) -> Vec<SubscriptionGuard>
+where
+    Q: CompileQuery<K, V>,
+    K: CellValue + Hash + Eq,
+    V: CellValue,
+    S: MapDiffSink<K, V>,
+{
+    let runtime = query.compile(cx);
+    runtime.connect(cx, sink)
 }
 
 /// Uncompiled reactive map operation chain.
@@ -124,8 +223,8 @@ pub trait MapQuery: CompileQuery<Self::Key, Self::Value> + properties::PlanPrope
         };
 
         let mut cx = compiler::CompileContext::default();
-        let mut guards = self.compile_into(&mut cx, sink);
-        guards.extend(cx.activate());
+        let runtime = self.compile(&mut cx);
+        let guards = runtime.install_roots(&mut cx, sink);
         for g in guards {
             output.own(g);
         }

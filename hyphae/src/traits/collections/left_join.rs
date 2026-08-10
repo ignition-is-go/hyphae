@@ -9,7 +9,7 @@ use std::{hash::Hash, marker::PhantomData};
 
 use crate::{
     map_query::{
-        CompileQuery, MapDiffSink, MapQuery,
+        BuildQueryRuntime, MapDiffSink, MapQuery,
         properties::{ByMapKey, ByRelation, ExactlyOne, PlanProperties, PreservesMapKey},
     },
     subscription::SubscriptionGuard,
@@ -40,14 +40,14 @@ where
     type OutputPartition = ByRelation<Rel>;
 }
 
-impl<K, V, P, Rel> CompileQuery<K, V> for RelationPlan<P, Rel>
+impl<K, V, P, Rel> BuildQueryRuntime<K, V> for RelationPlan<P, Rel>
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
     P: MapQuery<Key = K, Value = V>,
     Rel: Send + Sync + 'static,
 {
-    fn compile_into<Sink>(
+    fn build_into<Sink>(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
         sink: Sink,
@@ -55,7 +55,9 @@ where
     where
         Sink: MapDiffSink<K, V>,
     {
-        cx.with_relation_hint::<Rel, _>(|cx| self.plan.compile_into(cx, sink))
+        cx.with_relation_hint::<Rel, _>(|cx| {
+            crate::map_query::compile_runtime_into(self.plan, cx, sink)
+        })
     }
 }
 
@@ -208,7 +210,7 @@ where
     type OutputPartition = ByMapKey<LK>;
 }
 
-impl<L, R, LK, LV, RK, RV, JK, OV, FL, FR, F> CompileQuery<LK, OV>
+impl<L, R, LK, LV, RK, RV, JK, OV, FL, FR, F> BuildQueryRuntime<LK, OV>
     for JoinedValuesPlan<L, R, LK, LV, RK, RV, JK, OV, FL, FR, F>
 where
     L: MapQuery<Key = LK, Value = LV>,
@@ -223,7 +225,7 @@ where
     FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
     F: Fn(&LK, &LV, &[(RK, RV)]) -> OV + Send + Sync + 'static,
 {
-    fn compile_into<Sink>(
+    fn build_into<Sink>(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
         sink: Sink,
@@ -263,7 +265,7 @@ where
     type Value = OV;
 }
 
-impl<L, R, LK, LV, RK, RV, JK, FL, FR> CompileQuery<LK, (LV, Vec<RV>)>
+impl<L, R, LK, LV, RK, RV, JK, FL, FR> BuildQueryRuntime<LK, (LV, Vec<RV>)>
     for LeftJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
 where
     L: MapQuery<Key = LK, Value = LV>,
@@ -276,7 +278,7 @@ where
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
     FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
 {
-    fn compile_into<Sink>(
+    fn build_into<Sink>(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
         sink: Sink,
@@ -508,7 +510,7 @@ where
 }
 
 impl<L, R1, R2, LK, LV, RK1, RV1, JK1, MV, RK2, RV2, JK2, FL1, FR1, FM1, FL2, FR2>
-    CompileQuery<LK, (MV, Vec<RV2>)>
+    BuildQueryRuntime<LK, (MV, Vec<RV2>)>
     for TwoLeftJoinPlan<
         L,
         R1,
@@ -547,7 +549,7 @@ where
     FL2: Fn(&LK, &MV) -> JK2 + Send + Sync + 'static,
     FR2: Fn(&RK2, &RV2) -> JK2 + Send + Sync + 'static,
 {
-    fn compile_into<Sink>(
+    fn build_into<Sink>(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
         sink: Sink,
@@ -622,7 +624,7 @@ where
 }
 
 impl<L, R1, R2, LK, LV, RK1, RV1, JK1, MV, RK2, RV2, JK2, OV, FL1, FR1, FM1, FL2, FR2, FM2>
-    CompileQuery<LK, OV>
+    BuildQueryRuntime<LK, OV>
     for TwoLeftJoinMappedPlan<
         TwoLeftJoinPlan<
             L,
@@ -671,7 +673,7 @@ where
     FR2: Fn(&RK2, &RV2) -> JK2 + Send + Sync + 'static,
     FM2: JoinProjection<LK, MV, RK2, RV2, OV>,
 {
-    fn compile_into<Sink>(
+    fn build_into<Sink>(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
         sink: Sink,
@@ -708,7 +710,7 @@ where
     RV2: CellValue,
     OV: CellValue,
     F: JoinProjection<LK, MV, RK2, RV2, OV>,
-    Self: CompileQuery<LK, OV>,
+    Self: BuildQueryRuntime<LK, OV>,
 {
     type Key = LK;
     type Value = OV;
@@ -1588,6 +1590,68 @@ mod tests {
             joined.get_value(&"u1".to_string()),
             Some((name, matches)) if name == "ALICE" && matches.len() == 1
         ));
+    }
+
+    #[test]
+    fn repeated_fk_relationship_keeps_distinct_projected_right_inputs() {
+        let users = CellMap::<String, User>::new();
+        let posts = CellMap::<String, Post>::new();
+        let projected_a = posts.clone().map_values(|_, post| Post {
+            user_id: post.user_id.clone(),
+            title: format!("{}-a", post.title),
+        });
+        let projected_b = posts.clone().map_values(|_, post| Post {
+            user_id: post.user_id.clone(),
+            title: format!("{}-b", post.title),
+        });
+        let joined = users
+            .clone()
+            .left_join_fk::<UserPosts, _>(projected_a)
+            .map_joined_values(|_, user, first_posts| {
+                (
+                    user.clone(),
+                    first_posts.first().map(|(_, post)| post.title.clone()),
+                )
+            })
+            .left_join_fk::<UserPosts, _>(projected_b)
+            .map_joined_values(|_, first, second_posts| {
+                (
+                    first.1.clone(),
+                    second_posts.first().map(|(_, post)| post.title.clone()),
+                )
+            })
+            .materialize();
+
+        users.insert(
+            "u1".to_string(),
+            User {
+                name: "Alice".to_string(),
+            },
+        );
+        posts.insert(
+            "p1".to_string(),
+            Post {
+                user_id: UserId("u1".to_string()),
+                title: "First".to_string(),
+            },
+        );
+
+        assert_eq!(
+            joined.get_value(&"u1".to_string()),
+            Some((Some("First-a".to_string()), Some("First-b".to_string())))
+        );
+
+        posts.insert(
+            "p1".to_string(),
+            Post {
+                user_id: UserId("u1".to_string()),
+                title: "Updated".to_string(),
+            },
+        );
+        assert_eq!(
+            joined.get_value(&"u1".to_string()),
+            Some((Some("Updated-a".to_string()), Some("Updated-b".to_string())))
+        );
     }
 
     #[test]

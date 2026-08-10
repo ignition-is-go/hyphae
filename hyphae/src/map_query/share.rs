@@ -36,7 +36,7 @@ use uuid::Uuid;
 use super::properties::{ByMapKey, ExactlyOne, PlanProperties};
 use crate::{
     cell_map::MapDiff,
-    map_query::{BoxedMapDiffSink, CompileQuery, MapDiffSink, MapQuery},
+    map_query::{BoxedMapDiffSink, BuildQueryRuntime, MapDiffSink, MapQuery},
     subscription::SubscriptionGuard,
     traits::CellValue,
 };
@@ -199,8 +199,9 @@ where
     /// Prefer the [`MapQueryShareExt::share`] extension method — it reads as
     /// `query.share()` at the call site.
     pub fn new<Q: MapQuery<Key = K, Value = V>>(q: Q) -> Self {
-        let upstream: UpstreamInstall<K, V> =
-            Box::new(move |cx, sink| q.compile_into(cx, move |diff| sink(diff)));
+        let upstream: UpstreamInstall<K, V> = Box::new(move |cx, sink| {
+            crate::map_query::compile_runtime_into(q, cx, move |diff| sink(diff))
+        });
         Self {
             inner: Arc::new(SharedMapQueryInner {
                 upstream: Mutex::new(Some(upstream)),
@@ -212,12 +213,12 @@ where
     }
 }
 
-impl<K, V> CompileQuery<K, V> for SharedMapQuery<K, V>
+impl<K, V> BuildQueryRuntime<K, V> for SharedMapQuery<K, V>
 where
     K: CellValue + Hash + Eq,
     V: CellValue,
 {
-    fn compile_into<Sink>(
+    fn build_into<Sink>(
         self,
         cx: &mut super::compiler::CompileContext,
         sink: Sink,

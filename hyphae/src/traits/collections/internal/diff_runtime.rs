@@ -180,7 +180,7 @@ where
         }
     };
 
-    source.compile_into(cx, upstream_sink)
+    crate::map_query::compile_runtime_into(source, cx, upstream_sink)
 }
 
 /// Sink-driven grouped runtime for [`MapQuery`] plan nodes.

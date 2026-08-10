@@ -16,7 +16,7 @@
 use std::{hash::Hash, marker::PhantomData, sync::Arc};
 
 use super::properties::{ByMapKey, ExactlyOne, PlanProperties};
-use super::{CompileQuery, MapDiffSink, MapQuery};
+use super::{BuildQueryRuntime, MapDiffSink, MapQuery};
 use crate::{
     cell::CellImmutable,
     cell_map::CellMap,
@@ -41,13 +41,13 @@ where
     Vec::new()
 }
 
-impl<K, V, M> CompileQuery<K, V> for CellMap<K, V, M>
+impl<K, V, M> BuildQueryRuntime<K, V> for CellMap<K, V, M>
 where
     K: CellValue + Hash + Eq,
     V: CellValue,
     M: Clone + Send + Sync + 'static,
 {
-    fn compile_into<S>(
+    fn build_into<S>(
         self,
         cx: &mut super::compiler::CompileContext,
         sink: S,
@@ -58,15 +58,21 @@ where
         let identity = super::compiler::SourceIdentity::from_ptr(Arc::as_ptr(&self.inner));
         install_reactive_source(&self, identity, cx, sink)
     }
+
+    fn raw_source_identity(&self) -> Option<super::compiler::SourceIdentity> {
+        Some(super::compiler::SourceIdentity::from_ptr(Arc::as_ptr(
+            &self.inner,
+        )))
+    }
 }
 
-impl<PK, K, V> CompileQuery<K, V> for NestedMap<PK, K, V>
+impl<PK, K, V> BuildQueryRuntime<K, V> for NestedMap<PK, K, V>
 where
     PK: CellValue + Hash + Eq,
     K: CellValue + Hash + Eq,
     V: CellValue,
 {
-    fn compile_into<S>(
+    fn build_into<S>(
         self,
         cx: &mut super::compiler::CompileContext,
         sink: S,
@@ -76,6 +82,10 @@ where
     {
         let identity = self.query_source_identity();
         install_reactive_source(&self, identity, cx, sink)
+    }
+
+    fn raw_source_identity(&self) -> Option<super::compiler::SourceIdentity> {
+        Some(self.query_source_identity())
     }
 }
 

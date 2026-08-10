@@ -864,8 +864,10 @@ where
         }
     };
 
-    let mut guards = left.compile_into(cx, left_sink);
-    guards.extend(right.compile_into(cx, right_sink));
+    let mut guards = crate::map_query::compile_runtime_into(left, cx, left_sink);
+    guards.extend(crate::map_query::compile_runtime_into(
+        right, cx, right_sink,
+    ));
     guards
 }
 
@@ -1400,7 +1402,11 @@ where
     Sink: crate::map_query::MapDiffSink<LK, OV>,
 {
     let relation = cx.take_relation_hint();
-    if let Some(relation) = relation {
+    // A relation marker alone is not enough to prove that two right inputs
+    // have the same semantics. Only raw source boundaries have a stable
+    // identity suitable for index reuse; projections, filters, and all other
+    // operator nodes keep an independent index even when they share a root.
+    if let Some(relation) = relation.filter(|_| right.raw_source_identity().is_some()) {
         let index = cx.prepare_relationship_index::<RelationIndex<RK, RV, JK>>();
         return install_keyed_join_runtime_with_index(
             cx,
@@ -1532,13 +1538,15 @@ where
         }
     };
 
-    let mut guards = left.compile_into(cx, left_sink);
+    let mut guards = crate::map_query::compile_runtime_into(left, cx, left_sink);
     if let Some((relation, index)) = relationship_binding {
-        guards.extend(
-            cx.with_root_relation_index(relation, index, |cx| right.compile_into(cx, right_sink)),
-        );
+        guards.extend(cx.with_root_relation_index(relation, index, |cx| {
+            crate::map_query::compile_runtime_into(right, cx, right_sink)
+        }));
     } else {
-        guards.extend(right.compile_into(cx, right_sink));
+        guards.extend(crate::map_query::compile_runtime_into(
+            right, cx, right_sink,
+        ));
     }
     guards
 }
@@ -1873,8 +1881,16 @@ where
         }
     };
 
-    let mut guards = left.compile_into(cx, left_sink);
-    guards.extend(right1.compile_into(cx, right1_sink));
-    guards.extend(right2.compile_into(cx, right2_sink));
+    let mut guards = crate::map_query::compile_runtime_into(left, cx, left_sink);
+    guards.extend(crate::map_query::compile_runtime_into(
+        right1,
+        cx,
+        right1_sink,
+    ));
+    guards.extend(crate::map_query::compile_runtime_into(
+        right2,
+        cx,
+        right2_sink,
+    ));
     guards
 }
