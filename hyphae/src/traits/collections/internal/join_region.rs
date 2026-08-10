@@ -379,6 +379,13 @@ where
 
     /// Apply one left event and return the resulting output changes.
     pub(super) fn apply_left_diff(&mut self, diff: &MapDiff<K, I>) -> Vec<MapDiff<K, O>> {
+        if let MapDiff::Batch { changes } = diff {
+            return changes
+                .iter()
+                .flat_map(|change| self.apply_left_diff(change))
+                .collect();
+        }
+
         let mut impacted = OrderedSet::default();
         let mut pending = vec![diff];
         while let Some(change) = pending.pop() {
@@ -407,6 +414,13 @@ where
 
     /// Apply one right event and return changes for every affected left row.
     pub(super) fn apply_right_diff(&mut self, diff: &MapDiff<RK, RV>) -> Vec<MapDiff<K, O>> {
+        if let MapDiff::Batch { changes } = diff {
+            return changes
+                .iter()
+                .flat_map(|change| self.apply_right_diff(change))
+                .collect();
+        }
+
         let mut changed_join_keys = OrderedSet::default();
         let mut pending = vec![diff];
         while let Some(change) = pending.pop() {
@@ -534,6 +548,153 @@ where
             }
         }
         changes
+    }
+}
+
+/// The statically dispatched execution contract for one join stage.
+///
+/// All row types are associated types so a heterogeneous stage list can thread
+/// diffs without type erasure, allocation, or dynamic dispatch.
+pub(super) trait ExecutableStage {
+    type Key: Hash + Eq + CellValue;
+    type Input: CellValue;
+    type Output: CellValue;
+    type RightKey: Hash + Eq + CellValue;
+    type RightValue: CellValue;
+
+    fn apply_left_diff(
+        &mut self,
+        diff: &MapDiff<Self::Key, Self::Input>,
+    ) -> Vec<MapDiff<Self::Key, Self::Output>>;
+
+    fn apply_right_diff(
+        &mut self,
+        diff: &MapDiff<Self::RightKey, Self::RightValue>,
+    ) -> Vec<MapDiff<Self::Key, Self::Output>>;
+}
+
+impl<K, I, RK, RV, JK, O, LeftKey, RightKeyFn, Project> ExecutableStage
+    for StageRuntimeState<K, I, RK, RV, JK, O, LeftKey, RightKeyFn, Project>
+where
+    K: Hash + Eq + CellValue,
+    I: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    O: CellValue,
+    LeftKey: Fn(&K, &I) -> JK,
+    RightKeyFn: RightJoinKey<RK, RV, JK>,
+    Project: StageProject<K, I, RK, RV, O>,
+{
+    type Key = K;
+    type Input = I;
+    type Output = O;
+    type RightKey = RK;
+    type RightValue = RV;
+
+    fn apply_left_diff(&mut self, diff: &MapDiff<K, I>) -> Vec<MapDiff<K, O>> {
+        self.apply_left_diff(diff)
+    }
+
+    fn apply_right_diff(&mut self, diff: &MapDiff<RK, RV>) -> Vec<MapDiff<K, O>> {
+        self.apply_right_diff(diff)
+    }
+}
+
+/// A statically executable heterogeneous list of stage runtime states.
+pub(super) trait RuntimeStages<K, Input>
+where
+    K: Hash + Eq + CellValue,
+    Input: CellValue,
+{
+    type Output: CellValue;
+
+    fn apply_left_diff(&mut self, diff: &MapDiff<K, Input>) -> Vec<MapDiff<K, Self::Output>>;
+}
+
+impl<K, Input> RuntimeStages<K, Input> for JNil
+where
+    K: Hash + Eq + CellValue,
+    Input: CellValue,
+{
+    type Output = Input;
+
+    fn apply_left_diff(&mut self, diff: &MapDiff<K, Input>) -> Vec<MapDiff<K, Input>> {
+        vec![diff.clone()]
+    }
+}
+
+impl<K, Input, Head, Tail> RuntimeStages<K, Input> for JCons<Head, Tail>
+where
+    K: Hash + Eq + CellValue,
+    Input: CellValue,
+    Head: ExecutableStage<Key = K, Input = Input>,
+    Tail: RuntimeStages<K, Head::Output>,
+{
+    type Output = Tail::Output;
+
+    fn apply_left_diff(&mut self, diff: &MapDiff<K, Input>) -> Vec<MapDiff<K, Self::Output>> {
+        let head_changes = self.head.apply_left_diff(diff);
+        let mut output = Vec::new();
+        for change in &head_changes {
+            output.extend(self.tail.apply_left_diff(change));
+        }
+        output
+    }
+}
+
+/// Select the first right root in a runtime-stage list.
+pub(super) struct Here;
+
+/// Select a right root in the tail; nesting counts stages from the front.
+pub(super) struct There<Location>(PhantomData<fn() -> Location>);
+
+/// Direct entry from one right root into its selected stage.
+///
+/// `Here` updates the head and propagates its output through the tail. A
+/// `There<L>` implementation delegates directly to the tail, so earlier stages
+/// are not re-executed when a later right root changes.
+pub(super) trait RightRoot<Location, K, Input, RK, RV>: RuntimeStages<K, Input>
+where
+    K: Hash + Eq + CellValue,
+    Input: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+{
+    fn apply_right_root_diff(&mut self, diff: &MapDiff<RK, RV>) -> Vec<MapDiff<K, Self::Output>>;
+}
+
+impl<K, Input, RK, RV, Head, Tail> RightRoot<Here, K, Input, RK, RV> for JCons<Head, Tail>
+where
+    K: Hash + Eq + CellValue,
+    Input: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    Head: ExecutableStage<Key = K, Input = Input, RightKey = RK, RightValue = RV>,
+    Tail: RuntimeStages<K, Head::Output>,
+{
+    fn apply_right_root_diff(&mut self, diff: &MapDiff<RK, RV>) -> Vec<MapDiff<K, Self::Output>> {
+        let head_changes = self.head.apply_right_diff(diff);
+        let mut output = Vec::new();
+        for change in &head_changes {
+            output.extend(self.tail.apply_left_diff(change));
+        }
+        output
+    }
+}
+
+impl<Location, K, Input, RK, RV, Head, Tail> RightRoot<There<Location>, K, Input, RK, RV>
+    for JCons<Head, Tail>
+where
+    K: Hash + Eq + CellValue,
+    Input: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    Head: ExecutableStage<Key = K, Input = Input>,
+    Tail: RuntimeStages<K, Head::Output> + RightRoot<Location, K, Head::Output, RK, RV>,
+{
+    fn apply_right_root_diff(&mut self, diff: &MapDiff<RK, RV>) -> Vec<MapDiff<K, Self::Output>> {
+        self.tail.apply_right_root_diff(diff)
     }
 }
 
@@ -811,6 +972,308 @@ mod tests {
                 key: 1,
                 old_value: (true, 20, vec![11]),
             }]
+        );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn heterogeneous_three_stage_runtime_propagates_every_root_directly() {
+        let stage1 = StageRuntimeState::new(
+            |_: &u32, _: &i8| 0_u8,
+            crate::traits::RequiredRightKey(|_: &u8, _: &i8| 0_u8),
+            DirectProject(|_: &u32, left: &i8, rights: &[(u8, i8)]| {
+                i16::from(*left)
+                    + rights
+                        .iter()
+                        .map(|(_, value)| i16::from(*value))
+                        .sum::<i16>()
+            }),
+        );
+        let stage2 = StageRuntimeState::new(
+            |_: &u32, _: &i16| 0_u8,
+            crate::traits::RequiredRightKey(|_: &u16, _: &i16| 0_u8),
+            DirectProject(|_: &u32, left: &i16, rights: &[(u16, i16)]| {
+                i32::from(*left)
+                    + rights
+                        .iter()
+                        .map(|(_, value)| i32::from(*value))
+                        .sum::<i32>()
+            }),
+        );
+        let stage3 = StageRuntimeState::new(
+            |_: &u32, _: &i32| 0_u8,
+            crate::traits::RequiredRightKey(|_: &u32, _: &i32| 0_u8),
+            FilterProject::new(
+                DirectProject(|_: &u32, left: &i32, rights: &[(u32, i32)]| {
+                    i64::from(*left)
+                        + rights
+                            .iter()
+                            .map(|(_, value)| i64::from(*value))
+                            .sum::<i64>()
+                }),
+                |_: &u32, output: &i64| *output >= 0,
+            ),
+        );
+        let mut runtime = JCons {
+            head: stage1,
+            tail: JCons {
+                head: stage2,
+                tail: JCons {
+                    head: stage3,
+                    tail: JNil,
+                },
+            },
+        };
+
+        assert_eq!(
+            runtime.apply_left_diff(&MapDiff::Insert { key: 1, value: 10 }),
+            vec![MapDiff::Insert { key: 1, value: 10 }]
+        );
+        assert_eq!(
+            <_ as RightRoot<Here, u32, i8, u8, i8>>::apply_right_root_diff(
+                &mut runtime,
+                &MapDiff::Insert { key: 1, value: 5 },
+            ),
+            vec![MapDiff::Update {
+                key: 1,
+                old_value: 10,
+                new_value: 15
+            }]
+        );
+        assert_eq!(
+            <_ as RightRoot<Here, u32, i8, u8, i8>>::apply_right_root_diff(
+                &mut runtime,
+                &MapDiff::Update {
+                    key: 1,
+                    old_value: 5,
+                    new_value: 6
+                },
+            ),
+            vec![MapDiff::Update {
+                key: 1,
+                old_value: 15,
+                new_value: 16
+            }]
+        );
+        assert_eq!(
+            <_ as RightRoot<There<Here>, u32, i8, u16, i16>>::apply_right_root_diff(
+                &mut runtime,
+                &MapDiff::Insert { key: 2, value: 7 },
+            ),
+            vec![MapDiff::Update {
+                key: 1,
+                old_value: 16,
+                new_value: 23
+            }]
+        );
+        assert_eq!(
+            <_ as RightRoot<There<Here>, u32, i8, u16, i16>>::apply_right_root_diff(
+                &mut runtime,
+                &MapDiff::Update {
+                    key: 2,
+                    old_value: 7,
+                    new_value: 8
+                },
+            ),
+            vec![MapDiff::Update {
+                key: 1,
+                old_value: 23,
+                new_value: 24
+            }]
+        );
+        assert_eq!(
+            <_ as RightRoot<There<There<Here>>, u32, i8, u32, i32>>::apply_right_root_diff(
+                &mut runtime,
+                &MapDiff::Insert { key: 3, value: 11 },
+            ),
+            vec![MapDiff::Update {
+                key: 1,
+                old_value: 24,
+                new_value: 35
+            }]
+        );
+
+        assert_eq!(
+            <_ as RightRoot<There<Here>, u32, i8, u16, i16>>::apply_right_root_diff(
+                &mut runtime,
+                &MapDiff::Remove {
+                    key: 2,
+                    old_value: 8
+                },
+            ),
+            vec![MapDiff::Update {
+                key: 1,
+                old_value: 35,
+                new_value: 27
+            }]
+        );
+        assert_eq!(
+            <_ as RightRoot<Here, u32, i8, u8, i8>>::apply_right_root_diff(
+                &mut runtime,
+                &MapDiff::Remove {
+                    key: 1,
+                    old_value: 6
+                },
+            ),
+            vec![MapDiff::Update {
+                key: 1,
+                old_value: 27,
+                new_value: 21
+            }]
+        );
+        assert_eq!(
+            <_ as RightRoot<There<There<Here>>, u32, i8, u32, i32>>::apply_right_root_diff(
+                &mut runtime,
+                &MapDiff::Update {
+                    key: 3,
+                    old_value: 11,
+                    new_value: -20
+                },
+            ),
+            vec![MapDiff::Remove {
+                key: 1,
+                old_value: 21
+            }]
+        );
+        assert_eq!(
+            <_ as RightRoot<There<There<Here>>, u32, i8, u32, i32>>::apply_right_root_diff(
+                &mut runtime,
+                &MapDiff::Remove {
+                    key: 3,
+                    old_value: -20
+                },
+            ),
+            vec![MapDiff::Insert { key: 1, value: 10 }]
+        );
+        assert_eq!(
+            runtime.apply_left_diff(&MapDiff::Update {
+                key: 1,
+                old_value: 10,
+                new_value: 12
+            }),
+            vec![MapDiff::Update {
+                key: 1,
+                old_value: 10,
+                new_value: 12
+            }]
+        );
+        assert_eq!(
+            runtime.apply_left_diff(&MapDiff::Remove {
+                key: 1,
+                old_value: 12
+            }),
+            vec![MapDiff::Remove {
+                key: 1,
+                old_value: 12
+            }]
+        );
+    }
+
+    #[test]
+    fn stage_batches_preserve_each_member_event() {
+        let mut runtime = StageRuntimeState::new(
+            |_: &u8, value: &i32| *value,
+            crate::traits::RequiredRightKey(|_: &u8, value: &i32| *value),
+            DirectProject(|_: &u8, left: &i32, _: &[(u8, i32)]| *left),
+        );
+        assert_eq!(
+            runtime.apply_left_diff(&MapDiff::Batch {
+                changes: vec![
+                    MapDiff::Insert { key: 1, value: 10 },
+                    MapDiff::Update {
+                        key: 1,
+                        old_value: 10,
+                        new_value: 20
+                    },
+                    MapDiff::Remove {
+                        key: 1,
+                        old_value: 20
+                    },
+                ],
+            }),
+            vec![
+                MapDiff::Insert { key: 1, value: 10 },
+                MapDiff::Update {
+                    key: 1,
+                    old_value: 10,
+                    new_value: 20
+                },
+                MapDiff::Remove {
+                    key: 1,
+                    old_value: 20
+                },
+            ]
+        );
+
+        let mut right_runtime = StageRuntimeState::new(
+            |_: &u8, _: &i32| 0_u8,
+            crate::traits::RequiredRightKey(|_: &u8, _: &i32| 0_u8),
+            DirectProject(|_: &u8, left: &i32, rights: &[(u8, i32)]| {
+                *left + rights.iter().map(|(_, value)| value).sum::<i32>()
+            }),
+        );
+        assert_eq!(
+            right_runtime.apply_left_diff(&MapDiff::Insert { key: 1, value: 10 }),
+            vec![MapDiff::Insert { key: 1, value: 10 }]
+        );
+        assert_eq!(
+            right_runtime.apply_right_diff(&MapDiff::Batch {
+                changes: vec![
+                    MapDiff::Insert { key: 2, value: 1 },
+                    MapDiff::Update {
+                        key: 2,
+                        old_value: 1,
+                        new_value: 2
+                    },
+                    MapDiff::Remove {
+                        key: 2,
+                        old_value: 2
+                    },
+                ],
+            }),
+            vec![
+                MapDiff::Update {
+                    key: 1,
+                    old_value: 10,
+                    new_value: 11
+                },
+                MapDiff::Update {
+                    key: 1,
+                    old_value: 11,
+                    new_value: 12
+                },
+                MapDiff::Update {
+                    key: 1,
+                    old_value: 12,
+                    new_value: 10
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn heterogeneous_eight_stage_runtime_smoke() {
+        macro_rules! stage {
+            () => {
+                StageRuntimeState::new(
+                    |_: &u32, _: &i32| 0_u8,
+                    crate::traits::RequiredRightKey(|_: &u8, _: &u8| 0_u8),
+                    DirectProject(|_: &u32, left: &i32, _: &[(u8, u8)]| *left),
+                )
+            };
+        }
+        let mut runtime = JNil
+            .push(stage!())
+            .push(stage!())
+            .push(stage!())
+            .push(stage!())
+            .push(stage!())
+            .push(stage!())
+            .push(stage!())
+            .push(stage!());
+        assert_eq!(
+            runtime.apply_left_diff(&MapDiff::Insert { key: 1, value: 42 }),
+            vec![MapDiff::Insert { key: 1, value: 42 }]
         );
     }
 }
