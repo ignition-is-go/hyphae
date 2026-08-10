@@ -485,6 +485,61 @@ mod tests {
     }
 
     #[test]
+    fn reentrant_root_changes_wait_for_the_active_fanout_transaction() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let source = CellMap::<u64, u64>::new();
+        let identity = SourceIdentity::from_ptr(Arc::as_ptr(&source.inner));
+        let events = Arc::new(Mutex::new(Vec::<String>::new()));
+        let armed = Arc::new(AtomicBool::new(false));
+        let triggered = Arc::new(AtomicBool::new(false));
+        let mut cx = CompileContext::default();
+
+        let first_events = Arc::clone(&events);
+        let first_source = source.clone();
+        let first_armed = Arc::clone(&armed);
+        let first_triggered = Arc::clone(&triggered);
+        cx.register_root(&source, identity, move |diff| {
+            first_events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(format!("a:{diff:?}"));
+            if first_armed.load(Ordering::Acquire) && !first_triggered.swap(true, Ordering::AcqRel)
+            {
+                first_source.insert(2, 20);
+            }
+        });
+        let second_events = Arc::clone(&events);
+        cx.register_root(&source, identity, move |diff| {
+            second_events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(format!("b:{diff:?}"));
+        });
+
+        let guards = cx.activate();
+        events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        armed.store(true, Ordering::Release);
+        source.insert(1, 10);
+
+        let events = events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(events.len(), 4);
+        assert!(events[0].starts_with("a:"));
+        assert!(events[1].starts_with("b:"));
+        assert_eq!(&events[0][2..], &events[1][2..]);
+        assert!(events[2].starts_with("a:"));
+        assert!(events[3].starts_with("b:"));
+        assert_eq!(&events[2][2..], &events[3][2..]);
+        assert_ne!(&events[0][2..], &events[2][2..]);
+        drop(guards);
+    }
+
+    #[test]
     fn repeated_relationship_assigns_exactly_one_index_maintainer() {
         let source = CellMap::<u64, u64>::new();
         let identity = SourceIdentity::from_ptr(Arc::as_ptr(&source.inner));
