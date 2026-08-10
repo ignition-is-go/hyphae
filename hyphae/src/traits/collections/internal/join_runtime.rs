@@ -23,13 +23,28 @@ where
     left_rows: FxHashMap<LK, LV>,
     left_join_keys: FxHashMap<LK, JK>,
     join_to_left: FxHashMap<JK, Vec<LK>>,
-    right_rows: FxHashMap<RK, RV>,
-    right_join_keys: FxHashMap<RK, JK>,
-    join_to_right: FxHashMap<JK, Vec<RK>>,
+    right: RelationIndex<RK, RV, JK>,
     left_output_keys: FxHashMap<LK, OrderedSet<OK>>,
     output_cache: FxHashMap<OK, OV>,
     parallel_active: bool,
     scratch: JoinScratch<LK, RK, RV, JK, OK, OV>,
+}
+
+/// Typed physical index for one right-side relationship.
+struct RelationIndex<RK, RV, JK> {
+    rows: FxHashMap<RK, RV>,
+    row_join_keys: FxHashMap<RK, JK>,
+    join_to_rows: FxHashMap<JK, Vec<RK>>,
+}
+
+impl<RK, RV, JK> Default for RelationIndex<RK, RV, JK> {
+    fn default() -> Self {
+        Self {
+            rows: FxHashMap::default(),
+            row_join_keys: FxHashMap::default(),
+            join_to_rows: FxHashMap::default(),
+        }
+    }
 }
 
 struct JoinScratch<LK, RK, RV, JK, OK, OV> {
@@ -67,9 +82,7 @@ where
             left_rows: FxHashMap::default(),
             left_join_keys: FxHashMap::default(),
             join_to_left: FxHashMap::default(),
-            right_rows: FxHashMap::default(),
-            right_join_keys: FxHashMap::default(),
-            join_to_right: FxHashMap::default(),
+            right: RelationIndex::default(),
             left_output_keys: FxHashMap::default(),
             output_cache: FxHashMap::default(),
             parallel_active: false,
@@ -220,26 +233,31 @@ fn upsert_right<LK, LV, RK, RV, JK, OK, OV, FR>(
 {
     let join_key = right_join_key(&right_key, &right_value);
     match state
-        .right_join_keys
+        .right
+        .row_join_keys
         .insert(right_key.clone(), join_key.clone())
     {
         Some(previous_join_key) if previous_join_key != join_key => {
-            remove_index_member(&mut state.join_to_right, &previous_join_key, &right_key);
+            remove_index_member(
+                &mut state.right.join_to_rows,
+                &previous_join_key,
+                &right_key,
+            );
             changed_join_keys.insert(previous_join_key);
             add_index_member(
-                &mut state.join_to_right,
+                &mut state.right.join_to_rows,
                 join_key.clone(),
                 right_key.clone(),
             );
         }
         Some(_) => {}
         None => add_index_member(
-            &mut state.join_to_right,
+            &mut state.right.join_to_rows,
             join_key.clone(),
             right_key.clone(),
         ),
     }
-    state.right_rows.insert(right_key, right_value);
+    state.right.rows.insert(right_key, right_value);
     changed_join_keys.insert(join_key);
 }
 
@@ -256,11 +274,11 @@ fn remove_right<LK, LV, RK, RV, JK, OK, OV>(
     OK: Hash + Eq + CellValue,
     OV: CellValue,
 {
-    if let Some(previous_join_key) = state.right_join_keys.remove(right_key) {
-        remove_index_member(&mut state.join_to_right, &previous_join_key, right_key);
+    if let Some(previous_join_key) = state.right.row_join_keys.remove(right_key) {
+        remove_index_member(&mut state.right.join_to_rows, &previous_join_key, right_key);
         changed_join_keys.insert(previous_join_key);
     }
-    state.right_rows.remove(right_key);
+    state.right.rows.remove(right_key);
 }
 
 fn apply_right_diff<LK, LV, RK, RV, JK, OK, OV, FR>(
@@ -296,12 +314,12 @@ fn apply_right_diff<LK, LV, RK, RV, JK, OK, OV, FR>(
     {
         match diff {
             MapDiff::Initial { entries } => {
-                for join_key in state.right_join_keys.values() {
+                for join_key in state.right.row_join_keys.values() {
                     changed_join_keys.insert(join_key.clone());
                 }
-                state.right_rows.clear();
-                state.right_join_keys.clear();
-                state.join_to_right.clear();
+                state.right.rows.clear();
+                state.right.row_join_keys.clear();
+                state.right.join_to_rows.clear();
                 for (key, value) in entries {
                     upsert_right(
                         state,
@@ -373,13 +391,14 @@ where
             if let Some(right_keys) = state
                 .left_join_keys
                 .get(&left_key)
-                .and_then(|join_key| state.join_to_right.get(join_key))
+                .and_then(|join_key| state.right.join_to_rows.get(join_key))
             {
                 scratch
                     .right_rows
                     .extend(right_keys.iter().filter_map(|right_key| {
                         state
-                            .right_rows
+                            .right
+                            .rows
                             .get(right_key)
                             .map(|right_value| (right_key.clone(), right_value.clone()))
                     }));
@@ -515,11 +534,12 @@ where
                     if let Some(right_keys) = state
                         .left_join_keys
                         .get(left_key)
-                        .and_then(|join_key| state.join_to_right.get(join_key))
+                        .and_then(|join_key| state.right.join_to_rows.get(join_key))
                     {
                         right_rows.extend(right_keys.iter().filter_map(|right_key| {
                             state
-                                .right_rows
+                                .right
+                                .rows
                                 .get(right_key)
                                 .map(|right_value| (right_key.clone(), right_value.clone()))
                         }));
@@ -552,7 +572,7 @@ where
         let fanout = state
             .left_join_keys
             .get(left_key)
-            .and_then(|join_key| state.join_to_right.get(join_key))
+            .and_then(|join_key| state.right.join_to_rows.get(join_key))
             .map_or(0, Vec::len);
         work.saturating_add(fanout.saturating_add(1))
     });
@@ -579,13 +599,14 @@ where
             if let Some(right_keys) = state
                 .left_join_keys
                 .get(&left_key)
-                .and_then(|join_key| state.join_to_right.get(join_key))
+                .and_then(|join_key| state.right.join_to_rows.get(join_key))
             {
                 scratch
                     .right_rows
                     .extend(right_keys.iter().filter_map(|right_key| {
                         state
-                            .right_rows
+                            .right
+                            .rows
                             .get(right_key)
                             .map(|right_value| (right_key.clone(), right_value.clone()))
                     }));
@@ -1224,12 +1245,14 @@ where
     OV: CellValue,
 {
     state
-        .join_to_right
+        .right
+        .join_to_rows
         .values()
         .flatten()
         .filter_map(|key| {
             state
-                .right_rows
+                .right
+                .rows
                 .get(key)
                 .map(|value| (key.clone(), value.clone()))
         })
