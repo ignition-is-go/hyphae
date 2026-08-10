@@ -4,7 +4,7 @@
 //! required to transform a key-preserving projection. These runtimes therefore
 //! need no source mirror, output-key index, cache, mutex, or per-row hash set.
 
-use std::{hash::Hash, sync::Arc};
+use std::hash::Hash;
 
 use crate::{
     cell_map::MapDiff,
@@ -110,10 +110,10 @@ where
     }
 }
 
-pub fn install_map_values_runtime<K, V, U, S, F>(
+pub fn install_map_values_runtime<K, V, U, S, F, Sink>(
     source: S,
     f: F,
-    sink: MapDiffSink<K, U>,
+    sink: Sink,
 ) -> Vec<SubscriptionGuard>
 where
     K: Hash + Eq + CellValue,
@@ -121,19 +121,20 @@ where
     U: CellValue,
     S: MapQuery<Key = K, Value = V>,
     F: Fn(&K, &V) -> U + Send + Sync + 'static,
+    Sink: MapDiffSink<K, U>,
 {
-    let upstream_sink: MapDiffSink<K, V> = Arc::new(move |diff| {
+    let upstream_sink = move |diff: &MapDiff<K, V>| {
         if let Some(mapped) = map_diff(diff, &f) {
             sink(&mapped);
         }
-    });
+    };
     source.install(upstream_sink)
 }
 
-pub fn install_filter_map_values_runtime<K, V, U, S, F>(
+pub fn install_filter_map_values_runtime<K, V, U, S, F, Sink>(
     source: S,
     f: F,
-    sink: MapDiffSink<K, U>,
+    sink: Sink,
 ) -> Vec<SubscriptionGuard>
 where
     K: Hash + Eq + CellValue,
@@ -141,12 +142,13 @@ where
     U: CellValue,
     S: MapQuery<Key = K, Value = V>,
     F: Fn(&K, &V) -> Option<U> + Send + Sync + 'static,
+    Sink: MapDiffSink<K, U>,
 {
-    let upstream_sink: MapDiffSink<K, V> = Arc::new(move |diff| {
+    let upstream_sink = move |diff: &MapDiff<K, V>| {
         if let Some(mapped) = filter_map_diff(diff, &f) {
             sink(&mapped);
         }
-    });
+    };
     source.install(upstream_sink)
 }
 

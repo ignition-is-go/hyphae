@@ -57,7 +57,10 @@ where
         + 'static,
     F: Fn(&K, &V) -> W + Send + Sync + 'static,
 {
-    fn install(self, sink: MapDiffSink<K, V>) -> Vec<SubscriptionGuard> {
+    fn install<Sink>(self, sink: Sink) -> Vec<SubscriptionGuard>
+    where
+        Sink: MapDiffSink<K, V>,
+    {
         // Implement select_cell as a project_cell whose inner Watchable maps
         // the boolean gate into Option<(K, V)>.
         let predicate = self.predicate;

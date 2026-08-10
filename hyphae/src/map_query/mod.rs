@@ -27,13 +27,17 @@ pub mod share;
 
 pub use share::{MapQueryShareExt, SharedMapQuery};
 
-/// Boxed diff sink shape used by every [`MapQueryInstall::install`] hop.
+/// Statically typed downstream diff consumer used while compiling a query.
 ///
-/// A sink consumes diffs from an upstream stage and applies them to a
-/// downstream stage's state (or, at the materialize boundary, to the output
-/// [`CellMap`]). Sinks are `Arc`-cloneable so a stage can fan out to multiple
-/// downstream consumers if needed.
-pub(crate) type MapDiffSink<K, V> = Arc<dyn Fn(&MapDiff<K, V>) + Send + Sync>;
+/// The blanket implementation keeps every plan-to-plan edge monomorphized.
+/// Type erasure is reserved for actual multicast boundaries and the root
+/// source subscriber registry.
+pub(crate) trait MapDiffSink<K, V>: Fn(&MapDiff<K, V>) + Send + Sync + 'static {}
+
+impl<K, V, F> MapDiffSink<K, V> for F where F: Fn(&MapDiff<K, V>) + Send + Sync + 'static {}
+
+/// Explicitly erased sink used only by the opt-in shared query boundary.
+pub(crate) type BoxedMapDiffSink<K, V> = Arc<dyn Fn(&MapDiff<K, V>) + Send + Sync>;
 
 /// Crate-private installer hook used by [`MapQuery::materialize`].
 ///
@@ -55,7 +59,9 @@ where
     /// Consumes `self`: a plan can only be materialized once, and its
     /// owned source(s) need to move into the resulting subscription
     /// closures so chained plans compose without cloning.
-    fn install(self, sink: MapDiffSink<K, V>) -> Vec<SubscriptionGuard>;
+    fn install<S>(self, sink: S) -> Vec<SubscriptionGuard>
+    where
+        S: MapDiffSink<K, V>;
 }
 
 /// Uncompiled reactive map operation chain.
@@ -101,7 +107,7 @@ pub trait MapQuery: MapQueryInstall<Self::Key, Self::Value> {
         let output = CellMap::<Self::Key, Self::Value, CellMutable>::new();
         let weak = Arc::downgrade(&output.inner);
 
-        let sink: MapDiffSink<Self::Key, Self::Value> = Arc::new(move |diff| {
+        let sink = move |diff: &MapDiff<Self::Key, Self::Value>| {
             let Some(inner) = weak.upgrade() else {
                 return;
             };
@@ -113,7 +119,7 @@ pub trait MapQuery: MapQueryInstall<Self::Key, Self::Value> {
             // &diff). apply_diff_owned takes it by value, mutates state, and
             // emits the diff directly via diffs_cell — no Vec, no Batch wrap.
             out.apply_diff_owned(diff.clone());
-        });
+        };
 
         let guards = self.install(sink);
         for g in guards {

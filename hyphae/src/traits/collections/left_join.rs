@@ -58,8 +58,11 @@ where
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
     FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
 {
-    fn install(self, sink: MapDiffSink<LK, (LV, Vec<RV>)>) -> Vec<SubscriptionGuard> {
-        install_keyed_join_runtime_via_query::<LK, LV, RK, RV, JK, (LV, Vec<RV>), _, _, _, _, _>(
+    fn install<Sink>(self, sink: Sink) -> Vec<SubscriptionGuard>
+    where
+        Sink: MapDiffSink<LK, (LV, Vec<RV>)>,
+    {
+        install_keyed_join_runtime_via_query::<LK, LV, RK, RV, JK, (LV, Vec<RV>), _, _, _, _, _, _>(
             self.left,
             self.right,
             self.left_key,

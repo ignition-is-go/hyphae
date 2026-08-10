@@ -190,10 +190,11 @@ where
 }
 
 /// Wrap a non-empty change vector in `MapDiff::Batch`, dropping empty groups.
-fn emit_changes<K, V>(changes: Vec<MapDiff<K, V>>, sink: &crate::map_query::MapDiffSink<K, V>)
+fn emit_changes<K, V, Sink>(changes: Vec<MapDiff<K, V>>, sink: &Sink)
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
+    Sink: crate::map_query::MapDiffSink<K, V>,
 {
     if changes.is_empty() {
         return;
@@ -210,10 +211,10 @@ where
 /// Used by `MapQuery` plan nodes (`ProjectPlan`, `ProjectManyPlan`,
 /// `SelectPlan`) whose materialization shares one output cell map. Chains of
 /// plans compose without intermediate [`CellMap`](crate::CellMap) allocations.
-pub fn install_map_runtime_via_query<SK, SV, OK, OV, S, FO>(
+pub fn install_map_runtime_via_query<SK, SV, OK, OV, S, FO, Sink>(
     source: S,
     compute_rows: FO,
-    sink: crate::map_query::MapDiffSink<OK, OV>,
+    sink: Sink,
 ) -> Vec<SubscriptionGuard>
 where
     SK: Hash + Eq + CellValue,
@@ -222,24 +223,20 @@ where
     OV: CellValue,
     S: crate::map_query::MapQuery<Key = SK, Value = SV>,
     FO: Fn(&SK, &SV) -> Vec<(OK, OV)> + Send + Sync + 'static,
+    Sink: crate::map_query::MapDiffSink<OK, OV>,
 {
     let state = Arc::new(Mutex::new(MapState::<SK, SV, OK, OV>::default()));
-    let compute_rows = Arc::new(compute_rows);
-
-    let upstream_sink: crate::map_query::MapDiffSink<SK, SV> = {
-        let state = state;
-        let compute_rows = compute_rows;
-        let sink = sink;
-        Arc::new(move |diff| {
+    let upstream_sink = {
+        move |diff: &MapDiff<SK, SV>| {
             let mut state = state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let mut impacted: FxHashSet<SK> = FxHashSet::default();
             apply_source_diff(&mut state.source_rows, diff, &mut impacted);
-            let changes = recompute_impacted(&mut state, impacted, compute_rows.as_ref());
+            let changes = recompute_impacted(&mut state, impacted, &compute_rows);
             drop(state);
             emit_changes(changes, &sink);
-        })
+        }
     };
 
     source.install(upstream_sink)

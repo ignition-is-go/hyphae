@@ -56,7 +56,10 @@ where
     W: Watchable<Option<(K2, V2)>> + Gettable<Option<(K2, V2)>> + Clone + Send + Sync + 'static,
     F: Fn(&K, &V) -> W + Send + Sync + 'static,
 {
-    fn install(self, sink: MapDiffSink<K2, V2>) -> Vec<SubscriptionGuard> {
+    fn install<Sink>(self, sink: Sink) -> Vec<SubscriptionGuard>
+    where
+        Sink: MapDiffSink<K2, V2>,
+    {
         // Stage 1 (install_map_values_cell_via_query) emits diffs keyed by `K`
         // with values `Option<(K2, V2)>`. Stage 2 — implemented inline by the
         // intermediate sink below — projects `Some(...) -> (K2, V2)` and `None
@@ -64,10 +67,9 @@ where
         // we know what to Remove on transitions.
         let last_emitted: Arc<Mutex<HashMap<K, (K2, V2)>>> = Arc::new(Mutex::new(HashMap::new()));
 
-        let intermediate_sink: MapDiffSink<K, Option<(K2, V2)>> = {
+        let intermediate_sink = {
             let last_emitted = last_emitted;
-            let final_sink = sink.clone();
-            Arc::new(move |diff| {
+            move |diff: &MapDiff<K, Option<(K2, V2)>>| {
                 let mut out: Vec<MapDiff<K2, V2>> = Vec::new();
                 project_diff(&last_emitted, diff, &mut out);
                 if out.is_empty() {
@@ -75,16 +77,16 @@ where
                 }
                 if out.len() == 1 {
                     if let Some(diff) = out.pop() {
-                        final_sink(&diff);
+                        sink(&diff);
                     }
                 } else {
-                    final_sink(&MapDiff::Batch { changes: out });
+                    sink(&MapDiff::Batch { changes: out });
                 }
-            })
+            }
         };
 
         let mapper = self.mapper;
-        install_map_values_cell_via_query::<K, V, Option<(K2, V2)>, S, W, _>(
+        install_map_values_cell_via_query::<K, V, Option<(K2, V2)>, S, W, _, _>(
             self.source,
             move |k, v| (mapper)(k, v),
             intermediate_sink,

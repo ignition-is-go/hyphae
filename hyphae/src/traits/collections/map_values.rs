@@ -35,7 +35,10 @@ where
     U: CellValue,
     F: Fn(&K, &V) -> U + Send + Sync + 'static,
 {
-    fn install(self, sink: MapDiffSink<K, U>) -> Vec<SubscriptionGuard> {
+    fn install<Sink>(self, sink: Sink) -> Vec<SubscriptionGuard>
+    where
+        Sink: MapDiffSink<K, U>,
+    {
         install_map_values_runtime(self.source, self.f, sink)
     }
 }
@@ -75,7 +78,10 @@ where
     U: CellValue,
     F: Fn(&K, &V) -> Option<U> + Send + Sync + 'static,
 {
-    fn install(self, sink: MapDiffSink<K, U>) -> Vec<SubscriptionGuard> {
+    fn install<Sink>(self, sink: Sink) -> Vec<SubscriptionGuard>
+    where
+        Sink: MapDiffSink<K, U>,
+    {
         install_filter_map_values_runtime(self.source, self.f, sink)
     }
 }

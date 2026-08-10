@@ -126,10 +126,11 @@ where
 }
 
 /// Wrap a non-empty change vector in `MapDiff::Batch`, dropping empty groups.
-fn emit_changes<K, V>(changes: Vec<MapDiff<K, V>>, sink: &MapDiffSink<K, V>)
+fn emit_changes<K, V, Sink>(changes: Vec<MapDiff<K, V>>, sink: &Sink)
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
+    Sink: MapDiffSink<K, V>,
 {
     if changes.is_empty() {
         return;
@@ -143,11 +144,11 @@ where
 /// intermediate sink that flattens incoming diffs, drives `apply_atomic` to
 /// build the downstream change set, and forwards a single `Batch` per
 /// upstream emission to `sink`. No intermediate `CellMap` is allocated.
-pub fn install_diff_runtime_via_query<SK, SV, OK, OV, S, ST, FS>(
+pub fn install_diff_runtime_via_query<SK, SV, OK, OV, S, ST, FS, Sink>(
     source: S,
     initial_state: ST,
     apply_atomic: FS,
-    sink: MapDiffSink<OK, OV>,
+    sink: Sink,
 ) -> Vec<SubscriptionGuard>
 where
     SK: Hash + Eq + CellValue,
@@ -157,15 +158,12 @@ where
     S: MapQuery<Key = SK, Value = SV>,
     ST: Send + Sync + 'static,
     FS: Fn(&mut ST, &MapDiff<SK, SV>, &mut Vec<MapDiff<OK, OV>>) + Send + Sync + 'static,
+    Sink: MapDiffSink<OK, OV>,
 {
     let state = Arc::new(Mutex::new(initial_state));
-    let apply_atomic = Arc::new(apply_atomic);
 
-    let upstream_sink: MapDiffSink<SK, SV> = {
-        let state = state;
-        let apply_atomic = apply_atomic;
-        let sink = sink;
-        Arc::new(move |diff| {
+    let upstream_sink = {
+        move |diff: &MapDiff<SK, SV>| {
             let mut atomic_diffs: Vec<MapDiff<SK, SV>> = Vec::new();
             flatten_diff(diff, &mut atomic_diffs);
             let mut emitted = Vec::<MapDiff<OK, OV>>::new();
@@ -178,7 +176,7 @@ where
                 }
             }
             emit_changes(emitted, &sink);
-        })
+        }
     };
 
     source.install(upstream_sink)
@@ -188,10 +186,10 @@ where
 ///
 /// Used by `CountByPlan` and `GroupByPlan` to install grouping machinery
 /// into a downstream sink without materializing an intermediate `CellMap`.
-pub fn install_grouped_runtime_via_query<SK, SV, GK, GS, OV, S, FG, FI, FU, FR, FM, FE>(
+pub fn install_grouped_runtime_via_query<SK, SV, GK, GS, OV, S, FG, FI, FU, FR, FM, FE, Sink>(
     source: S,
     ops: GroupedOps<SK, SV, GK, GS, OV, FG, FI, FU, FR, FM, FE>,
-    sink: MapDiffSink<GK, OV>,
+    sink: Sink,
 ) -> Vec<SubscriptionGuard>
 where
     SK: Hash + Eq + CellValue,
@@ -206,9 +204,10 @@ where
     FR: Fn(&mut GS, &SK, &SV) + Send + Sync + 'static,
     FM: Fn(&GS) -> OV + Send + Sync + 'static,
     FE: Fn(&GS) -> bool + Send + Sync + 'static,
+    Sink: MapDiffSink<GK, OV>,
 {
     let ops = Arc::new(ops);
-    install_diff_runtime_via_query::<SK, SV, GK, OV, S, GroupedState<SK, GK, GS>, _>(
+    install_diff_runtime_via_query::<SK, SV, GK, OV, S, GroupedState<SK, GK, GS>, _, _>(
         source,
         GroupedState::<SK, GK, GS>::default(),
         move |state: &mut GroupedState<SK, GK, GS>,

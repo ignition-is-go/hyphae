@@ -40,7 +40,10 @@ where
     V: CellValue,
     F: Fn(&K, &V) -> bool + Send + Sync + 'static,
 {
-    fn install(self, sink: MapDiffSink<K, V>) -> Vec<SubscriptionGuard> {
+    fn install<Sink>(self, sink: Sink) -> Vec<SubscriptionGuard>
+    where
+        Sink: MapDiffSink<K, V>,
+    {
         let predicate = self.predicate;
         install_filter_map_values_runtime(
             self.source,

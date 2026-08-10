@@ -419,10 +419,11 @@ where
 /// subscribers: every non-empty group of output diffs produced from a single
 /// upstream diff is delivered as one `MapDiff::Batch`, even when the group
 /// contains a single change. Empty batches are dropped.
-fn emit_changes<OK, OV>(sink: &crate::map_query::MapDiffSink<OK, OV>, changes: Vec<MapDiff<OK, OV>>)
+fn emit_changes<OK, OV, Sink>(sink: &Sink, changes: Vec<MapDiff<OK, OV>>)
 where
     OK: Hash + Eq + CellValue,
     OV: CellValue,
+    Sink: crate::map_query::MapDiffSink<OK, OV>,
 {
     if changes.is_empty() {
         return;
@@ -431,13 +432,13 @@ where
 }
 
 /// Install the one-output, left-key-preserving multi-join runtime.
-pub fn install_keyed_multi_join_runtime_via_query<LK, LV, RK, RV, JK, OV, L, R, FL, FR, FO>(
+pub fn install_keyed_multi_join_runtime_via_query<LK, LV, RK, RV, JK, OV, L, R, FL, FR, FO, Sink>(
     left: L,
     right: R,
     left_join_keys_fn: FL,
     right_join_key: FR,
     compute_value: FO,
-    sink: crate::map_query::MapDiffSink<LK, OV>,
+    sink: Sink,
 ) -> Vec<SubscriptionGuard>
 where
     LK: Hash + Eq + CellValue,
@@ -451,6 +452,7 @@ where
     FL: Fn(&LK, &LV) -> Vec<JK> + Send + Sync + 'static,
     FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
     FO: Fn(&LK, &LV, &[(RK, RV)]) -> OV + Send + Sync + 'static,
+    Sink: crate::map_query::MapDiffSink<LK, OV>,
 {
     let state = Arc::new(Mutex::new(
         MultiJoinState::<LK, LV, RK, RV, JK, LK, OV>::default(),
@@ -458,13 +460,14 @@ where
     let left_join_keys_fn = Arc::new(left_join_keys_fn);
     let right_join_key = Arc::new(right_join_key);
     let compute_value = Arc::new(compute_value);
+    let sink = Arc::new(sink);
 
-    let left_sink: crate::map_query::MapDiffSink<LK, LV> = {
+    let left_sink = {
         let state = state.clone();
         let left_join_keys_fn = left_join_keys_fn;
         let compute_value = compute_value.clone();
         let sink = sink.clone();
-        Arc::new(move |diff| {
+        move |diff: &MapDiff<LK, LV>| {
             let mut state = state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -478,17 +481,17 @@ where
             let changes =
                 recompute_keyed_impacted(&mut state, &mut scratch, compute_value.as_ref());
             state.scratch = scratch;
-            emit_changes(&sink, changes);
+            emit_changes(sink.as_ref(), changes);
             drop(state);
-        })
+        }
     };
 
-    let right_sink: crate::map_query::MapDiffSink<RK, RV> = {
+    let right_sink = {
         let state = state;
         let right_join_key = right_join_key;
         let compute_value = compute_value;
         let sink = sink;
-        Arc::new(move |diff| {
+        move |diff: &MapDiff<RK, RV>| {
             let mut state = state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -503,9 +506,9 @@ where
             let changes =
                 recompute_keyed_impacted(&mut state, &mut scratch, compute_value.as_ref());
             state.scratch = scratch;
-            emit_changes(&sink, changes);
+            emit_changes(sink.as_ref(), changes);
             drop(state);
-        })
+        }
     };
 
     let mut guards = left.install(left_sink);

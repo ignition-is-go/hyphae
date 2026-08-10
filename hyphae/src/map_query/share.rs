@@ -35,7 +35,7 @@ use uuid::Uuid;
 
 use crate::{
     cell_map::MapDiff,
-    map_query::{MapDiffSink, MapQuery, MapQueryInstall},
+    map_query::{BoxedMapDiffSink, MapDiffSink, MapQuery, MapQueryInstall},
     subscription::SubscriptionGuard,
     traits::CellValue,
 };
@@ -46,7 +46,7 @@ type DiffSubscriber<K, V> = Arc<dyn Fn(&MapDiff<K, V>) + Send + Sync>;
 /// `install` consumes `self`, so we wrap a one-shot `FnOnce` in a slot and
 /// take it on the first downstream install.
 type UpstreamInstall<K, V> =
-    Box<dyn FnOnce(MapDiffSink<K, V>) -> Vec<SubscriptionGuard> + Send + Sync>;
+    Box<dyn FnOnce(BoxedMapDiffSink<K, V>) -> Vec<SubscriptionGuard> + Send + Sync>;
 
 pub(crate) struct SharedMapQueryInner<K, V>
 where
@@ -182,7 +182,8 @@ where
     /// Prefer the [`MapQueryShareExt::share`] extension method — it reads as
     /// `query.share()` at the call site.
     pub fn new<Q: MapQuery<Key = K, Value = V>>(q: Q) -> Self {
-        let upstream: UpstreamInstall<K, V> = Box::new(move |sink| q.install(sink));
+        let upstream: UpstreamInstall<K, V> =
+            Box::new(move |sink| q.install(move |diff| sink(diff)));
         Self {
             inner: Arc::new(SharedMapQueryInner {
                 upstream: Mutex::new(Some(upstream)),
@@ -199,8 +200,12 @@ where
     K: CellValue + Hash + Eq,
     V: CellValue,
 {
-    fn install(self, sink: MapDiffSink<K, V>) -> Vec<SubscriptionGuard> {
+    fn install<Sink>(self, sink: Sink) -> Vec<SubscriptionGuard>
+    where
+        Sink: MapDiffSink<K, V>,
+    {
         let id = Uuid::new_v4();
+        let sink: DiffSubscriber<K, V> = Arc::new(sink);
 
         // Decide whether this is the first install. If the upstream slot is
         // still populated, we will:
@@ -222,7 +227,7 @@ where
         if let Some(install_fn) = upstream_take {
             self.inner.add_subscriber(id, sink);
             let weak = Arc::downgrade(&self.inner);
-            let fanout: MapDiffSink<K, V> = Arc::new(move |diff: &MapDiff<K, V>| {
+            let fanout: BoxedMapDiffSink<K, V> = Arc::new(move |diff: &MapDiff<K, V>| {
                 let Some(inner) = weak.upgrade() else {
                     return;
                 };

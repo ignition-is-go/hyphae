@@ -30,7 +30,10 @@ where
     M::Key: CellValue + Hash + Eq,
     M::Value: CellValue,
 {
-    fn install(self, sink: MapDiffSink<M::Key, M::Value>) -> Vec<SubscriptionGuard> {
+    fn install<S>(self, sink: S) -> Vec<SubscriptionGuard>
+    where
+        S: MapDiffSink<M::Key, M::Value>,
+    {
         // `subscribe_diffs_reactive` borrows `&self`, so we need `self` to
         // outlive the call. We also need to keep the source alive across the
         // subscription lifetime so the underlying inner map doesn't drop
