@@ -32,7 +32,7 @@ use crate::{
 /// work; share by materializing once.
 pub struct ProjectCellPlan<S, K, V, K2, V2, W, F>
 where
-    S: MapQuery<K, V>,
+    S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
     V: CellValue,
     K2: Hash + Eq + CellValue,
@@ -48,7 +48,7 @@ where
 
 impl<S, K, V, K2, V2, W, F> MapQueryInstall<K2, V2> for ProjectCellPlan<S, K, V, K2, V2, W, F>
 where
-    S: MapQuery<K, V>,
+    S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
     V: CellValue,
     K2: Hash + Eq + CellValue,
@@ -93,9 +93,9 @@ where
 }
 
 #[allow(private_bounds)]
-impl<S, K, V, K2, V2, W, F> MapQuery<K2, V2> for ProjectCellPlan<S, K, V, K2, V2, W, F>
+impl<S, K, V, K2, V2, W, F> MapQuery for ProjectCellPlan<S, K, V, K2, V2, W, F>
 where
-    S: MapQuery<K, V>,
+    S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
     V: CellValue,
     K2: Hash + Eq + CellValue,
@@ -103,6 +103,8 @@ where
     W: Watchable<Option<(K2, V2)>> + Gettable<Option<(K2, V2)>> + Clone + Send + Sync + 'static,
     F: Fn(&K, &V) -> W + Send + Sync + 'static,
 {
+    type Key = K2;
+    type Value = V2;
 }
 
 /// Translate a single `(K, Option<(K2, V2)>)` diff into the corresponding
@@ -235,7 +237,7 @@ fn apply_one<K, K2, V2>(
 /// `project_cell` builds an uncompiled plan node; call
 /// [`MapQuery::materialize`] on the result to obtain a subscribable
 /// [`CellMap`](crate::CellMap).
-pub trait ProjectCellExt<K, V>: MapQuery<K, V>
+pub trait ProjectCellExt<K, V>: MapQuery<Key = K, Value = V>
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
@@ -245,7 +247,7 @@ where
     /// `mapper(&source_key, &source_value)` returns a watchable
     /// `Option<(output_key, output_value)>`. `None` means the row is excluded.
     #[track_caller]
-    fn project_cell<K2, V2, W, F>(self, mapper: F) -> impl MapQuery<K2, V2>
+    fn project_cell<K2, V2, W, F>(self, mapper: F) -> impl MapQuery<Key = K2, Value = V2>
     where
         K2: Hash + Eq + CellValue,
         V2: CellValue,
@@ -264,7 +266,7 @@ impl<K, V, M> ProjectCellExt<K, V> for M
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
-    M: MapQuery<K, V>,
+    M: MapQuery<Key = K, Value = V>,
 {
 }
 

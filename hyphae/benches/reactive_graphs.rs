@@ -156,7 +156,7 @@ macro_rules! join_dimension {
     };
 }
 
-fn initial_plan(sources: &Sources) -> impl MapQuery<u64, Arc<Record>> + use<> {
+fn initial_plan(sources: &Sources) -> impl MapQuery<Key = u64, Value = Arc<Record>> + use<> {
     sources
         .root
         .clone()

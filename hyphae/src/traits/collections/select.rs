@@ -4,12 +4,14 @@
 //! [`MapQuery`] operators. Call [`MapQuery::materialize`] to compile a plan
 //! into a subscribable [`CellMap`](crate::CellMap).
 
-use std::{hash::Hash, marker::PhantomData, sync::Arc};
+use std::{hash::Hash, marker::PhantomData};
 
 use crate::{
     map_query::{MapDiffSink, MapQuery, MapQueryInstall},
     subscription::SubscriptionGuard,
-    traits::{CellValue, collections::internal::map_runtime::install_map_runtime_via_query},
+    traits::{
+        CellValue, collections::internal::stateless_runtime::install_filter_map_values_runtime,
+    },
 };
 
 /// Plan node for [`SelectExt::select`].
@@ -21,47 +23,43 @@ use crate::{
 /// share by materializing once.
 pub struct SelectPlan<S, K, V, F>
 where
-    S: MapQuery<K, V>,
+    S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
     V: CellValue,
-    F: Fn(&V) -> bool + Send + Sync + 'static,
+    F: Fn(&K, &V) -> bool + Send + Sync + 'static,
 {
     pub(crate) source: S,
-    pub(crate) predicate: Arc<F>,
+    pub(crate) predicate: F,
     pub(crate) _types: PhantomData<fn() -> (K, V)>,
 }
 
 impl<S, K, V, F> MapQueryInstall<K, V> for SelectPlan<S, K, V, F>
 where
-    S: MapQuery<K, V>,
+    S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
     V: CellValue,
-    F: Fn(&V) -> bool + Send + Sync + 'static,
+    F: Fn(&K, &V) -> bool + Send + Sync + 'static,
 {
     fn install(self, sink: MapDiffSink<K, V>) -> Vec<SubscriptionGuard> {
         let predicate = self.predicate;
-        install_map_runtime_via_query::<K, V, K, V, S, _>(
+        install_filter_map_values_runtime(
             self.source,
-            move |k, v| {
-                if predicate(v) {
-                    vec![(k.clone(), v.clone())]
-                } else {
-                    Vec::new()
-                }
-            },
+            move |key, value| predicate(key, value).then(|| value.clone()),
             sink,
         )
     }
 }
 
 #[allow(private_bounds)]
-impl<S, K, V, F> MapQuery<K, V> for SelectPlan<S, K, V, F>
+impl<S, K, V, F> MapQuery for SelectPlan<S, K, V, F>
 where
-    S: MapQuery<K, V>,
+    S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
     V: CellValue,
-    F: Fn(&V) -> bool + Send + Sync + 'static,
+    F: Fn(&K, &V) -> bool + Send + Sync + 'static,
 {
+    type Key = K;
+    type Value = V;
 }
 
 /// Select operator returning a [`MapQuery`] plan node.
@@ -69,7 +67,7 @@ where
 /// `select` consumes `self` and returns an uncompiled plan node; call
 /// [`MapQuery::materialize`] on the result to obtain a subscribable
 /// [`CellMap`](crate::CellMap).
-pub trait SelectExt<K, V>: MapQuery<K, V>
+pub trait SelectExt<K, V>: MapQuery<Key = K, Value = V>
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
@@ -78,13 +76,27 @@ where
     ///
     /// `predicate(&value)` decides whether a row is present in the output map.
     #[track_caller]
-    fn select<F>(self, predicate: F) -> impl MapQuery<K, V>
+    fn select<F>(self, predicate: F) -> impl MapQuery<Key = K, Value = V>
     where
         F: Fn(&V) -> bool + Send + Sync + 'static,
     {
+        let predicate = move |_key: &K, value: &V| predicate(value);
         SelectPlan {
             source: self,
-            predicate: Arc::new(predicate),
+            predicate,
+            _types: PhantomData,
+        }
+    }
+
+    /// Filters rows using both the key and value.
+    #[track_caller]
+    fn select_by<F>(self, predicate: F) -> impl MapQuery<Key = K, Value = V>
+    where
+        F: Fn(&K, &V) -> bool + Send + Sync + 'static,
+    {
+        SelectPlan {
+            source: self,
+            predicate,
             _types: PhantomData,
         }
     }
@@ -94,7 +106,7 @@ impl<K, V, M> SelectExt<K, V> for M
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
-    M: MapQuery<K, V>,
+    M: MapQuery<Key = K, Value = V>,
 {
 }
 

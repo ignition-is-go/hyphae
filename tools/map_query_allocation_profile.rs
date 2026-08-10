@@ -16,7 +16,7 @@ use std::{
 
 use hyphae::{
     CellMap, MapQuery,
-    traits::{LeftJoinExt, ProjectMapExt, SelectExt},
+    traits::{LeftJoinExt, MapValuesExt, SelectExt},
 };
 
 const ROWS: u64 = 1_000;
@@ -240,26 +240,20 @@ fn measure_projection(revision: &str) {
     let plan = source
         .clone()
         .select(|row| row.payload % 2 == 0)
-        .project(|key, row| {
-            Some((
-                *key,
-                Arc::new(Row {
-                    relation: row.relation,
-                    payload: row.payload.rotate_left(7),
-                    generation: row.generation,
-                }),
-            ))
+        .map_values(|_key, row| {
+            Arc::new(Row {
+                relation: row.relation,
+                payload: row.payload.rotate_left(7),
+                generation: row.generation,
+            })
         })
         .select(|row| row.relation < 64)
-        .project(|key, row| {
-            Some((
-                *key,
-                Arc::new(Row {
-                    relation: row.relation,
-                    payload: row.payload.wrapping_mul(33),
-                    generation: row.generation,
-                }),
-            ))
+        .map_values(|_key, row| {
+            Arc::new(Row {
+                relation: row.relation,
+                payload: row.payload.wrapping_mul(33),
+                generation: row.generation,
+            })
         });
     let (after_build, build) = measure_phase("build", before_build, started, 1);
 
@@ -312,13 +306,13 @@ fn measure_two_join(revision: &str) {
             |_key, row| row.relation,
             |_key, dimension| dimension.relation,
         )
-        .project(|key, (row, matches)| Some((*key, fold_matches(row, matches, 17))))
+        .map_values(|_key, (row, matches)| fold_matches(row, matches, 17))
         .left_join_by(
             second,
             |_key, row| row.relation,
             |_key, dimension| dimension.relation,
         )
-        .project(|key, (row, matches)| Some((*key, fold_matches(row, matches, 19))));
+        .map_values(|_key, (row, matches)| fold_matches(row, matches, 19));
     let (after_build, build) = measure_phase("build", before_build, started, 1);
 
     let started = Instant::now();
@@ -368,25 +362,25 @@ fn measure_four_join(revision: &str) {
             |_key, row| row.relation,
             |_key, dimension| dimension.relation,
         )
-        .project(|key, (row, matches)| Some((*key, fold_matches(row, matches, 1))))
+        .map_values(|_key, (row, matches)| fold_matches(row, matches, 1))
         .left_join_by(
             shared.clone(),
             |_key, row| row.relation,
             |_key, dimension| dimension.relation,
         )
-        .project(|key, (row, matches)| Some((*key, fold_matches(row, matches, 2))))
+        .map_values(|_key, (row, matches)| fold_matches(row, matches, 2))
         .left_join_by(
             shared.clone(),
             |_key, row| row.relation,
             |_key, dimension| dimension.relation,
         )
-        .project(|key, (row, matches)| Some((*key, fold_matches(row, matches, 3))))
+        .map_values(|_key, (row, matches)| fold_matches(row, matches, 3))
         .left_join_by(
             shared,
             |_key, row| row.relation,
             |_key, dimension| dimension.relation,
         )
-        .project(|key, (row, matches)| Some((*key, fold_matches(row, matches, 4))));
+        .map_values(|_key, (row, matches)| fold_matches(row, matches, 4));
     let (after_build, build) = measure_phase("build", before_build, started, 1);
 
     let started = Instant::now();

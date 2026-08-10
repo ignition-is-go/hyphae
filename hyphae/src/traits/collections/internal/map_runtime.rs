@@ -220,7 +220,7 @@ where
     SV: CellValue,
     OK: Hash + Eq + CellValue,
     OV: CellValue,
-    S: crate::map_query::MapQuery<SK, SV>,
+    S: crate::map_query::MapQuery<Key = SK, Value = SV>,
     FO: Fn(&SK, &SV) -> Vec<(OK, OV)> + Send + Sync + 'static,
 {
     let state = Arc::new(Mutex::new(MapState::<SK, SV, OK, OV>::default()));

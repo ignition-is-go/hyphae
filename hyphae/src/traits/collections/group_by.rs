@@ -24,7 +24,7 @@ use crate::{
 /// share by materializing once.
 pub struct GroupByPlan<S, K, V, GK, F>
 where
-    S: MapQuery<K, V>,
+    S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + Ord + CellValue,
     V: CellValue,
     GK: Hash + Eq + CellValue,
@@ -37,7 +37,7 @@ where
 
 impl<S, K, V, GK, F> MapQueryInstall<GK, Vec<V>> for GroupByPlan<S, K, V, GK, F>
 where
-    S: MapQuery<K, V>,
+    S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + Ord + CellValue,
     V: CellValue,
     GK: Hash + Eq + CellValue,
@@ -69,14 +69,16 @@ where
 }
 
 #[allow(private_bounds)]
-impl<S, K, V, GK, F> MapQuery<GK, Vec<V>> for GroupByPlan<S, K, V, GK, F>
+impl<S, K, V, GK, F> MapQuery for GroupByPlan<S, K, V, GK, F>
 where
-    S: MapQuery<K, V>,
+    S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + Ord + CellValue,
     V: CellValue,
     GK: Hash + Eq + CellValue,
     F: Fn(&K, &V) -> GK + Send + Sync + 'static,
 {
+    type Key = GK;
+    type Value = Vec<V>;
 }
 
 /// Group-by operator returning a [`MapQuery`] plan node.
@@ -84,7 +86,7 @@ where
 /// `group_by` consumes `self` and returns an uncompiled plan node; call
 /// [`MapQuery::materialize`] on the result to obtain a subscribable
 /// [`CellMap`](crate::CellMap).
-pub trait GroupByExt<K, V>: MapQuery<K, V>
+pub trait GroupByExt<K, V>: MapQuery<Key = K, Value = V>
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
@@ -94,7 +96,7 @@ where
     /// Each output key is a group id and each output value is the group's
     /// rows as `Vec<V>`.
     #[track_caller]
-    fn group_by<GK, F>(self, group_key: F) -> impl MapQuery<GK, Vec<V>>
+    fn group_by<GK, F>(self, group_key: F) -> impl MapQuery<Key = GK, Value = Vec<V>>
     where
         K: Ord,
         GK: Hash + Eq + CellValue,
@@ -112,7 +114,7 @@ impl<K, V, M> GroupByExt<K, V> for M
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
-    M: MapQuery<K, V>,
+    M: MapQuery<Key = K, Value = V>,
 {
 }
 

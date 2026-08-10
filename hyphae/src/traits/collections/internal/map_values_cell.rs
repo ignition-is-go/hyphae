@@ -178,7 +178,7 @@ where
     K: Hash + Eq + CellValue,
     V: CellValue,
     U: CellValue,
-    S: crate::map_query::MapQuery<K, V>,
+    S: crate::map_query::MapQuery<Key = K, Value = V>,
     W: Watchable<U> + Gettable<U> + Clone + Send + Sync + 'static,
     F: Fn(&K, &V) -> W + Send + Sync + 'static,
 {

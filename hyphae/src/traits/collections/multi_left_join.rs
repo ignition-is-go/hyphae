@@ -27,8 +27,8 @@ use crate::{
 /// materializing once.
 pub struct MultiLeftJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
 where
-    L: MapQuery<LK, LV>,
-    R: MapQuery<RK, RV>,
+    L: MapQuery<Key = LK, Value = LV>,
+    R: MapQuery<Key = RK, Value = RV>,
     LK: Hash + Eq + CellValue,
     LV: CellValue,
     RK: Hash + Eq + CellValue,
@@ -48,8 +48,8 @@ where
 impl<L, R, LK, LV, RK, RV, JK, FL, FR> MapQueryInstall<LK, (LV, Vec<RV>)>
     for MultiLeftJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
 where
-    L: MapQuery<LK, LV>,
-    R: MapQuery<RK, RV>,
+    L: MapQuery<Key = LK, Value = LV>,
+    R: MapQuery<Key = RK, Value = RV>,
     LK: Hash + Eq + CellValue,
     LV: CellValue,
     RK: Hash + Eq + CellValue,
@@ -74,11 +74,11 @@ where
 }
 
 #[allow(private_bounds)]
-impl<L, R, LK, LV, RK, RV, JK, FL, FR> MapQuery<LK, (LV, Vec<RV>)>
+impl<L, R, LK, LV, RK, RV, JK, FL, FR> MapQuery
     for MultiLeftJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
 where
-    L: MapQuery<LK, LV>,
-    R: MapQuery<RK, RV>,
+    L: MapQuery<Key = LK, Value = LV>,
+    R: MapQuery<Key = RK, Value = RV>,
     LK: Hash + Eq + CellValue,
     LV: CellValue,
     RK: Hash + Eq + CellValue,
@@ -87,6 +87,8 @@ where
     FL: Fn(&LK, &LV) -> Vec<JK> + Send + Sync + 'static,
     FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
 {
+    type Key = LK;
+    type Value = (LV, Vec<RV>);
 }
 
 /// Multi-left-join operator returning a [`MapQuery`] plan node.
@@ -94,7 +96,7 @@ where
 /// Consumes `self` and returns an uncompiled plan node; call
 /// [`MapQuery::materialize`] on the result to obtain a subscribable
 /// [`CellMap`](crate::CellMap).
-pub trait MultiLeftJoinExt<K, V>: MapQuery<K, V>
+pub trait MultiLeftJoinExt<K, V>: MapQuery<Key = K, Value = V>
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
@@ -111,9 +113,9 @@ where
         right: R,
         left_keys: FL,
         right_key: FR,
-    ) -> impl MapQuery<K, (V, Vec<RV>)>
+    ) -> impl MapQuery<Key = K, Value = (V, Vec<RV>)>
     where
-        R: MapQuery<RK, RV>,
+        R: MapQuery<Key = RK, Value = RV>,
         RK: Hash + Eq + CellValue,
         RV: CellValue,
         JK: Hash + Eq + CellValue,
@@ -134,7 +136,7 @@ impl<K, V, M> MultiLeftJoinExt<K, V> for M
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
-    M: MapQuery<K, V>,
+    M: MapQuery<Key = K, Value = V>,
 {
 }
 

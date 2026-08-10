@@ -50,12 +50,15 @@ where
 }
 
 #[allow(private_bounds)]
-impl<K, V, M> MapQuery<K, V> for CellMap<K, V, M>
+impl<K, V, M> MapQuery for CellMap<K, V, M>
 where
     K: CellValue + Hash + Eq,
     V: CellValue,
     M: Clone + Send + Sync + 'static,
 {
+    type Key = K;
+    type Value = V;
+
     /// No-op materialize: the cell map is already a cached, multicast source.
     /// Just flip the marker to `CellImmutable` and reuse the same `Arc<inner>`.
     fn materialize(self) -> CellMap<K, V, CellImmutable> {
@@ -67,12 +70,15 @@ where
 }
 
 #[allow(private_bounds)]
-impl<PK, K, V> MapQuery<K, V> for NestedMap<PK, K, V>
+impl<PK, K, V> MapQuery for NestedMap<PK, K, V>
 where
     PK: CellValue + Hash + Eq,
     K: CellValue + Hash + Eq,
     V: CellValue,
 {
+    type Key = K;
+    type Value = V;
+
     // Inherits the default materialize. A NestedMap is not a CellMap; it
     // owns its own diff-stream/state and there is no immutable variant to
     // short-circuit to, so the default allocate-and-forward strategy is

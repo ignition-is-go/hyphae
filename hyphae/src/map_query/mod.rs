@@ -85,26 +85,27 @@ where
 /// [`CellMap`] (which IS `Clone` — the clone is an `Arc` bump referencing
 /// the same multicast cache) and then clone the cell map.
 #[allow(private_bounds)]
-pub trait MapQuery<K, V>: MapQueryInstall<K, V>
-where
-    K: CellValue + Hash + Eq,
-    V: CellValue,
-{
+pub trait MapQuery: MapQueryInstall<Self::Key, Self::Value> {
+    /// Key produced by this query plan.
+    type Key: CellValue + Hash + Eq;
+    /// Value produced by this query plan.
+    type Value: CellValue;
+
     /// Compile the query into a [`CellMap`] and install root-source
     /// subscriptions running the fused diff-propagation closure.
     ///
     /// This is the only way to observe map-query output. Every subscribe in
     /// the codebase is on a cell map, never on a query — which is the point.
     #[track_caller]
-    fn materialize(self) -> CellMap<K, V, CellImmutable> {
-        let output = CellMap::<K, V, CellMutable>::new();
+    fn materialize(self) -> CellMap<Self::Key, Self::Value, CellImmutable> {
+        let output = CellMap::<Self::Key, Self::Value, CellMutable>::new();
         let weak = Arc::downgrade(&output.inner);
 
-        let sink: MapDiffSink<K, V> = Arc::new(move |diff| {
+        let sink: MapDiffSink<Self::Key, Self::Value> = Arc::new(move |diff| {
             let Some(inner) = weak.upgrade() else {
                 return;
             };
-            let out: CellMap<K, V, CellMutable> = CellMap {
+            let out: CellMap<Self::Key, Self::Value, CellMutable> = CellMap {
                 inner,
                 _marker: PhantomData,
             };

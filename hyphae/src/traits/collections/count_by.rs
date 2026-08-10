@@ -24,7 +24,7 @@ use crate::{
 /// share by materializing once.
 pub struct CountByPlan<S, K, V, GK, F>
 where
-    S: MapQuery<K, V>,
+    S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
     V: CellValue,
     GK: Hash + Eq + CellValue,
@@ -37,7 +37,7 @@ where
 
 impl<S, K, V, GK, F> MapQueryInstall<GK, usize> for CountByPlan<S, K, V, GK, F>
 where
-    S: MapQuery<K, V>,
+    S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
     V: CellValue,
     GK: Hash + Eq + CellValue,
@@ -67,14 +67,16 @@ where
 }
 
 #[allow(private_bounds)]
-impl<S, K, V, GK, F> MapQuery<GK, usize> for CountByPlan<S, K, V, GK, F>
+impl<S, K, V, GK, F> MapQuery for CountByPlan<S, K, V, GK, F>
 where
-    S: MapQuery<K, V>,
+    S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
     V: CellValue,
     GK: Hash + Eq + CellValue,
     F: Fn(&K, &V) -> GK + Send + Sync + 'static,
 {
+    type Key = GK;
+    type Value = usize;
 }
 
 /// Count-by operator returning a [`MapQuery`] plan node.
@@ -82,7 +84,7 @@ where
 /// `count_by` consumes `self` and returns an uncompiled plan node; call
 /// [`MapQuery::materialize`] on the result to obtain a subscribable
 /// [`CellMap`](crate::CellMap).
-pub trait CountByExt<K, V>: MapQuery<K, V>
+pub trait CountByExt<K, V>: MapQuery<Key = K, Value = V>
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
@@ -93,7 +95,7 @@ where
     /// `group_key` is called for every source row and its return value
     /// becomes the output map key.
     #[track_caller]
-    fn count_by<GK, F>(self, group_key: F) -> impl MapQuery<GK, usize>
+    fn count_by<GK, F>(self, group_key: F) -> impl MapQuery<Key = GK, Value = usize>
     where
         GK: Hash + Eq + CellValue,
         F: Fn(&K, &V) -> GK + Send + Sync + 'static,
@@ -110,7 +112,7 @@ impl<K, V, M> CountByExt<K, V> for M
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
-    M: MapQuery<K, V>,
+    M: MapQuery<Key = K, Value = V>,
 {
 }
 

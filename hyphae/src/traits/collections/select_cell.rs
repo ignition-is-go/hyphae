@@ -26,7 +26,7 @@ use crate::{
 #[allow(private_bounds)]
 pub struct SelectCellPlan<S, K, V, W, F>
 where
-    S: MapQuery<K, V>,
+    S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
     V: CellValue,
     W: Pipeline<bool>
@@ -45,7 +45,7 @@ where
 
 impl<S, K, V, W, F> MapQueryInstall<K, V> for SelectCellPlan<S, K, V, W, F>
 where
-    S: MapQuery<K, V>,
+    S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
     V: CellValue,
     W: Pipeline<bool>
@@ -61,7 +61,7 @@ where
         // Implement select_cell as a project_cell whose inner Watchable maps
         // the boolean gate into Option<(K, V)>.
         let predicate = self.predicate;
-        let inner_plan = self.source.project_cell(move |k, v| {
+        let inner_plan = self.source.project_cell(move |k: &K, v: &V| {
             let k = k.clone();
             let v = v.clone();
             predicate(&k, &v)
@@ -79,9 +79,9 @@ where
 }
 
 #[allow(private_bounds)]
-impl<S, K, V, W, F> MapQuery<K, V> for SelectCellPlan<S, K, V, W, F>
+impl<S, K, V, W, F> MapQuery for SelectCellPlan<S, K, V, W, F>
 where
-    S: MapQuery<K, V>,
+    S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
     V: CellValue,
     W: Pipeline<bool>
@@ -93,6 +93,8 @@ where
         + 'static,
     F: Fn(&K, &V) -> W + Send + Sync + 'static,
 {
+    type Key = K;
+    type Value = V;
 }
 
 /// Select-cell operator returning a [`MapQuery`] plan node.
@@ -100,7 +102,7 @@ where
 /// `select_cell` consumes `self` and returns an uncompiled plan node; call
 /// [`MapQuery::materialize`] on the result to obtain a subscribable
 /// [`CellMap`](crate::CellMap).
-pub trait SelectCellExt<K, V>: MapQuery<K, V>
+pub trait SelectCellExt<K, V>: MapQuery<Key = K, Value = V>
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
@@ -111,7 +113,7 @@ where
     /// included when true and excluded when false.
     #[track_caller]
     #[allow(private_bounds)]
-    fn select_cell<W, F>(self, predicate: F) -> impl MapQuery<K, V>
+    fn select_cell<W, F>(self, predicate: F) -> impl MapQuery<Key = K, Value = V>
     where
         W: Pipeline<bool>
             + crate::pipeline::PipelineSeed<bool>
@@ -134,7 +136,7 @@ impl<K, V, M> SelectCellExt<K, V> for M
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
-    M: MapQuery<K, V>,
+    M: MapQuery<Key = K, Value = V>,
 {
 }
 

@@ -5,7 +5,7 @@ use crate::{
     traits::{CellValue, InnerJoinExt},
 };
 
-fn assert_query<K, V, Q: MapQuery<K, V>>(_: &Q)
+fn assert_query<K, V, Q: MapQuery<Key = K, Value = V>>(_: &Q)
 where
     K: CellValue + std::hash::Hash + Eq,
     V: CellValue,

@@ -11,11 +11,12 @@ pub mod operators;
 
 pub use cell_value::CellValue;
 pub use collections::{
-    CountByExt, GroupByExt, InnerJoinExt, LeftJoinExt, LeftSemiJoinExt, MultiLeftJoinExt,
-    ProjectCellExt, ProjectManyExt, ProjectMapExt, SelectCellExt, SelectExt,
+    CountByExt, FlatMapEntriesExt, GroupByExt, InnerJoinExt, LeftJoinExt, LeftSemiJoinExt,
+    MapEntriesExt, MapValuesExt, MultiLeftJoinExt, ProjectCellExt, ProjectManyExt, ProjectMapExt,
+    SelectCellExt, SelectExt,
 };
 pub use dep_node::DepNode;
-pub use foreign_key::{HasForeignKey, IdFor, IdType, JoinKeyFrom};
+pub use foreign_key::{ForeignKeyRelation, IdFor, IdType, JoinKeyFrom};
 pub use mutable::Mutable;
 // Re-export all operators for convenience
 pub use operators::{

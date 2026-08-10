@@ -11,7 +11,7 @@ use crate::{
     map_query::{MapDiffSink, MapQuery, MapQueryInstall},
     subscription::SubscriptionGuard,
     traits::{
-        CellValue, HasForeignKey, IdFor,
+        CellValue, ForeignKeyRelation, IdFor,
         collections::internal::join_runtime::install_keyed_join_runtime_via_query,
     },
 };
@@ -27,8 +27,8 @@ use crate::{
 /// materializing once.
 pub struct LeftJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
 where
-    L: MapQuery<LK, LV>,
-    R: MapQuery<RK, RV>,
+    L: MapQuery<Key = LK, Value = LV>,
+    R: MapQuery<Key = RK, Value = RV>,
     LK: Hash + Eq + CellValue,
     LV: CellValue,
     RK: Hash + Eq + CellValue,
@@ -48,8 +48,8 @@ where
 impl<L, R, LK, LV, RK, RV, JK, FL, FR> MapQueryInstall<LK, (LV, Vec<RV>)>
     for LeftJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
 where
-    L: MapQuery<LK, LV>,
-    R: MapQuery<RK, RV>,
+    L: MapQuery<Key = LK, Value = LV>,
+    R: MapQuery<Key = RK, Value = RV>,
     LK: Hash + Eq + CellValue,
     LV: CellValue,
     RK: Hash + Eq + CellValue,
@@ -74,11 +74,10 @@ where
 }
 
 #[allow(private_bounds)]
-impl<L, R, LK, LV, RK, RV, JK, FL, FR> MapQuery<LK, (LV, Vec<RV>)>
-    for LeftJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
+impl<L, R, LK, LV, RK, RV, JK, FL, FR> MapQuery for LeftJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
 where
-    L: MapQuery<LK, LV>,
-    R: MapQuery<RK, RV>,
+    L: MapQuery<Key = LK, Value = LV>,
+    R: MapQuery<Key = RK, Value = RV>,
     LK: Hash + Eq + CellValue,
     LV: CellValue,
     RK: Hash + Eq + CellValue,
@@ -87,6 +86,8 @@ where
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
     FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
 {
+    type Key = LK;
+    type Value = (LV, Vec<RV>);
 }
 
 /// Left-join operators returning [`MapQuery`] plan nodes.
@@ -94,7 +95,7 @@ where
 /// All three methods consume `self` and return uncompiled plan nodes; call
 /// [`MapQuery::materialize`] on the result to obtain a subscribable
 /// [`CellMap`](crate::CellMap).
-pub trait LeftJoinExt<K, V>: MapQuery<K, V>
+pub trait LeftJoinExt<K, V>: MapQuery<Key = K, Value = V>
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
@@ -105,9 +106,9 @@ where
     /// key. Right matches are collected into a `Vec`; an empty `Vec` means no
     /// matching right rows were found.
     #[allow(clippy::type_complexity)]
-    fn left_join<R, RV>(self, right: R) -> impl MapQuery<K, (V, Vec<RV>)>
+    fn left_join<R, RV>(self, right: R) -> impl MapQuery<Key = K, Value = (V, Vec<RV>)>
     where
-        R: MapQuery<K, RV>,
+        R: MapQuery<Key = K, Value = RV>,
         RV: CellValue,
     {
         LeftJoinPlan {
@@ -126,18 +127,19 @@ where
     /// Right matches are collected into a `Vec`; an empty `Vec` means no
     /// matching right rows were found.
     #[allow(clippy::type_complexity)]
-    fn left_join_fk<R, RK, RV>(self, right: R) -> impl MapQuery<K, (V, Vec<RV>)>
+    fn left_join_fk<Rel, R>(self, right: R) -> impl MapQuery<Key = K, Value = (V, Vec<Rel::Child>)>
     where
-        R: MapQuery<RK, RV>,
-        RK: Hash + Eq + CellValue,
-        RV: CellValue + HasForeignKey<V>,
-        <<RV as HasForeignKey<V>>::ForeignKey as IdFor<V>>::MapKey: Into<K>,
+        Rel: ForeignKeyRelation,
+        R: MapQuery<Value = Rel::Child>,
+        Rel::ForeignKey: IdFor<Rel::Parent, MapKey = K>,
     {
         LeftJoinPlan {
             left: self,
             right,
-            left_key: |k: &K, _: &V| k.clone(),
-            right_key: |_: &RK, rv: &RV| rv.fk().map_key().into(),
+            left_key: |k: &K, _: &V| Some(k.clone()),
+            right_key: |_: &R::Key, rv: &Rel::Child| {
+                Rel::foreign_key(rv).map(|foreign_key| foreign_key.map_key())
+            },
             _types: PhantomData,
         }
     }
@@ -153,9 +155,9 @@ where
         right: R,
         left_key: FL,
         right_key: FR,
-    ) -> impl MapQuery<K, (V, Vec<RV>)>
+    ) -> impl MapQuery<Key = K, Value = (V, Vec<RV>)>
     where
-        R: MapQuery<RK, RV>,
+        R: MapQuery<Key = RK, Value = RV>,
         RK: Hash + Eq + CellValue,
         RV: CellValue,
         JK: Hash + Eq + CellValue,
@@ -176,7 +178,7 @@ impl<K, V, M> LeftJoinExt<K, V> for M
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
-    M: MapQuery<K, V>,
+    M: MapQuery<Key = K, Value = V>,
 {
 }
 
@@ -186,8 +188,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        CellMap, MapDiff, Materialize,
-        traits::{Gettable, HasForeignKey, IdFor, IdType},
+        CellMap, MapDiff, MapValuesExt, Materialize,
+        traits::{ForeignKeyRelation, Gettable, IdFor, IdType},
     };
 
     #[test]
@@ -345,10 +347,15 @@ mod tests {
         title: String,
     }
 
-    impl HasForeignKey<User> for Post {
+    struct UserPosts;
+
+    impl ForeignKeyRelation for UserPosts {
+        type Parent = User;
+        type Child = Post;
         type ForeignKey = UserId;
-        fn fk(&self) -> UserId {
-            self.user_id.clone()
+
+        fn foreign_key(post: &Post) -> Option<UserId> {
+            Some(post.user_id.clone())
         }
     }
 
@@ -356,7 +363,10 @@ mod tests {
     fn left_join_fk_keeps_unmatched_with_empty_vec() {
         let users = CellMap::<String, User>::new();
         let posts = CellMap::<String, Post>::new();
-        let joined = users.clone().left_join_fk(posts).materialize();
+        let joined = users
+            .clone()
+            .left_join_fk::<UserPosts, _>(posts)
+            .materialize();
 
         users.insert(
             "u1".to_string(),
@@ -376,7 +386,10 @@ mod tests {
     fn left_join_fk_collects_matching_posts() {
         let users = CellMap::<String, User>::new();
         let posts = CellMap::<String, Post>::new();
-        let joined = users.clone().left_join_fk(posts.clone()).materialize();
+        let joined = users
+            .clone()
+            .left_join_fk::<UserPosts, _>(posts.clone())
+            .materialize();
 
         users.insert(
             "u1".to_string(),
@@ -403,6 +416,36 @@ mod tests {
         assert!(matches!(
             val,
             Some((_, matched_posts)) if matched_posts.len() == 2
+        ));
+    }
+
+    #[test]
+    fn fk_join_survives_key_preserving_parent_projection() {
+        let users = CellMap::<String, User>::new();
+        let posts = CellMap::<String, Post>::new();
+        let joined = users
+            .clone()
+            .map_values(|_key, user| user.name.to_uppercase())
+            .left_join_fk::<UserPosts, _>(posts.clone())
+            .materialize();
+
+        users.insert(
+            "u1".to_string(),
+            User {
+                name: "Alice".to_string(),
+            },
+        );
+        posts.insert(
+            "p1".to_string(),
+            Post {
+                user_id: UserId("u1".to_string()),
+                title: "Hello".to_string(),
+            },
+        );
+
+        assert!(matches!(
+            joined.get_value(&"u1".to_string()),
+            Some((name, matches)) if name == "ALICE" && matches.len() == 1
         ));
     }
 }

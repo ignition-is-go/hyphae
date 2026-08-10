@@ -181,7 +181,7 @@ where
     ///
     /// Prefer the [`MapQueryShareExt::share`] extension method — it reads as
     /// `query.share()` at the call site.
-    pub fn new<Q: MapQuery<K, V>>(q: Q) -> Self {
+    pub fn new<Q: MapQuery<Key = K, Value = V>>(q: Q) -> Self {
         let upstream: UpstreamInstall<K, V> = Box::new(move |sink| q.install(sink));
         Self {
             inner: Arc::new(SharedMapQueryInner {
@@ -270,11 +270,14 @@ where
 }
 
 #[allow(private_bounds)]
-impl<K, V> MapQuery<K, V> for SharedMapQuery<K, V>
+impl<K, V> MapQuery for SharedMapQuery<K, V>
 where
     K: CellValue + Hash + Eq,
     V: CellValue,
 {
+    type Key = K;
+    type Value = V;
+
     // Default `materialize` is correct: it allocates a CellMap that subscribes
     // through `install()` above. Each materialized leaf adds one fan-out
     // subscriber; the share point's upstream plan installs exactly once.
@@ -287,7 +290,7 @@ where
 /// handle. Each clone of the handle, when materialized (or otherwise
 /// installed), adds one fan-out subscriber but does NOT add another upstream
 /// subscription — the share point installs upstream exactly once.
-pub trait MapQueryShareExt<K, V>: MapQuery<K, V>
+pub trait MapQueryShareExt<K, V>: MapQuery<Key = K, Value = V>
 where
     K: CellValue + Hash + Eq,
     V: CellValue,
@@ -302,6 +305,6 @@ impl<K, V, Q> MapQueryShareExt<K, V> for Q
 where
     K: CellValue + Hash + Eq,
     V: CellValue,
-    Q: MapQuery<K, V>,
+    Q: MapQuery<Key = K, Value = V>,
 {
 }

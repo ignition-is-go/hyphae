@@ -154,7 +154,7 @@ where
     SV: CellValue,
     OK: Hash + Eq + CellValue,
     OV: CellValue,
-    S: MapQuery<SK, SV>,
+    S: MapQuery<Key = SK, Value = SV>,
     ST: Send + Sync + 'static,
     FS: Fn(&mut ST, &MapDiff<SK, SV>, &mut Vec<MapDiff<OK, OV>>) + Send + Sync + 'static,
 {
@@ -199,7 +199,7 @@ where
     GK: Hash + Eq + CellValue,
     GS: Clone + Send + Sync + 'static,
     OV: CellValue,
-    S: MapQuery<SK, SV>,
+    S: MapQuery<Key = SK, Value = SV>,
     FG: Fn(&SK, &SV) -> GK + Send + Sync + 'static,
     FI: Fn(&mut GS, &SK, &SV) + Send + Sync + 'static,
     FU: Fn(&mut GS, &SK, &SV, &SV) + Send + Sync + 'static,

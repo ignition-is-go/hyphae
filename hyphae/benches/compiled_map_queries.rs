@@ -10,7 +10,7 @@ use std::sync::Arc;
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use hyphae::{
     CellMap, MapQuery,
-    traits::{LeftJoinExt, ProjectMapExt, SelectExt},
+    traits::{LeftJoinExt, MapEntriesExt, MapValuesExt, SelectExt},
 };
 
 const ROWS: u64 = 1_000;
@@ -83,26 +83,20 @@ fn bench_projection_region(c: &mut Criterion) {
     let output = source
         .clone()
         .select(|row| row.payload % 2 == 0)
-        .project(|key, row| {
-            Some((
-                *key,
-                Arc::new(Row {
-                    relation: row.relation,
-                    payload: row.payload.rotate_left(7),
-                    generation: row.generation,
-                }),
-            ))
+        .map_values(|_key, row| {
+            Arc::new(Row {
+                relation: row.relation,
+                payload: row.payload.rotate_left(7),
+                generation: row.generation,
+            })
         })
         .select(|row| row.relation < 64)
-        .project(|key, row| {
-            Some((
-                *key,
-                Arc::new(Row {
-                    relation: row.relation,
-                    payload: row.payload.wrapping_mul(33),
-                    generation: row.generation,
-                }),
-            ))
+        .map_values(|_key, row| {
+            Arc::new(Row {
+                relation: row.relation,
+                payload: row.payload.wrapping_mul(33),
+                generation: row.generation,
+            })
         })
         .materialize();
 
@@ -127,13 +121,13 @@ fn bench_two_join_region(c: &mut Criterion) {
             |_key, row| row.relation,
             |_key, dimension| dimension.relation,
         )
-        .project(|key, (row, matches)| Some((*key, fold_matches(row, matches, 1))))
+        .map_values(|_key, (row, matches)| fold_matches(row, matches, 1))
         .left_join_by(
             second,
             |_key, row| row.relation,
             |_key, dimension| dimension.relation,
         )
-        .project(|key, (row, matches)| Some((*key, fold_matches(row, matches, 2))))
+        .map_values(|_key, (row, matches)| fold_matches(row, matches, 2))
         .materialize();
 
     let mut generation = 0_u64;
@@ -156,25 +150,25 @@ fn bench_repeated_relation_four_join(c: &mut Criterion) {
             |_key, row| row.relation,
             |_key, dimension| dimension.relation,
         )
-        .project(|key, (row, matches)| Some((*key, fold_matches(row, matches, 1))))
+        .map_values(|_key, (row, matches)| fold_matches(row, matches, 1))
         .left_join_by(
             shared_dimension.clone(),
             |_key, row| row.relation,
             |_key, dimension| dimension.relation,
         )
-        .project(|key, (row, matches)| Some((*key, fold_matches(row, matches, 2))))
+        .map_values(|_key, (row, matches)| fold_matches(row, matches, 2))
         .left_join_by(
             shared_dimension.clone(),
             |_key, row| row.relation,
             |_key, dimension| dimension.relation,
         )
-        .project(|key, (row, matches)| Some((*key, fold_matches(row, matches, 3))))
+        .map_values(|_key, (row, matches)| fold_matches(row, matches, 3))
         .left_join_by(
             shared_dimension,
             |_key, row| row.relation,
             |_key, dimension| dimension.relation,
         )
-        .project(|key, (row, matches)| Some((*key, fold_matches(row, matches, 4))))
+        .map_values(|_key, (row, matches)| fold_matches(row, matches, 4))
         .materialize();
 
     let mut generation = 0_u64;
@@ -198,15 +192,13 @@ fn bench_rekey_between_joins(c: &mut Criterion) {
             |_key, row| row.relation,
             |_key, dimension| dimension.relation,
         )
-        .project(|key, (row, matches)| {
-            Some((key.wrapping_add(ROWS), fold_matches(row, matches, 11)))
-        })
+        .map_entries(|key, (row, matches)| (key.wrapping_add(ROWS), fold_matches(row, matches, 11)))
         .left_join_by(
             second,
             |_key, row| row.relation,
             |_key, dimension| dimension.relation,
         )
-        .project(|key, (row, matches)| Some((*key, fold_matches(row, matches, 13))))
+        .map_values(|_key, (row, matches)| fold_matches(row, matches, 13))
         .materialize();
 
     let mut generation = 0_u64;
@@ -232,13 +224,13 @@ fn bench_two_join_batches(c: &mut Criterion) {
                 |_key, row| row.relation,
                 |_key, dimension| dimension.relation,
             )
-            .project(|key, (row, matches)| Some((*key, fold_matches(row, matches, 17))))
+            .map_values(|_key, (row, matches)| fold_matches(row, matches, 17))
             .left_join_by(
                 second,
                 |_key, row| row.relation,
                 |_key, dimension| dimension.relation,
             )
-            .project(|key, (row, matches)| Some((*key, fold_matches(row, matches, 19))))
+            .map_values(|_key, (row, matches)| fold_matches(row, matches, 19))
             .materialize();
 
         let mut generation = 0_u64;
