@@ -4,6 +4,13 @@
 **Status:** Approved (brainstorm); ready for implementation plan
 **Related work:** Pipeline refactor (`feat/pipelines` branch) introduced an analogous lazy-plan / `materialize()` pattern for single-cell pure operators.
 
+> **Phase B superseded:** The initial lazy-plan/materialization architecture in
+> this document has shipped, but its proposed runtime optimizer direction is
+> superseded by
+> `2026-08-10-static-compiled-map-query-design.md`. The newer design replaces
+> recursive boxed-sink installation with relationship-typed, monomorphized,
+> deterministically parallel query runtimes.
+
 ## Goal
 
 Reduce contention and atomic overhead when chaining `CellMap` operations (joins, projections, filters). Today, every step in a chain like
