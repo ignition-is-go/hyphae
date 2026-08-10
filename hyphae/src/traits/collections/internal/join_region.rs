@@ -20,7 +20,7 @@ use crate::{
     cell_map::MapDiff,
     map_query::{
         BuildQueryRuntime, MapDiffSink, MapQuery, compile_runtime_into,
-        compiler::{CompileContext, DeferredPhysical},
+        compiler::{CompileContext, DeferredPhysical, QUERY_POISONED_MESSAGE, QueryPoison},
         properties::{ByMapKey, Partition, PlanProperties, ZeroOrOne},
     },
     subscription::SubscriptionGuard,
@@ -1269,6 +1269,11 @@ struct RegionRouter<Runtime, K, Input> {
     shard_count: usize,
     promotion_work: usize,
     parallel_active: bool,
+    /// Terminal fail-stop state. A projection/apply unwind can leave typed shard
+    /// runtimes or a maintained right index partially changed, so the region is
+    /// quarantined permanently rather than exposed for recovery.
+    poisoned: bool,
+    query_poison: QueryPoison,
     test_config: bool,
     #[cfg(test)]
     last_left_workers: Vec<String>,
@@ -1337,11 +1342,19 @@ where
             shard_count: configured_shards(),
             promotion_work: configured_promotion_work(),
             parallel_active: false,
+            poisoned: false,
+            query_poison: QueryPoison::default(),
             test_config: false,
             #[cfg(test)]
             last_left_workers: Vec::new(),
             _input: PhantomData,
         }
+    }
+
+    fn with_query_poison(runtime: Runtime, query_poison: QueryPoison) -> Self {
+        let mut router = Self::new(runtime);
+        router.query_poison = query_poison;
+        router
     }
 
     #[cfg(test)]
@@ -1354,6 +1367,8 @@ where
             shard_count: shard_count.max(1),
             promotion_work: promotion_work.max(1),
             parallel_active: false,
+            poisoned: false,
+            query_poison: QueryPoison::default(),
             test_config: true,
             #[cfg(test)]
             last_left_workers: Vec::new(),
@@ -1794,6 +1809,43 @@ where
     }
 }
 
+/// Executes one complete left or right callback transaction while holding the
+/// region mutex. This provides fail-stop publication atomicity: output is
+/// returned to the callback only after the whole region apply succeeds. It is
+/// deliberately not recovery-and-continue, and cannot roll back independent
+/// sinks that an enclosing query already published before this callback began.
+#[allow(clippy::panic)]
+fn region_transaction<Runtime, K, Input, Output>(
+    state: &Arc<Mutex<RegionRouter<Runtime, K, Input>>>,
+    apply: impl FnOnce(&mut RegionRouter<Runtime, K, Input>) -> Output,
+) -> Output {
+    let mut router = state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if router.poisoned {
+        drop(router);
+        std::panic::panic_any(QUERY_POISONED_MESSAGE);
+    }
+
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| apply(&mut router))) {
+        Ok(output) => {
+            drop(router);
+            output
+        }
+        Err(payload) => {
+            // Rayon propagates only after its scope has joined every worker, so
+            // no shard can remain active by the time this catch arm executes.
+            router.query_poison.poison();
+            router.poisoned = true;
+            router.parallel_active = false;
+            #[cfg(test)]
+            router.last_left_workers.clear();
+            drop(router);
+            std::panic::resume_unwind(payload);
+        }
+    }
+}
+
 /// Select the first right root in a runtime-stage list.
 pub(super) struct Here;
 
@@ -2230,12 +2282,9 @@ where
         let right_sink = Arc::clone(sink);
         let callback = move |diff: &MapDiff<RK, RV>| {
             let maintain = Policy::maintains(callback_binding.as_ref());
-            let changes = {
-                let mut runtime = right_state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let changes = region_transaction(&right_state, |runtime| {
                 runtime.apply_right::<Location, RK, RV>(diff, maintain)
-            };
+            });
             for change in &changes {
                 right_sink(change);
             }
@@ -2266,7 +2315,11 @@ where
         Sink: MapDiffSink<K, Stages::Output>,
     {
         let (runtime, rights) = self.stages.split(cx);
-        let state = Arc::new(Mutex::new(RegionRouter::new(runtime)));
+        let query_poison = cx.query_poison();
+        let state = Arc::new(Mutex::new(RegionRouter::with_query_poison(
+            runtime,
+            query_poison,
+        )));
         let sink = Arc::new(sink);
 
         // Register every right root before the left root. CompileContext then
@@ -2279,12 +2332,7 @@ where
             self.left,
             cx,
             move |diff: &MapDiff<K, Input>| {
-                let changes = {
-                    let mut runtime = left_state
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    runtime.apply_left(diff)
-                };
+                let changes = region_transaction(&left_state, |runtime| runtime.apply_left(diff));
                 for change in &changes {
                     left_sink(change);
                 }
@@ -3518,6 +3566,544 @@ mod tests {
         );
         assert_eq!(output.get_value(&10_000), None);
         assert_eq!(output.get_value(&20_000), Some(7));
+    }
+
+    fn panic_text(payload: &(dyn std::any::Any + Send)) -> Option<&str> {
+        payload
+            .downcast_ref::<&'static str>()
+            .copied()
+            .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+    }
+
+    #[test]
+    #[allow(clippy::expect_used, clippy::panic)]
+    fn sequential_apply_panic_quarantines_left_and_right_callbacks() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let projections = Arc::new(AtomicUsize::new(0));
+        let right_keys = Arc::new(AtomicUsize::new(0));
+        let projection_count = Arc::clone(&projections);
+        let right_key_count = Arc::clone(&right_keys);
+        let runtime = JCons {
+            head: StageRuntimeState::new(
+                |_: &u32, value: &i32| *value,
+                crate::traits::RequiredRightKey(move |_: &u8, value: &i32| {
+                    right_key_count.fetch_add(1, Ordering::SeqCst);
+                    *value
+                }),
+                DirectProject(move |_: &u32, left: &i32, _: &[(u8, i32)]| {
+                    projection_count.fetch_add(1, Ordering::SeqCst);
+                    if *left == 13 {
+                        std::panic::panic_any("original sequential projection panic");
+                    }
+                    *left
+                }),
+            ),
+            tail: JNil,
+        };
+        let state = Arc::new(Mutex::new(RegionRouter::with_config(runtime, 1, 100)));
+        let original = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let changes = region_transaction(&state, |router| {
+                router.apply_left(&MapDiff::Insert { key: 1, value: 13 })
+            });
+            // Publication is intentionally outside the transaction helper.
+            let _published = changes.len();
+        }))
+        .expect_err("projection must panic");
+        assert_eq!(
+            panic_text(original.as_ref()),
+            Some("original sequential projection panic")
+        );
+        assert!(state.lock().expect("unpoisoned mutex").poisoned);
+
+        let projection_before = projections.load(Ordering::SeqCst);
+        let right_before = right_keys.load(Ordering::SeqCst);
+        for attempt in [0_u8, 1] {
+            let poison = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if attempt == 0 {
+                    let _ = region_transaction(&state, |router| {
+                        router.apply_left(&MapDiff::Insert { key: 2, value: 2 })
+                    });
+                } else {
+                    let _ = region_transaction(&state, |router| {
+                        router.apply_right::<Here, _, _>(
+                            &MapDiff::Insert {
+                                key: 1_u8,
+                                value: 1_i32,
+                            },
+                            true,
+                        )
+                    });
+                }
+            }))
+            .expect_err("poisoned region must fail fast");
+            assert_eq!(panic_text(poison.as_ref()), Some(QUERY_POISONED_MESSAGE));
+        }
+        assert_eq!(projections.load(Ordering::SeqCst), projection_before);
+        assert_eq!(right_keys.load(Ordering::SeqCst), right_before);
+        assert!(!state.lock().expect("unpoisoned mutex").parallel_active);
+    }
+
+    #[test]
+    #[allow(clippy::expect_used, clippy::panic)]
+    fn right_maintainer_write_then_projection_panic_quarantines_region() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        #[derive(Clone)]
+        struct CountingIndex {
+            inner: DeferredPhysical<RelationIndex<u8, i32, i32>>,
+            writes: Arc<AtomicUsize>,
+        }
+        impl RelationIndexStorage<u8, i32, i32> for CountingIndex {
+            type Read<'a> = parking_lot::RwLockReadGuard<'a, RelationIndex<u8, i32, i32>>;
+
+            fn acquire_read(&self) -> Self::Read<'_> {
+                self.inner.acquire_read()
+            }
+
+            fn write<T>(&mut self, write: impl FnOnce(&mut RelationIndex<u8, i32, i32>) -> T) -> T {
+                self.writes.fetch_add(1, Ordering::SeqCst);
+                self.inner.write(write)
+            }
+        }
+
+        let writes = Arc::new(AtomicUsize::new(0));
+        let panic_projection = Arc::new(AtomicBool::new(false));
+        let panic_flag = Arc::clone(&panic_projection);
+        let runtime = JCons {
+            head: StageRuntimeState::with_index(
+                |_: &u32, value: &i32| *value,
+                crate::traits::RequiredRightKey(|_: &u8, value: &i32| *value),
+                DirectProject(move |_: &u32, left: &i32, _: &[(u8, i32)]| {
+                    if panic_flag.load(Ordering::SeqCst) {
+                        std::panic::panic_any("right projection panic after write");
+                    }
+                    *left
+                }),
+                CountingIndex {
+                    inner: DeferredPhysical::default(),
+                    writes: Arc::clone(&writes),
+                },
+            ),
+            tail: JNil,
+        };
+        let state = Arc::new(Mutex::new(RegionRouter::with_config(runtime, 1, 100)));
+        let _ = region_transaction(&state, |router| {
+            router.apply_left(&MapDiff::Insert { key: 1, value: 4 })
+        });
+        panic_projection.store(true, Ordering::SeqCst);
+        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = region_transaction(&state, |router| {
+                router.apply_right::<Here, _, _>(
+                    &MapDiff::Insert {
+                        key: 8_u8,
+                        value: 4_i32,
+                    },
+                    true,
+                )
+            });
+        }))
+        .expect_err("right-root projection must panic");
+        assert_eq!(
+            panic_text(payload.as_ref()),
+            Some("right projection panic after write")
+        );
+        assert_eq!(writes.load(Ordering::SeqCst), 1);
+        assert!(state.lock().expect("unpoisoned mutex").poisoned);
+
+        let poison = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = region_transaction(&state, |router| {
+                router.apply_right::<Here, _, _>(
+                    &MapDiff::Insert {
+                        key: 9_u8,
+                        value: 4_i32,
+                    },
+                    true,
+                )
+            });
+        }))
+        .expect_err("later right event must fail fast");
+        assert_eq!(panic_text(poison.as_ref()), Some(QUERY_POISONED_MESSAGE));
+        assert_eq!(writes.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    #[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
+    #[allow(
+        clippy::expect_used,
+        clippy::items_after_statements,
+        clippy::panic,
+        clippy::significant_drop_tightening
+    )]
+    fn parallel_shard_panic_joins_siblings_and_publishes_nothing() {
+        use std::{
+            collections::HashSet,
+            sync::{
+                Barrier,
+                atomic::{AtomicUsize, Ordering},
+            },
+        };
+
+        if crate::executor::configured_worker_threads() <= 1 {
+            return;
+        }
+        let shard = |key: &u32| {
+            let mut hasher = FxHasher::default();
+            key.hash(&mut hasher);
+            usize::try_from(hasher.finish() % 4).unwrap_or(0)
+        };
+        let panic_key = (0..7_000)
+            .find(|key| shard(key) == 0)
+            .expect("shard zero key");
+        let sibling_key = (0..7_000)
+            .find(|key| shard(key) == 1)
+            .expect("shard one key");
+        let barrier = Arc::new(Barrier::new(2));
+        let active = Arc::new(AtomicUsize::new(0));
+        let sibling_commits = Arc::new(AtomicUsize::new(0));
+        let workers = Arc::new(Mutex::new(HashSet::new()));
+        let barrier_in = Arc::clone(&barrier);
+        let active_in = Arc::clone(&active);
+        let sibling_in = Arc::clone(&sibling_commits);
+        let workers_in = Arc::clone(&workers);
+
+        struct Active(Arc<AtomicUsize>);
+        impl Drop for Active {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+
+        let runtime = JCons {
+            head: StageRuntimeState::new(
+                |_: &u32, value: &i32| *value,
+                crate::traits::RequiredRightKey(|_: &u8, value: &i32| *value),
+                DirectProject(|_: &u32, left: &i32, _: &[(u8, i32)]| *left),
+            ),
+            tail: JCons {
+                head: StageRuntimeState::new(
+                    |_: &u32, value: &i32| *value,
+                    crate::traits::RequiredRightKey(|_: &u16, value: &i32| *value),
+                    DirectProject(move |key: &u32, left: &i32, _: &[(u16, i32)]| {
+                        if *key == panic_key || *key == sibling_key {
+                            active_in.fetch_add(1, Ordering::SeqCst);
+                            let _active = Active(Arc::clone(&active_in));
+                            if let Some(name) = std::thread::current().name() {
+                                workers_in
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .insert(name.to_owned());
+                            }
+                            barrier_in.wait();
+                            if *key == panic_key {
+                                std::panic::panic_any("parallel shard projection panic");
+                            }
+                            sibling_in.fetch_add(1, Ordering::SeqCst);
+                        }
+                        *left
+                    }),
+                ),
+                tail: JNil,
+            },
+        };
+        let state = Arc::new(Mutex::new(RegionRouter::with_config(runtime, 4, 1)));
+        let published = AtomicUsize::new(0);
+        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let changes =
+                region_transaction(&state, |router| router.apply_left(&insert_batch(7_000)));
+            published.fetch_add(changes.len(), Ordering::SeqCst);
+        }))
+        .expect_err("one parallel shard must panic");
+        assert_eq!(
+            panic_text(payload.as_ref()),
+            Some("parallel shard projection panic")
+        );
+        assert_eq!(published.load(Ordering::SeqCst), 0);
+        assert_eq!(active.load(Ordering::SeqCst), 0, "all Rayon work joined");
+        assert!(sibling_commits.load(Ordering::SeqCst) > 0);
+        assert!(
+            workers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len()
+                > 1,
+            "barrier participants must run on sibling workers"
+        );
+        let router = state.lock().expect("unpoisoned mutex");
+        assert!(router.poisoned);
+        assert!(!router.parallel_active);
+        assert!(router.last_left_workers.is_empty());
+    }
+
+    #[test]
+    #[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
+    #[allow(
+        clippy::as_conversions,
+        clippy::expect_used,
+        clippy::items_after_statements,
+        clippy::panic,
+        clippy::too_many_lines
+    )]
+    fn public_parallel_region_panic_publishes_no_materialized_rows() {
+        use std::{
+            collections::HashSet,
+            sync::{
+                Barrier,
+                atomic::{AtomicUsize, Ordering},
+            },
+        };
+
+        if crate::executor::configured_worker_threads() <= 1 {
+            return;
+        }
+        struct Active(Arc<AtomicUsize>);
+        impl Drop for Active {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+
+        let shard_count = configured_shards();
+        let shard = |key: &u32| {
+            let mut hasher = FxHasher::default();
+            key.hash(&mut hasher);
+            let count = u64::try_from(shard_count).unwrap_or(1);
+            usize::try_from(hasher.finish() % count).unwrap_or(0)
+        };
+        let panic_key = (0..10_000)
+            .find(|key| shard(key) == 0)
+            .expect("first shard key");
+        let sibling_key = (0..10_000)
+            .find(|key| shard(key) == 1)
+            .expect("sibling shard key");
+        let barrier = Arc::new(Barrier::new(2));
+        let active = Arc::new(AtomicUsize::new(0));
+        let sibling_commits = Arc::new(AtomicUsize::new(0));
+        let workers = Arc::new(Mutex::new(HashSet::new()));
+        let barrier_in = Arc::clone(&barrier);
+        let active_in = Arc::clone(&active);
+        let sibling_in = Arc::clone(&sibling_commits);
+        let workers_in = Arc::clone(&workers);
+
+        let left = crate::CellMap::<u32, i32>::new();
+        let right = crate::CellMap::<u8, i32>::new();
+        let identity_stage = || {
+            JoinStage::new(
+                right.clone(),
+                (|_: &u32, value: &i32| *value) as fn(&u32, &i32) -> i32,
+                crate::traits::RequiredRightKey(
+                    (|_: &u8, value: &i32| *value) as fn(&u8, &i32) -> i32,
+                ),
+                DirectProject(
+                    (|_: &u32, left: &i32, _: &[(u8, i32)]| *left)
+                        as fn(&u32, &i32, &[(u8, i32)]) -> i32,
+                ),
+            )
+        };
+        let final_stage = JoinStage::new(
+            right.clone(),
+            (|_: &u32, value: &i32| *value) as fn(&u32, &i32) -> i32,
+            crate::traits::RequiredRightKey((|_: &u8, value: &i32| *value) as fn(&u8, &i32) -> i32),
+            DirectProject(move |key: &u32, left: &i32, _: &[(u8, i32)]| {
+                if *key == panic_key || *key == sibling_key {
+                    active_in.fetch_add(1, Ordering::SeqCst);
+                    let _active = Active(Arc::clone(&active_in));
+                    if let Some(name) = std::thread::current().name() {
+                        workers_in
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .insert(name.to_owned());
+                    }
+                    barrier_in.wait();
+                    if *key == panic_key {
+                        std::panic::panic_any("public parallel projection panic");
+                    }
+                    sibling_in.fetch_add(1, Ordering::SeqCst);
+                }
+                *left
+            }),
+        );
+        let stages = JNil
+            .push(identity_stage())
+            .push(identity_stage())
+            .push(identity_stage())
+            .push(final_stage);
+        let output = JoinRegion::new(left.clone(), stages).materialize();
+        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            left.apply_batch(
+                (0..10_000)
+                    .map(|key| MapDiff::Insert {
+                        key,
+                        value: i32::try_from(key).unwrap_or(i32::MAX),
+                    })
+                    .collect(),
+            );
+        }))
+        .expect_err("public parallel projection must panic");
+        assert_eq!(
+            panic_text(payload.as_ref()),
+            Some("public parallel projection panic")
+        );
+        assert_eq!(
+            output.len().materialize().get(),
+            0,
+            "failed batch published no rows"
+        );
+        assert_eq!(active.load(Ordering::SeqCst), 0, "all Rayon work joined");
+        assert!(sibling_commits.load(Ordering::SeqCst) > 0);
+        assert!(
+            workers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len()
+                > 1
+        );
+    }
+
+    #[test]
+    #[allow(clippy::expect_used, clippy::panic)]
+    fn public_reentrant_event_is_cleared_then_fresh_event_hits_region_poison() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let left = crate::CellMap::<u32, i32>::new();
+        let right = crate::CellMap::<u8, i32>::new();
+        let reentrant_left = left.clone();
+        let projections = Arc::new(AtomicUsize::new(0));
+        let right_keys = Arc::new(AtomicUsize::new(0));
+        let projection_count = Arc::clone(&projections);
+        let right_key_count = Arc::clone(&right_keys);
+        let stage = JoinStage::new(
+            right.clone(),
+            |_: &u32, value: &i32| *value,
+            crate::traits::RequiredRightKey(move |_: &u8, value: &i32| {
+                right_key_count.fetch_add(1, Ordering::SeqCst);
+                *value
+            }),
+            DirectProject(move |key: &u32, left_value: &i32, _: &[(u8, i32)]| {
+                projection_count.fetch_add(1, Ordering::SeqCst);
+                if *key == 1 {
+                    reentrant_left.insert(2, 2);
+                    std::panic::panic_any("public region projection panic");
+                }
+                *left_value
+            }),
+        );
+        let output = JoinRegion::new(left.clone(), JNil.push(stage)).materialize();
+        let original = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            left.insert(1, 1);
+        }))
+        .expect_err("public callback must propagate original panic");
+        assert_eq!(
+            panic_text(original.as_ref()),
+            Some("public region projection panic")
+        );
+        assert_eq!(projections.load(Ordering::SeqCst), 1);
+        assert_eq!(output.get_value(&1), None);
+        assert_eq!(output.get_value(&2), None, "queued event was discarded");
+
+        let other_root_poison = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            right.insert(7, 7);
+        }))
+        .expect_err("a different physical root in the query must fail fast");
+        assert_eq!(
+            panic_text(other_root_poison.as_ref()),
+            Some(QUERY_POISONED_MESSAGE)
+        );
+        assert_eq!(right_keys.load(Ordering::SeqCst), 0);
+
+        let poison = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            left.insert(3, 3);
+        }))
+        .expect_err("fresh event must reach fail-fast poison");
+        assert_eq!(panic_text(poison.as_ref()), Some(QUERY_POISONED_MESSAGE));
+        assert_eq!(projections.load(Ordering::SeqCst), 1);
+        assert_eq!(output.get_value(&3), None);
+    }
+
+    #[test]
+    #[allow(clippy::expect_used, clippy::panic)]
+    fn promotion_replay_panic_quarantines_region() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let panic_on_replay = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&panic_on_replay);
+        let runtime = JCons {
+            head: StageRuntimeState::new(
+                |_: &u32, value: &i32| *value,
+                crate::traits::RequiredRightKey(|_: &u8, value: &i32| *value),
+                DirectProject(move |key: &u32, left: &i32, _: &[(u8, i32)]| {
+                    if *key == 7 && flag.load(Ordering::SeqCst) {
+                        std::panic::panic_any("promotion replay panic");
+                    }
+                    *left
+                }),
+            ),
+            tail: JNil,
+        };
+        let state = Arc::new(Mutex::new(RegionRouter::with_config(runtime, 3, 2)));
+        let _ = region_transaction(&state, |router| {
+            router.apply_left(&MapDiff::Insert { key: 7, value: 7 })
+        });
+        panic_on_replay.store(true, Ordering::SeqCst);
+        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = region_transaction(&state, |router| {
+                router.apply_left(&MapDiff::Batch {
+                    changes: vec![
+                        MapDiff::Insert { key: 8, value: 8 },
+                        MapDiff::Insert { key: 9, value: 9 },
+                    ],
+                })
+            });
+        }))
+        .expect_err("promotion replay must panic");
+        assert_eq!(panic_text(payload.as_ref()), Some("promotion replay panic"));
+        let router = state.lock().expect("unpoisoned mutex");
+        assert!(router.poisoned);
+        assert!(!router.parallel_active);
+        drop(router);
+    }
+
+    #[test]
+    #[allow(clippy::expect_used, clippy::panic)]
+    fn later_stage_panic_quarantines_the_whole_typed_spine() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let first_stage = Arc::new(AtomicUsize::new(0));
+        let first_count = Arc::clone(&first_stage);
+        let runtime = JCons {
+            head: StageRuntimeState::new(
+                |_: &u32, value: &i32| *value,
+                crate::traits::RequiredRightKey(|_: &u8, value: &i32| *value),
+                DirectProject(move |_: &u32, left: &i32, _: &[(u8, i32)]| {
+                    first_count.fetch_add(1, Ordering::SeqCst);
+                    *left
+                }),
+            ),
+            tail: JCons {
+                head: StageRuntimeState::new(
+                    |_: &u32, value: &i32| *value,
+                    crate::traits::RequiredRightKey(|_: &u16, value: &i32| *value),
+                    DirectProject(|_: &u32, _: &i32, _: &[(u16, i32)]| {
+                        std::panic::panic_any("tail projection panic");
+                    }),
+                ),
+                tail: JNil,
+            },
+        };
+        let state = Arc::new(Mutex::new(RegionRouter::with_config(runtime, 1, 100)));
+        let published = Arc::new(AtomicUsize::new(0));
+        let published_after = Arc::clone(&published);
+        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let changes = region_transaction(&state, |router| {
+                router.apply_left(&MapDiff::Insert { key: 1, value: 1 })
+            });
+            published_after.fetch_add(changes.len(), Ordering::SeqCst);
+        }))
+        .expect_err("tail stage must panic");
+        assert_eq!(panic_text(payload.as_ref()), Some("tail projection panic"));
+        assert!(first_stage.load(Ordering::SeqCst) > 0);
+        assert_eq!(published.load(Ordering::SeqCst), 0);
+        assert!(state.lock().expect("unpoisoned mutex").poisoned);
     }
 
     #[allow(clippy::as_conversions)]

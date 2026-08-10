@@ -31,6 +31,23 @@ impl SourceIdentity {
 
 type QueuedQueryEvent = Box<dyn FnOnce() + Send + 'static>;
 
+pub const QUERY_POISONED_MESSAGE: &str =
+    "hyphae join region is poisoned after a prior callback panic";
+
+/// Fail-stop cohort shared by every physical root compiled into one query.
+#[derive(Clone, Default)]
+pub struct QueryPoison(Arc<AtomicBool>);
+
+impl QueryPoison {
+    pub fn poison(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    fn is_poisoned(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
 /// One publication transaction gate shared by every physical root in a query.
 ///
 /// The first event remains borrowed and statically typed. Only an event that
@@ -61,6 +78,12 @@ impl Drop for ActiveQueryDispatch<'_> {
     }
 }
 
+#[cold]
+#[allow(clippy::panic)]
+fn panic_query_poisoned() -> ! {
+    std::panic::panic_any(QUERY_POISONED_MESSAGE);
+}
+
 fn fanout_root_diff<K, V>(sinks: &[BoxedMapDiffSink<K, V>], diff: &MapDiff<K, V>) {
     for sink in sinks {
         sink(diff);
@@ -69,6 +92,7 @@ fn fanout_root_diff<K, V>(sinks: &[BoxedMapDiffSink<K, V>], diff: &MapDiff<K, V>
 
 fn dispatch_query_root<K, V>(
     dispatch: &Mutex<QueryDispatch>,
+    poison: &QueryPoison,
     sinks: &Arc<Vec<BoxedMapDiffSink<K, V>>>,
     diff: &MapDiff<K, V>,
 ) where
@@ -79,6 +103,10 @@ fn dispatch_query_root<K, V>(
         let mut state = dispatch
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if poison.is_poisoned() {
+            drop(state);
+            panic_query_poisoned();
+        }
         if state.active {
             let sinks = Arc::clone(sinks);
             let diff = diff.clone();
@@ -216,6 +244,7 @@ where
 #[derive(Default)]
 pub struct CompileContext {
     query_dispatch: Arc<Mutex<QueryDispatch>>,
+    query_poison: QueryPoison,
     roots: HashMap<RootKey, RootRequirement>,
     relationships: HashMap<RelationshipKey, usize>,
     relationship_indexes: HashMap<RelationshipKey, Box<dyn Any>>,
@@ -226,6 +255,10 @@ pub struct CompileContext {
 }
 
 impl CompileContext {
+    pub(crate) fn query_poison(&self) -> QueryPoison {
+        self.query_poison.clone()
+    }
+
     /// Register a typed root entry point without activating its subscription.
     /// Repeated uses append to one root-boundary fanout and therefore install
     /// exactly one physical source subscription during activation.
@@ -275,11 +308,12 @@ impl CompileContext {
             // corrupted: keep the entry point live as an independent root.
             let source = source.clone();
             let dispatch = Arc::clone(&self.query_dispatch);
+            let poison = self.query_poison.clone();
             self.activations.push(Box::new(move || {
                 let sinks: Arc<Vec<BoxedMapDiffSink<M::Key, M::Value>>> =
                     Arc::new(vec![Arc::new(sink)]);
                 vec![source.subscribe_diffs_reactive(move |diff| {
-                    dispatch_query_root(&dispatch, &sinks, diff);
+                    dispatch_query_root(&dispatch, &poison, &sinks, diff);
                 })]
             }));
             return ordinal;
@@ -299,6 +333,7 @@ impl CompileContext {
 
         let source = source.clone();
         let dispatch = Arc::clone(&self.query_dispatch);
+        let poison = self.query_poison.clone();
         self.activations.push(Box::new(move || {
             let sinks = Arc::new(std::mem::take(
                 &mut *sinks
@@ -309,7 +344,7 @@ impl CompileContext {
             // transaction. A different root cannot publish between a shared
             // relationship's maintainer and observers.
             let guard = source.subscribe_diffs_reactive(move |diff| {
-                dispatch_query_root(&dispatch, &sinks, diff);
+                dispatch_query_root(&dispatch, &poison, &sinks, diff);
             });
             vec![guard]
         }));
@@ -839,6 +874,7 @@ mod tests {
             },
         };
         let dispatch = Mutex::new(QueryDispatch::default());
+        let poison = QueryPoison::default();
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let sink_calls = Arc::clone(&calls);
         let sinks: Arc<Vec<BoxedMapDiffSink<u64, CloneTracked>>> =
@@ -846,7 +882,7 @@ mod tests {
                 sink_calls.fetch_add(1, Ordering::Relaxed);
             })]);
 
-        dispatch_query_root(&dispatch, &sinks, &diff);
+        dispatch_query_root(&dispatch, &poison, &sinks, &diff);
 
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         assert_eq!(clones.load(Ordering::Relaxed), 0);
@@ -855,6 +891,7 @@ mod tests {
     #[test]
     fn concurrent_query_event_queues_behind_active_fanout() {
         let dispatch = Arc::new(Mutex::new(QueryDispatch::default()));
+        let poison = QueryPoison::default();
         let observed = Arc::new(Mutex::new(Vec::new()));
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
@@ -889,17 +926,24 @@ mod tests {
             }
         })]);
         let first_dispatch = Arc::clone(&dispatch);
+        let first_poison = poison.clone();
         let first_sinks = Arc::clone(&sinks);
         let first = std::thread::spawn(move || {
             dispatch_query_root(
                 &first_dispatch,
+                &first_poison,
                 &first_sinks,
                 &MapDiff::Insert { key: 1, value: 10 },
             );
         });
 
         assert!(entered_rx.recv().is_ok(), "first fanout must start");
-        dispatch_query_root(&dispatch, &sinks, &MapDiff::Insert { key: 2, value: 20 });
+        dispatch_query_root(
+            &dispatch,
+            &poison,
+            &sinks,
+            &MapDiff::Insert { key: 2, value: 20 },
+        );
         assert!(
             release_tx.send(()).is_ok(),
             "blocked fanout must remain live"
@@ -917,6 +961,7 @@ mod tests {
     #[test]
     fn panic_clears_queued_query_events_and_recovers() {
         let dispatch = Arc::new(Mutex::new(QueryDispatch::default()));
+        let poison = QueryPoison::default();
         let should_panic = Arc::new(AtomicBool::new(true));
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
@@ -942,24 +987,36 @@ mod tests {
         })]);
 
         let panic_dispatch = Arc::clone(&dispatch);
+        let panic_poison = poison.clone();
         let panic_sinks = Arc::clone(&sinks);
         let panicking = std::thread::spawn(move || {
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 dispatch_query_root(
                     &panic_dispatch,
+                    &panic_poison,
                     &panic_sinks,
                     &MapDiff::Insert { key: 1, value: 10 },
                 );
             }))
         });
         assert!(entered_rx.recv().is_ok());
-        dispatch_query_root(&dispatch, &sinks, &MapDiff::Insert { key: 2, value: 20 });
+        dispatch_query_root(
+            &dispatch,
+            &poison,
+            &sinks,
+            &MapDiff::Insert { key: 2, value: 20 },
+        );
         assert!(release_tx.send(()).is_ok());
         assert!(panicking.join().is_ok_and(|result| result.is_err()));
 
         // The queued second event belonged to the partially committed
         // transaction and was discarded. A fresh third event is accepted.
-        dispatch_query_root(&dispatch, &sinks, &MapDiff::Insert { key: 3, value: 30 });
+        dispatch_query_root(
+            &dispatch,
+            &poison,
+            &sinks,
+            &MapDiff::Insert { key: 3, value: 30 },
+        );
         assert_eq!(calls.load(Ordering::Relaxed), 2);
         let state = dispatch
             .lock()
