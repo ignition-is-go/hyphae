@@ -1,4 +1,5 @@
 use std::{
+    any::TypeId,
     collections::hash_map::Entry,
     hash::{Hash, Hasher},
     sync::{Arc, Mutex},
@@ -10,7 +11,7 @@ use crate::{cell_map::MapDiff, subscription::SubscriptionGuard, traits::CellValu
 
 use super::ordered_set::OrderedSet;
 
-struct JoinState<LK, LV, RK, RV, JK, OK, OV>
+struct JoinState<LK, LV, RK, RV, JK, OK, OV, RI = RelationIndex<RK, RV, JK>>
 where
     LK: Hash + Eq + CellValue,
     LV: CellValue,
@@ -23,7 +24,7 @@ where
     left_rows: FxHashMap<LK, LV>,
     left_join_keys: FxHashMap<LK, JK>,
     join_to_left: FxHashMap<JK, Vec<LK>>,
-    right: RelationIndex<RK, RV, JK>,
+    right: RI,
     left_output_keys: FxHashMap<LK, OrderedSet<OK>>,
     output_cache: FxHashMap<OK, OV>,
     parallel_active: bool,
@@ -44,6 +45,42 @@ impl<RK, RV, JK> Default for RelationIndex<RK, RV, JK> {
             row_join_keys: FxHashMap::default(),
             join_to_rows: FxHashMap::default(),
         }
+    }
+}
+
+trait RelationIndexStorage<RK, RV, JK>: Send + Sync + 'static {
+    fn read<T>(&self, read: impl FnOnce(&RelationIndex<RK, RV, JK>) -> T) -> T;
+    fn write<T>(&mut self, write: impl FnOnce(&mut RelationIndex<RK, RV, JK>) -> T) -> T;
+}
+
+impl<RK, RV, JK> RelationIndexStorage<RK, RV, JK> for RelationIndex<RK, RV, JK>
+where
+    RK: Send + Sync + 'static,
+    RV: Send + Sync + 'static,
+    JK: Send + Sync + 'static,
+{
+    fn read<T>(&self, read: impl FnOnce(&Self) -> T) -> T {
+        read(self)
+    }
+
+    fn write<T>(&mut self, write: impl FnOnce(&mut Self) -> T) -> T {
+        write(self)
+    }
+}
+
+impl<RK, RV, JK> RelationIndexStorage<RK, RV, JK>
+    for crate::map_query::compiler::DeferredPhysical<RelationIndex<RK, RV, JK>>
+where
+    RK: Send + Sync + 'static,
+    RV: Send + Sync + 'static,
+    JK: Send + Sync + 'static,
+{
+    fn read<T>(&self, read: impl FnOnce(&RelationIndex<RK, RV, JK>) -> T) -> T {
+        crate::map_query::compiler::DeferredPhysical::read(self, read)
+    }
+
+    fn write<T>(&mut self, write: impl FnOnce(&mut RelationIndex<RK, RV, JK>) -> T) -> T {
+        crate::map_query::compiler::DeferredPhysical::write(self, write)
     }
 }
 
@@ -91,6 +128,30 @@ where
     }
 }
 
+impl<LK, LV, RK, RV, JK, OK, OV, RI> JoinState<LK, LV, RK, RV, JK, OK, OV, RI>
+where
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    OK: Hash + Eq + CellValue,
+    OV: CellValue,
+{
+    fn with_right(right: RI) -> Self {
+        Self {
+            left_rows: FxHashMap::default(),
+            left_join_keys: FxHashMap::default(),
+            join_to_left: FxHashMap::default(),
+            right,
+            left_output_keys: FxHashMap::default(),
+            output_cache: FxHashMap::default(),
+            parallel_active: false,
+            scratch: JoinScratch::default(),
+        }
+    }
+}
+
 fn add_index_member<I, M>(index: &mut FxHashMap<I, Vec<M>>, index_key: I, member: M)
 where
     I: Hash + Eq + CellValue,
@@ -116,7 +177,7 @@ where
 }
 
 fn upsert_left<LK, LV, RK, RV, JK, OK, OV, FL>(
-    state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV>,
+    state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
     left_key: LK,
     left_value: LV,
     left_join_key: &FL,
@@ -148,7 +209,7 @@ fn upsert_left<LK, LV, RK, RV, JK, OK, OV, FL>(
 }
 
 fn remove_left<LK, LV, RK, RV, JK, OK, OV>(
-    state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV>,
+    state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
     left_key: &LK,
     impacted: &mut OrderedSet<LK>,
 ) where
@@ -169,7 +230,7 @@ fn remove_left<LK, LV, RK, RV, JK, OK, OV>(
 }
 
 fn apply_left_diff<LK, LV, RK, RV, JK, OK, OV, FL>(
-    state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV>,
+    state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
     diff: &MapDiff<LK, LV>,
     left_join_key: &FL,
     impacted: &mut OrderedSet<LK>,
@@ -216,7 +277,7 @@ fn apply_left_diff<LK, LV, RK, RV, JK, OK, OV, FL>(
 }
 
 fn upsert_right<LK, LV, RK, RV, JK, OK, OV, FR>(
-    state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV>,
+    state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
     right_key: RK,
     right_value: RV,
     right_join_key: &FR,
@@ -232,37 +293,26 @@ fn upsert_right<LK, LV, RK, RV, JK, OK, OV, FR>(
     FR: Fn(&RK, &RV) -> JK,
 {
     let join_key = right_join_key(&right_key, &right_value);
-    match state
-        .right
-        .row_join_keys
-        .insert(right_key.clone(), join_key.clone())
-    {
-        Some(previous_join_key) if previous_join_key != join_key => {
-            remove_index_member(
-                &mut state.right.join_to_rows,
-                &previous_join_key,
-                &right_key,
-            );
-            changed_join_keys.insert(previous_join_key);
-            add_index_member(
-                &mut state.right.join_to_rows,
-                join_key.clone(),
-                right_key.clone(),
-            );
+    state.right.write(|right| {
+        match right
+            .row_join_keys
+            .insert(right_key.clone(), join_key.clone())
+        {
+            Some(previous_join_key) if previous_join_key != join_key => {
+                remove_index_member(&mut right.join_to_rows, &previous_join_key, &right_key);
+                changed_join_keys.insert(previous_join_key);
+                add_index_member(&mut right.join_to_rows, join_key.clone(), right_key.clone());
+            }
+            Some(_) => {}
+            None => add_index_member(&mut right.join_to_rows, join_key.clone(), right_key.clone()),
         }
-        Some(_) => {}
-        None => add_index_member(
-            &mut state.right.join_to_rows,
-            join_key.clone(),
-            right_key.clone(),
-        ),
-    }
-    state.right.rows.insert(right_key, right_value);
+        right.rows.insert(right_key, right_value);
+    });
     changed_join_keys.insert(join_key);
 }
 
 fn remove_right<LK, LV, RK, RV, JK, OK, OV>(
-    state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV>,
+    state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
     right_key: &RK,
     changed_join_keys: &mut OrderedSet<JK>,
 ) where
@@ -274,15 +324,17 @@ fn remove_right<LK, LV, RK, RV, JK, OK, OV>(
     OK: Hash + Eq + CellValue,
     OV: CellValue,
 {
-    if let Some(previous_join_key) = state.right.row_join_keys.remove(right_key) {
-        remove_index_member(&mut state.right.join_to_rows, &previous_join_key, right_key);
-        changed_join_keys.insert(previous_join_key);
-    }
-    state.right.rows.remove(right_key);
+    state.right.write(|right| {
+        if let Some(previous_join_key) = right.row_join_keys.remove(right_key) {
+            remove_index_member(&mut right.join_to_rows, &previous_join_key, right_key);
+            changed_join_keys.insert(previous_join_key);
+        }
+        right.rows.remove(right_key);
+    });
 }
 
 fn apply_right_diff<LK, LV, RK, RV, JK, OK, OV, FR>(
-    state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV>,
+    state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
     diff: &MapDiff<RK, RV>,
     right_join_key: &FR,
     impacted: &mut OrderedSet<LK>,
@@ -298,7 +350,7 @@ fn apply_right_diff<LK, LV, RK, RV, JK, OK, OV, FR>(
     FR: Fn(&RK, &RV) -> JK,
 {
     fn apply_one<LK, LV, RK, RV, JK, OK, OV, FR>(
-        state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV>,
+        state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
         diff: &MapDiff<RK, RV>,
         right_join_key: &FR,
         changed_join_keys: &mut OrderedSet<JK>,
@@ -314,12 +366,14 @@ fn apply_right_diff<LK, LV, RK, RV, JK, OK, OV, FR>(
     {
         match diff {
             MapDiff::Initial { entries } => {
-                for join_key in state.right.row_join_keys.values() {
-                    changed_join_keys.insert(join_key.clone());
-                }
-                state.right.rows.clear();
-                state.right.row_join_keys.clear();
-                state.right.join_to_rows.clear();
+                state.right.write(|right| {
+                    for join_key in right.row_join_keys.values() {
+                        changed_join_keys.insert(join_key.clone());
+                    }
+                    right.rows.clear();
+                    right.row_join_keys.clear();
+                    right.join_to_rows.clear();
+                });
                 for (key, value) in entries {
                     upsert_right(
                         state,
@@ -365,7 +419,7 @@ fn apply_right_diff<LK, LV, RK, RV, JK, OK, OV, FR>(
 }
 
 fn recompute_impacted<LK, LV, RK, RV, JK, OK, OV, FO>(
-    state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV>,
+    state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
     scratch: &mut JoinScratch<LK, RK, RV, JK, OK, OV>,
     compute_rows: &FO,
 ) -> Vec<MapDiff<OK, OV>>
@@ -388,20 +442,19 @@ where
         scratch.desired_order.clear();
         if let Some(left_value) = state.left_rows.get(&left_key) {
             scratch.right_rows.clear();
-            if let Some(right_keys) = state
-                .left_join_keys
-                .get(&left_key)
-                .and_then(|join_key| state.right.join_to_rows.get(join_key))
-            {
-                scratch
-                    .right_rows
-                    .extend(right_keys.iter().filter_map(|right_key| {
-                        state
-                            .right
-                            .rows
-                            .get(right_key)
-                            .map(|right_value| (right_key.clone(), right_value.clone()))
-                    }));
+            if let Some(join_key) = state.left_join_keys.get(&left_key) {
+                state.right.read(|right| {
+                    if let Some(right_keys) = right.join_to_rows.get(join_key) {
+                        scratch
+                            .right_rows
+                            .extend(right_keys.iter().filter_map(|right_key| {
+                                right
+                                    .rows
+                                    .get(right_key)
+                                    .map(|right_value| (right_key.clone(), right_value.clone()))
+                            }));
+                    }
+                });
             }
 
             for (output_key, output_value) in
@@ -469,7 +522,7 @@ const PARALLEL_JOIN_WORK_ENTER: usize = 65_536;
 const PARALLEL_JOIN_WORK_EXIT: usize = 49_152;
 
 fn commit_keyed_value<LK, LV, RK, RV, JK, OV>(
-    state: &mut JoinState<LK, LV, RK, RV, JK, LK, OV>,
+    state: &mut JoinState<LK, LV, RK, RV, JK, LK, OV, impl RelationIndexStorage<RK, RV, JK>>,
     left_key: LK,
     desired_value: Option<OV>,
     changes: &mut Vec<MapDiff<LK, OV>>,
@@ -510,7 +563,7 @@ fn commit_keyed_value<LK, LV, RK, RV, JK, OV>(
 #[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
 fn compute_keyed_parallel<LK, LV, RK, RV, JK, OV, FO>(
     pool: &rayon::ThreadPool,
-    state: &JoinState<LK, LV, RK, RV, JK, LK, OV>,
+    state: &JoinState<LK, LV, RK, RV, JK, LK, OV, impl RelationIndexStorage<RK, RV, JK>>,
     impacted: &[LK],
     compute_value: &FO,
 ) -> Vec<(LK, Option<OV>)>
@@ -531,18 +584,17 @@ where
             .map_init(Vec::<(RK, RV)>::new, |right_rows, left_key| {
                 right_rows.clear();
                 let desired = state.left_rows.get(left_key).and_then(|left_value| {
-                    if let Some(right_keys) = state
-                        .left_join_keys
-                        .get(left_key)
-                        .and_then(|join_key| state.right.join_to_rows.get(join_key))
-                    {
-                        right_rows.extend(right_keys.iter().filter_map(|right_key| {
-                            state
-                                .right
-                                .rows
-                                .get(right_key)
-                                .map(|right_value| (right_key.clone(), right_value.clone()))
-                        }));
+                    if let Some(join_key) = state.left_join_keys.get(left_key) {
+                        state.right.read(|right| {
+                            if let Some(right_keys) = right.join_to_rows.get(join_key) {
+                                right_rows.extend(right_keys.iter().filter_map(|right_key| {
+                                    right
+                                        .rows
+                                        .get(right_key)
+                                        .map(|right_value| (right_key.clone(), right_value.clone()))
+                                }));
+                            }
+                        });
                     }
                     compute_value(left_key, left_value, right_rows)
                 });
@@ -553,7 +605,7 @@ where
 }
 
 fn recompute_keyed_impacted<LK, LV, RK, RV, JK, OV, FO>(
-    state: &mut JoinState<LK, LV, RK, RV, JK, LK, OV>,
+    state: &mut JoinState<LK, LV, RK, RV, JK, LK, OV, impl RelationIndexStorage<RK, RV, JK>>,
     scratch: &mut JoinScratch<LK, RK, RV, JK, LK, OV>,
     compute_value: &FO,
 ) -> Vec<MapDiff<LK, OV>>
@@ -568,13 +620,15 @@ where
 {
     let mut changes = Vec::new();
     let impacted: Vec<LK> = scratch.impacted.drain().collect();
-    let estimated_work = impacted.iter().fold(0_usize, |work, left_key| {
-        let fanout = state
-            .left_join_keys
-            .get(left_key)
-            .and_then(|join_key| state.right.join_to_rows.get(join_key))
-            .map_or(0, Vec::len);
-        work.saturating_add(fanout.saturating_add(1))
+    let estimated_work = state.right.read(|right| {
+        impacted.iter().fold(0_usize, |work, left_key| {
+            let fanout = state
+                .left_join_keys
+                .get(left_key)
+                .and_then(|join_key| right.join_to_rows.get(join_key))
+                .map_or(0, Vec::len);
+            work.saturating_add(fanout.saturating_add(1))
+        })
     });
     state.parallel_active = if state.parallel_active {
         estimated_work >= PARALLEL_JOIN_WORK_EXIT
@@ -596,20 +650,19 @@ where
     for left_key in impacted {
         scratch.right_rows.clear();
         let desired_value = state.left_rows.get(&left_key).and_then(|left_value| {
-            if let Some(right_keys) = state
-                .left_join_keys
-                .get(&left_key)
-                .and_then(|join_key| state.right.join_to_rows.get(join_key))
-            {
-                scratch
-                    .right_rows
-                    .extend(right_keys.iter().filter_map(|right_key| {
-                        state
-                            .right
-                            .rows
-                            .get(right_key)
-                            .map(|right_value| (right_key.clone(), right_value.clone()))
-                    }));
+            if let Some(join_key) = state.left_join_keys.get(&left_key) {
+                state.right.read(|right| {
+                    if let Some(right_keys) = right.join_to_rows.get(join_key) {
+                        scratch
+                            .right_rows
+                            .extend(right_keys.iter().filter_map(|right_key| {
+                                right
+                                    .rows
+                                    .get(right_key)
+                                    .map(|right_value| (right_key.clone(), right_value.clone()))
+                            }));
+                    }
+                });
             }
             compute_value(&left_key, left_value, &scratch.right_rows)
         });
@@ -1208,7 +1261,7 @@ fn diff_work<K, V>(diff: &MapDiff<K, V>) -> usize {
 }
 
 fn state_left_entries<LK, LV, RK, RV, JK, OK, OV>(
-    state: &JoinState<LK, LV, RK, RV, JK, OK, OV>,
+    state: &JoinState<LK, LV, RK, RV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
 ) -> Vec<(LK, LV)>
 where
     LK: Hash + Eq + CellValue,
@@ -1233,7 +1286,7 @@ where
 }
 
 fn state_right_entries<LK, LV, RK, RV, JK, OK, OV>(
-    state: &JoinState<LK, LV, RK, RV, JK, OK, OV>,
+    state: &JoinState<LK, LV, RK, RV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
 ) -> Vec<(RK, RV)>
 where
     LK: Hash + Eq + CellValue,
@@ -1244,19 +1297,19 @@ where
     OK: Hash + Eq + CellValue,
     OV: CellValue,
 {
-    state
-        .right
-        .join_to_rows
-        .values()
-        .flatten()
-        .filter_map(|key| {
-            state
-                .right
-                .rows
-                .get(key)
-                .map(|value| (key.clone(), value.clone()))
-        })
-        .collect()
+    state.right.read(|right| {
+        right
+            .join_to_rows
+            .values()
+            .flatten()
+            .filter_map(|key| {
+                right
+                    .rows
+                    .get(key)
+                    .map(|value| (key.clone(), value.clone()))
+            })
+            .collect()
+    })
 }
 
 /// Install the zero-or-one-output, left-key-preserving join runtime.
@@ -1284,8 +1337,66 @@ where
     Sink: crate::map_query::MapDiffSink<LK, OV>,
 {
     let relation = cx.take_relation_hint();
+    if let Some(relation) = relation {
+        let index = cx.prepare_relationship_index::<RelationIndex<RK, RV, JK>>();
+        return install_keyed_join_runtime_with_index(
+            cx,
+            index.clone(),
+            Some((relation, index)),
+            left,
+            right,
+            left_join_key,
+            right_join_key,
+            compute_value,
+            sink,
+        );
+    }
+
+    install_keyed_join_runtime_with_index(
+        cx,
+        RelationIndex::default(),
+        None,
+        left,
+        right,
+        left_join_key,
+        right_join_key,
+        compute_value,
+        sink,
+    )
+}
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn install_keyed_join_runtime_with_index<LK, LV, RK, RV, JK, OV, L, R, FL, FR, FO, Sink, RI>(
+    cx: &mut crate::map_query::compiler::CompileContext,
+    right_index: RI,
+    relationship_binding: Option<(
+        TypeId,
+        crate::map_query::compiler::DeferredPhysical<RelationIndex<RK, RV, JK>>,
+    )>,
+    left: L,
+    right: R,
+    left_join_key: FL,
+    right_join_key: FR,
+    compute_value: FO,
+    sink: Sink,
+) -> Vec<SubscriptionGuard>
+where
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    OV: CellValue,
+    L: crate::map_query::MapQuery<Key = LK, Value = LV>,
+    R: crate::map_query::MapQuery<Key = RK, Value = RV>,
+    FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
+    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    FO: Fn(&LK, &LV, &[(RK, RV)]) -> Option<OV> + Send + Sync + 'static,
+    Sink: crate::map_query::MapDiffSink<LK, OV>,
+    RI: RelationIndexStorage<RK, RV, JK>,
+{
     let state = Arc::new(Mutex::new(
-        JoinState::<LK, LV, RK, RV, JK, LK, OV>::default(),
+        JoinState::<LK, LV, RK, RV, JK, LK, OV, RI>::with_right(right_index),
     ));
     let left_join_key = Arc::new(left_join_key);
     let right_join_key = Arc::new(right_join_key);
@@ -1342,8 +1453,10 @@ where
     };
 
     let mut guards = left.compile_into(cx, left_sink);
-    if let Some(relation) = relation {
-        guards.extend(cx.with_root_relation(relation, |cx| right.compile_into(cx, right_sink)));
+    if let Some((relation, index)) = relationship_binding {
+        guards.extend(
+            cx.with_root_relation_index(relation, index, |cx| right.compile_into(cx, right_sink)),
+        );
     } else {
         guards.extend(right.compile_into(cx, right_sink));
     }

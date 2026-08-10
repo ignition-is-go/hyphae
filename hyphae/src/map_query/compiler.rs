@@ -2,7 +2,7 @@ use std::{
     any::{Any, TypeId},
     collections::HashMap,
     hash::Hash,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use crate::{
@@ -46,14 +46,89 @@ struct RelationshipKey {
 
 type Activation = Box<dyn FnOnce() -> Vec<SubscriptionGuard>>;
 
+trait PhysicalRelationshipBinding {
+    fn bind(&self, key: RelationshipKey, indexes: &mut HashMap<RelationshipKey, Box<dyn Any>>);
+}
+
+struct TypedRelationshipBinding<T> {
+    slot: DeferredPhysical<T>,
+}
+
+impl<T> PhysicalRelationshipBinding for TypedRelationshipBinding<T>
+where
+    T: Default + Send + Sync + 'static,
+{
+    fn bind(&self, key: RelationshipKey, indexes: &mut HashMap<RelationshipKey, Box<dyn Any>>) {
+        let index = indexes
+            .get(&key)
+            .and_then(|index| index.downcast_ref::<Arc<Mutex<T>>>())
+            .cloned()
+            .unwrap_or_else(|| {
+                let index = Arc::new(Mutex::new(T::default()));
+                indexes.insert(key, Box::new(Arc::clone(&index)));
+                index
+            });
+        let _already_bound = self.slot.inner.set(index).is_err();
+    }
+}
+
+/// A typed direct handle populated when the owning right subtree resolves to
+/// its physical source during compilation.
+pub struct DeferredPhysical<T> {
+    inner: Arc<OnceLock<Arc<Mutex<T>>>>,
+}
+
+impl<T> Clone for DeferredPhysical<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl<T> Default for DeferredPhysical<T> {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(OnceLock::new()),
+        }
+    }
+}
+
+impl<T> DeferredPhysical<T>
+where
+    T: Default,
+{
+    pub(crate) fn read<R>(&self, read: impl FnOnce(&T) -> R) -> R {
+        let index = self
+            .inner
+            .get_or_init(|| Arc::new(Mutex::new(T::default())));
+        let index = index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        read(&index)
+    }
+
+    pub(crate) fn write<R>(&mut self, write: impl FnOnce(&mut T) -> R) -> R {
+        let index = self
+            .inner
+            .get_or_init(|| Arc::new(Mutex::new(T::default())));
+        let mut index = index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        write(&mut index)
+    }
+}
+
 /// Setup-time state shared by every node in one materialization.
 #[derive(Default)]
 pub struct CompileContext {
     roots: HashMap<RootKey, RootRequirement>,
     relationships: HashMap<RelationshipKey, usize>,
+    relationship_indexes: HashMap<RelationshipKey, Box<dyn Any>>,
     activations: Vec<Activation>,
     relation_hint: Option<TypeId>,
     active_root_relation: Option<TypeId>,
+    active_relationship_binding: Option<Box<dyn PhysicalRelationshipBinding>>,
 }
 
 impl CompileContext {
@@ -78,14 +153,15 @@ impl CompileContext {
             value: TypeId::of::<M::Value>(),
         };
         if let Some(relation) = self.active_root_relation {
-            let uses = self
-                .relationships
-                .entry(RelationshipKey {
-                    source: identity,
-                    relation,
-                })
-                .or_default();
+            let relationship_key = RelationshipKey {
+                source: identity,
+                relation,
+            };
+            let uses = self.relationships.entry(relationship_key).or_default();
             *uses = uses.saturating_add(1);
+            if let Some(binding) = &self.active_relationship_binding {
+                binding.bind(relationship_key, &mut self.relationship_indexes);
+            }
         }
         if let Some(requirement) = self.roots.get_mut(&root_key) {
             requirement.uses = requirement.uses.saturating_add(1);
@@ -172,14 +248,26 @@ impl CompileContext {
         self.relation_hint.take()
     }
 
-    pub(crate) fn with_root_relation<T>(
+    pub(crate) fn prepare_relationship_index<T>(&self) -> DeferredPhysical<T> {
+        DeferredPhysical::default()
+    }
+
+    pub(crate) fn with_root_relation_index<I, T>(
         &mut self,
         relation: TypeId,
+        index: DeferredPhysical<I>,
         compile: impl FnOnce(&mut Self) -> T,
-    ) -> T {
-        let previous = self.active_root_relation.replace(relation);
+    ) -> T
+    where
+        I: Default + Send + Sync + 'static,
+    {
+        let previous_relation = self.active_root_relation.replace(relation);
+        let previous_binding = self
+            .active_relationship_binding
+            .replace(Box::new(TypedRelationshipBinding { slot: index }));
         let result = compile(self);
-        self.active_root_relation = previous;
+        self.active_relationship_binding = previous_binding;
+        self.active_root_relation = previous_relation;
         result
     }
 
@@ -206,6 +294,11 @@ impl CompileContext {
             })
             .copied()
             .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn physical_relationship_count(&self) -> usize {
+        self.relationship_indexes.len()
     }
 }
 
@@ -297,6 +390,7 @@ mod tests {
             cx.relationship_use_count::<ParentChildren>(children_identity),
             2
         );
+        assert_eq!(cx.physical_relationship_count(), 1);
         guards.extend(cx.activate());
         assert_eq!(guards.len(), 2);
     }
