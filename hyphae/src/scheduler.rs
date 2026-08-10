@@ -101,7 +101,7 @@
 //! by cell, and [`run_wave`] runs those groups — sequentially if there are few
 //! (the common/resting case: a join has 2 inputs, most fan-out is a handful of
 //! subscribers, and a pool dispatch's overhead alone would dwarf that), or
-//! across the scheduler's own dedicated [`WAVE_POOL`] if the wave crosses
+//! across Hyphae's shared dedicated worker pool if the wave crosses
 //! [`WAVE_THRESHOLD`] (genuinely wide fan-out — many independent cells settling
 //! at once). That threshold defaults high and the pool is built lazily and
 //! sized small on purpose: real graphs are overwhelmingly deep rather than
@@ -419,15 +419,9 @@ pub(crate) fn enqueue(id: Uuid, node: &dyn DepNode, terminal: bool, run: Box<dyn
 /// a heavy 1s+ rebuild wave was measured using only 1–2 cores, so parallel
 /// dispatch buys little and its fixed per-wave cost is pure loss at rest. A high
 /// threshold keeps the common/resting case sequential — and because
-/// [`WAVE_POOL`] is built lazily, a process whose waves never cross it spawns
+/// the shared worker pool is built lazily, so a process whose waves never cross it spawns
 /// zero wave threads and pays zero idle cost.
 const DEFAULT_WAVE_THRESHOLD: usize = 64;
-
-/// Default wave-pool size cap. Kept small because the workload is deep, not
-/// wide; overridable via `HYPHAE_WAVE_THREADS` (`0` disables the parallel path
-/// entirely — every wave runs sequentially).
-#[cfg(not(target_arch = "wasm32"))]
-const DEFAULT_WAVE_THREADS_CAP: usize = 4;
 
 fn env_usize(key: &str) -> Option<usize> {
     std::env::var(key).ok().and_then(|v| v.trim().parse().ok())
@@ -455,40 +449,6 @@ pub fn set_wave_threshold_for_test(groups: usize) {
     WAVE_THRESHOLD.store(groups, Ordering::Relaxed);
 }
 
-/// Configured wave-pool thread count, resolved once. `0` means "no
-/// parallelism" — [`run_wave`] then always runs sequentially and [`WAVE_POOL`]
-/// is never built.
-#[cfg(not(target_arch = "wasm32"))]
-static WAVE_THREADS: LazyLock<usize> = LazyLock::new(|| {
-    env_usize("HYPHAE_WAVE_THREADS").unwrap_or_else(|| {
-        std::thread::available_parallelism().map_or(1, |n| n.get().min(DEFAULT_WAVE_THREADS_CAP))
-    })
-});
-
-/// The scheduler's **dedicated**, named wave-parallelism pool — `None` when
-/// disabled (`HYPHAE_WAVE_THREADS=0`). Built lazily on the first wave that
-/// genuinely crosses [`WAVE_THRESHOLD`], so a process that never has a wide wave
-/// never constructs it (and never spawns its threads).
-///
-/// Dedicated rather than rayon's global pool for two reasons the field data
-/// surfaced: (1) sizing is decoupled from the ambient core count, so a 24-core
-/// host doesn't wake 24 workers for a wave that needs 2; (2) the workers are
-/// *named* (`hyphae-wave-N`) — global-pool workers inherit the name of whichever
-/// thread first touches the pool (they showed up as `hyphae-timer-re`), which
-/// poisons every profile taken of a process that uses hyphae timers.
-#[cfg(not(target_arch = "wasm32"))]
-static WAVE_POOL: LazyLock<Option<rayon::ThreadPool>> = LazyLock::new(|| {
-    let threads = *WAVE_THREADS;
-    if threads == 0 {
-        return None;
-    }
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .thread_name(|i| format!("hyphae-wave-{i}"))
-        .build()
-        .ok()
-});
-
 /// Run one height's worth of ops, grouped by cell (see
 /// [`SharedTick::pop_min_height_groups`]). Distinct groups are distinct cells at
 /// the same height: height is `1 + max(dep.height)`, so if one group's cell
@@ -503,7 +463,7 @@ static WAVE_POOL: LazyLock<Option<rayon::ThreadPool>> = LazyLock::new(|| {
 /// The threshold compares the number of *groups* (distinct cells), not raw ops:
 /// a single event cell fired 32× is one group and stays sequential (as it must
 /// to preserve order), while a genuinely wide wave that crosses
-/// [`WAVE_THRESHOLD`] gets real parallelism on the dedicated [`WAVE_POOL`].
+/// [`WAVE_THRESHOLD`] gets real parallelism on the dedicated shared pool.
 /// Panics are caught per-op so one buggy callback can't strand or corrupt
 /// unrelated work; every payload seen is returned for the caller to pick one to
 /// re-raise.
@@ -525,7 +485,7 @@ fn run_wave(groups: Vec<Vec<Box<dyn FnOnce() + Send>>>) -> Vec<Box<dyn std::any:
     if groups.len() < wave_threshold() {
         return run_sequential(groups);
     }
-    match WAVE_POOL.as_ref() {
+    match crate::executor::worker_pool() {
         Some(pool) => {
             use rayon::prelude::*;
             pool.install(|| groups.into_par_iter().flat_map_iter(run_group).collect())
