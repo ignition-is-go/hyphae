@@ -6,6 +6,8 @@
 
 use std::{hash::Hash, marker::PhantomData};
 
+use super::map_values::FilterMapValuesPlan;
+
 use crate::{
     map_query::{
         BuildQueryRuntime, MapDiffSink, MapQuery,
@@ -46,6 +48,48 @@ where
     pub(crate) source: S,
     pub(crate) predicate: F,
     pub(crate) _types: PhantomData<fn() -> (K, V)>,
+}
+
+impl<S, K, V, F> SelectPlan<S, K, V, F>
+where
+    S: MapQuery<Key = K, Value = V>,
+    K: Hash + Eq + CellValue,
+    V: CellValue,
+    F: Fn(&K, &V) -> bool + Send + Sync + 'static,
+{
+    /// Fuse an exactly-one projection after this selection.
+    pub fn map_values<U, G>(
+        self,
+        g: G,
+    ) -> FilterMapValuesPlan<S, K, V, U, impl Fn(&K, &V) -> Option<U> + Send + Sync + 'static>
+    where
+        U: CellValue,
+        G: Fn(&K, &V) -> U + Send + Sync + 'static,
+    {
+        let predicate = self.predicate;
+        FilterMapValuesPlan {
+            source: self.source,
+            f: move |key, value| predicate(key, value).then(|| g(key, value)),
+            _types: PhantomData,
+        }
+    }
+
+    /// Fuse a filtering projection after this selection.
+    pub fn filter_map_values<U, G>(
+        self,
+        g: G,
+    ) -> FilterMapValuesPlan<S, K, V, U, impl Fn(&K, &V) -> Option<U> + Send + Sync + 'static>
+    where
+        U: CellValue,
+        G: Fn(&K, &V) -> Option<U> + Send + Sync + 'static,
+    {
+        let predicate = self.predicate;
+        FilterMapValuesPlan {
+            source: self.source,
+            f: move |key, value| predicate(key, value).then(|| g(key, value)).flatten(),
+            _types: PhantomData,
+        }
+    }
 }
 
 impl<S, K, V, F> BuildQueryRuntime<K, V> for SelectPlan<S, K, V, F>
@@ -99,7 +143,10 @@ where
     ///
     /// `predicate(&value)` decides whether a row is present in the output map.
     #[track_caller]
-    fn select<F>(self, predicate: F) -> impl MapQuery<Key = K, Value = V>
+    fn select<F>(
+        self,
+        predicate: F,
+    ) -> SelectPlan<Self, K, V, impl Fn(&K, &V) -> bool + Send + Sync + 'static>
     where
         F: Fn(&V) -> bool + Send + Sync + 'static,
     {
@@ -113,7 +160,7 @@ where
 
     /// Filters rows using both the key and value.
     #[track_caller]
-    fn select_by<F>(self, predicate: F) -> impl MapQuery<Key = K, Value = V>
+    fn select_by<F>(self, predicate: F) -> SelectPlan<Self, K, V, F>
     where
         F: Fn(&K, &V) -> bool + Send + Sync + 'static,
     {

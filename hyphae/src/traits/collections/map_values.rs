@@ -89,6 +89,55 @@ where
     type Value = U;
 }
 
+impl<S, K, V, U, F> MapValuesPlan<S, K, V, U, F>
+where
+    S: MapQuery<Key = K, Value = V>,
+    K: Hash + Eq + CellValue,
+    V: CellValue,
+    U: CellValue,
+    F: Fn(&K, &V) -> U + Send + Sync + 'static,
+{
+    /// Fuse another exactly-one projection into this kernel.
+    pub fn map_values<W, G>(
+        self,
+        g: G,
+    ) -> MapValuesPlan<S, K, V, W, impl Fn(&K, &V) -> W + Send + Sync + 'static>
+    where
+        W: CellValue,
+        G: Fn(&K, &U) -> W + Send + Sync + 'static,
+    {
+        let f = self.f;
+        MapValuesPlan {
+            source: self.source,
+            f: move |key, value| {
+                let value = f(key, value);
+                g(key, &value)
+            },
+            _types: PhantomData,
+        }
+    }
+
+    /// Fuse a filtering projection into this kernel.
+    pub fn filter_map_values<W, G>(
+        self,
+        g: G,
+    ) -> FilterMapValuesPlan<S, K, V, W, impl Fn(&K, &V) -> Option<W> + Send + Sync + 'static>
+    where
+        W: CellValue,
+        G: Fn(&K, &U) -> Option<W> + Send + Sync + 'static,
+    {
+        let f = self.f;
+        FilterMapValuesPlan {
+            source: self.source,
+            f: move |key, value| {
+                let value = f(key, value);
+                g(key, &value)
+            },
+            _types: PhantomData,
+        }
+    }
+}
+
 /// Zero-or-one, key-preserving value projection.
 pub struct FilterMapValuesPlan<S, K, V, U, F>
 where
@@ -98,9 +147,84 @@ where
     U: CellValue,
     F: Fn(&K, &V) -> Option<U> + Send + Sync + 'static,
 {
-    source: S,
-    f: F,
-    _types: PhantomData<fn() -> (K, V, U)>,
+    pub(crate) source: S,
+    pub(crate) f: F,
+    pub(crate) _types: PhantomData<fn() -> (K, V, U)>,
+}
+
+impl<S, K, V, U, F> FilterMapValuesPlan<S, K, V, U, F>
+where
+    S: MapQuery<Key = K, Value = V>,
+    K: Hash + Eq + CellValue,
+    V: CellValue,
+    U: CellValue,
+    F: Fn(&K, &V) -> Option<U> + Send + Sync + 'static,
+{
+    /// Fuse an exactly-one projection after this optional kernel.
+    pub fn map_values<W, G>(
+        self,
+        g: G,
+    ) -> FilterMapValuesPlan<S, K, V, W, impl Fn(&K, &V) -> Option<W> + Send + Sync + 'static>
+    where
+        W: CellValue,
+        G: Fn(&K, &U) -> W + Send + Sync + 'static,
+    {
+        let f = self.f;
+        FilterMapValuesPlan {
+            source: self.source,
+            f: move |key, value| f(key, value).map(|value| g(key, &value)),
+            _types: PhantomData,
+        }
+    }
+
+    /// Fuse another filtering projection into this optional kernel.
+    pub fn filter_map_values<W, G>(
+        self,
+        g: G,
+    ) -> FilterMapValuesPlan<S, K, V, W, impl Fn(&K, &V) -> Option<W> + Send + Sync + 'static>
+    where
+        W: CellValue,
+        G: Fn(&K, &U) -> Option<W> + Send + Sync + 'static,
+    {
+        let f = self.f;
+        FilterMapValuesPlan {
+            source: self.source,
+            f: move |key, value| f(key, value).and_then(|value| g(key, &value)),
+            _types: PhantomData,
+        }
+    }
+
+    /// Fuse a value predicate into this optional kernel.
+    pub fn select<G>(
+        self,
+        predicate: G,
+    ) -> FilterMapValuesPlan<S, K, V, U, impl Fn(&K, &V) -> Option<U> + Send + Sync + 'static>
+    where
+        G: Fn(&U) -> bool + Send + Sync + 'static,
+    {
+        let f = self.f;
+        FilterMapValuesPlan {
+            source: self.source,
+            f: move |key, value| f(key, value).filter(|value| predicate(value)),
+            _types: PhantomData,
+        }
+    }
+
+    /// Fuse a key-aware predicate into this optional kernel.
+    pub fn select_by<G>(
+        self,
+        predicate: G,
+    ) -> FilterMapValuesPlan<S, K, V, U, impl Fn(&K, &V) -> Option<U> + Send + Sync + 'static>
+    where
+        G: Fn(&K, &U) -> bool + Send + Sync + 'static,
+    {
+        let f = self.f;
+        FilterMapValuesPlan {
+            source: self.source,
+            f: move |key, value| f(key, value).filter(|value| predicate(key, value)),
+            _types: PhantomData,
+        }
+    }
 }
 
 impl<S, K, V, U, F> BuildQueryRuntime<K, U> for FilterMapValuesPlan<S, K, V, U, F>
