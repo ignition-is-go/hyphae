@@ -14,6 +14,9 @@ use hyphae::{
 };
 
 pub const APPLICATION_ROWS: u64 = 10_000;
+/// Frozen batch sizes bracketing the four-stage region's exit and enter costs.
+#[allow(dead_code)]
+pub const REGION_CALIBRATION_ROWS: [u64; 6] = [989, 990, 991, 1_649, 1_650, 1_651];
 pub const RELATION_KEYS: u64 = 2_048;
 pub const MATCHES_PER_KEY: u64 = 4;
 pub const EXPECTED_STAGE_MASK: u8 = 0b1111;
@@ -172,6 +175,26 @@ fn shuffled_keys() -> Vec<u64> {
 pub fn update_batch(generation: u64, rekey: bool) -> Vec<(u64, Arc<ApplicationRow>)> {
     shuffled_keys()
         .into_iter()
+        .map(|key| (key, application_row(key, generation, rekey)))
+        .collect()
+}
+
+/// Return the frozen shuffled prefix used for a near-threshold calibration.
+/// Keeping this in the application fixture makes calibration exercise exactly
+/// the same four-stage graph, row shape, and key distribution as the 10k goldens.
+#[allow(dead_code)]
+pub fn calibration_update_batch(
+    generation: u64,
+    rekey: bool,
+    rows: u64,
+) -> Vec<(u64, Arc<ApplicationRow>)> {
+    assert!(
+        REGION_CALIBRATION_ROWS.contains(&rows) || rows == APPLICATION_ROWS,
+        "calibration row count must be one of the immutable frozen sizes"
+    );
+    shuffled_keys()
+        .into_iter()
+        .take(usize::try_from(rows).unwrap_or(usize::MAX))
         .map(|key| (key, application_row(key, generation, rekey)))
         .collect()
 }

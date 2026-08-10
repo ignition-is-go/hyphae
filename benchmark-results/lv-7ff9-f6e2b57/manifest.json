@@ -1,0 +1,85 @@
+{
+  "schema": "hyphae.region-threshold-calibration/1",
+  "issue": "lv-7ff9",
+  "base_head": "f6e2b57b3dbc14648705b75bdd775c9726114432",
+  "frozen_sizes": [
+    989,
+    990,
+    991,
+    1649,
+    1650,
+    1651
+  ],
+  "cost_units_per_row": 97,
+  "commands": {
+    "benchmark": "HYPHAE_WORKER_THREADS={1,2,4} cargo bench -p hyphae --features scheduler,region-calibration --bench region_threshold_calibration -- --warm-up-time 2 --measurement-time 5 --sample-size 50 --noplot --save-baseline lv7ff9-final-w<W>-r<R>",
+    "repeats": 2,
+    "fresh_process_per_run": true
+  },
+  "toolchain": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "platform": "Linux-7.1.3-arch2-2-x86_64-with-glibc2.43",
+  "stdout_sha256": {
+    "normal-tiny-left-w1.stdout.txt": "5fa1d9dbca4534402ef80f40e5d41ef06a1b8ae86ee7f160e1492e018d905a02",
+    "normal-tiny-repeated-typed-w1-repeat.stdout.txt": "c3a8d05a557ef82f191f984dccfea7cc42ce813fcf0749b64bb310a8efc03f0a",
+    "normal-tiny-repeated-typed-w1.stdout.txt": "e7c45374be3d8833fd6834a3dbe3feb67ead071a32dc6a3dc54fc00aec886b20",
+    "w1-repeat1.stdout.txt": "983a5bb03b97f0bdd946213eb985b510463a02043a5f4f5dbb2de9a29326dd61",
+    "w1-repeat2.stdout.txt": "41512b81ec2ef73e82d2c50d781d1f59019e1e72addafbac5bfeac02b61625c5",
+    "w2-repeat1.stdout.txt": "c3baf34ee0c7205cc9989faebe17613dce14edbd41daf813e9b022ebc672bc23",
+    "w2-repeat2.stdout.txt": "04448b00c1f955520247646f33e202e47ebde29a36004d0e16e0acdacbd1da67",
+    "w4-repeat1.stdout.txt": "7c2720ef097c6a50218ae0bda12ff194fdbc0b6c905f15ab80f09eb188919ae5",
+    "w4-repeat2.stdout.txt": "ae794678882ed75f6723dc6d6129f3d1ac41859de6ac30532ddc4c360d60384c"
+  },
+  "raw_json_file_count": 240,
+  "generated_utc": "2026-08-10T21:44:16.299424+00:00",
+  "capture_harness_sha256": {
+    "hyphae/benches/region_threshold_calibration.rs": "30606c32d85fb278e7b5969b97f1207c65c30747c40ff9ac315394cd3c867c78",
+    "hyphae/benches/support/four_join_application_workload.rs": "34288df6ea2831d9a8fd76b01c195d4e1822ece335951fe2447a8fed5d1cc1ac",
+    "hyphae/src/region_calibration.rs": "b0a967bfd49f6f2232f8c27b5f3e6894fa10aa7675a2457203b669aee7a4600b",
+    "hyphae/src/traits/collections/internal/join_region.rs": "82e973ace1c5d2d6027f43e43b8184f98f9b95799f853642162050fe7550f99e"
+  },
+  "capture_candidate_worktree_diff_sha256": "6a08316ee483267ffbac8068f6e339ebeed29e10315d58f2ade6de7d71e1e87b",
+  "final_harness_sha256": {
+    "hyphae/benches/region_threshold_calibration.rs": "30606c32d85fb278e7b5969b97f1207c65c30747c40ff9ac315394cd3c867c78",
+    "hyphae/benches/support/four_join_application_workload.rs": "fedfb2f8298862ab2be8d44313c0957618ff4cbf8b1ca0d09a50bc8201cd2086",
+    "hyphae/src/region_calibration.rs": "b0a967bfd49f6f2232f8c27b5f3e6894fa10aa7675a2457203b669aee7a4600b",
+    "hyphae/src/traits/collections/internal/join_region.rs": "82e973ace1c5d2d6027f43e43b8184f98f9b95799f853642162050fe7550f99e"
+  },
+  "final_candidate_worktree_diff_sha256": "a885c4b7e4f3c8f7c47f561692886d51608be19a33d769ca4bc1d38a0ff64699",
+  "timed_helper_slice_sha256": {
+    "capture": "d392514a4c87e6b0d4794d3b75187ea4a83b5a6c4283e909a79e5b18400f7cb3",
+    "final": "d392514a4c87e6b0d4794d3b75187ea4a83b5a6c4283e909a79e5b18400f7cb3"
+  },
+  "post_capture_change": "Restored update_batch's original direct shuffled_keys().map 10k body and added dead-code annotations needed by strict all-target Clippy; calibration_update_batch and benchmark timed dependency slice unchanged. Re-ran golden, truth, full tests, both Clippy gates, fmt, and diff check.",
+  "cpu_model": "AMD Ryzen 9 7900X3D 12-Core Processor",
+  "environment": {
+    "host": "malcolm",
+    "benchmark_worker_env_values": [
+      1,
+      2,
+      4
+    ],
+    "warm_up_seconds": 2,
+    "measurement_seconds": 5,
+    "samples": 50,
+    "criterion_sample_warnings": "33/60 cases warned requested 50 samples could not fit 5 s; Criterion extended collection; all 60 sample.json files contain exactly 50 iters and 50 times",
+    "confidence_intervals": "pointwise slope 95%, not simultaneous"
+  },
+  "run_artifact_mtime_utc": {
+    "w1-repeat1.stdout.txt": "2026-08-10T21:20:52.129143+00:00",
+    "w1-repeat2.stdout.txt": "2026-08-10T21:21:41.056386+00:00",
+    "w2-repeat1.stdout.txt": "2026-08-10T21:23:23.847895+00:00",
+    "w2-repeat2.stdout.txt": "2026-08-10T21:25:23.157480+00:00",
+    "w4-repeat1.stdout.txt": "2026-08-10T21:27:00.458914+00:00",
+    "w4-repeat2.stdout.txt": "2026-08-10T21:28:45.170389+00:00"
+  },
+  "final_git_status_porcelain_sha256": "dc04bc106dbc75500ee98dd6e39bd08978b3138452a6281cb6bc7f3802a20fb2",
+  "final_source_sha256": {
+    "hyphae/Cargo.toml": "8ef8d2e4c060d2f7b9a739d1f57a4e9e90c5f2822bf74a5a719310a3f5d882cc",
+    "hyphae/src/lib.rs": "7468451821970dfff944070f131cc8ff73dacee22b9d029cc3bba5dd0029424f",
+    "hyphae/tests/region_threshold_truth_table.rs": "5d773e382bcdf1d3ec9cd17332f821b34693fdb13022337c35fc3eb354c20fd9",
+    "hyphae/benches/region_threshold_calibration.rs": "30606c32d85fb278e7b5969b97f1207c65c30747c40ff9ac315394cd3c867c78",
+    "hyphae/benches/support/four_join_application_workload.rs": "fedfb2f8298862ab2be8d44313c0957618ff4cbf8b1ca0d09a50bc8201cd2086",
+    "hyphae/src/region_calibration.rs": "b0a967bfd49f6f2232f8c27b5f3e6894fa10aa7675a2457203b669aee7a4600b",
+    "hyphae/src/traits/collections/internal/join_region.rs": "82e973ace1c5d2d6027f43e43b8184f98f9b95799f853642162050fe7550f99e"
+  }
+}

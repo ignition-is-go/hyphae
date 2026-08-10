@@ -1,0 +1,63 @@
+    Finished `bench` profile [optimized] target(s) in 0.05s
+     Running benches/region_threshold_calibration.rs (target/release/deps/region_threshold_calibration-fcc1e54becfd1351)
+Gnuplot not found, using plotters backend
+Benchmarking region_threshold_calibration/inactive/989
+Benchmarking region_threshold_calibration/inactive/989: Warming up for 2.0000 s
+
+Warning: Unable to complete 50 samples in 5.0s. You may wish to increase target time to 5.5s, enable flat sampling, or reduce sample count to 30.
+Benchmarking region_threshold_calibration/inactive/989: Collecting 50 samples in estimated 5.5110 s (1275 iterations)
+Benchmarking region_threshold_calibration/inactive/989: Analyzing
+Benchmarking region_threshold_calibration/inactive/990
+Benchmarking region_threshold_calibration/inactive/990: Warming up for 2.0000 s
+
+Warning: Unable to complete 50 samples in 5.0s. You may wish to increase target time to 5.6s, enable flat sampling, or reduce sample count to 30.
+Benchmarking region_threshold_calibration/inactive/990: Collecting 50 samples in estimated 5.5590 s (1275 iterations)
+Benchmarking region_threshold_calibration/inactive/990: Analyzing
+Benchmarking region_threshold_calibration/inactive/991
+Benchmarking region_threshold_calibration/inactive/991: Warming up for 2.0000 s
+
+Warning: Unable to complete 50 samples in 5.0s. You may wish to increase target time to 6.1s, enable flat sampling, or reduce sample count to 30.
+Benchmarking region_threshold_calibration/inactive/991: Collecting 50 samples in estimated 6.0763 s (1275 iterations)
+Benchmarking region_threshold_calibration/inactive/991: Analyzing
+Benchmarking region_threshold_calibration/inactive/1649
+Benchmarking region_threshold_calibration/inactive/1649: Warming up for 2.0000 s
+
+Warning: Unable to complete 50 samples in 5.0s. You may wish to increase target time to 6.8s, enable flat sampling, or reduce sample count to 30.
+Benchmarking region_threshold_calibration/inactive/1649: Collecting 50 samples in estimated 6.7652 s (1275 iterations)
+Benchmarking region_threshold_calibration/inactive/1649: Analyzing
+Benchmarking region_threshold_calibration/inactive/1650
+Benchmarking region_threshold_calibration/inactive/1650: Warming up for 2.0000 s
+
+Warning: Unable to complete 50 samples in 5.0s. You may wish to increase target time to 6.2s, enable flat sampling, or reduce sample count to 30.
+Benchmarking region_threshold_calibration/inactive/1650: Collecting 50 samples in estimated 6.2221 s (1275 iterations)
+Benchmarking region_threshold_calibration/inactive/1650: Analyzing
+Benchmarking region_threshold_calibration/inactive/1651
+Benchmarking region_threshold_calibration/inactive/1651: Warming up for 2.0000 s
+
+Warning: Unable to complete 50 samples in 5.0s. You may wish to increase target time to 5.1s, enable flat sampling, or reduce sample count to 30.
+Benchmarking region_threshold_calibration/inactive/1651: Collecting 50 samples in estimated 5.1353 s (1275 iterations)
+Benchmarking region_threshold_calibration/inactive/1651: Analyzing
+Benchmarking region_threshold_calibration/active/989
+Benchmarking region_threshold_calibration/active/989: Warming up for 2.0000 s
+Benchmarking region_threshold_calibration/active/989: Collecting 50 samples in estimated 6.7788 s (2550 iterations)
+Benchmarking region_threshold_calibration/active/989: Analyzing
+Benchmarking region_threshold_calibration/active/990
+Benchmarking region_threshold_calibration/active/990: Warming up for 2.0000 s
+Benchmarking region_threshold_calibration/active/990: Collecting 50 samples in estimated 5.8136 s (2550 iterations)
+Benchmarking region_threshold_calibration/active/990: Analyzing
+Benchmarking region_threshold_calibration/active/991
+Benchmarking region_threshold_calibration/active/991: Warming up for 2.0000 s
+Benchmarking region_threshold_calibration/active/991: Collecting 50 samples in estimated 5.5795 s (2550 iterations)
+Benchmarking region_threshold_calibration/active/991: Analyzing
+Benchmarking region_threshold_calibration/active/1649
+Benchmarking region_threshold_calibration/active/1649: Warming up for 2.0000 s
+Benchmarking region_threshold_calibration/active/1649: Collecting 50 samples in estimated 6.8374 s (2550 iterations)
+Benchmarking region_threshold_calibration/active/1649: Analyzing
+Benchmarking region_threshold_calibration/active/1650
+Benchmarking region_threshold_calibration/active/1650: Warming up for 2.0000 s
+Benchmarking region_threshold_calibration/active/1650: Collecting 50 samples in estimated 6.8202 s (2550 iterations)
+Benchmarking region_threshold_calibration/active/1650: Analyzing
+Benchmarking region_threshold_calibration/active/1651
+Benchmarking region_threshold_calibration/active/1651: Warming up for 2.0000 s
+Benchmarking region_threshold_calibration/active/1651: Collecting 50 samples in estimated 6.6718 s (2550 iterations)
+Benchmarking region_threshold_calibration/active/1651: Analyzing

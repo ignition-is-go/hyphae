@@ -1,0 +1,30 @@
+CPU model: AMD Ryzen 9 7900X3D 12-Core Processor
+Platform: Linux-7.1.3-arch2-2-x86_64-with-glibc2.43
+Base HEAD: f6e2b57b3dbc14648705b75bdd775c9726114432
+Capture diff SHA-256: 6a08316ee483267ffbac8068f6e339ebeed29e10315d58f2ade6de7d71e1e87b
+Final diff SHA-256: a885c4b7e4f3c8f7c47f561692886d51608be19a33d769ca4bc1d38a0ff64699
+Benchmark env: HYPHAE_WORKER_THREADS=1,2,4; two fresh-process repeats each
+Criterion: 2 s requested warmup; 5 s requested measurement; 50 samples (33/60 cases extended collection; every sample.json has 50 points)
+
+Final git status --porcelain=v1 (includes untouched pre-existing artifacts):
+ M hyphae/Cargo.toml
+ M hyphae/benches/support/four_join_application_workload.rs
+ M hyphae/src/lib.rs
+ M hyphae/src/traits/collections/internal/join_region.rs
+?? benchmark-results/lv-7ff9-f6e2b57/
+?? benchmark-results/map-query-allocations/20260810T165500Z-baseline/
+?? benchmark-results/optional-fk-baseline-repeated-typed.txt
+?? benchmark-results/optional-fk-baseline-two-join.txt
+?? benchmark-results/optional-fk-candidate-repeated-typed.txt
+?? benchmark-results/optional-fk-candidate-two-join.txt
+?? benchmark-results/optional-fk-clean-clippy.txt
+?? benchmark-results/optional-fk-clean-full-tests.txt
+?? benchmark-results/optional-fk-clippy.txt
+?? benchmark-results/optional-fk-full-tests.txt
+?? benchmark-results/optional-fk-gate-baseline-repeated-typed.txt
+?? benchmark-results/optional-fk-gate-baseline-two-join.txt
+?? benchmark-results/optional-fk-gate-candidate-repeated-typed.txt
+?? benchmark-results/optional-fk-gate-candidate-two-join.txt
+?? hyphae/benches/region_threshold_calibration.rs
+?? hyphae/src/region_calibration.rs
+?? hyphae/tests/region_threshold_truth_table.rs

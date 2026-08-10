@@ -21,6 +21,9 @@ async = ["flume", "futures-core"]
 # boundary, plus the `clock`/`TickSource` seam for frame-locked ticking. Off by
 # default: the synchronous eager-push path is unchanged when this is disabled.
 scheduler = []
+# Opt-in calibration-only branch counters for join-region benchmarks. Every
+# counter call is cfg-elided unless explicitly enabled.
+region-calibration = []
 # The one observability feature: `#[inline(never)]` propagation boundaries so
 # sampling profilers stop folding `notify`/`write_value`/`fanout` into one
 # symbol, per-fanout `tracing` spans tagged with cell id/name, and the
@@ -112,3 +115,12 @@ required-features = ["scheduler"]
 name = "scheduler_contention"
 harness = false
 required-features = ["scheduler"]
+
+[[bench]]
+name = "region_threshold_calibration"
+harness = false
+required-features = ["scheduler", "region-calibration"]
+
+[[test]]
+name = "region_threshold_truth_table"
+required-features = ["scheduler", "region-calibration"]

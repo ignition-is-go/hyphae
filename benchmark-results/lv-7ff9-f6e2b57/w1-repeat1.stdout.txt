@@ -1,0 +1,29 @@
+region_threshold_calibration/inactive/989
+                        time:   [1.0474 ms 1.0779 ms 1.1158 ms]
+Found 6 outliers among 50 measurements (12.00%)
+  1 (2.00%) high mild
+  5 (10.00%) high severe
+region_threshold_calibration/inactive/990
+                        time:   [1.0496 ms 1.0591 ms 1.0711 ms]
+Found 7 outliers among 50 measurements (14.00%)
+  3 (6.00%) high mild
+  4 (8.00%) high severe
+region_threshold_calibration/inactive/991
+                        time:   [1.0362 ms 1.0446 ms 1.0533 ms]
+Found 1 outliers among 50 measurements (2.00%)
+  1 (2.00%) high severe
+region_threshold_calibration/inactive/1649
+                        time:   [1.6925 ms 1.7114 ms 1.7341 ms]
+Found 4 outliers among 50 measurements (8.00%)
+  3 (6.00%) high mild
+  1 (2.00%) high severe
+region_threshold_calibration/inactive/1650
+                        time:   [1.7830 ms 1.8176 ms 1.8585 ms]
+Found 5 outliers among 50 measurements (10.00%)
+  3 (6.00%) high mild
+  2 (4.00%) high severe
+region_threshold_calibration/inactive/1651
+                        time:   [1.7693 ms 1.7989 ms 1.8292 ms]
+Found 2 outliers among 50 measurements (4.00%)
+  1 (2.00%) high mild
+  1 (2.00%) high severe

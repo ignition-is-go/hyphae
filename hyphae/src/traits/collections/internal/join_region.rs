@@ -1540,6 +1540,8 @@ where
 
     fn apply_left(&mut self, diff: &MapDiff<K, Input>) -> Vec<MapDiff<K, Runtime::Output>> {
         if self.shards.is_none() && self.shard_count <= 1 && !self.test_config {
+            #[cfg(feature = "region-calibration")]
+            crate::region_calibration::left_serial_dispatch();
             if matches!(diff, MapDiff::Initial { .. }) {
                 let order = self.merge_order(diff);
                 let mut output = self
@@ -1562,6 +1564,8 @@ where
         let promotion_warranted =
             diff_work(diff) >= self.promotion_work || estimated_work >= PARALLEL_REGION_WORK_ENTER;
         if self.shards.is_none() && (self.shard_count <= 1 || !promotion_warranted) {
+            #[cfg(feature = "region-calibration")]
+            crate::region_calibration::left_serial_dispatch();
             if matches!(diff, MapDiff::Initial { .. }) {
                 let order = self.merge_order(diff);
                 let mut output = self
@@ -1617,7 +1621,15 @@ where
             hysteresis_wants_parallel && balanced && crate::executor::worker_pool().is_some();
         #[cfg(not(all(feature = "scheduler", not(target_arch = "wasm32"))))]
         let resources_available = false;
+        #[cfg(feature = "region-calibration")]
+        let was_parallel = self.parallel_active;
         self.parallel_active = hysteresis_wants_parallel && balanced && resources_available;
+        #[cfg(feature = "region-calibration")]
+        match (was_parallel, self.parallel_active) {
+            (false, true) => crate::region_calibration::inactive_to_parallel(),
+            (true, false) => crate::region_calibration::parallel_to_inactive(),
+            _ => {}
+        }
         let run_parallel = self.parallel_active;
 
         let process = |(shard_id, (shard, changes)): (
@@ -1658,6 +1670,8 @@ where
         #[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
         let per_shard = if run_parallel {
             if let Some(pool) = crate::executor::worker_pool() {
+                #[cfg(feature = "region-calibration")]
+                crate::region_calibration::left_parallel_dispatch();
                 use rayon::prelude::*;
                 pool.install(|| {
                     shards
@@ -1668,6 +1682,8 @@ where
                         .collect::<Vec<_>>()
                 })
             } else {
+                #[cfg(feature = "region-calibration")]
+                crate::region_calibration::left_serial_dispatch();
                 shards
                     .iter_mut()
                     .zip(routed)
@@ -1676,6 +1692,8 @@ where
                     .collect()
             }
         } else {
+            #[cfg(feature = "region-calibration")]
+            crate::region_calibration::left_serial_dispatch();
             shards
                 .iter_mut()
                 .zip(routed)
@@ -1686,6 +1704,8 @@ where
         #[cfg(not(all(feature = "scheduler", not(target_arch = "wasm32"))))]
         let per_shard: Vec<_> = {
             let _ = run_parallel;
+            #[cfg(feature = "region-calibration")]
+            crate::region_calibration::left_serial_dispatch();
             shards
                 .iter_mut()
                 .zip(routed)

@@ -1,0 +1,4 @@
+compiled_query/repeated_typed_relation_four_join/repeated_right_single
+                        time:   [4.6379 µs 4.6531 µs 4.6683 µs]
+                        change: [+4.3141% +4.8508% +5.3936%] (p = 0.00 < 0.05)
+                        Performance has regressed.
