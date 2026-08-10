@@ -22,8 +22,8 @@ pub use left_join::{
 pub use left_semi_join::LeftSemiJoinExt;
 pub use map_values::{FilterMapValuesPlan, MapValuesExt, MapValuesPlan};
 pub use multi_left_join::MultiLeftJoinExt;
-pub use project::{MapEntriesExt, ProjectMapExt};
+pub use project::MapEntriesExt;
 pub use project_cell::ProjectCellExt;
-pub use project_many::{FlatMapEntriesExt, ProjectManyExt};
+pub use project_many::FlatMapEntriesExt;
 pub use select::SelectExt;
 pub use select_cell::SelectCellExt;

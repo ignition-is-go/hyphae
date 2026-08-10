@@ -23,7 +23,7 @@ use std::sync::Arc;
 use criterion::{BatchSize, BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use hyphae::{
     Cell, CellImmutable, CellMap, JoinExt, MapExt, MapQuery, Materialize, TapExt,
-    traits::{LeftJoinExt, ProjectMapExt, SelectExt},
+    traits::{LeftJoinExt, MapEntriesExt, SelectExt},
 };
 use seq_macro::seq;
 
@@ -110,7 +110,7 @@ macro_rules! join_dimension {
                 |_id, record| record.bucket,
                 |_id, dimension| dimension.bucket,
             )
-            .project(|id, (record, matches)| {
+            .filter_map_entries(|id, (record, matches)| {
                 let checksum = matches.iter().fold(record.checksum, |acc, dimension| {
                     acc.rotate_left(5) ^ dimension.payload.wrapping_add($salt)
                 });
@@ -123,7 +123,7 @@ macro_rules! join_dimension {
                     }),
                 ))
             })
-            .project(|id, record| {
+            .filter_map_entries(|id, record| {
                 Some((
                     *id,
                     Arc::new(Record {
@@ -133,7 +133,7 @@ macro_rules! join_dimension {
                     }),
                 ))
             })
-            .project(|id, record| {
+            .filter_map_entries(|id, record| {
                 Some((
                     *id,
                     Arc::new(Record {
@@ -143,7 +143,7 @@ macro_rules! join_dimension {
                     }),
                 ))
             })
-            .project(|id, record| {
+            .filter_map_entries(|id, record| {
                 Some((
                     *id,
                     Arc::new(Record {
@@ -161,7 +161,7 @@ fn initial_plan(sources: &Sources) -> impl MapQuery<Key = u64, Value = Arc<Recor
         .root
         .clone()
         .select(|record| record.bucket % 2 == 0 || record.generation % 2 == 1)
-        .project(|id, record| {
+        .filter_map_entries(|id, record| {
             Some((
                 *id,
                 Arc::new(Record {

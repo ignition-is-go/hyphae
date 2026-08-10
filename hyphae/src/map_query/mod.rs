@@ -8,7 +8,7 @@
 //! subscribable cell map.
 //!
 //! This design makes the memoization boundary explicit. Chaining map operators
-//! (`inner_join`, `left_join`, `project`, ...) builds a plan without allocating
+//! (`inner_join`, `left_join`, `map_values`, ...) builds a plan without allocating
 //! an intermediate [`CellMap`] per stage. The final map cache, diff cell, and
 //! per-key cells are allocated only when the caller explicitly asks for them
 //! with `.materialize()`.

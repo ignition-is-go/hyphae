@@ -1,8 +1,4 @@
-//! Project plan node implementing [`MapQuery`].
-//!
-//! `project` builds an uncompiled plan node that composes with other
-//! [`MapQuery`] operators. Call [`MapQuery::materialize`] to compile a plan
-//! into a subscribable [`CellMap`](crate::CellMap).
+//! Rekeying projection plan nodes implementing [`MapQuery`].
 
 use std::{hash::Hash, marker::PhantomData};
 
@@ -12,7 +8,7 @@ use crate::{
     traits::{CellValue, collections::internal::map_runtime::install_map_runtime_via_query},
 };
 
-/// Plan node for [`ProjectMapExt::project`].
+/// Zero-or-one rekeying projection plan.
 ///
 /// Each source row maps to at most one output row. The closure returns
 /// `Some((output_key, output_value))` to include/update a row, or `None` to
@@ -69,36 +65,6 @@ where
 {
     type Key = OK;
     type Value = OV;
-}
-
-/// Project operator returning a [`MapQuery`] plan node.
-///
-/// `project` consumes `self` and returns an uncompiled plan node; call
-/// [`MapQuery::materialize`] on the result to obtain a subscribable
-/// [`CellMap`](crate::CellMap).
-pub trait ProjectMapExt<K, V>: MapQuery<Key = K, Value = V>
-where
-    K: Hash + Eq + CellValue,
-    V: CellValue,
-{
-    /// Projects each source row to at most one output row.
-    ///
-    /// `f(&source_key, &source_value)` returns:
-    /// - `Some((output_key, output_value))` to include/update a row
-    /// - `None` to remove/exclude that source row from output
-    #[track_caller]
-    fn project<K2, V2, F>(self, f: F) -> impl MapQuery<Key = K2, Value = V2>
-    where
-        K2: Hash + Eq + CellValue,
-        V2: CellValue,
-        F: Fn(&K, &V) -> Option<(K2, V2)> + Send + Sync + 'static,
-    {
-        ProjectPlan {
-            source: self,
-            f,
-            _types: PhantomData,
-        }
-    }
 }
 
 /// One-to-one rekeying projection plan.
@@ -192,14 +158,6 @@ where
 {
 }
 
-impl<K, V, M> ProjectMapExt<K, V> for M
-where
-    K: Hash + Eq + CellValue,
-    V: CellValue,
-    M: MapQuery<Key = K, Value = V>,
-{
-}
-
 #[cfg(test)]
 mod tests {
     use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -212,7 +170,7 @@ mod tests {
         let source = CellMap::<String, i32>::new();
         let projected = source
             .clone()
-            .project(|key, value| {
+            .filter_map_entries(|key, value| {
                 if *value > 0 {
                     Some((format!("p:{key}"), value * 10))
                 } else {

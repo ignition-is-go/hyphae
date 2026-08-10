@@ -13,9 +13,8 @@ pub use cell_value::CellValue;
 pub use collections::{
     CountByExt, DirectJoinProjection, FilterMapValuesPlan, FlatMapEntriesExt, GroupByExt,
     InnerJoinExt, JoinProjection, JoinedValuesPlan, LeftJoinExt, LeftJoinPlan, LeftSemiJoinExt,
-    MapEntriesExt, MapValuesExt, MapValuesPlan, MultiLeftJoinExt, ProjectCellExt, ProjectManyExt,
-    ProjectMapExt, SelectCellExt, SelectExt, TupleJoinProjection, TwoLeftJoinMappedPlan,
-    TwoLeftJoinPlan,
+    MapEntriesExt, MapValuesExt, MapValuesPlan, MultiLeftJoinExt, ProjectCellExt, SelectCellExt,
+    SelectExt, TupleJoinProjection, TwoLeftJoinMappedPlan, TwoLeftJoinPlan,
 };
 pub use dep_node::DepNode;
 pub use foreign_key::{ForeignKeyRelation, IdFor, IdType, JoinKeyFrom};

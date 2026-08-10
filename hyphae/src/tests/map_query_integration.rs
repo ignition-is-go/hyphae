@@ -171,16 +171,16 @@ fn left_semi_join_plan_keeps_left_with_match() {
     assert_eq!(mat.get_value(&"b".to_string()), Some(3));
 }
 
-use crate::traits::ProjectMapExt;
+use crate::traits::MapEntriesExt;
 
 #[test]
-fn project_plan_filters_and_transforms() {
+fn filter_map_entries_plan_filters_and_transforms() {
     let src = CellMap::<String, i32>::new();
     src.insert("a".into(), 5);
 
     let mat = src
         .clone()
-        .project(|k, v| Some((format!("p:{k}"), v * 10)))
+        .filter_map_entries(|k, v| Some((format!("p:{k}"), v * 10)))
         .materialize();
     assert_eq!(mat.get_value(&"p:a".to_string()), Some(50));
 
@@ -188,18 +188,21 @@ fn project_plan_filters_and_transforms() {
     assert_eq!(mat.get_value(&"p:b".to_string()), Some(70));
 }
 
-use crate::traits::ProjectManyExt;
+use crate::traits::FlatMapEntriesExt;
 
 #[test]
-fn project_many_plan_emits_multiple_rows_per_source() {
+fn flat_map_entries_plan_emits_multiple_rows_per_source() {
     let src = CellMap::<String, i32>::new();
     src.insert("x".into(), 2);
 
     let mat = src
-        .project_many(|k, v| vec![(format!("a:{k}"), v * 10), (format!("b:{k}"), v * 100)])
+        .flat_map_entries(|_, v| vec![("a".to_string(), v * 10), ("b".to_string(), v * 100)])
         .materialize();
-    assert_eq!(mat.get_value(&"a:x".to_string()), Some(20));
-    assert_eq!(mat.get_value(&"b:x".to_string()), Some(200));
+    assert_eq!(mat.get_value(&("x".to_string(), "a".to_string())), Some(20));
+    assert_eq!(
+        mat.get_value(&("x".to_string(), "b".to_string())),
+        Some(200)
+    );
 }
 
 use crate::traits::MultiLeftJoinExt;
@@ -373,7 +376,10 @@ fn shared_map_query_subscribes_upstream_once() {
     src.insert("a".into(), 1);
     let initial_subs = DepNode::subscriber_count(&src.diffs().materialize());
 
-    let shared = src.clone().project(|k, v| Some((k.clone(), v * 2))).share();
+    let shared = src
+        .clone()
+        .filter_map_entries(|k, v| Some((k.clone(), v * 2)))
+        .share();
 
     // Cloning the share doesn't subscribe.
     let s1 = shared.clone();
@@ -407,7 +413,10 @@ fn shared_map_query_drops_upstream_when_all_subscribers_drop() {
     src.insert("a".into(), 1);
     let initial_subs = DepNode::subscriber_count(&src.diffs().materialize());
 
-    let shared = src.clone().project(|k, v| Some((k.clone(), v * 2))).share();
+    let shared = src
+        .clone()
+        .filter_map_entries(|k, v| Some((k.clone(), v * 2)))
+        .share();
     let m1 = shared.clone().materialize();
     let m2 = shared.clone().materialize();
 

@@ -119,7 +119,7 @@
 //! ## `CellMap` Quick Start
 //!
 //! ```rust
-//! use hyphae::{CellMap, MapQuery, traits::{InnerJoinExt, ProjectMapExt}};
+//! use hyphae::{CellMap, MapQuery, traits::{InnerJoinExt, MapValuesExt}};
 //!
 //! let users = CellMap::<String, &'static str>::new();
 //! let scores = CellMap::<String, i32>::new();
@@ -131,7 +131,7 @@
 //! let view = users
 //!     .clone()
 //!     .inner_join(scores.clone())
-//!     .project(|user_id, (name, score)| Some((user_id.clone(), format!("{name}:{score}"))))
+//!     .map_values(|_, (name, score)| format!("{name}:{score}"))
 //!     .materialize();
 //!
 //! assert!(view.contains_key(&"u1".to_string()));
@@ -202,10 +202,9 @@ pub use traits::{
     JoinExt, JoinKeyFrom, JoinProjection, JoinedValuesPlan, KeyChange, LastExt, LeftJoinExt,
     LeftJoinPlan, LeftSemiJoinExt, MapEntriesExt, MapErrExt, MapExt, MapOkExt, MapValuesExt,
     MapValuesPlan, MergeExt, MergeMapExt, MultiLeftJoinExt, Mutable, PairwiseExt, ParallelCell,
-    ParallelExt, ProjectCellExt, ProjectManyExt, ProjectMapExt, ReactiveKeys, ReactiveMap,
-    RetryExt, SampleExt, ScanExt, SelectCellExt, SelectExt, SkipExt, SkipWhileExt,
-    StateMachineBuilder, StateTransitionExt, SwitchMapExt, TakeExt, TakeUntilExt, TakeWhileExt,
-    TapExt, ThrottleExt, TimeoutExt, TryMapExt, TupleJoinProjection, TwoLeftJoinMappedPlan,
-    TwoLeftJoinPlan, UnwrapOrExt, Watchable, WatchableResult, WindowExt, WithLatestFromExt, ZipExt,
-    join_vec,
+    ParallelExt, ProjectCellExt, ReactiveKeys, ReactiveMap, RetryExt, SampleExt, ScanExt,
+    SelectCellExt, SelectExt, SkipExt, SkipWhileExt, StateMachineBuilder, StateTransitionExt,
+    SwitchMapExt, TakeExt, TakeUntilExt, TakeWhileExt, TapExt, ThrottleExt, TimeoutExt, TryMapExt,
+    TupleJoinProjection, TwoLeftJoinMappedPlan, TwoLeftJoinPlan, UnwrapOrExt, Watchable,
+    WatchableResult, WindowExt, WithLatestFromExt, ZipExt, join_vec,
 };

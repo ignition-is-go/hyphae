@@ -4,9 +4,9 @@
 //! reactive applications: derived views composed of multiple joins +
 //! projections + `group_by` over event-driven entity tables. Patterns:
 //!
-//! - **`mid_view` (4-hop)**: `instances.left_join_by(&lanes).left_join_by(&keyframes).project()`
-//! - **`assets_view` (5-hop)**: `files.group_by().left_join_by(transfers).project().left_join_by(metadata).project()`
-//! - **`deep_view` (7-hop)**: `targets.left_join_by(actions).project().left_join_by(emitters).project().left_join_by(statuses).project()`
+//! - **`mid_view` (4-hop)**: joins followed by `filter_map_entries`
+//! - **`assets_view` (5-hop)**: grouping, joins, and semantic projections
+//! - **`deep_view` (7-hop)**: three joins separated by semantic projections
 //! - **`fan_out`**: a `mid_view` materialized once, then read by N subscribers
 //! - **`batch_mutation`**: `insert_many` of K rows through a `mid_view`
 //! - **`select_project`**: `select` (filter) followed by `project` (reshape)
@@ -21,7 +21,7 @@ use std::sync::Arc;
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use hyphae::{
     CellMap, MapQuery,
-    traits::{GroupByExt, LeftJoinExt, ProjectMapExt, SelectExt},
+    traits::{GroupByExt, LeftJoinExt, MapEntriesExt, SelectExt},
 };
 
 fn safe_mod(value: usize, modulus: usize) -> usize {
@@ -334,7 +334,7 @@ fn populate_session_sources(
 
 // ── Scenario 1: mid_view (4-hop, ValueTrackEditor-like) ──────────────────────
 //
-//   instances.left_join_by(&lanes).left_join_by(&keyframes).project()
+//   instances.left_join_by(&lanes).left_join_by(&keyframes).filter_map_entries()
 
 fn build_mid_view(
     instances: &CellMap<Arc<str>, Arc<Instance>>,
@@ -353,7 +353,7 @@ fn build_mid_view(
             |_inst_id, (inst, _lanes)| inst.lane_id.clone(),
             |_kf_id, kf| kf.lane_id.clone(),
         )
-        .project(|inst_id, ((inst, lane_matches), kf_list)| {
+        .filter_map_entries(|inst_id, ((inst, lane_matches), kf_list)| {
             let lane = lane_matches.first()?.clone();
             Some((
                 inst_id.clone(),
@@ -400,8 +400,8 @@ fn bench_mid_view(c: &mut Criterion) {
 // ── Scenario 2: assets_view (5-hop, AssetsView-like with group_by) ───────────
 //
 //   files.group_by(asset_path)
-//        .left_join_by(transfers, ...).project(...)
-//        .left_join_by(metadata, ...).project(...)
+//        .left_join_by(transfers, ...).filter_map_entries(...)
+//        .left_join_by(metadata, ...).filter_map_entries(...)
 
 fn build_assets_view(
     files: &CellMap<Arc<str>, Arc<File>>,
@@ -419,7 +419,7 @@ fn build_assets_view(
             |asset_path, _files| asset_path.clone(),
             |_id, t| t.asset_path.clone(),
         )
-        .project(|asset_path, (files, transfers)| {
+        .filter_map_entries(|asset_path, (files, transfers)| {
             Some((asset_path.clone(), (files.clone(), transfers.clone())))
         })
         .left_join_by(
@@ -427,7 +427,7 @@ fn build_assets_view(
             |asset_path, _v| asset_path.clone(),
             |_id, m| m.asset_path.clone(),
         )
-        .project(|asset_path, ((files, transfers), metadata)| {
+        .filter_map_entries(|asset_path, ((files, transfers), metadata)| {
             Some((
                 asset_path.clone(),
                 Arc::new(AssetView {
@@ -472,9 +472,9 @@ fn bench_assets_view(c: &mut Criterion) {
 
 // ── Scenario 3: deep_view (7-hop, SessionTargets-like) ───────────────────────
 //
-//   targets.left_join_by(actions).project()
-//          .left_join_by(emitters).project()
-//          .left_join_by(statuses).project()
+//   targets.left_join_by(actions).filter_map_entries()
+//          .left_join_by(emitters).filter_map_entries()
+//          .left_join_by(statuses).filter_map_entries()
 
 fn build_session_view(
     targets: &CellMap<Arc<str>, Arc<Target>>,
@@ -489,7 +489,7 @@ fn build_session_view(
             |id, _t| id.clone(),
             |_id, a| a.target_id.clone(),
         )
-        .project(|tgt_id, (target, action_list)| {
+        .filter_map_entries(|tgt_id, (target, action_list)| {
             Some((tgt_id.clone(), (target.clone(), action_list.clone())))
         })
         .left_join_by(
@@ -497,7 +497,7 @@ fn build_session_view(
             |id, _v| id.clone(),
             |_id, e| e.target_id.clone(),
         )
-        .project(|tgt_id, ((target, actions), emitter_list)| {
+        .filter_map_entries(|tgt_id, ((target, actions), emitter_list)| {
             Some((
                 tgt_id.clone(),
                 (target.clone(), actions.clone(), emitter_list.clone()),
@@ -508,7 +508,7 @@ fn build_session_view(
             |id, _v| id.clone(),
             |_id, s| s.target_id.clone(),
         )
-        .project(|tgt_id, ((target, actions, emitters), status_list)| {
+        .filter_map_entries(|tgt_id, ((target, actions, emitters), status_list)| {
             Some((
                 tgt_id.clone(),
                 Arc::new(SessionTargetView {
@@ -649,7 +649,7 @@ fn bench_batch_mutation(c: &mut Criterion) {
 
 // ── Scenario 6: select-then-project (filtering + reshape, very common) ───────
 //
-//   targets.select(|t| t.parent_id.is_some()).project(...)
+//   targets.select(|t| t.parent_id.is_some()).filter_map_entries(...)
 
 fn bench_select_project(c: &mut Criterion) {
     let mut group = c.benchmark_group("view/select_project");
@@ -660,7 +660,7 @@ fn bench_select_project(c: &mut Criterion) {
             let _view = targets
                 .clone()
                 .select(|t| t.parent_id.is_some())
-                .project(|id, t| Some((id.clone(), t.name.clone())))
+                .filter_map_entries(|id, t| Some((id.clone(), t.name.clone())))
                 .materialize();
             let mut tick = 0u64;
             b.iter(|| {
