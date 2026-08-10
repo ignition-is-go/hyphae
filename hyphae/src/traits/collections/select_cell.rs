@@ -9,7 +9,10 @@ use std::{hash::Hash, marker::PhantomData, sync::Arc};
 
 use super::ProjectCellExt;
 use crate::{
-    map_query::{MapDiffSink, MapQuery, MapQueryInstall},
+    map_query::{
+        MapDiffSink, MapQuery, MapQueryInstall,
+        properties::{ByMapKey, PlanProperties, ZeroOrOne},
+    },
     pipeline::{Materialize, Pipeline},
     subscription::SubscriptionGuard,
     traits::{CellValue, Gettable, MapExt},
@@ -41,6 +44,26 @@ where
     pub(crate) source: S,
     pub(crate) predicate: Arc<F>,
     pub(crate) _types: PhantomData<fn() -> (K, V, W)>,
+}
+
+#[allow(private_bounds)]
+impl<S, K, V, W, F> PlanProperties for SelectCellPlan<S, K, V, W, F>
+where
+    S: MapQuery<Key = K, Value = V>,
+    K: Hash + Eq + CellValue,
+    V: CellValue,
+    W: Pipeline<bool>
+        + crate::pipeline::PipelineSeed<bool>
+        + Gettable<bool>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    F: Fn(&K, &V) -> W + Send + Sync + 'static,
+{
+    type Cardinality = ZeroOrOne;
+    type InputPartition = S::OutputPartition;
+    type OutputPartition = ByMapKey<K>;
 }
 
 impl<S, K, V, W, F> MapQueryInstall<K, V> for SelectCellPlan<S, K, V, W, F>

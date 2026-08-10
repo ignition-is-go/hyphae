@@ -3,7 +3,10 @@
 use std::{hash::Hash, marker::PhantomData};
 
 use crate::{
-    map_query::{MapDiffSink, MapQuery, MapQueryInstall},
+    map_query::{
+        MapDiffSink, MapQuery, MapQueryInstall,
+        properties::{ExactlyOne, PlanProperties, ZeroOrOne},
+    },
     subscription::SubscriptionGuard,
     traits::{
         CellValue,
@@ -12,6 +15,32 @@ use crate::{
         },
     },
 };
+
+impl<S, K, V, U, F> PlanProperties for MapValuesPlan<S, K, V, U, F>
+where
+    S: MapQuery<Key = K, Value = V> + PlanProperties,
+    K: Hash + Eq + CellValue,
+    V: CellValue,
+    U: CellValue,
+    F: Fn(&K, &V) -> U + Send + Sync + 'static,
+{
+    type Cardinality = ExactlyOne;
+    type InputPartition = S::OutputPartition;
+    type OutputPartition = S::OutputPartition;
+}
+
+impl<S, K, V, U, F> PlanProperties for FilterMapValuesPlan<S, K, V, U, F>
+where
+    S: MapQuery<Key = K, Value = V> + PlanProperties,
+    K: Hash + Eq + CellValue,
+    V: CellValue,
+    U: CellValue,
+    F: Fn(&K, &V) -> Option<U> + Send + Sync + 'static,
+{
+    type Cardinality = ZeroOrOne;
+    type InputPartition = S::OutputPartition;
+    type OutputPartition = S::OutputPartition;
+}
 
 /// Exactly-one, key-preserving value projection.
 pub struct MapValuesPlan<S, K, V, U, F>

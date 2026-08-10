@@ -8,7 +8,10 @@
 use std::{hash::Hash, marker::PhantomData};
 
 use crate::{
-    map_query::{MapDiffSink, MapQuery, MapQueryInstall},
+    map_query::{
+        MapDiffSink, MapQuery, MapQueryInstall,
+        properties::{ByMapKey, Many, PlanProperties, Repartition},
+    },
     subscription::SubscriptionGuard,
     traits::{
         CellValue, ForeignKeyRelation, IdFor,
@@ -35,6 +38,19 @@ where
     pub(crate) right: R,
     #[allow(clippy::type_complexity)]
     pub(crate) _types: PhantomData<fn() -> (K, LV, RV)>,
+}
+
+impl<L, R, K, LV, RV> PlanProperties for InnerJoinByKeyPlan<L, R, K, LV, RV>
+where
+    L: MapQuery<Key = K, Value = LV>,
+    R: MapQuery<Key = K, Value = RV>,
+    K: Hash + Eq + CellValue,
+    LV: CellValue,
+    RV: CellValue,
+{
+    type Cardinality = Many;
+    type InputPartition = L::OutputPartition;
+    type OutputPartition = ByMapKey<K>;
 }
 
 impl<L, R, K, LV, RV> MapQueryInstall<K, (LV, RV)> for InnerJoinByKeyPlan<L, R, K, LV, RV>
@@ -101,6 +117,24 @@ where
     pub(crate) right_key: FR,
     #[allow(clippy::type_complexity)]
     pub(crate) _types: PhantomData<fn() -> (LK, LV, RK, RV, JK)>,
+}
+
+impl<L, R, LK, LV, RK, RV, JK, FL, FR> PlanProperties
+    for InnerJoinByPairPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
+where
+    L: MapQuery<Key = LK, Value = LV>,
+    R: MapQuery<Key = RK, Value = RV>,
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
+    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+{
+    type Cardinality = Many;
+    type InputPartition = L::OutputPartition;
+    type OutputPartition = Repartition<(LK, RK)>;
 }
 
 impl<L, R, LK, LV, RK, RV, JK, FL, FR> MapQueryInstall<(LK, RK), (LV, RV)>

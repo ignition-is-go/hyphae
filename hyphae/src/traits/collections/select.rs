@@ -7,12 +7,27 @@
 use std::{hash::Hash, marker::PhantomData};
 
 use crate::{
-    map_query::{MapDiffSink, MapQuery, MapQueryInstall},
+    map_query::{
+        MapDiffSink, MapQuery, MapQueryInstall,
+        properties::{PlanProperties, ZeroOrOne},
+    },
     subscription::SubscriptionGuard,
     traits::{
         CellValue, collections::internal::stateless_runtime::install_filter_map_values_runtime,
     },
 };
+
+impl<S, K, V, F> PlanProperties for SelectPlan<S, K, V, F>
+where
+    S: MapQuery<Key = K, Value = V> + PlanProperties,
+    K: Hash + Eq + CellValue,
+    V: CellValue,
+    F: Fn(&K, &V) -> bool + Send + Sync + 'static,
+{
+    type Cardinality = ZeroOrOne;
+    type InputPartition = S::OutputPartition;
+    type OutputPartition = S::OutputPartition;
+}
 
 /// Plan node for [`SelectExt::select`].
 ///

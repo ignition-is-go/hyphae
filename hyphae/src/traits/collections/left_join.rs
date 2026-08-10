@@ -8,7 +8,10 @@
 use std::{hash::Hash, marker::PhantomData};
 
 use crate::{
-    map_query::{MapDiffSink, MapQuery, MapQueryInstall},
+    map_query::{
+        MapDiffSink, MapQuery, MapQueryInstall,
+        properties::{ByMapKey, ByRelation, ExactlyOne, PlanProperties, PreservesMapKey},
+    },
     subscription::SubscriptionGuard,
     traits::{
         CellValue, ForeignKeyRelation, IdFor,
@@ -25,6 +28,16 @@ use super::map_values::MapValuesPlan;
 pub struct RelationPlan<P, Rel> {
     plan: P,
     _relation: PhantomData<fn() -> Rel>,
+}
+
+impl<P, Rel> PlanProperties for RelationPlan<P, Rel>
+where
+    P: PlanProperties,
+    Rel: Send + Sync + 'static,
+{
+    type Cardinality = P::Cardinality;
+    type InputPartition = P::InputPartition;
+    type OutputPartition = ByRelation<Rel>;
 }
 
 impl<K, V, P, Rel> MapQueryInstall<K, V> for RelationPlan<P, Rel>
@@ -81,6 +94,24 @@ where
     pub(crate) right_key: FR,
     #[allow(clippy::type_complexity)]
     pub(crate) _types: PhantomData<fn() -> (LK, LV, RK, RV, JK)>,
+}
+
+impl<L, R, LK, LV, RK, RV, JK, FL, FR> PlanProperties
+    for LeftJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
+where
+    L: MapQuery<Key = LK, Value = LV> + PlanProperties,
+    R: MapQuery<Key = RK, Value = RV>,
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
+    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+{
+    type Cardinality = ExactlyOne;
+    type InputPartition = L::OutputPartition;
+    type OutputPartition = ByMapKey<LK>;
 }
 
 /// Internal projection protocol carried by statically recognized join plans.
@@ -151,6 +182,26 @@ where
     join: LeftJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>,
     projection: F,
     _output: PhantomData<fn() -> OV>,
+}
+
+impl<L, R, LK, LV, RK, RV, JK, OV, FL, FR, F> PlanProperties
+    for JoinedValuesPlan<L, R, LK, LV, RK, RV, JK, OV, FL, FR, F>
+where
+    L: MapQuery<Key = LK, Value = LV> + PlanProperties,
+    R: MapQuery<Key = RK, Value = RV>,
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    OV: CellValue,
+    FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
+    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    F: Fn(&LK, &LV, &[(RK, RV)]) -> OV + Send + Sync + 'static,
+{
+    type Cardinality = ExactlyOne;
+    type InputPartition = L::OutputPartition;
+    type OutputPartition = ByMapKey<LK>;
 }
 
 impl<L, R, LK, LV, RK, RV, JK, OV, FL, FR, F> MapQueryInstall<LK, OV>
@@ -366,6 +417,50 @@ pub struct TwoLeftJoinPlan<
     _types: PhantomData<fn() -> (LK, LV, RK1, RV1, JK1, MV, RK2, RV2, JK2)>,
 }
 
+impl<L, R1, R2, LK, LV, RK1, RV1, JK1, MV, RK2, RV2, JK2, FL1, FR1, FM1, FL2, FR2> PlanProperties
+    for TwoLeftJoinPlan<
+        L,
+        R1,
+        R2,
+        LK,
+        LV,
+        RK1,
+        RV1,
+        JK1,
+        MV,
+        RK2,
+        RV2,
+        JK2,
+        FL1,
+        FR1,
+        FM1,
+        FL2,
+        FR2,
+    >
+where
+    L: MapQuery<Key = LK, Value = LV> + PlanProperties,
+    R1: MapQuery<Key = RK1, Value = RV1>,
+    R2: MapQuery<Key = RK2, Value = RV2>,
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK1: Hash + Eq + CellValue,
+    RV1: CellValue,
+    JK1: Hash + Eq + CellValue,
+    MV: CellValue,
+    RK2: Hash + Eq + CellValue,
+    RV2: CellValue,
+    JK2: Hash + Eq + CellValue,
+    FL1: Fn(&LK, &LV) -> JK1 + Send + Sync + 'static,
+    FR1: Fn(&RK1, &RV1) -> JK1 + Send + Sync + 'static,
+    FM1: JoinProjection<LK, LV, RK1, RV1, MV>,
+    FL2: Fn(&LK, &MV) -> JK2 + Send + Sync + 'static,
+    FR2: Fn(&RK2, &RV2) -> JK2 + Send + Sync + 'static,
+{
+    type Cardinality = ExactlyOne;
+    type InputPartition = L::OutputPartition;
+    type OutputPartition = ByMapKey<LK>;
+}
+
 /// Final projection attached to a coordinated two-left-join region.
 pub struct TwoLeftJoinMappedPlan<P, LK, MV, RK2, RV2, OV, F>
 where
@@ -380,6 +475,22 @@ where
     plan: P,
     map_second: F,
     _types: PhantomData<fn() -> (LK, MV, RK2, RV2, OV)>,
+}
+
+impl<P, LK, MV, RK2, RV2, OV, F> PlanProperties
+    for TwoLeftJoinMappedPlan<P, LK, MV, RK2, RV2, OV, F>
+where
+    P: MapQuery<Key = LK, Value = (MV, Vec<RV2>)>,
+    LK: Hash + Eq + CellValue,
+    MV: CellValue,
+    RK2: Hash + Eq + CellValue,
+    RV2: CellValue,
+    OV: CellValue,
+    F: JoinProjection<LK, MV, RK2, RV2, OV>,
+{
+    type Cardinality = ExactlyOne;
+    type InputPartition = P::InputPartition;
+    type OutputPartition = ByMapKey<LK>;
 }
 
 impl<L, R1, R2, LK, LV, RK1, RV1, JK1, MV, RK2, RV2, JK2, FL1, FR1, FM1, FL2, FR2>
@@ -634,10 +745,11 @@ where
     }
 }
 
+#[allow(private_bounds)]
 impl<L, R1, LK, LV, RK1, RV1, JK1, MV, FL1, FR1, FM1>
     MapValuesPlan<LeftJoinPlan<L, R1, LK, LV, RK1, RV1, JK1, FL1, FR1>, LK, (LV, Vec<RV1>), MV, FM1>
 where
-    L: MapQuery<Key = LK, Value = LV>,
+    L: MapQuery<Key = LK, Value = LV> + PreservesMapKey<LK>,
     R1: MapQuery<Key = RK1, Value = RV1>,
     LK: Hash + Eq + CellValue,
     LV: CellValue,
@@ -703,10 +815,11 @@ where
     }
 }
 
+#[allow(private_bounds)]
 impl<L, R1, LK, LV, RK1, RV1, JK1, MV, FL1, FR1, FM1>
     JoinedValuesPlan<L, R1, LK, LV, RK1, RV1, JK1, MV, FL1, FR1, FM1>
 where
-    L: MapQuery<Key = LK, Value = LV>,
+    L: MapQuery<Key = LK, Value = LV> + PreservesMapKey<LK>,
     R1: MapQuery<Key = RK1, Value = RV1>,
     LK: Hash + Eq + CellValue,
     LV: CellValue,

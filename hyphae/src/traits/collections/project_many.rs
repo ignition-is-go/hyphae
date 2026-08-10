@@ -3,10 +3,27 @@
 use std::{hash::Hash, marker::PhantomData};
 
 use crate::{
-    map_query::{MapDiffSink, MapQuery, MapQueryInstall},
+    map_query::{
+        MapDiffSink, MapQuery, MapQueryInstall,
+        properties::{Many, PlanProperties, Repartition},
+    },
     subscription::SubscriptionGuard,
     traits::{CellValue, collections::internal::map_runtime::install_map_runtime_via_query},
 };
+
+impl<S, SK, SV, LK, OV, F> PlanProperties for FlatMapEntriesPlan<S, SK, SV, LK, OV, F>
+where
+    S: MapQuery<Key = SK, Value = SV> + PlanProperties,
+    SK: Hash + Eq + CellValue,
+    SV: CellValue,
+    LK: Hash + Eq + CellValue,
+    OV: CellValue,
+    F: Fn(&SK, &SV) -> Vec<(LK, OV)> + Send + Sync + 'static,
+{
+    type Cardinality = Many;
+    type InputPartition = S::OutputPartition;
+    type OutputPartition = Repartition<(SK, LK)>;
+}
 
 /// One-to-many projection whose `(source key, local key)` output identity is
 /// collision-free across distinct source rows.

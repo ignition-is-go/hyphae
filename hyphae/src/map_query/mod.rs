@@ -22,6 +22,7 @@ use crate::{
     traits::CellValue,
 };
 
+pub(crate) mod properties;
 pub(crate) mod reactive_map_impl;
 pub mod share;
 
@@ -91,7 +92,7 @@ where
 /// [`CellMap`] (which IS `Clone` — the clone is an `Arc` bump referencing
 /// the same multicast cache) and then clone the cell map.
 #[allow(private_bounds)]
-pub trait MapQuery: MapQueryInstall<Self::Key, Self::Value> {
+pub trait MapQuery: MapQueryInstall<Self::Key, Self::Value> + properties::PlanProperties {
     /// Key produced by this query plan.
     type Key: CellValue + Hash + Eq;
     /// Value produced by this query plan.

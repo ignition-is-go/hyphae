@@ -15,6 +15,7 @@
 
 use std::{hash::Hash, marker::PhantomData};
 
+use super::properties::{ByMapKey, ExactlyOne, PlanProperties};
 use super::{MapDiffSink, MapQuery, MapQueryInstall};
 use crate::{
     cell::CellImmutable,
@@ -50,6 +51,17 @@ where
         });
         vec![guard]
     }
+}
+
+impl<M> PlanProperties for M
+where
+    M: ReactiveMap + Clone,
+    M::Key: CellValue + Hash + Eq,
+    M::Value: CellValue,
+{
+    type Cardinality = ExactlyOne;
+    type InputPartition = ByMapKey<M::Key>;
+    type OutputPartition = ByMapKey<M::Key>;
 }
 
 #[allow(private_bounds)]

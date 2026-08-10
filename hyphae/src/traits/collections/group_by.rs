@@ -7,13 +7,29 @@
 use std::{collections::BTreeMap, hash::Hash, marker::PhantomData, sync::Arc};
 
 use crate::{
-    map_query::{MapDiffSink, MapQuery, MapQueryInstall},
+    map_query::{
+        MapDiffSink, MapQuery, MapQueryInstall,
+        properties::{Many, PlanProperties, Repartition},
+    },
     subscription::SubscriptionGuard,
     traits::{
         CellValue,
         collections::internal::diff_runtime::{GroupedOps, install_grouped_runtime_via_query},
     },
 };
+
+impl<S, K, V, GK, F> PlanProperties for GroupByPlan<S, K, V, GK, F>
+where
+    S: MapQuery<Key = K, Value = V>,
+    K: Hash + Eq + Ord + CellValue,
+    V: CellValue,
+    GK: Hash + Eq + CellValue,
+    F: Fn(&K, &V) -> GK + Send + Sync + 'static,
+{
+    type Cardinality = Many;
+    type InputPartition = S::OutputPartition;
+    type OutputPartition = Repartition<GK>;
+}
 
 /// Plan node for [`GroupByExt::group_by`].
 ///

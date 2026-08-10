@@ -33,6 +33,7 @@ use std::{collections::HashMap, hash::Hash, sync::Arc};
 
 use uuid::Uuid;
 
+use super::properties::{ByMapKey, ExactlyOne, PlanProperties};
 use crate::{
     cell_map::MapDiff,
     map_query::{BoxedMapDiffSink, MapDiffSink, MapQuery, MapQueryInstall},
@@ -158,6 +159,16 @@ where
     V: CellValue,
 {
     inner: Arc<SharedMapQueryInner<K, V>>,
+}
+
+impl<K, V> PlanProperties for SharedMapQuery<K, V>
+where
+    K: Hash + Eq + CellValue,
+    V: CellValue,
+{
+    type Cardinality = ExactlyOne;
+    type InputPartition = ByMapKey<K>;
+    type OutputPartition = ByMapKey<K>;
 }
 
 impl<K, V> Clone for SharedMapQuery<K, V>

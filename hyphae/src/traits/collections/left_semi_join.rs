@@ -8,7 +8,10 @@
 use std::{hash::Hash, marker::PhantomData};
 
 use crate::{
-    map_query::{MapDiffSink, MapQuery, MapQueryInstall},
+    map_query::{
+        MapDiffSink, MapQuery, MapQueryInstall,
+        properties::{ByMapKey, PlanProperties, ZeroOrOne},
+    },
     subscription::SubscriptionGuard,
     traits::{
         CellValue, ForeignKeyRelation, IdFor,
@@ -44,6 +47,24 @@ where
     pub(crate) right_key: FR,
     #[allow(clippy::type_complexity)]
     pub(crate) _types: PhantomData<fn() -> (LK, LV, RK, RV, JK)>,
+}
+
+impl<L, R, LK, LV, RK, RV, JK, FL, FR> PlanProperties
+    for LeftSemiJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
+where
+    L: MapQuery<Key = LK, Value = LV>,
+    R: MapQuery<Key = RK, Value = RV>,
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
+    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+{
+    type Cardinality = ZeroOrOne;
+    type InputPartition = L::OutputPartition;
+    type OutputPartition = ByMapKey<LK>;
 }
 
 impl<L, R, LK, LV, RK, RV, JK, FL, FR> MapQueryInstall<LK, LV>

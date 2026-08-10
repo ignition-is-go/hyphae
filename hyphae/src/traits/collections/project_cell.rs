@@ -14,7 +14,10 @@ use std::{
 
 use crate::{
     cell_map::MapDiff,
-    map_query::{MapDiffSink, MapQuery, MapQueryInstall},
+    map_query::{
+        MapDiffSink, MapQuery, MapQueryInstall,
+        properties::{PlanProperties, Repartition, ZeroOrOne},
+    },
     subscription::SubscriptionGuard,
     traits::{
         CellValue, Gettable, Watchable,
@@ -44,6 +47,21 @@ where
     pub(crate) mapper: Arc<F>,
     #[allow(clippy::type_complexity)]
     pub(crate) _types: PhantomData<fn() -> (K, V, K2, V2, W)>,
+}
+
+impl<S, K, V, K2, V2, W, F> PlanProperties for ProjectCellPlan<S, K, V, K2, V2, W, F>
+where
+    S: MapQuery<Key = K, Value = V>,
+    K: Hash + Eq + CellValue,
+    V: CellValue,
+    K2: Hash + Eq + CellValue,
+    V2: CellValue,
+    W: Watchable<Option<(K2, V2)>> + Gettable<Option<(K2, V2)>> + Clone + Send + Sync + 'static,
+    F: Fn(&K, &V) -> W + Send + Sync + 'static,
+{
+    type Cardinality = ZeroOrOne;
+    type InputPartition = S::OutputPartition;
+    type OutputPartition = Repartition<K2>;
 }
 
 impl<S, K, V, K2, V2, W, F> MapQueryInstall<K2, V2> for ProjectCellPlan<S, K, V, K2, V2, W, F>

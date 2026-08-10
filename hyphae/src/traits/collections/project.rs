@@ -3,10 +3,41 @@
 use std::{hash::Hash, marker::PhantomData};
 
 use crate::{
-    map_query::{MapDiffSink, MapQuery, MapQueryInstall},
+    map_query::{
+        MapDiffSink, MapQuery, MapQueryInstall,
+        properties::{ExactlyOne, PlanProperties, Repartition, ZeroOrOne},
+    },
     subscription::SubscriptionGuard,
     traits::{CellValue, collections::internal::map_runtime::install_map_runtime_via_query},
 };
+
+impl<S, SK, SV, OK, OV, F> PlanProperties for ProjectPlan<S, SK, SV, OK, OV, F>
+where
+    S: MapQuery<Key = SK, Value = SV> + PlanProperties,
+    SK: Hash + Eq + CellValue,
+    SV: CellValue,
+    OK: Hash + Eq + CellValue,
+    OV: CellValue,
+    F: Fn(&SK, &SV) -> Option<(OK, OV)> + Send + Sync + 'static,
+{
+    type Cardinality = ZeroOrOne;
+    type InputPartition = S::OutputPartition;
+    type OutputPartition = Repartition<OK>;
+}
+
+impl<S, SK, SV, OK, OV, F> PlanProperties for MapEntriesPlan<S, SK, SV, OK, OV, F>
+where
+    S: MapQuery<Key = SK, Value = SV> + PlanProperties,
+    SK: Hash + Eq + CellValue,
+    SV: CellValue,
+    OK: Hash + Eq + CellValue,
+    OV: CellValue,
+    F: Fn(&SK, &SV) -> (OK, OV) + Send + Sync + 'static,
+{
+    type Cardinality = ExactlyOne;
+    type InputPartition = S::OutputPartition;
+    type OutputPartition = Repartition<OK>;
+}
 
 /// Zero-or-one rekeying projection plan.
 ///
