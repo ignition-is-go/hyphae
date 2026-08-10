@@ -46,6 +46,49 @@ pub trait ForeignKeyRelation: Send + Sync + 'static {
     fn foreign_key(child: &Self::Child) -> Option<Self::ForeignKey>;
 }
 
+/// Extracts a right-side join key while making key absence explicit.
+///
+/// The adapter types below avoid overlapping blanket implementations for
+/// required keys and `Option` keys. Join runtimes monomorphize this call, so
+/// [`RequiredRightKey`] retains the ordinary infallible fast path.
+pub trait RightJoinKey<RK, RV, JK>: Send + Sync + 'static {
+    /// Whether extraction can omit a row. Used to preserve the required-key fast path.
+    const OPTIONAL: bool;
+
+    /// Returns the join key, or `None` when the row has no relationship.
+    fn right_join_key(&self, row_key: &RK, row_value: &RV) -> Option<JK>;
+}
+
+/// Adapter for an infallible right-side key extractor.
+pub struct RequiredRightKey<F>(pub F);
+
+impl<RK, RV, JK, F> RightJoinKey<RK, RV, JK> for RequiredRightKey<F>
+where
+    F: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+{
+    const OPTIONAL: bool = false;
+
+    #[inline]
+    fn right_join_key(&self, row_key: &RK, row_value: &RV) -> Option<JK> {
+        Some((self.0)(row_key, row_value))
+    }
+}
+
+/// Adapter for a right-side key extractor whose relationship may be absent.
+pub struct OptionalRightKey<F>(pub F);
+
+impl<RK, RV, JK, F> RightJoinKey<RK, RV, JK> for OptionalRightKey<F>
+where
+    F: Fn(&RK, &RV) -> Option<JK> + Send + Sync + 'static,
+{
+    const OPTIONAL: bool = true;
+
+    #[inline]
+    fn right_join_key(&self, row_key: &RK, row_value: &RV) -> Option<JK> {
+        (self.0)(row_key, row_value)
+    }
+}
+
 /// Convert a right-side join key into the left-side join key representation.
 pub trait JoinKeyFrom<R> {
     fn join_key_from(value: &R) -> Self;

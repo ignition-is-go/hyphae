@@ -7,7 +7,11 @@ use std::{
 
 use rustc_hash::{FxHashMap, FxHasher};
 
-use crate::{cell_map::MapDiff, subscription::SubscriptionGuard, traits::CellValue};
+use crate::{
+    cell_map::MapDiff,
+    subscription::SubscriptionGuard,
+    traits::{CellValue, RightJoinKey},
+};
 
 use super::ordered_set::OrderedSet;
 
@@ -305,25 +309,29 @@ fn upsert_right<LK, LV, RK, RV, JK, OK, OV, FR>(
     JK: Hash + Eq + CellValue,
     OK: Hash + Eq + CellValue,
     OV: CellValue,
-    FR: Fn(&RK, &RV) -> JK,
+    FR: RightJoinKey<RK, RV, JK>,
 {
-    let join_key = right_join_key(&right_key, &right_value);
+    let join_key = right_join_key.right_join_key(&right_key, &right_value);
     state.right.write(|right| {
-        match right
-            .row_join_keys
-            .insert(right_key.clone(), join_key.clone())
+        let previous_join_key = right.row_join_keys.remove(&right_key);
+        if previous_join_key != join_key
+            && let Some(previous_join_key) = &previous_join_key
         {
-            Some(previous_join_key) if previous_join_key != join_key => {
-                remove_index_member(&mut right.join_to_rows, &previous_join_key, &right_key);
-                changed_join_keys.insert(previous_join_key);
+            remove_index_member(&mut right.join_to_rows, previous_join_key, &right_key);
+            changed_join_keys.insert(previous_join_key.clone());
+        }
+
+        if let Some(join_key) = join_key {
+            if previous_join_key.as_ref() != Some(&join_key) {
                 add_index_member(&mut right.join_to_rows, join_key.clone(), right_key.clone());
             }
-            Some(_) => {}
-            None => add_index_member(&mut right.join_to_rows, join_key.clone(), right_key.clone()),
+            changed_join_keys.insert(join_key.clone());
+            right.row_join_keys.insert(right_key.clone(), join_key);
+            right.rows.insert(right_key, right_value);
+        } else {
+            right.rows.remove(&right_key);
         }
-        right.rows.insert(right_key, right_value);
     });
-    changed_join_keys.insert(join_key);
 }
 
 fn remove_right<LK, LV, RK, RV, JK, OK, OV>(
@@ -362,7 +370,7 @@ fn apply_right_diff<LK, LV, RK, RV, JK, OK, OV, FR>(
     JK: Hash + Eq + CellValue,
     OK: Hash + Eq + CellValue,
     OV: CellValue,
-    FR: Fn(&RK, &RV) -> JK,
+    FR: RightJoinKey<RK, RV, JK>,
 {
     fn apply_one<LK, LV, RK, RV, JK, OK, OV, FR>(
         state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
@@ -377,7 +385,7 @@ fn apply_right_diff<LK, LV, RK, RV, JK, OK, OV, FR>(
         JK: Hash + Eq + CellValue,
         OK: Hash + Eq + CellValue,
         OV: CellValue,
-        FR: Fn(&RK, &RV) -> JK,
+        FR: RightJoinKey<RK, RV, JK>,
     {
         match diff {
             MapDiff::Initial { entries } => {
@@ -447,7 +455,7 @@ fn observe_shared_right_diff<LK, LV, RK, RV, JK, OK, OV, FR>(
     JK: Hash + Eq + CellValue,
     OK: Hash + Eq + CellValue,
     OV: CellValue,
-    FR: Fn(&RK, &RV) -> JK,
+    FR: RightJoinKey<RK, RV, JK>,
 {
     fn collect<RK, RV, JK, FR>(
         diff: &MapDiff<RK, RV>,
@@ -457,27 +465,37 @@ fn observe_shared_right_diff<LK, LV, RK, RV, JK, OK, OV, FR>(
         RK: Hash + Eq + CellValue,
         RV: CellValue,
         JK: Hash + Eq + CellValue,
-        FR: Fn(&RK, &RV) -> JK,
+        FR: RightJoinKey<RK, RV, JK>,
     {
         match diff {
             MapDiff::Initial { entries } => {
                 for (key, value) in entries {
-                    changed_join_keys.insert(right_join_key(key, value));
+                    if let Some(join_key) = right_join_key.right_join_key(key, value) {
+                        changed_join_keys.insert(join_key);
+                    }
                 }
             }
             MapDiff::Insert { key, value } => {
-                changed_join_keys.insert(right_join_key(key, value));
+                if let Some(join_key) = right_join_key.right_join_key(key, value) {
+                    changed_join_keys.insert(join_key);
+                }
             }
             MapDiff::Remove { key, old_value } => {
-                changed_join_keys.insert(right_join_key(key, old_value));
+                if let Some(join_key) = right_join_key.right_join_key(key, old_value) {
+                    changed_join_keys.insert(join_key);
+                }
             }
             MapDiff::Update {
                 key,
                 old_value,
                 new_value,
             } => {
-                changed_join_keys.insert(right_join_key(key, old_value));
-                changed_join_keys.insert(right_join_key(key, new_value));
+                if let Some(join_key) = right_join_key.right_join_key(key, old_value) {
+                    changed_join_keys.insert(join_key);
+                }
+                if let Some(join_key) = right_join_key.right_join_key(key, new_value) {
+                    changed_join_keys.insert(join_key);
+                }
             }
             MapDiff::Batch { changes } => {
                 for change in changes {
@@ -806,7 +824,7 @@ where
     L: crate::map_query::MapQuery<Key = LK, Value = LV>,
     R: crate::map_query::MapQuery<Key = RK, Value = RV>,
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
-    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    FR: RightJoinKey<RK, RV, JK> + Send + Sync + 'static,
     FO: Fn(&LK, &LV, &[(RK, RV)]) -> Vec<(OK, OV)> + Send + Sync + 'static,
     Sink: crate::map_query::MapDiffSink<OK, OV>,
 {
@@ -890,6 +908,7 @@ where
     guards
 }
 
+#[allow(clippy::missing_const_for_fn)]
 fn query_shard_count() -> usize {
     #[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
     if let Some(pool) = crate::executor::worker_pool() {
@@ -1105,13 +1124,14 @@ where
         (routed, event_ordinals)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn route_right<FR>(
         &mut self,
         diff: &MapDiff<RK, RV>,
         right_join_key: &FR,
     ) -> Vec<Vec<MapDiff<RK, RV>>>
     where
-        FR: Fn(&RK, &RV) -> JK,
+        FR: RightJoinKey<RK, RV, JK>,
     {
         let mut routed = (0..self.shards.len())
             .map(|_| Vec::new())
@@ -1129,7 +1149,23 @@ where
                     }
                     self.right_routes.clear();
                     for (key, value) in entries {
-                        let route = shard_for(&right_join_key(&key, &value), self.shards.len());
+                        if let Some(join_key) = right_join_key.right_join_key(&key, &value) {
+                            let route = shard_for(&join_key, self.shards.len());
+                            push_routed(
+                                &mut routed,
+                                route,
+                                MapDiff::Insert {
+                                    key: key.clone(),
+                                    value,
+                                },
+                            );
+                            self.right_routes.insert(key, route);
+                        }
+                    }
+                }
+                MapDiff::Insert { key, value } => {
+                    if let Some(join_key) = right_join_key.right_join_key(&key, &value) {
+                        let route = shard_for(&join_key, self.shards.len());
                         push_routed(
                             &mut routed,
                             route,
@@ -1141,62 +1177,77 @@ where
                         self.right_routes.insert(key, route);
                     }
                 }
-                MapDiff::Insert { key, value } => {
-                    let route = shard_for(&right_join_key(&key, &value), self.shards.len());
-                    push_routed(
-                        &mut routed,
-                        route,
-                        MapDiff::Insert {
-                            key: key.clone(),
-                            value,
-                        },
-                    );
-                    self.right_routes.insert(key, route);
-                }
                 MapDiff::Update {
                     key,
                     old_value,
                     new_value,
                 } => {
-                    let new_route = shard_for(&right_join_key(&key, &new_value), self.shards.len());
-                    let old_route = self.right_routes.get(&key).copied().unwrap_or_else(|| {
-                        shard_for(&right_join_key(&key, &old_value), self.shards.len())
+                    let old_route = self.right_routes.remove(&key).or_else(|| {
+                        right_join_key
+                            .right_join_key(&key, &old_value)
+                            .map(|join_key| shard_for(&join_key, self.shards.len()))
                     });
-                    if old_route == new_route {
-                        push_routed(
-                            &mut routed,
-                            new_route,
-                            MapDiff::Update {
-                                key: key.clone(),
-                                old_value,
-                                new_value,
-                            },
-                        );
-                    } else {
-                        push_routed(
-                            &mut routed,
-                            old_route,
-                            MapDiff::Remove {
-                                key: key.clone(),
-                                old_value,
-                            },
-                        );
-                        push_routed(
-                            &mut routed,
-                            new_route,
-                            MapDiff::Insert {
-                                key: key.clone(),
-                                value: new_value,
-                            },
-                        );
+                    let new_route = right_join_key
+                        .right_join_key(&key, &new_value)
+                        .map(|join_key| shard_for(&join_key, self.shards.len()));
+                    match (old_route, new_route) {
+                        (Some(old_route), Some(new_route)) if old_route == new_route => {
+                            push_routed(
+                                &mut routed,
+                                new_route,
+                                MapDiff::Update {
+                                    key: key.clone(),
+                                    old_value,
+                                    new_value,
+                                },
+                            );
+                            self.right_routes.insert(key, new_route);
+                        }
+                        (Some(old_route), Some(new_route)) => {
+                            push_routed(
+                                &mut routed,
+                                old_route,
+                                MapDiff::Remove {
+                                    key: key.clone(),
+                                    old_value,
+                                },
+                            );
+                            push_routed(
+                                &mut routed,
+                                new_route,
+                                MapDiff::Insert {
+                                    key: key.clone(),
+                                    value: new_value,
+                                },
+                            );
+                            self.right_routes.insert(key, new_route);
+                        }
+                        (Some(old_route), None) => {
+                            push_routed(&mut routed, old_route, MapDiff::Remove { key, old_value });
+                        }
+                        (None, Some(new_route)) => {
+                            push_routed(
+                                &mut routed,
+                                new_route,
+                                MapDiff::Insert {
+                                    key: key.clone(),
+                                    value: new_value,
+                                },
+                            );
+                            self.right_routes.insert(key, new_route);
+                        }
+                        (None, None) => {}
                     }
-                    self.right_routes.insert(key, new_route);
                 }
                 MapDiff::Remove { key, old_value } => {
-                    let route = self.right_routes.remove(&key).unwrap_or_else(|| {
-                        shard_for(&right_join_key(&key, &old_value), self.shards.len())
+                    let route = self.right_routes.remove(&key).or_else(|| {
+                        right_join_key
+                            .right_join_key(&key, &old_value)
+                            .map(|join_key| shard_for(&join_key, self.shards.len()))
                     });
-                    push_routed(&mut routed, route, MapDiff::Remove { key, old_value });
+                    if let Some(route) = route {
+                        push_routed(&mut routed, route, MapDiff::Remove { key, old_value });
+                    }
                 }
                 MapDiff::Batch { .. } => {}
             }
@@ -1275,7 +1326,7 @@ where
     RV: CellValue,
     JK: Hash + Eq + CellValue,
     OV: CellValue,
-    FR: Fn(&RK, &RV) -> JK + Sync,
+    FR: RightJoinKey<RK, RV, JK> + Sync,
     FO: Fn(&LK, &LV, &[(RK, RV)]) -> OV + Sync,
 {
     let process = |(state, diffs): (
@@ -1415,7 +1466,7 @@ where
     L: crate::map_query::MapQuery<Key = LK, Value = LV>,
     R: crate::map_query::MapQuery<Key = RK, Value = RV>,
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
-    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    FR: RightJoinKey<RK, RV, JK> + Send + Sync + 'static,
     FO: Fn(&LK, &LV, &[(RK, RV)]) -> Option<OV> + Send + Sync + 'static,
     Sink: crate::map_query::MapDiffSink<LK, OV>,
 {
@@ -1477,7 +1528,7 @@ where
     L: crate::map_query::MapQuery<Key = LK, Value = LV>,
     R: crate::map_query::MapQuery<Key = RK, Value = RV>,
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
-    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    FR: RightJoinKey<RK, RV, JK> + Send + Sync + 'static,
     FO: Fn(&LK, &LV, &[(RK, RV)]) -> Option<OV> + Send + Sync + 'static,
     Sink: crate::map_query::MapDiffSink<LK, OV>,
     RI: RelationIndexStorage<RK, RV, JK>,
@@ -1627,10 +1678,10 @@ where
     R1: crate::map_query::MapQuery<Key = RK1, Value = RV1>,
     R2: crate::map_query::MapQuery<Key = RK2, Value = RV2>,
     FL1: Fn(&LK, &LV) -> JK1 + Send + Sync + 'static,
-    FR1: Fn(&RK1, &RV1) -> JK1 + Send + Sync + 'static,
+    FR1: RightJoinKey<RK1, RV1, JK1> + Send + Sync + 'static,
     FM1: Fn(&LK, &LV, &[(RK1, RV1)]) -> MV + Send + Sync + 'static,
     FL2: Fn(&LK, &MV) -> JK2 + Send + Sync + 'static,
-    FR2: Fn(&RK2, &RV2) -> JK2 + Send + Sync + 'static,
+    FR2: RightJoinKey<RK2, RV2, JK2> + Send + Sync + 'static,
     FM2: Fn(&LK, &MV, &[(RK2, RV2)]) -> OV + Send + Sync + 'static,
     Sink: crate::map_query::MapDiffSink<LK, OV>,
 {

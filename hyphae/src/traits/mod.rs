@@ -17,7 +17,10 @@ pub use collections::{
     SelectCellExt, SelectExt, TupleJoinProjection, TwoLeftJoinMappedPlan, TwoLeftJoinPlan,
 };
 pub use dep_node::DepNode;
-pub use foreign_key::{ForeignKeyRelation, IdFor, IdType, JoinKeyFrom};
+pub use foreign_key::{
+    ForeignKeyRelation, IdFor, IdType, JoinKeyFrom, OptionalRightKey, RequiredRightKey,
+    RightJoinKey,
+};
 pub use mutable::Mutable;
 // Re-export all operators for convenience
 pub use operators::{

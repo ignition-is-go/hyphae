@@ -14,7 +14,7 @@ use crate::{
     },
     subscription::SubscriptionGuard,
     traits::{
-        CellValue, ForeignKeyRelation, IdFor,
+        CellValue, ForeignKeyRelation, IdFor, OptionalRightKey, RequiredRightKey, RightJoinKey,
         collections::internal::join_runtime::{
             install_keyed_join_runtime_via_query, install_two_keyed_join_runtime_via_query,
         },
@@ -101,7 +101,7 @@ where
     RV: CellValue,
     JK: Hash + Eq + CellValue,
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
-    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    FR: RightJoinKey<RK, RV, JK>,
 {
     pub(crate) left: L,
     pub(crate) right: R,
@@ -122,7 +122,7 @@ where
     RV: CellValue,
     JK: Hash + Eq + CellValue,
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
-    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    FR: RightJoinKey<RK, RV, JK>,
 {
     type Cardinality = ExactlyOne;
     type InputPartition = L::OutputPartition;
@@ -191,7 +191,7 @@ where
     JK: Hash + Eq + CellValue,
     OV: CellValue,
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
-    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    FR: RightJoinKey<RK, RV, JK>,
     F: Fn(&LK, &LV, &[(RK, RV)]) -> OV + Send + Sync + 'static,
 {
     join: LeftJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>,
@@ -211,7 +211,7 @@ where
     JK: Hash + Eq + CellValue,
     OV: CellValue,
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
-    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    FR: RightJoinKey<RK, RV, JK>,
     F: Fn(&LK, &LV, &[(RK, RV)]) -> OV + Send + Sync + 'static,
 {
     type Cardinality = ExactlyOne;
@@ -231,7 +231,7 @@ where
     JK: Hash + Eq + CellValue,
     OV: CellValue,
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
-    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    FR: RightJoinKey<RK, RV, JK>,
     F: Fn(&LK, &LV, &[(RK, RV)]) -> OV + Send + Sync + 'static,
 {
     fn build_into<Sink>(
@@ -267,7 +267,7 @@ where
     JK: Hash + Eq + CellValue,
     OV: CellValue,
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
-    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    FR: RightJoinKey<RK, RV, JK>,
     F: Fn(&LK, &LV, &[(RK, RV)]) -> OV + Send + Sync + 'static,
 {
     type Key = LK;
@@ -285,7 +285,7 @@ where
     RV: CellValue,
     JK: Hash + Eq + CellValue,
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
-    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    FR: RightJoinKey<RK, RV, JK>,
 {
     fn build_into<Sink>(
         self,
@@ -321,7 +321,7 @@ where
     RV: CellValue,
     JK: Hash + Eq + CellValue,
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
-    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    FR: RightJoinKey<RK, RV, JK>,
 {
     type Key = LK;
     type Value = (LV, Vec<RV>);
@@ -337,7 +337,7 @@ where
     RV: CellValue,
     JK: Hash + Eq + CellValue,
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
-    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    FR: RightJoinKey<RK, RV, JK>,
 {
     /// Project a joined row directly from the left value and indexed matches.
     ///
@@ -370,7 +370,7 @@ where
     RV: CellValue,
     JK: Hash + Eq + CellValue,
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
-    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    FR: RightJoinKey<RK, RV, JK>,
     Rel: Send + Sync + 'static,
 {
     /// Project a relationship-typed join without erasing its marker.
@@ -425,10 +425,10 @@ pub struct TwoLeftJoinPlan<
     RV2: CellValue,
     JK2: Hash + Eq + CellValue,
     FL1: Fn(&LK, &LV) -> JK1 + Send + Sync + 'static,
-    FR1: Fn(&RK1, &RV1) -> JK1 + Send + Sync + 'static,
+    FR1: RightJoinKey<RK1, RV1, JK1>,
     FM1: JoinProjection<LK, LV, RK1, RV1, MV>,
     FL2: Fn(&LK, &MV) -> JK2 + Send + Sync + 'static,
-    FR2: Fn(&RK2, &RV2) -> JK2 + Send + Sync + 'static,
+    FR2: RightJoinKey<RK2, RV2, JK2>,
 {
     left: L,
     right1: R1,
@@ -476,10 +476,10 @@ where
     RV2: CellValue,
     JK2: Hash + Eq + CellValue,
     FL1: Fn(&LK, &LV) -> JK1 + Send + Sync + 'static,
-    FR1: Fn(&RK1, &RV1) -> JK1 + Send + Sync + 'static,
+    FR1: RightJoinKey<RK1, RV1, JK1>,
     FM1: JoinProjection<LK, LV, RK1, RV1, MV>,
     FL2: Fn(&LK, &MV) -> JK2 + Send + Sync + 'static,
-    FR2: Fn(&RK2, &RV2) -> JK2 + Send + Sync + 'static,
+    FR2: RightJoinKey<RK2, RV2, JK2>,
 {
     type Cardinality = ExactlyOne;
     type InputPartition = L::OutputPartition;
@@ -553,10 +553,10 @@ where
     RV2: CellValue,
     JK2: Hash + Eq + CellValue,
     FL1: Fn(&LK, &LV) -> JK1 + Send + Sync + 'static,
-    FR1: Fn(&RK1, &RV1) -> JK1 + Send + Sync + 'static,
+    FR1: RightJoinKey<RK1, RV1, JK1>,
     FM1: JoinProjection<LK, LV, RK1, RV1, MV>,
     FL2: Fn(&LK, &MV) -> JK2 + Send + Sync + 'static,
-    FR2: Fn(&RK2, &RV2) -> JK2 + Send + Sync + 'static,
+    FR2: RightJoinKey<RK2, RV2, JK2>,
 {
     fn build_into<Sink>(
         self,
@@ -623,10 +623,10 @@ where
     RV2: CellValue,
     JK2: Hash + Eq + CellValue,
     FL1: Fn(&LK, &LV) -> JK1 + Send + Sync + 'static,
-    FR1: Fn(&RK1, &RV1) -> JK1 + Send + Sync + 'static,
+    FR1: RightJoinKey<RK1, RV1, JK1>,
     FM1: JoinProjection<LK, LV, RK1, RV1, MV>,
     FL2: Fn(&LK, &MV) -> JK2 + Send + Sync + 'static,
-    FR2: Fn(&RK2, &RV2) -> JK2 + Send + Sync + 'static,
+    FR2: RightJoinKey<RK2, RV2, JK2>,
 {
     type Key = LK;
     type Value = (MV, Vec<RV2>);
@@ -676,10 +676,10 @@ where
     JK2: Hash + Eq + CellValue,
     OV: CellValue,
     FL1: Fn(&LK, &LV) -> JK1 + Send + Sync + 'static,
-    FR1: Fn(&RK1, &RV1) -> JK1 + Send + Sync + 'static,
+    FR1: RightJoinKey<RK1, RV1, JK1>,
     FM1: JoinProjection<LK, LV, RK1, RV1, MV>,
     FL2: Fn(&LK, &MV) -> JK2 + Send + Sync + 'static,
-    FR2: Fn(&RK2, &RV2) -> JK2 + Send + Sync + 'static,
+    FR2: RightJoinKey<RK2, RV2, JK2>,
     FM2: JoinProjection<LK, MV, RK2, RV2, OV>,
 {
     fn build_into<Sink>(
@@ -741,10 +741,10 @@ where
     RV2: CellValue,
     JK2: Hash + Eq + CellValue,
     FL1: Fn(&LK, &LV) -> JK1 + Send + Sync + 'static,
-    FR1: Fn(&RK1, &RV1) -> JK1 + Send + Sync + 'static,
+    FR1: RightJoinKey<RK1, RV1, JK1>,
     FM1: JoinProjection<LK, LV, RK1, RV1, MV>,
     FL2: Fn(&LK, &MV) -> JK2 + Send + Sync + 'static,
-    FR2: Fn(&RK2, &RV2) -> JK2 + Send + Sync + 'static,
+    FR2: RightJoinKey<RK2, RV2, JK2>,
 {
     /// Attach the final key-preserving projection without breaking the
     /// coordinated physical region apart.
@@ -793,7 +793,7 @@ where
     JK1: Hash + Eq + CellValue,
     MV: CellValue,
     FL1: Fn(&LK, &LV) -> JK1 + Send + Sync + 'static,
-    FR1: Fn(&RK1, &RV1) -> JK1 + Send + Sync + 'static,
+    FR1: RightJoinKey<RK1, RV1, JK1>,
     FM1: Fn(&LK, &(LV, Vec<RV1>)) -> MV + Send + Sync + 'static,
 {
     /// Extend a recognized join/projection region with a second left join.
@@ -819,7 +819,7 @@ where
         FR1,
         TupleJoinProjection<FM1>,
         FL2,
-        FR2,
+        RequiredRightKey<FR2>,
     >
     where
         R2: MapQuery<Key = RK2, Value = RV2>,
@@ -844,7 +844,7 @@ where
             right_key1,
             map_first: TupleJoinProjection(self.f),
             left_key2: left_key,
-            right_key2: right_key,
+            right_key2: RequiredRightKey(right_key),
             _types: PhantomData,
         }
     }
@@ -863,7 +863,7 @@ where
     JK1: Hash + Eq + CellValue,
     MV: CellValue,
     FL1: Fn(&LK, &LV) -> JK1 + Send + Sync + 'static,
-    FR1: Fn(&RK1, &RV1) -> JK1 + Send + Sync + 'static,
+    FR1: RightJoinKey<RK1, RV1, JK1>,
     FM1: Fn(&LK, &LV, &[(RK1, RV1)]) -> MV + Send + Sync + 'static,
 {
     /// Extend a direct joined projection with a coordinated second left join.
@@ -889,7 +889,7 @@ where
         FR1,
         DirectJoinProjection<FM1>,
         FL2,
-        FR2,
+        RequiredRightKey<FR2>,
     >
     where
         R2: MapQuery<Key = RK2, Value = RV2>,
@@ -914,7 +914,7 @@ where
             right_key1,
             map_first: DirectJoinProjection(self.projection),
             left_key2: left_key,
-            right_key2: right_key,
+            right_key2: RequiredRightKey(right_key),
             _types: PhantomData,
         }
     }
@@ -948,7 +948,7 @@ where
         RV,
         K,
         impl Fn(&K, &V) -> K + Send + Sync + 'static,
-        impl Fn(&K, &RV) -> K + Send + Sync + 'static,
+        RequiredRightKey<impl Fn(&K, &RV) -> K + Send + Sync + 'static>,
     >
     where
         R: MapQuery<Key = K, Value = RV>,
@@ -958,7 +958,7 @@ where
             left: self,
             right,
             left_key: |k: &K, _: &V| k.clone(),
-            right_key: |k: &K, _: &RV| k.clone(),
+            right_key: RequiredRightKey(|k: &K, _: &RV| k.clone()),
             _types: PhantomData,
         }
     }
@@ -981,9 +981,9 @@ where
             V,
             R::Key,
             Rel::Child,
-            Option<K>,
-            impl Fn(&K, &V) -> Option<K> + Send + Sync + 'static,
-            impl Fn(&R::Key, &Rel::Child) -> Option<K> + Send + Sync + 'static,
+            K,
+            impl Fn(&K, &V) -> K + Send + Sync + 'static,
+            OptionalRightKey<impl Fn(&R::Key, &Rel::Child) -> Option<K> + Send + Sync + 'static>,
         >,
         Rel,
     >
@@ -996,10 +996,10 @@ where
             plan: LeftJoinPlan {
                 left: self,
                 right,
-                left_key: |k: &K, _: &V| Some(k.clone()),
-                right_key: |_: &R::Key, rv: &Rel::Child| {
+                left_key: |k: &K, _: &V| k.clone(),
+                right_key: OptionalRightKey(|_: &R::Key, rv: &Rel::Child| {
                     Rel::foreign_key(rv).map(|foreign_key| foreign_key.map_key())
-                },
+                }),
                 _types: PhantomData,
             },
             _relation: PhantomData,
@@ -1017,7 +1017,7 @@ where
         right: R,
         left_key: FL,
         right_key: FR,
-    ) -> LeftJoinPlan<Self, R, K, V, RK, RV, JK, FL, FR>
+    ) -> LeftJoinPlan<Self, R, K, V, RK, RV, JK, FL, RequiredRightKey<FR>>
     where
         R: MapQuery<Key = RK, Value = RV>,
         RK: Hash + Eq + CellValue,
@@ -1030,7 +1030,7 @@ where
             left: self,
             right,
             left_key,
-            right_key,
+            right_key: RequiredRightKey(right_key),
             _types: PhantomData,
         }
     }
@@ -1507,7 +1507,7 @@ mod tests {
         type ForeignKey = UserId;
 
         fn foreign_key(post: &Post) -> Option<UserId> {
-            Some(post.user_id.clone())
+            (!post.user_id.0.is_empty()).then(|| post.user_id.clone())
         }
     }
 
@@ -1532,6 +1532,46 @@ mod tests {
             val,
             Some((user, posts)) if user.name == "Alice" && posts.is_empty()
         ));
+    }
+
+    #[test]
+    fn left_join_fk_ignores_absent_foreign_keys() {
+        let users = CellMap::<String, User>::new();
+        let posts = CellMap::<String, Post>::new();
+        let joined = users
+            .clone()
+            .left_join_fk::<UserPosts, _>(posts.clone())
+            .materialize();
+        users.insert(
+            "u1".to_string(),
+            User {
+                name: "Alice".to_string(),
+            },
+        );
+        posts.insert(
+            "p1".to_string(),
+            Post {
+                user_id: UserId(String::new()),
+                title: "Orphan".to_string(),
+            },
+        );
+        assert!(matches!(joined.get_value(&"u1".to_string()), Some((_, rows)) if rows.is_empty()));
+        posts.insert(
+            "p1".to_string(),
+            Post {
+                user_id: UserId("u1".to_string()),
+                title: "Attached".to_string(),
+            },
+        );
+        assert!(matches!(joined.get_value(&"u1".to_string()), Some((_, rows)) if rows.len() == 1));
+        posts.insert(
+            "p1".to_string(),
+            Post {
+                user_id: UserId(String::new()),
+                title: "Detached".to_string(),
+            },
+        );
+        assert!(matches!(joined.get_value(&"u1".to_string()), Some((_, rows)) if rows.is_empty()));
     }
 
     #[test]
@@ -1708,5 +1748,128 @@ mod tests {
 
         assert_eq!(joined.get_value(&"u1".to_string()), Some((0, 0)));
         assert_eq!(joined.get_value(&"u2".to_string()), Some((1, 1)));
+
+        posts.insert(
+            "p1".to_string(),
+            Post {
+                user_id: UserId(String::new()),
+                title: "Detached".to_string(),
+            },
+        );
+        assert_eq!(joined.get_value(&"u1".to_string()), Some((0, 0)));
+        assert_eq!(joined.get_value(&"u2".to_string()), Some((0, 0)));
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct OptionalPost {
+        user_id: Option<UserId>,
+        sequence: usize,
+    }
+
+    struct OptionalUserPosts;
+
+    impl ForeignKeyRelation for OptionalUserPosts {
+        type Parent = User;
+        type Child = OptionalPost;
+        type ForeignKey = UserId;
+
+        fn foreign_key(post: &OptionalPost) -> Option<UserId> {
+            post.user_id.clone()
+        }
+    }
+
+    #[test]
+    fn repeated_optional_fk_relationship_tracks_some_none_transitions() {
+        let users = CellMap::<String, User>::new();
+        let posts = CellMap::<String, OptionalPost>::new();
+        let joined = users
+            .clone()
+            .left_join_fk::<OptionalUserPosts, _>(posts.clone())
+            .map_joined_values(|_, _, first| first.len())
+            .left_join_fk::<OptionalUserPosts, _>(posts.clone())
+            .map_joined_values(|_, first, second| (*first, second.len()))
+            .materialize();
+        users.insert(
+            "u1".into(),
+            User {
+                name: "Alice".into(),
+            },
+        );
+        posts.insert(
+            "p1".into(),
+            OptionalPost {
+                user_id: None,
+                sequence: 1,
+            },
+        );
+        assert_eq!(joined.get_value(&"u1".to_string()), Some((0, 0)));
+
+        posts.insert(
+            "p1".into(),
+            OptionalPost {
+                user_id: Some(UserId("u1".into())),
+                sequence: 2,
+            },
+        );
+        assert_eq!(joined.get_value(&"u1".to_string()), Some((1, 1)));
+
+        posts.insert(
+            "p1".into(),
+            OptionalPost {
+                user_id: None,
+                sequence: 3,
+            },
+        );
+        assert_eq!(joined.get_value(&"u1".to_string()), Some((0, 0)));
+    }
+
+    #[cfg(feature = "scheduler")]
+    #[test]
+    fn large_sharded_optional_fk_batch_omits_absent_routes() {
+        const ROWS: usize = 66_000;
+        let users = CellMap::<String, User>::new();
+        let posts = CellMap::<usize, OptionalPost>::new();
+        let joined = users
+            .clone()
+            .left_join_fk::<OptionalUserPosts, _>(posts.clone())
+            .map_joined_values(|_, _, first| first.len())
+            .left_join_fk::<OptionalUserPosts, _>(posts.clone())
+            .map_joined_values(|_, first, second| (*first, second.len()))
+            .materialize();
+        users.insert(
+            "u1".into(),
+            User {
+                name: "Alice".into(),
+            },
+        );
+        posts.insert_many(
+            (0..ROWS)
+                .map(|sequence| {
+                    (
+                        sequence,
+                        OptionalPost {
+                            user_id: Some(UserId("u1".into())),
+                            sequence,
+                        },
+                    )
+                })
+                .collect(),
+        );
+        assert_eq!(joined.get_value(&"u1".to_string()), Some((ROWS, ROWS)));
+
+        posts.insert_many(
+            (0..ROWS)
+                .map(|sequence| {
+                    (
+                        sequence,
+                        OptionalPost {
+                            user_id: None,
+                            sequence,
+                        },
+                    )
+                })
+                .collect(),
+        );
+        assert_eq!(joined.get_value(&"u1".to_string()), Some((0, 0)));
     }
 }

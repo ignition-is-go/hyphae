@@ -16,7 +16,7 @@ use crate::{
     },
     subscription::SubscriptionGuard,
     traits::{
-        CellValue, ForeignKeyRelation, IdFor,
+        CellValue, ForeignKeyRelation, IdFor, OptionalRightKey, RequiredRightKey, RightJoinKey,
         collections::internal::join_runtime::install_keyed_join_runtime_via_query,
     },
 };
@@ -41,7 +41,7 @@ where
     RV: CellValue,
     JK: Hash + Eq + CellValue,
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
-    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    FR: RightJoinKey<RK, RV, JK>,
 {
     pub(crate) left: L,
     pub(crate) right: R,
@@ -62,7 +62,7 @@ where
     RV: CellValue,
     JK: Hash + Eq + CellValue,
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
-    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    FR: RightJoinKey<RK, RV, JK>,
 {
     type Cardinality = ZeroOrOne;
     type InputPartition = L::OutputPartition;
@@ -80,7 +80,7 @@ where
     RV: CellValue,
     JK: Hash + Eq + CellValue,
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
-    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    FR: RightJoinKey<RK, RV, JK>,
 {
     fn build_into<Sink>(
         self,
@@ -120,7 +120,7 @@ where
     RV: CellValue,
     JK: Hash + Eq + CellValue,
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
-    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    FR: RightJoinKey<RK, RV, JK>,
 {
     type Key = LK;
     type Value = LV;
@@ -150,7 +150,7 @@ where
             left: self,
             right,
             left_key: |k: &K, _: &V| k.clone(),
-            right_key: |k: &K, _: &RV| k.clone(),
+            right_key: RequiredRightKey(|k: &K, _: &RV| k.clone()),
             _types: PhantomData,
         }
     }
@@ -172,9 +172,9 @@ where
             V,
             R::Key,
             Rel::Child,
-            Option<K>,
-            impl Fn(&K, &V) -> Option<K> + Send + Sync + 'static,
-            impl Fn(&R::Key, &Rel::Child) -> Option<K> + Send + Sync + 'static,
+            K,
+            impl Fn(&K, &V) -> K + Send + Sync + 'static,
+            OptionalRightKey<impl Fn(&R::Key, &Rel::Child) -> Option<K> + Send + Sync + 'static>,
         >,
         Rel,
     >
@@ -186,10 +186,10 @@ where
         RelationPlan::<_, Rel>::new(LeftSemiJoinPlan {
             left: self,
             right,
-            left_key: |k: &K, _: &V| Some(k.clone()),
-            right_key: |_: &R::Key, rv: &Rel::Child| {
+            left_key: |k: &K, _: &V| k.clone(),
+            right_key: OptionalRightKey(|_: &R::Key, rv: &Rel::Child| {
                 Rel::foreign_key(rv).map(|foreign_key| foreign_key.map_key())
-            },
+            }),
             _types: PhantomData,
         })
     }
@@ -217,7 +217,7 @@ where
             left: self,
             right,
             left_key,
-            right_key,
+            right_key: RequiredRightKey(right_key),
             _types: PhantomData,
         }
     }
@@ -358,7 +358,7 @@ mod tests {
         type ForeignKey = UserId;
 
         fn foreign_key(post: &Post) -> Option<UserId> {
-            Some(post.user_id.clone())
+            (!post.user_id.0.is_empty()).then(|| post.user_id.clone())
         }
     }
 
@@ -405,6 +405,46 @@ mod tests {
     }
 
     #[test]
+    fn left_semi_join_fk_ignores_absent_foreign_keys() {
+        let users = CellMap::<String, User>::new();
+        let posts = CellMap::<String, Post>::new();
+        let joined = users
+            .clone()
+            .left_semi_join_fk::<UserPosts, _>(posts.clone())
+            .materialize();
+        users.insert(
+            "u1".to_string(),
+            User {
+                name: "Alice".to_string(),
+            },
+        );
+        posts.insert(
+            "p1".to_string(),
+            Post {
+                user_id: UserId(String::new()),
+                title: "Orphan".to_string(),
+            },
+        );
+        assert_eq!(joined.get_value(&"u1".to_string()), None);
+        posts.insert(
+            "p1".to_string(),
+            Post {
+                user_id: UserId("u1".to_string()),
+                title: "Attached".to_string(),
+            },
+        );
+        assert!(joined.get_value(&"u1".to_string()).is_some());
+        posts.insert(
+            "p1".to_string(),
+            Post {
+                user_id: UserId(String::new()),
+                title: "Detached".to_string(),
+            },
+        );
+        assert_eq!(joined.get_value(&"u1".to_string()), None);
+    }
+
+    #[test]
     fn left_semi_join_fk_reacts_to_post_removal() {
         let users = CellMap::<String, User>::new();
         let posts = CellMap::<String, Post>::new();
@@ -430,5 +470,51 @@ mod tests {
 
         posts.remove(&"p1".to_string());
         assert_eq!(joined.entries().materialize().get().len(), 0);
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct OptionalPost {
+        user_id: Option<UserId>,
+    }
+
+    struct OptionalUserPosts;
+
+    impl ForeignKeyRelation for OptionalUserPosts {
+        type Parent = User;
+        type Child = OptionalPost;
+        type ForeignKey = UserId;
+
+        fn foreign_key(post: &OptionalPost) -> Option<UserId> {
+            post.user_id.clone()
+        }
+    }
+
+    #[test]
+    fn left_semi_join_fk_omits_absent_children_and_tracks_transitions() {
+        let users = CellMap::<String, User>::new();
+        let posts = CellMap::<String, OptionalPost>::new();
+        let joined = users
+            .clone()
+            .left_semi_join_fk::<OptionalUserPosts, _>(posts.clone())
+            .materialize();
+        users.insert(
+            "u1".into(),
+            User {
+                name: "Alice".into(),
+            },
+        );
+        posts.insert("p1".into(), OptionalPost { user_id: None });
+        assert!(joined.get_value(&"u1".to_string()).is_none());
+
+        posts.insert(
+            "p1".into(),
+            OptionalPost {
+                user_id: Some(UserId("u1".into())),
+            },
+        );
+        assert!(joined.get_value(&"u1".to_string()).is_some());
+
+        posts.insert("p1".into(), OptionalPost { user_id: None });
+        assert!(joined.get_value(&"u1".to_string()).is_none());
     }
 }

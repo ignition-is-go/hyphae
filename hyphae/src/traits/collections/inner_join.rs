@@ -16,7 +16,7 @@ use crate::{
     },
     subscription::SubscriptionGuard,
     traits::{
-        CellValue, ForeignKeyRelation, IdFor,
+        CellValue, ForeignKeyRelation, IdFor, OptionalRightKey, RequiredRightKey, RightJoinKey,
         collections::internal::join_runtime::{
             install_join_runtime_via_query, install_keyed_join_runtime_via_query,
         },
@@ -76,7 +76,7 @@ where
             self.left,
             self.right,
             |k: &K, _: &LV| k.clone(),
-            |k: &K, _: &RV| k.clone(),
+            RequiredRightKey(|k: &K, _: &RV| k.clone()),
             |_left_k: &K, left_v: &LV, rights: &[(K, RV)]| {
                 rights
                     .first()
@@ -116,7 +116,7 @@ where
     RV: CellValue,
     JK: Hash + Eq + CellValue,
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
-    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    FR: RightJoinKey<RK, RV, JK>,
 {
     pub(crate) left: L,
     pub(crate) right: R,
@@ -137,7 +137,7 @@ where
     RV: CellValue,
     JK: Hash + Eq + CellValue,
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
-    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    FR: RightJoinKey<RK, RV, JK>,
 {
     type Cardinality = Many;
     type InputPartition = L::OutputPartition;
@@ -155,7 +155,7 @@ where
     RV: CellValue,
     JK: Hash + Eq + CellValue,
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
-    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    FR: RightJoinKey<RK, RV, JK>,
 {
     fn build_into<Sink>(
         self,
@@ -194,7 +194,7 @@ where
     RV: CellValue,
     JK: Hash + Eq + CellValue,
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
-    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    FR: RightJoinKey<RK, RV, JK>,
 {
     type Key = (LK, RK);
     type Value = (LV, RV);
@@ -244,9 +244,9 @@ where
             V,
             R::Key,
             Rel::Child,
-            Option<K>,
-            impl Fn(&K, &V) -> Option<K> + Send + Sync + 'static,
-            impl Fn(&R::Key, &Rel::Child) -> Option<K> + Send + Sync + 'static,
+            K,
+            impl Fn(&K, &V) -> K + Send + Sync + 'static,
+            OptionalRightKey<impl Fn(&R::Key, &Rel::Child) -> Option<K> + Send + Sync + 'static>,
         >,
         Rel,
     >
@@ -258,10 +258,10 @@ where
         RelationPlan::<_, Rel>::new(InnerJoinByPairPlan {
             left: self,
             right,
-            left_key: |k: &K, _: &V| Some(k.clone()),
-            right_key: |_: &R::Key, rv: &Rel::Child| {
+            left_key: |k: &K, _: &V| k.clone(),
+            right_key: OptionalRightKey(|_: &R::Key, rv: &Rel::Child| {
                 Rel::foreign_key(rv).map(|foreign_key| foreign_key.map_key())
-            },
+            }),
             _types: PhantomData,
         })
     }
@@ -289,7 +289,7 @@ where
             left: self,
             right,
             left_key,
-            right_key,
+            right_key: RequiredRightKey(right_key),
             _types: PhantomData,
         }
     }
@@ -463,7 +463,7 @@ mod tests {
         type ForeignKey = UserId;
 
         fn foreign_key(post: &Post) -> Option<UserId> {
-            Some(post.user_id.clone())
+            (!post.user_id.0.is_empty()).then(|| post.user_id.clone())
         }
     }
 
@@ -523,6 +523,74 @@ mod tests {
     }
 
     #[test]
+    fn inner_join_fk_omits_absent_keys_and_handles_key_moves() {
+        let users = CellMap::<String, User>::new();
+        let posts = CellMap::<String, Post>::new();
+        let joined = users
+            .clone()
+            .inner_join_fk::<UserPosts, _>(posts.clone())
+            .materialize();
+        for (key, name) in [("u1", "Alice"), ("u2", "Bob")] {
+            users.insert(
+                key.to_string(),
+                User {
+                    name: name.to_string(),
+                },
+            );
+        }
+
+        let post_key = "p1".to_string();
+        posts.insert(
+            post_key.clone(),
+            Post {
+                user_id: UserId(String::new()),
+                title: "Orphan".to_string(),
+            },
+        );
+        assert!(joined.entries().materialize().get().is_empty());
+
+        posts.insert(
+            post_key.clone(),
+            Post {
+                user_id: UserId("u1".to_string()),
+                title: "Attached".to_string(),
+            },
+        );
+        assert!(
+            joined
+                .get_value(&("u1".to_string(), post_key.clone()))
+                .is_some()
+        );
+
+        posts.insert(
+            post_key.clone(),
+            Post {
+                user_id: UserId("u2".to_string()),
+                title: "Moved".to_string(),
+            },
+        );
+        assert!(
+            joined
+                .get_value(&("u1".to_string(), post_key.clone()))
+                .is_none()
+        );
+        assert!(
+            joined
+                .get_value(&("u2".to_string(), post_key.clone()))
+                .is_some()
+        );
+
+        posts.insert(
+            post_key,
+            Post {
+                user_id: UserId(String::new()),
+                title: "Detached".to_string(),
+            },
+        );
+        assert!(joined.entries().materialize().get().is_empty());
+    }
+
+    #[test]
     fn inner_join_fk_handles_one_to_many() {
         let users = CellMap::<String, User>::new();
         let posts = CellMap::<String, Post>::new();
@@ -579,5 +647,51 @@ mod tests {
         );
 
         assert_eq!(joined.entries().materialize().get().len(), 0);
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct OptionalPost {
+        user_id: Option<UserId>,
+    }
+
+    struct OptionalUserPosts;
+
+    impl ForeignKeyRelation for OptionalUserPosts {
+        type Parent = User;
+        type Child = OptionalPost;
+        type ForeignKey = UserId;
+
+        fn foreign_key(post: &OptionalPost) -> Option<UserId> {
+            post.user_id.clone()
+        }
+    }
+
+    #[test]
+    fn inner_join_fk_omits_absent_children_and_tracks_some_none_transitions() {
+        let users = CellMap::<String, User>::new();
+        let posts = CellMap::<String, OptionalPost>::new();
+        let joined = users
+            .clone()
+            .inner_join_fk::<OptionalUserPosts, _>(posts.clone())
+            .materialize();
+        users.insert(
+            "u1".into(),
+            User {
+                name: "Alice".into(),
+            },
+        );
+        posts.insert("p1".into(), OptionalPost { user_id: None });
+        assert!(joined.entries().materialize().get().is_empty());
+
+        posts.insert(
+            "p1".into(),
+            OptionalPost {
+                user_id: Some(UserId("u1".into())),
+            },
+        );
+        assert!(joined.get_value(&("u1".into(), "p1".into())).is_some());
+
+        posts.insert("p1".into(), OptionalPost { user_id: None });
+        assert!(joined.entries().materialize().get().is_empty());
     }
 }
