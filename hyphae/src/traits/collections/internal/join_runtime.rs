@@ -36,10 +36,10 @@ where
 }
 
 /// Typed physical index for one right-side relationship.
-struct RelationIndex<RK, RV, JK> {
-    rows: FxHashMap<RK, RV>,
-    row_join_keys: FxHashMap<RK, JK>,
-    join_to_rows: FxHashMap<JK, Vec<RK>>,
+pub(super) struct RelationIndex<RK, RV, JK> {
+    pub(super) rows: FxHashMap<RK, RV>,
+    pub(super) row_join_keys: FxHashMap<RK, JK>,
+    pub(super) join_to_rows: FxHashMap<JK, Vec<RK>>,
 }
 
 impl<RK, RV, JK> Default for RelationIndex<RK, RV, JK> {
@@ -52,7 +52,7 @@ impl<RK, RV, JK> Default for RelationIndex<RK, RV, JK> {
     }
 }
 
-trait RelationIndexStorage<RK, RV, JK>: Send + Sync + 'static {
+pub(super) trait RelationIndexStorage<RK, RV, JK>: Send + Sync + 'static {
     type Read<'a>: std::ops::Deref<Target = RelationIndex<RK, RV, JK>>
     where
         Self: 'a;

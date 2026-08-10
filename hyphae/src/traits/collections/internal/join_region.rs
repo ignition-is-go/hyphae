@@ -7,6 +7,7 @@
 //! projection remains statically dispatched.
 
 use std::{
+    any::TypeId,
     collections::hash_map::Entry,
     hash::Hash,
     marker::PhantomData,
@@ -19,14 +20,17 @@ use crate::{
     cell_map::MapDiff,
     map_query::{
         BuildQueryRuntime, MapDiffSink, MapQuery, compile_runtime_into,
-        compiler::CompileContext,
+        compiler::{CompileContext, DeferredPhysical},
         properties::{ByMapKey, Partition, PlanProperties, ZeroOrOne},
     },
     subscription::SubscriptionGuard,
     traits::{CellValue, RequiredRightKey, RightJoinKey},
 };
 
-use super::ordered_set::OrderedSet;
+use super::{
+    join_runtime::{RelationIndex, RelationIndexStorage},
+    ordered_set::OrderedSet,
+};
 
 /// The empty join-stage list.
 #[derive(Debug, Clone, Copy, Default)]
@@ -347,6 +351,114 @@ where
     }
 }
 
+/// Keep a stage's relationship index private to that stage.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OwnedIndex;
+
+/// Share the physical relationship index for raw roots bearing `Rel`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SharedRelationIndex<Rel>(PhantomData<fn() -> Rel>);
+
+impl<Rel> SharedRelationIndex<Rel> {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(PhantomData)
+    }
+}
+
+trait IndexPolicy<RK, RV, JK>: Send + Sync + 'static
+where
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+{
+    type Storage: RelationIndexStorage<RK, RV, JK>;
+    type Binding: Clone + Send + Sync + 'static;
+
+    fn prepare(cx: &CompileContext, shareable: bool) -> (Self::Storage, Option<Self::Binding>);
+    fn maintains(binding: Option<&Self::Binding>) -> bool;
+    fn install<Right, Sink>(
+        right: Right,
+        cx: &mut CompileContext,
+        binding: Option<Self::Binding>,
+        sink: Sink,
+    ) -> Vec<SubscriptionGuard>
+    where
+        Right: MapQuery<Key = RK, Value = RV>,
+        Sink: MapDiffSink<RK, RV>;
+}
+
+impl<RK, RV, JK> IndexPolicy<RK, RV, JK> for OwnedIndex
+where
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+{
+    type Storage = RelationIndex<RK, RV, JK>;
+    type Binding = ();
+
+    fn prepare(_: &CompileContext, _: bool) -> (Self::Storage, Option<Self::Binding>) {
+        (RelationIndex::default(), None)
+    }
+
+    fn maintains(_: Option<&Self::Binding>) -> bool {
+        true
+    }
+
+    fn install<Right, Sink>(
+        right: Right,
+        cx: &mut CompileContext,
+        _: Option<Self::Binding>,
+        sink: Sink,
+    ) -> Vec<SubscriptionGuard>
+    where
+        Right: MapQuery<Key = RK, Value = RV>,
+        Sink: MapDiffSink<RK, RV>,
+    {
+        compile_runtime_into(right, cx, sink)
+    }
+}
+
+impl<RK, RV, JK, Rel> IndexPolicy<RK, RV, JK> for SharedRelationIndex<Rel>
+where
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    Rel: Send + Sync + 'static,
+{
+    type Storage = DeferredPhysical<RelationIndex<RK, RV, JK>>;
+    type Binding = DeferredPhysical<RelationIndex<RK, RV, JK>>;
+
+    fn prepare(cx: &CompileContext, shareable: bool) -> (Self::Storage, Option<Self::Binding>) {
+        let index = cx.prepare_relationship_index();
+        let binding = shareable.then(|| index.clone());
+        (index, binding)
+    }
+
+    fn maintains(binding: Option<&Self::Binding>) -> bool {
+        binding.is_none_or(DeferredPhysical::maintains_index)
+    }
+
+    fn install<Right, Sink>(
+        right: Right,
+        cx: &mut CompileContext,
+        binding: Option<Self::Binding>,
+        sink: Sink,
+    ) -> Vec<SubscriptionGuard>
+    where
+        Right: MapQuery<Key = RK, Value = RV>,
+        Sink: MapDiffSink<RK, RV>,
+    {
+        if let Some(index) = binding {
+            cx.with_root_relation_index(TypeId::of::<Rel>(), index, |cx| {
+                compile_runtime_into(right, cx, sink)
+            })
+        } else {
+            compile_runtime_into(right, cx, sink)
+        }
+    }
+}
+
 /// One statically typed join stage.
 ///
 /// The right plan and key extractors will be consumed by the later compiler
@@ -362,11 +474,13 @@ pub struct JoinStage<
     LeftKey,
     RightKeyFn,
     Project,
+    Policy = OwnedIndex,
 > {
     pub right: Right,
     pub left_key: LeftKey,
     pub right_key: RightKeyFn,
     pub project: Project,
+    pub index_policy: Policy,
     _types: PhantomData<fn() -> (K, Input, RightKey, RightValue, JoinKey, Output)>,
 }
 
@@ -385,12 +499,40 @@ impl<Right, K, Input, RightKey, RightValue, JoinKey, Output, LeftKey, RightKeyFn
             left_key,
             right_key,
             project,
+            index_policy: OwnedIndex,
+            _types: PhantomData,
+        }
+    }
+
+    pub fn with_index_policy<Policy>(
+        self,
+        index_policy: Policy,
+    ) -> JoinStage<
+        Right,
+        K,
+        Input,
+        RightKey,
+        RightValue,
+        JoinKey,
+        Output,
+        LeftKey,
+        RightKeyFn,
+        Project,
+        Policy,
+    > {
+        JoinStage {
+            right: self.right,
+            left_key: self.left_key,
+            right_key: self.right_key,
+            project: self.project,
+            index_policy,
             _types: PhantomData,
         }
     }
 }
 
-impl<Right, K, Input, RightKey, RightValue, JoinKey, Output, LeftKey, RightKeyFn, Project> StageSpec
+impl<Right, K, Input, RightKey, RightValue, JoinKey, Output, LeftKey, RightKeyFn, Project, Policy>
+    StageSpec
     for JoinStage<
         Right,
         K,
@@ -402,6 +544,7 @@ impl<Right, K, Input, RightKey, RightValue, JoinKey, Output, LeftKey, RightKeyFn
         LeftKey,
         RightKeyFn,
         Project,
+        Policy,
     >
 where
     K: Hash + Eq + CellValue,
@@ -414,6 +557,7 @@ where
     LeftKey: Send + Sync + 'static,
     RightKeyFn: Send + Sync + 'static,
     Project: StageProject<K, Input, RightKey, RightValue, Output>,
+    Policy: Send + Sync + 'static,
 {
     type Key = K;
     type Input = Input;
@@ -422,7 +566,7 @@ where
     type OutputPartition = ByMapKey<K>;
 }
 
-impl<Right, K, Input, RightKey, RightValue, JoinKey, Output, LeftKey, RightKeyFn, Project>
+impl<Right, K, Input, RightKey, RightValue, JoinKey, Output, LeftKey, RightKeyFn, Project, Policy>
     PlanProperties
     for JoinStage<
         Right,
@@ -435,6 +579,7 @@ impl<Right, K, Input, RightKey, RightValue, JoinKey, Output, LeftKey, RightKeyFn
         LeftKey,
         RightKeyFn,
         Project,
+        Policy,
     >
 where
     Self: StageSpec,
@@ -449,8 +594,18 @@ where
 /// This is deliberately independent of query installation. Each instantiated
 /// stage owns its typed relationship index; a later region executor can chain
 /// as many differently typed states as its stage list requires.
-pub(super) struct StageRuntimeState<K, I, RK, RV, JK, O, LeftKey, RightKeyFn, Project>
-where
+pub(super) struct StageRuntimeState<
+    K,
+    I,
+    RK,
+    RV,
+    JK,
+    O,
+    LeftKey,
+    RightKeyFn,
+    Project,
+    RI = RelationIndex<RK, RV, JK>,
+> where
     K: Hash + Eq + CellValue,
     I: CellValue,
     RK: Hash + Eq + CellValue,
@@ -461,13 +616,12 @@ where
     left_rows: FxHashMap<K, I>,
     left_join_keys: FxHashMap<K, JK>,
     join_to_left: FxHashMap<JK, Vec<K>>,
-    right_rows: FxHashMap<RK, RV>,
-    right_join_keys: FxHashMap<RK, JK>,
-    join_to_right: FxHashMap<JK, Vec<RK>>,
+    right: RI,
     output_cache: FxHashMap<K, O>,
     left_key: LeftKey,
     right_key: RightKeyFn,
     project: Project,
+    _right_types: PhantomData<fn() -> (RK, RV)>,
 }
 
 fn add_index_member<I, M>(index: &mut FxHashMap<I, Vec<M>>, index_key: I, member: M)
@@ -494,6 +648,54 @@ where
     }
 }
 
+fn upsert_relation<RK, RV, JK, FR>(
+    index: &mut RelationIndex<RK, RV, JK>,
+    right_key: &FR,
+    key: RK,
+    value: RV,
+    changed: &mut OrderedSet<JK>,
+) where
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    FR: RightJoinKey<RK, RV, JK>,
+{
+    let new_join_key = right_key.right_join_key(&key, &value);
+    let old_join_key = index.row_join_keys.remove(&key);
+    if old_join_key != new_join_key
+        && let Some(old) = &old_join_key
+    {
+        remove_index_member(&mut index.join_to_rows, old, &key);
+        changed.insert(old.clone());
+    }
+    if let Some(join_key) = new_join_key {
+        if old_join_key.as_ref() != Some(&join_key) {
+            add_index_member(&mut index.join_to_rows, join_key.clone(), key.clone());
+        }
+        changed.insert(join_key.clone());
+        index.row_join_keys.insert(key.clone(), join_key);
+        index.rows.insert(key, value);
+    } else {
+        index.rows.remove(&key);
+    }
+}
+
+fn remove_relation<RK, RV, JK>(
+    index: &mut RelationIndex<RK, RV, JK>,
+    key: &RK,
+    changed: &mut OrderedSet<JK>,
+) where
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+{
+    if let Some(join_key) = index.row_join_keys.remove(key) {
+        remove_index_member(&mut index.join_to_rows, &join_key, key);
+        changed.insert(join_key);
+    }
+    index.rows.remove(key);
+}
+
 impl<K, I, RK, RV, JK, O, LeftKey, RightKeyFn, Project>
     StageRuntimeState<K, I, RK, RV, JK, O, LeftKey, RightKeyFn, Project>
 where
@@ -508,17 +710,44 @@ where
     Project: StageProject<K, I, RK, RV, O>,
 {
     pub(super) fn new(left_key: LeftKey, right_key: RightKeyFn, project: Project) -> Self {
+        Self::with_index(left_key, right_key, project, RelationIndex::default())
+    }
+
+    pub(super) fn apply_right_diff(&mut self, diff: &MapDiff<RK, RV>) -> Vec<MapDiff<K, O>> {
+        self.apply_right_diff_policy(diff, true)
+    }
+}
+
+impl<K, I, RK, RV, JK, O, LeftKey, RightKeyFn, Project, RI>
+    StageRuntimeState<K, I, RK, RV, JK, O, LeftKey, RightKeyFn, Project, RI>
+where
+    K: Hash + Eq + CellValue,
+    I: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    O: CellValue,
+    LeftKey: Fn(&K, &I) -> JK,
+    RightKeyFn: RightJoinKey<RK, RV, JK>,
+    Project: StageProject<K, I, RK, RV, O>,
+    RI: RelationIndexStorage<RK, RV, JK>,
+{
+    pub(super) fn with_index(
+        left_key: LeftKey,
+        right_key: RightKeyFn,
+        project: Project,
+        right: RI,
+    ) -> Self {
         Self {
             left_rows: FxHashMap::default(),
             left_join_keys: FxHashMap::default(),
             join_to_left: FxHashMap::default(),
-            right_rows: FxHashMap::default(),
-            right_join_keys: FxHashMap::default(),
-            join_to_right: FxHashMap::default(),
+            right,
             output_cache: FxHashMap::default(),
             left_key,
             right_key,
             project,
+            _right_types: PhantomData,
         }
     }
 
@@ -585,71 +814,103 @@ where
     }
 
     /// Apply one right event and return changes for every affected left row.
-    pub(super) fn apply_right_diff(&mut self, diff: &MapDiff<RK, RV>) -> Vec<MapDiff<K, O>> {
+    pub(super) fn apply_right_diff_policy(
+        &mut self,
+        diff: &MapDiff<RK, RV>,
+        maintain: bool,
+    ) -> Vec<MapDiff<K, O>> {
         if let MapDiff::Batch { changes } = diff {
             return changes
                 .iter()
-                .flat_map(|change| self.apply_right_diff(change))
+                .flat_map(|change| self.apply_right_diff_policy(change, maintain))
                 .collect();
         }
-
-        let mut changed_join_keys = OrderedSet::default();
-        let mut pending = vec![diff];
-        while let Some(change) = pending.pop() {
-            match change {
-                MapDiff::Initial { entries } => {
-                    changed_join_keys.extend(self.right_join_keys.values().cloned());
-                    self.right_rows.clear();
-                    self.right_join_keys.clear();
-                    self.join_to_right.clear();
-                    for (key, value) in entries {
-                        self.upsert_right(key.clone(), value.clone(), &mut changed_join_keys);
-                    }
-                }
-                MapDiff::Insert { key, value }
-                | MapDiff::Update {
-                    key,
-                    new_value: value,
-                    ..
-                } => self.upsert_right(key.clone(), value.clone(), &mut changed_join_keys),
-                MapDiff::Remove { key, .. } => {
-                    self.remove_right(key, &mut changed_join_keys);
-                }
-                MapDiff::Batch { changes } => pending.extend(changes.iter().rev()),
-            }
-        }
-
-        let mut impacted = OrderedSet::default();
-        for join_key in changed_join_keys.drain() {
-            if let Some(left_keys) = self.join_to_left.get(&join_key) {
-                impacted.extend(left_keys.iter().cloned());
-            }
-        }
-        self.recompute_impacted(&mut impacted)
+        self.apply_right_batch(std::slice::from_ref(diff), maintain)
     }
 
-    fn apply_right_batch(&mut self, changes: &[MapDiff<RK, RV>]) -> Vec<MapDiff<K, O>> {
+    fn apply_right_batch(
+        &mut self,
+        changes: &[MapDiff<RK, RV>],
+        maintain: bool,
+    ) -> Vec<MapDiff<K, O>> {
         let mut changed_join_keys = OrderedSet::default();
-        let mut pending: Vec<_> = changes.iter().rev().collect();
-        while let Some(change) = pending.pop() {
-            match change {
-                MapDiff::Initial { entries } => {
-                    changed_join_keys.extend(self.right_join_keys.values().cloned());
-                    self.right_rows.clear();
-                    self.right_join_keys.clear();
-                    self.join_to_right.clear();
-                    for (key, value) in entries {
-                        self.upsert_right(key.clone(), value.clone(), &mut changed_join_keys);
+        if maintain {
+            let right_key = &self.right_key;
+            self.right.write(|index| {
+                let mut pending: Vec<_> = changes.iter().rev().collect();
+                while let Some(change) = pending.pop() {
+                    match change {
+                        MapDiff::Initial { entries } => {
+                            changed_join_keys.extend(index.row_join_keys.values().cloned());
+                            index.rows.clear();
+                            index.row_join_keys.clear();
+                            index.join_to_rows.clear();
+                            for (key, value) in entries {
+                                upsert_relation(
+                                    index,
+                                    right_key,
+                                    key.clone(),
+                                    value.clone(),
+                                    &mut changed_join_keys,
+                                );
+                            }
+                        }
+                        MapDiff::Insert { key, value }
+                        | MapDiff::Update {
+                            key,
+                            new_value: value,
+                            ..
+                        } => {
+                            upsert_relation(
+                                index,
+                                right_key,
+                                key.clone(),
+                                value.clone(),
+                                &mut changed_join_keys,
+                            );
+                        }
+                        MapDiff::Remove { key, .. } => {
+                            remove_relation(index, key, &mut changed_join_keys);
+                        }
+                        MapDiff::Batch { changes } => pending.extend(changes.iter().rev()),
                     }
                 }
-                MapDiff::Insert { key, value }
-                | MapDiff::Update {
-                    key,
-                    new_value: value,
-                    ..
-                } => self.upsert_right(key.clone(), value.clone(), &mut changed_join_keys),
-                MapDiff::Remove { key, .. } => self.remove_right(key, &mut changed_join_keys),
-                MapDiff::Batch { changes } => pending.extend(changes.iter().rev()),
+            });
+        } else {
+            let mut pending: Vec<_> = changes.iter().rev().collect();
+            while let Some(change) = pending.pop() {
+                match change {
+                    MapDiff::Initial { entries } => {
+                        changed_join_keys.extend(
+                            entries.iter().filter_map(|(key, value)| {
+                                self.right_key.right_join_key(key, value)
+                            }),
+                        );
+                    }
+                    MapDiff::Insert { key, value } => {
+                        if let Some(join_key) = self.right_key.right_join_key(key, value) {
+                            changed_join_keys.insert(join_key);
+                        }
+                    }
+                    MapDiff::Update {
+                        key,
+                        old_value,
+                        new_value,
+                    } => {
+                        if let Some(join_key) = self.right_key.right_join_key(key, old_value) {
+                            changed_join_keys.insert(join_key);
+                        }
+                        if let Some(join_key) = self.right_key.right_join_key(key, new_value) {
+                            changed_join_keys.insert(join_key);
+                        }
+                    }
+                    MapDiff::Remove { key, old_value } => {
+                        if let Some(join_key) = self.right_key.right_join_key(key, old_value) {
+                            changed_join_keys.insert(join_key);
+                        }
+                    }
+                    MapDiff::Batch { changes } => pending.extend(changes.iter().rev()),
+                }
             }
         }
         let mut impacted = OrderedSet::default();
@@ -684,47 +945,19 @@ where
         }
     }
 
-    fn upsert_right(&mut self, key: RK, value: RV, changed_join_keys: &mut OrderedSet<JK>) {
-        let new_join_key = self.right_key.right_join_key(&key, &value);
-        let old_join_key = self.right_join_keys.remove(&key);
-        if old_join_key != new_join_key
-            && let Some(old_join_key) = &old_join_key
-        {
-            remove_index_member(&mut self.join_to_right, old_join_key, &key);
-            changed_join_keys.insert(old_join_key.clone());
-        }
-
-        if let Some(join_key) = new_join_key {
-            if old_join_key.as_ref() != Some(&join_key) {
-                add_index_member(&mut self.join_to_right, join_key.clone(), key.clone());
-            }
-            changed_join_keys.insert(join_key.clone());
-            self.right_join_keys.insert(key.clone(), join_key);
-            self.right_rows.insert(key, value);
-        } else {
-            self.right_rows.remove(&key);
-        }
-    }
-
-    fn remove_right(&mut self, key: &RK, changed_join_keys: &mut OrderedSet<JK>) {
-        if let Some(join_key) = self.right_join_keys.remove(key) {
-            remove_index_member(&mut self.join_to_right, &join_key, key);
-            changed_join_keys.insert(join_key);
-        }
-        self.right_rows.remove(key);
-    }
-
     fn recompute_impacted(&mut self, impacted: &mut OrderedSet<K>) -> Vec<MapDiff<K, O>> {
         let mut changes = Vec::new();
         let mut right_matches = Vec::new();
+        let right = self.right.acquire_read();
         for key in impacted.drain() {
             let desired = self.left_rows.get(&key).and_then(|input| {
                 right_matches.clear();
                 if let Some(join_key) = self.left_join_keys.get(&key)
-                    && let Some(right_keys) = self.join_to_right.get(join_key)
+                    && let Some(right_keys) = right.join_to_rows.get(join_key)
                 {
                     right_matches.extend(right_keys.iter().filter_map(|right_key| {
-                        self.right_rows
+                        right
+                            .rows
                             .get(right_key)
                             .map(|value| (right_key.clone(), value.clone()))
                     }));
@@ -775,11 +1008,12 @@ pub(super) trait ExecutableStage {
     fn apply_right_diff(
         &mut self,
         diff: &MapDiff<Self::RightKey, Self::RightValue>,
+        maintain: bool,
     ) -> Vec<MapDiff<Self::Key, Self::Output>>;
 }
 
-impl<K, I, RK, RV, JK, O, LeftKey, RightKeyFn, Project> ExecutableStage
-    for StageRuntimeState<K, I, RK, RV, JK, O, LeftKey, RightKeyFn, Project>
+impl<K, I, RK, RV, JK, O, LeftKey, RightKeyFn, Project, RI> ExecutableStage
+    for StageRuntimeState<K, I, RK, RV, JK, O, LeftKey, RightKeyFn, Project, RI>
 where
     K: Hash + Eq + CellValue,
     I: CellValue,
@@ -790,6 +1024,7 @@ where
     LeftKey: Fn(&K, &I) -> JK,
     RightKeyFn: RightJoinKey<RK, RV, JK>,
     Project: StageProject<K, I, RK, RV, O>,
+    RI: RelationIndexStorage<RK, RV, JK>,
 {
     type Key = K;
     type Input = I;
@@ -804,11 +1039,8 @@ where
         }
     }
 
-    fn apply_right_diff(&mut self, diff: &MapDiff<RK, RV>) -> Vec<MapDiff<K, O>> {
-        match diff {
-            MapDiff::Batch { changes } => self.apply_right_batch(changes),
-            _ => self.apply_right_diff(diff),
-        }
+    fn apply_right_diff(&mut self, diff: &MapDiff<RK, RV>, maintain: bool) -> Vec<MapDiff<K, O>> {
+        self.apply_right_diff_policy(diff, maintain)
     }
 }
 
@@ -877,7 +1109,15 @@ where
     RK: Hash + Eq + CellValue,
     RV: CellValue,
 {
-    fn apply_right_root_diff(&mut self, diff: &MapDiff<RK, RV>) -> Vec<MapDiff<K, Self::Output>>;
+    fn apply_right_root_diff(&mut self, diff: &MapDiff<RK, RV>) -> Vec<MapDiff<K, Self::Output>> {
+        self.apply_right_root_diff_policy(diff, true)
+    }
+
+    fn apply_right_root_diff_policy(
+        &mut self,
+        diff: &MapDiff<RK, RV>,
+        maintain: bool,
+    ) -> Vec<MapDiff<K, Self::Output>>;
 }
 
 impl<K, Input, RK, RV, Head, Tail> RightRoot<Here, K, Input, RK, RV> for JCons<Head, Tail>
@@ -889,9 +1129,13 @@ where
     Head: ExecutableStage<Key = K, Input = Input, RightKey = RK, RightValue = RV>,
     Tail: RuntimeStages<K, Head::Output>,
 {
-    fn apply_right_root_diff(&mut self, diff: &MapDiff<RK, RV>) -> Vec<MapDiff<K, Self::Output>> {
+    fn apply_right_root_diff_policy(
+        &mut self,
+        diff: &MapDiff<RK, RV>,
+        maintain: bool,
+    ) -> Vec<MapDiff<K, Self::Output>> {
         let preserve_batch = matches!(diff, MapDiff::Batch { .. });
-        let head_changes = self.head.apply_right_diff(diff);
+        let head_changes = self.head.apply_right_diff(diff, maintain);
         let mut output = Vec::new();
         for change in &head_changes {
             output.extend(self.tail.apply_left_diff(change));
@@ -914,8 +1158,12 @@ where
     Head: ExecutableStage<Key = K, Input = Input>,
     Tail: RuntimeStages<K, Head::Output> + RightRoot<Location, K, Head::Output, RK, RV>,
 {
-    fn apply_right_root_diff(&mut self, diff: &MapDiff<RK, RV>) -> Vec<MapDiff<K, Self::Output>> {
-        self.tail.apply_right_root_diff(diff)
+    fn apply_right_root_diff_policy(
+        &mut self,
+        diff: &MapDiff<RK, RV>,
+        maintain: bool,
+    ) -> Vec<MapDiff<K, Self::Output>> {
+        self.tail.apply_right_root_diff_policy(diff, maintain)
     }
 }
 
@@ -1057,13 +1305,14 @@ where
     type Runtime: RuntimeStages<K, Input>;
     type Rights;
 
-    fn split(self) -> (Self::Runtime, Self::Rights);
+    fn split(self, cx: &CompileContext) -> (Self::Runtime, Self::Rights);
 }
 
-struct RightPlan<Right, Tail, Location, RK, RV> {
+struct RightPlan<Right, Tail, Location, RK, RV, JK, Policy, Binding> {
     right: Right,
     tail: Tail,
-    _types: PhantomData<fn() -> (Location, RK, RV)>,
+    binding: Option<Binding>,
+    _types: PhantomData<fn() -> (Location, RK, RV, JK, Policy)>,
 }
 
 impl<K, Input, Location> SplitStages<K, Input, Location> for JNil
@@ -1074,14 +1323,17 @@ where
     type Runtime = Self;
     type Rights = Self;
 
-    fn split(self) -> (Self::Runtime, Self::Rights) {
+    fn split(self, _: &CompileContext) -> (Self::Runtime, Self::Rights) {
         (Self, Self)
     }
 }
 
-impl<Right, Tail, K, Input, RK, RV, JK, Output, LeftKey, RightKeyFn, Project, Location>
+impl<Right, Tail, K, Input, RK, RV, JK, Output, LeftKey, RightKeyFn, Project, Policy, Location>
     SplitStages<K, Input, Location>
-    for JCons<JoinStage<Right, K, Input, RK, RV, JK, Output, LeftKey, RightKeyFn, Project>, Tail>
+    for JCons<
+        JoinStage<Right, K, Input, RK, RV, JK, Output, LeftKey, RightKeyFn, Project, Policy>,
+        Tail,
+    >
 where
     K: Hash + Eq + CellValue,
     Input: CellValue,
@@ -1093,31 +1345,47 @@ where
     RightKeyFn: RightJoinKey<RK, RV, JK>,
     Project: StageProject<K, Input, RK, RV, Output>,
     Right: MapQuery<Key = RK, Value = RV>,
+    Policy: IndexPolicy<RK, RV, JK>,
     Tail: SplitStages<K, Output, There<Location>>,
 {
     type Runtime = JCons<
-        StageRuntimeState<K, Input, RK, RV, JK, Output, LeftKey, RightKeyFn, Project>,
+        StageRuntimeState<
+            K,
+            Input,
+            RK,
+            RV,
+            JK,
+            Output,
+            LeftKey,
+            RightKeyFn,
+            Project,
+            Policy::Storage,
+        >,
         Tail::Runtime,
     >;
-    type Rights = RightPlan<Right, Tail::Rights, Location, RK, RV>;
+    type Rights = RightPlan<Right, Tail::Rights, Location, RK, RV, JK, Policy, Policy::Binding>;
 
-    fn split(self) -> (Self::Runtime, Self::Rights) {
+    fn split(self, cx: &CompileContext) -> (Self::Runtime, Self::Rights) {
         let JoinStage {
             right,
             left_key,
             right_key,
             project,
+            index_policy: _,
             _types: _,
         } = self.head;
-        let (tail_runtime, tail_rights) = self.tail.split();
+        let shareable = right.raw_source_identity().is_some();
+        let (right_index, binding) = Policy::prepare(cx, shareable);
+        let (tail_runtime, tail_rights) = self.tail.split(cx);
         (
             JCons {
-                head: StageRuntimeState::new(left_key, right_key, project),
+                head: StageRuntimeState::with_index(left_key, right_key, project, right_index),
                 tail: tail_runtime,
             },
             RightPlan {
                 right,
                 tail: tail_rights,
+                binding,
                 _types: PhantomData,
             },
         )
@@ -1164,14 +1432,18 @@ where
     }
 }
 
-impl<Runtime, K, Input, Output, Right, Tail, Location, RK, RV>
-    InstallRights<Runtime, K, Input, Output> for RightPlan<Right, Tail, Location, RK, RV>
+impl<Runtime, K, Input, Output, Right, Tail, Location, RK, RV, JK, Policy, Binding>
+    InstallRights<Runtime, K, Input, Output>
+    for RightPlan<Right, Tail, Location, RK, RV, JK, Policy, Binding>
 where
     K: Hash + Eq + CellValue,
     Input: CellValue,
     Output: CellValue,
     RK: Hash + Eq + CellValue,
     RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    Policy: IndexPolicy<RK, RV, JK, Binding = Binding>,
+    Binding: Clone + Send + Sync + 'static,
     Runtime: RuntimeStages<K, Input, Output = Output>
         + RightRoot<Location, K, Input, RK, RV>
         + Send
@@ -1188,20 +1460,22 @@ where
     where
         Sink: MapDiffSink<K, Output>,
     {
+        let callback_binding = self.binding.clone();
         let right_state = Arc::clone(state);
         let right_sink = Arc::clone(sink);
         let callback = move |diff: &MapDiff<RK, RV>| {
+            let maintain = Policy::maintains(callback_binding.as_ref());
             let changes = {
                 let mut runtime = right_state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                runtime.apply_right_root_diff(diff)
+                runtime.apply_right_root_diff_policy(diff, maintain)
             };
             for change in &changes {
                 right_sink(change);
             }
         };
-        let mut guards = compile_runtime_into(self.right, cx, callback);
+        let mut guards = Policy::install(self.right, cx, self.binding, callback);
         guards.extend(self.tail.install(cx, state, sink));
         guards
     }
@@ -1222,7 +1496,7 @@ where
     where
         Sink: MapDiffSink<K, Stages::Output>,
     {
-        let (runtime, rights) = self.stages.split();
+        let (runtime, rights) = self.stages.split(cx);
         let state = Arc::new(Mutex::new(runtime));
         let sink = Arc::new(sink);
 
@@ -1410,7 +1684,7 @@ mod tests {
                 })
                 .is_empty()
         );
-        assert!(!runtime.right_rows.contains_key(&7));
+        assert!(!runtime.right.rows.contains_key(&7));
 
         assert_eq!(
             runtime.apply_right_diff(&MapDiff::Update {
@@ -1989,5 +2263,120 @@ mod tests {
             .push(stage(right()));
         let output = JoinRegion::new(left, stages).materialize();
         assert_eq!(output.get_value(&1), Some(8));
+    }
+
+    struct SharedTestRelation;
+
+    type SharedRight = crate::CellMap<u32, (u32, u32)>;
+    type SharedStage = JoinStage<
+        SharedRight,
+        u32,
+        u32,
+        u32,
+        (u32, u32),
+        u32,
+        u32,
+        fn(&u32, &u32) -> u32,
+        RequiredRightKey<fn(&u32, &(u32, u32)) -> u32>,
+        DirectProject<fn(&u32, &u32, &[(u32, (u32, u32))]) -> u32>,
+        SharedRelationIndex<SharedTestRelation>,
+    >;
+
+    #[allow(
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::trivially_copy_pass_by_ref
+    )]
+    fn shared_stage(right: SharedRight) -> SharedStage {
+        fn left_key(_: &u32, _: &u32) -> u32 {
+            7
+        }
+        fn right_key(_: &u32, value: &(u32, u32)) -> u32 {
+            value.0
+        }
+        fn project(_: &u32, left: &u32, rights: &[(u32, (u32, u32))]) -> u32 {
+            left + rights.iter().map(|(_, value)| value.1).sum::<u32>()
+        }
+        JoinStage::new(
+            right,
+            left_key as fn(&u32, &u32) -> u32,
+            RequiredRightKey(right_key as fn(&u32, &(u32, u32)) -> u32),
+            DirectProject(project as fn(&u32, &u32, &[(u32, (u32, u32))]) -> u32),
+        )
+        .with_index_policy(SharedRelationIndex::new())
+    }
+
+    #[test]
+    fn arbitrary_three_stage_repeated_raw_relation_shares_one_physical_index() {
+        let left = crate::CellMap::<u32, u32>::new();
+        let right = SharedRight::new();
+        left.insert(1, 1);
+        right.insert(1, (7, 10));
+
+        let stages = JNil
+            .push(shared_stage(right.clone()))
+            .push(shared_stage(right.clone()))
+            .push(shared_stage(right.clone()));
+        let mut cx = CompileContext::default();
+        let guards = JoinRegion::new(left.clone(), stages).build_into(&mut cx, |_| {});
+        assert_eq!(cx.physical_relationship_count(), 1);
+        let identity = BuildQueryRuntime::raw_source_identity(&right);
+        assert!(identity.is_some());
+        let Some(identity) = identity else { return };
+        assert_eq!(cx.relationship_use_count::<SharedTestRelation>(identity), 3);
+        drop(guards);
+
+        let stages = JNil
+            .push(shared_stage(right.clone()))
+            .push(shared_stage(right.clone()))
+            .push(shared_stage(right.clone()));
+        let output = JoinRegion::new(left, stages).materialize();
+        assert_eq!(output.get_value(&1), Some(31));
+        right.insert(1, (7, 20));
+        assert_eq!(output.get_value(&1), Some(61));
+        right.insert(2, (7, 5));
+        assert_eq!(output.get_value(&1), Some(76));
+    }
+
+    #[test]
+    #[allow(clippy::arithmetic_side_effects, clippy::as_conversions)]
+    fn transformed_relation_marked_rights_keep_private_indexes() {
+        use crate::traits::MapValuesExt;
+
+        let left = crate::CellMap::<u32, u32>::new();
+        let right = SharedRight::new();
+        let first = right.clone().map_values(|_, value| *value);
+        let second = right.map_values(|_, value| (value.0, value.1 * 2));
+        let first = JoinStage::new(
+            first,
+            (|_: &u32, _: &u32| 7) as fn(&u32, &u32) -> u32,
+            RequiredRightKey(
+                (|_: &u32, value: &(u32, u32)| value.0) as fn(&u32, &(u32, u32)) -> u32,
+            ),
+            DirectProject(
+                (|_: &u32, left: &u32, rights: &[(u32, (u32, u32))]| {
+                    left + rights.iter().map(|(_, v)| v.1).sum::<u32>()
+                }) as fn(&u32, &u32, &[(u32, (u32, u32))]) -> u32,
+            ),
+        )
+        .with_index_policy(SharedRelationIndex::<SharedTestRelation>::new());
+        let second = JoinStage::new(
+            second,
+            (|_: &u32, _: &u32| 7) as fn(&u32, &u32) -> u32,
+            RequiredRightKey(
+                (|_: &u32, value: &(u32, u32)| value.0) as fn(&u32, &(u32, u32)) -> u32,
+            ),
+            DirectProject(
+                (|_: &u32, left: &u32, rights: &[(u32, (u32, u32))]| {
+                    left + rights.iter().map(|(_, v)| v.1).sum::<u32>()
+                }) as fn(&u32, &u32, &[(u32, (u32, u32))]) -> u32,
+            ),
+        )
+        .with_index_policy(SharedRelationIndex::<SharedTestRelation>::new());
+        let mut cx = CompileContext::default();
+        let guards =
+            JoinRegion::new(left, JNil.push(first).push(second)).build_into(&mut cx, |_| {});
+        assert_eq!(cx.physical_relationship_count(), 0);
+        drop(guards);
     }
 }

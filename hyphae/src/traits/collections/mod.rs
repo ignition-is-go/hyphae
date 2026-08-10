@@ -17,8 +17,8 @@ pub use group_by::GroupByExt;
 pub use inner_join::InnerJoinExt;
 #[doc(hidden)]
 pub use internal::join_region::{
-    CollectProject, DirectProject, JCons, JNil, JoinRegion, JoinStage, LastStage, MapLast, Push,
-    ReplaceLastProject, StageList, ThenMap,
+    CollectProject, DirectProject, JCons, JNil, JoinRegion, JoinStage, LastStage, MapLast,
+    OwnedIndex, Push, ReplaceLastProject, SharedRelationIndex, StageList, ThenMap,
 };
 pub use left_join::{
     DirectJoinProjection, JoinProjection, JoinProjectionProject, JoinedValuesPlan, LeftJoinExt,

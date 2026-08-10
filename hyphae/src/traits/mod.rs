@@ -15,8 +15,9 @@ pub use collections::{
     FlatMapEntriesExt, GroupByExt, InnerJoinExt, JCons, JNil, JoinProjection,
     JoinProjectionProject, JoinRegion, JoinStage, JoinedValuesPlan, LastStage, LeftJoinExt,
     LeftJoinPlan, LeftSemiJoinExt, MapEntriesExt, MapLast, MapValuesExt, MapValuesPlan,
-    MultiLeftJoinExt, ProjectCellExt, Push, RelationPlan, ReplaceLastProject, SelectCellExt,
-    SelectExt, StageList, ThenMap, TupleJoinProjection, TwoLeftJoinMappedPlan, TwoLeftJoinPlan,
+    MultiLeftJoinExt, OwnedIndex, ProjectCellExt, Push, RelationPlan, ReplaceLastProject,
+    SelectCellExt, SelectExt, SharedRelationIndex, StageList, ThenMap, TupleJoinProjection,
+    TwoLeftJoinMappedPlan, TwoLeftJoinPlan,
 };
 pub use dep_node::DepNode;
 pub use foreign_key::{
