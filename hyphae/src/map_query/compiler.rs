@@ -184,14 +184,11 @@ impl<T> DeferredPhysical<T>
 where
     T: Default,
 {
-    pub(crate) fn read<R>(&self, read: impl FnOnce(&T) -> R) -> R {
-        let index = self
-            .inner
-            .get_or_init(|| Arc::new(Mutex::new(T::default())));
-        let index = index
+    pub(crate) fn acquire_read(&self) -> std::sync::MutexGuard<'_, T> {
+        self.inner
+            .get_or_init(|| Arc::new(Mutex::new(T::default())))
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        read(&index)
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub(crate) fn write<R>(&self, write: impl FnOnce(&mut T) -> R) -> R {

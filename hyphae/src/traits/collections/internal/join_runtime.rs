@@ -49,7 +49,11 @@ impl<RK, RV, JK> Default for RelationIndex<RK, RV, JK> {
 }
 
 trait RelationIndexStorage<RK, RV, JK>: Send + Sync + 'static {
-    fn read<T>(&self, read: impl FnOnce(&RelationIndex<RK, RV, JK>) -> T) -> T;
+    type Read<'a>: std::ops::Deref<Target = RelationIndex<RK, RV, JK>>
+    where
+        Self: 'a;
+
+    fn acquire_read(&self) -> Self::Read<'_>;
     fn write<T>(&mut self, write: impl FnOnce(&mut RelationIndex<RK, RV, JK>) -> T) -> T;
 }
 
@@ -59,8 +63,13 @@ where
     RV: Send + Sync + 'static,
     JK: Send + Sync + 'static,
 {
-    fn read<T>(&self, read: impl FnOnce(&Self) -> T) -> T {
-        read(self)
+    type Read<'a>
+        = &'a Self
+    where
+        Self: 'a;
+
+    fn acquire_read(&self) -> Self::Read<'_> {
+        self
     }
 
     fn write<T>(&mut self, write: impl FnOnce(&mut Self) -> T) -> T {
@@ -76,8 +85,13 @@ where
     RV: Send + Sync + 'static,
     JK: Send + Sync + 'static,
 {
-    fn read<T>(&self, read: impl FnOnce(&RelationIndex<RK, RV, JK>) -> T) -> T {
-        crate::map_query::compiler::DeferredPhysical::read(self, read)
+    type Read<'a>
+        = std::sync::MutexGuard<'a, RelationIndex<RK, RV, JK>>
+    where
+        Self: 'a;
+
+    fn acquire_read(&self) -> Self::Read<'_> {
+        crate::map_query::compiler::DeferredPhysical::acquire_read(self)
     }
 
     fn write<T>(&mut self, write: impl FnOnce(&mut RelationIndex<RK, RV, JK>) -> T) -> T {
@@ -497,6 +511,9 @@ where
     FO: Fn(&LK, &LV, &[(RK, RV)]) -> Vec<(OK, OV)>,
 {
     let mut changes: Vec<MapDiff<OK, OV>> = Vec::new();
+    // Pin a shared physical relationship index once for the whole root event.
+    // The owned index keeps this as a direct borrow with no locking.
+    let right = state.right.acquire_read();
 
     for left_key in scratch.impacted.drain() {
         let mut current_output_keys = state.left_output_keys.remove(&left_key).unwrap_or_default();
@@ -505,19 +522,17 @@ where
         scratch.desired_order.clear();
         if let Some(left_value) = state.left_rows.get(&left_key) {
             scratch.right_rows.clear();
-            if let Some(join_key) = state.left_join_keys.get(&left_key) {
-                state.right.read(|right| {
-                    if let Some(right_keys) = right.join_to_rows.get(join_key) {
-                        scratch
-                            .right_rows
-                            .extend(right_keys.iter().filter_map(|right_key| {
-                                right
-                                    .rows
-                                    .get(right_key)
-                                    .map(|right_value| (right_key.clone(), right_value.clone()))
-                            }));
-                    }
-                });
+            if let Some(join_key) = state.left_join_keys.get(&left_key)
+                && let Some(right_keys) = right.join_to_rows.get(join_key)
+            {
+                scratch
+                    .right_rows
+                    .extend(right_keys.iter().filter_map(|right_key| {
+                        right
+                            .rows
+                            .get(right_key)
+                            .map(|right_value| (right_key.clone(), right_value.clone()))
+                    }));
             }
 
             for (output_key, output_value) in
@@ -584,20 +599,16 @@ where
 const PARALLEL_JOIN_WORK_ENTER: usize = 65_536;
 const PARALLEL_JOIN_WORK_EXIT: usize = 49_152;
 
-fn commit_keyed_value<LK, LV, RK, RV, JK, OV>(
-    state: &mut JoinState<LK, LV, RK, RV, JK, LK, OV, impl RelationIndexStorage<RK, RV, JK>>,
+fn commit_keyed_value<LK, OV>(
+    output_cache: &mut FxHashMap<LK, OV>,
     left_key: LK,
     desired_value: Option<OV>,
     changes: &mut Vec<MapDiff<LK, OV>>,
 ) where
     LK: Hash + Eq + CellValue,
-    LV: CellValue,
-    RK: Hash + Eq + CellValue,
-    RV: CellValue,
-    JK: Hash + Eq + CellValue,
     OV: CellValue,
 {
-    match (state.output_cache.entry(left_key.clone()), desired_value) {
+    match (output_cache.entry(left_key.clone()), desired_value) {
         (Entry::Occupied(mut entry), Some(new_value)) => {
             if entry.get() != &new_value {
                 let old_value = entry.insert(new_value.clone());
@@ -627,6 +638,7 @@ fn commit_keyed_value<LK, LV, RK, RV, JK, OV>(
 fn compute_keyed_parallel<LK, LV, RK, RV, JK, OV, FO>(
     pool: &rayon::ThreadPool,
     state: &JoinState<LK, LV, RK, RV, JK, LK, OV, impl RelationIndexStorage<RK, RV, JK>>,
+    right: &RelationIndex<RK, RV, JK>,
     impacted: &[LK],
     compute_value: &FO,
 ) -> Vec<(LK, Option<OV>)>
@@ -647,17 +659,15 @@ where
             .map_init(Vec::<(RK, RV)>::new, |right_rows, left_key| {
                 right_rows.clear();
                 let desired = state.left_rows.get(left_key).and_then(|left_value| {
-                    if let Some(join_key) = state.left_join_keys.get(left_key) {
-                        state.right.read(|right| {
-                            if let Some(right_keys) = right.join_to_rows.get(join_key) {
-                                right_rows.extend(right_keys.iter().filter_map(|right_key| {
-                                    right
-                                        .rows
-                                        .get(right_key)
-                                        .map(|right_value| (right_key.clone(), right_value.clone()))
-                                }));
-                            }
-                        });
+                    if let Some(join_key) = state.left_join_keys.get(left_key)
+                        && let Some(right_keys) = right.join_to_rows.get(join_key)
+                    {
+                        right_rows.extend(right_keys.iter().filter_map(|right_key| {
+                            right
+                                .rows
+                                .get(right_key)
+                                .map(|right_value| (right_key.clone(), right_value.clone()))
+                        }));
                     }
                     compute_value(left_key, left_value, right_rows)
                 });
@@ -683,15 +693,16 @@ where
 {
     let mut changes = Vec::new();
     let impacted: Vec<LK> = scratch.impacted.drain().collect();
-    let estimated_work = state.right.read(|right| {
-        impacted.iter().fold(0_usize, |work, left_key| {
-            let fanout = state
-                .left_join_keys
-                .get(left_key)
-                .and_then(|join_key| right.join_to_rows.get(join_key))
-                .map_or(0, Vec::len);
-            work.saturating_add(fanout.saturating_add(1))
-        })
+    // Keep one shared-index guard across estimation and all row lookups for
+    // this callback. In particular, Rayon workers share this pinned read.
+    let right = state.right.acquire_read();
+    let estimated_work = impacted.iter().fold(0_usize, |work, left_key| {
+        let fanout = state
+            .left_join_keys
+            .get(left_key)
+            .and_then(|join_key| right.join_to_rows.get(join_key))
+            .map_or(0, Vec::len);
+        work.saturating_add(fanout.saturating_add(1))
     });
     state.parallel_active = if state.parallel_active {
         estimated_work >= PARALLEL_JOIN_WORK_EXIT
@@ -703,9 +714,15 @@ where
     if state.parallel_active
         && let Some(pool) = crate::executor::worker_pool()
     {
-        let desired = compute_keyed_parallel(pool, state, &impacted, compute_value);
+        let desired = compute_keyed_parallel(pool, state, &right, &impacted, compute_value);
+        drop(right);
         for (left_key, desired_value) in desired {
-            commit_keyed_value(state, left_key, desired_value, &mut changes);
+            commit_keyed_value(
+                &mut state.output_cache,
+                left_key,
+                desired_value,
+                &mut changes,
+            );
         }
         return changes;
     }
@@ -713,24 +730,26 @@ where
     for left_key in impacted {
         scratch.right_rows.clear();
         let desired_value = state.left_rows.get(&left_key).and_then(|left_value| {
-            if let Some(join_key) = state.left_join_keys.get(&left_key) {
-                state.right.read(|right| {
-                    if let Some(right_keys) = right.join_to_rows.get(join_key) {
-                        scratch
-                            .right_rows
-                            .extend(right_keys.iter().filter_map(|right_key| {
-                                right
-                                    .rows
-                                    .get(right_key)
-                                    .map(|right_value| (right_key.clone(), right_value.clone()))
-                            }));
-                    }
-                });
+            if let Some(join_key) = state.left_join_keys.get(&left_key)
+                && let Some(right_keys) = right.join_to_rows.get(join_key)
+            {
+                scratch
+                    .right_rows
+                    .extend(right_keys.iter().filter_map(|right_key| {
+                        right
+                            .rows
+                            .get(right_key)
+                            .map(|right_value| (right_key.clone(), right_value.clone()))
+                    }));
             }
             compute_value(&left_key, left_value, &scratch.right_rows)
         });
-
-        commit_keyed_value(state, left_key, desired_value, &mut changes);
+        commit_keyed_value(
+            &mut state.output_cache,
+            left_key,
+            desired_value,
+            &mut changes,
+        );
     }
 
     changes
@@ -1362,19 +1381,18 @@ where
     OK: Hash + Eq + CellValue,
     OV: CellValue,
 {
-    state.right.read(|right| {
-        right
-            .join_to_rows
-            .values()
-            .flatten()
-            .filter_map(|key| {
-                right
-                    .rows
-                    .get(key)
-                    .map(|value| (key.clone(), value.clone()))
-            })
-            .collect()
-    })
+    let right = state.right.acquire_read();
+    right
+        .join_to_rows
+        .values()
+        .flatten()
+        .filter_map(|key| {
+            right
+                .rows
+                .get(key)
+                .map(|value| (key.clone(), value.clone()))
+        })
+        .collect()
 }
 
 /// Install the zero-or-one-output, left-key-preserving join runtime.
@@ -1893,4 +1911,63 @@ where
         right2_sink,
     ));
     guards
+}
+
+#[cfg(test)]
+mod read_acquisition_tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use super::*;
+
+    struct CountingIndex {
+        index: RelationIndex<usize, usize, usize>,
+        reads: Arc<AtomicUsize>,
+    }
+
+    impl RelationIndexStorage<usize, usize, usize> for CountingIndex {
+        type Read<'a> = &'a RelationIndex<usize, usize, usize>;
+
+        fn acquire_read(&self) -> Self::Read<'_> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            &self.index
+        }
+
+        fn write<T>(
+            &mut self,
+            write: impl FnOnce(&mut RelationIndex<usize, usize, usize>) -> T,
+        ) -> T {
+            write(&mut self.index)
+        }
+    }
+
+    #[test]
+    fn keyed_callback_acquires_shared_index_once_for_all_impacted_keys() {
+        let reads = Arc::new(AtomicUsize::new(0));
+        let mut index = RelationIndex::default();
+        index.join_to_rows.insert(0, (0..32).collect());
+        for key in 0..32 {
+            index.rows.insert(key, key);
+            index.row_join_keys.insert(key, 0);
+        }
+        let mut state = JoinState::with_right(CountingIndex {
+            index,
+            reads: Arc::clone(&reads),
+        });
+        let mut scratch = JoinScratch::default();
+        for key in 0..128 {
+            state.left_rows.insert(key, key);
+            state.left_join_keys.insert(key, 0);
+            scratch.impacted.insert(key);
+        }
+
+        let changes = recompute_keyed_impacted(&mut state, &mut scratch, &|_, _, right_rows| {
+            Some(right_rows.len())
+        });
+
+        assert_eq!(changes.len(), 128);
+        assert_eq!(reads.load(Ordering::Relaxed), 1);
+    }
 }
