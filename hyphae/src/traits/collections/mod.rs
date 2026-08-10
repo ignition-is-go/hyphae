@@ -15,7 +15,10 @@ mod select_cell;
 pub use count_by::CountByExt;
 pub use group_by::GroupByExt;
 pub use inner_join::InnerJoinExt;
-pub use left_join::{LeftJoinExt, LeftJoinPlan, TwoLeftJoinMappedPlan, TwoLeftJoinPlan};
+pub use left_join::{
+    DirectJoinProjection, JoinProjection, JoinedValuesPlan, LeftJoinExt, LeftJoinPlan,
+    TupleJoinProjection, TwoLeftJoinMappedPlan, TwoLeftJoinPlan,
+};
 pub use left_semi_join::LeftSemiJoinExt;
 pub use map_values::{FilterMapValuesPlan, MapValuesExt, MapValuesPlan};
 pub use multi_left_join::MultiLeftJoinExt;

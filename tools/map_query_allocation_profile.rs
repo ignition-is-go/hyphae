@@ -191,8 +191,12 @@ fn updated_row(key: u64, generation: u64) -> Arc<Row> {
     })
 }
 
-fn fold_matches(row: &Row, matches: &[Arc<Dimension>], salt: u64) -> Arc<Row> {
-    let payload = matches.iter().fold(row.payload, |acc, dimension| {
+fn fold_indexed_matches(
+    row: &Row,
+    matches: &[(u64, Arc<Dimension>)],
+    salt: u64,
+) -> Arc<Row> {
+    let payload = matches.iter().fold(row.payload, |acc, (_, dimension)| {
         acc.rotate_left(5) ^ dimension.payload.wrapping_add(salt)
     });
     Arc::new(Row {
@@ -306,13 +310,13 @@ fn measure_two_join(revision: &str) {
             |_key, row| row.relation,
             |_key, dimension| dimension.relation,
         )
-        .map_values(|_key, (row, matches)| fold_matches(row, matches, 17))
+        .map_joined_values(|_key, row, matches| fold_indexed_matches(row, matches, 17))
         .left_join_by(
             second,
             |_key, row| row.relation,
             |_key, dimension| dimension.relation,
         )
-        .map_values(|_key, (row, matches)| fold_matches(row, matches, 19));
+        .map_joined_values(|_key, row, matches| fold_indexed_matches(row, matches, 19));
     let (after_build, build) = measure_phase("build", before_build, started, 1);
 
     let started = Instant::now();
@@ -362,25 +366,25 @@ fn measure_four_join(revision: &str) {
             |_key, row| row.relation,
             |_key, dimension| dimension.relation,
         )
-        .map_values(|_key, (row, matches)| fold_matches(row, matches, 1))
+        .map_joined_values(|_key, row, matches| fold_indexed_matches(row, matches, 1))
         .left_join_by(
             shared.clone(),
             |_key, row| row.relation,
             |_key, dimension| dimension.relation,
         )
-        .map_values(|_key, (row, matches)| fold_matches(row, matches, 2))
+        .map_joined_values(|_key, row, matches| fold_indexed_matches(row, matches, 2))
         .left_join_by(
             shared.clone(),
             |_key, row| row.relation,
             |_key, dimension| dimension.relation,
         )
-        .map_values(|_key, (row, matches)| fold_matches(row, matches, 3))
+        .map_joined_values(|_key, row, matches| fold_indexed_matches(row, matches, 3))
         .left_join_by(
             shared,
             |_key, row| row.relation,
             |_key, dimension| dimension.relation,
         )
-        .map_values(|_key, (row, matches)| fold_matches(row, matches, 4));
+        .map_joined_values(|_key, row, matches| fold_indexed_matches(row, matches, 4));
     let (after_build, build) = measure_phase("build", before_build, started, 1);
 
     let started = Instant::now();

@@ -49,6 +49,126 @@ where
     pub(crate) _types: PhantomData<fn() -> (LK, LV, RK, RV, JK)>,
 }
 
+/// Internal projection protocol carried by statically recognized join plans.
+mod join_projection_private {
+    pub trait Sealed {}
+}
+
+/// Internal projection protocol carried by statically recognized join plans.
+#[doc(hidden)]
+#[allow(private_bounds)]
+pub trait JoinProjection<LK, LV, RK, RV, OV>:
+    join_projection_private::Sealed + Send + Sync + 'static
+{
+    fn project(&self, key: &LK, left: &LV, rights: &[(RK, RV)]) -> OV;
+}
+
+/// Adapter for the ordinary `map_values(|key, (left, rights)| ...)` surface.
+#[doc(hidden)]
+pub struct TupleJoinProjection<F>(F);
+
+impl<F> join_projection_private::Sealed for TupleJoinProjection<F> {}
+
+impl<LK, LV, RK, RV, OV, F> JoinProjection<LK, LV, RK, RV, OV> for TupleJoinProjection<F>
+where
+    LV: Clone,
+    RV: Clone,
+    F: Fn(&LK, &(LV, Vec<RV>)) -> OV + Send + Sync + 'static,
+{
+    fn project(&self, key: &LK, left: &LV, rights: &[(RK, RV)]) -> OV {
+        let joined = (
+            left.clone(),
+            rights.iter().map(|(_, value)| value.clone()).collect(),
+        );
+        (self.0)(key, &joined)
+    }
+}
+
+/// Adapter for `map_joined_values`, which avoids materializing a joined tuple.
+#[doc(hidden)]
+pub struct DirectJoinProjection<F>(F);
+
+impl<F> join_projection_private::Sealed for DirectJoinProjection<F> {}
+
+impl<LK, LV, RK, RV, OV, F> JoinProjection<LK, LV, RK, RV, OV> for DirectJoinProjection<F>
+where
+    F: Fn(&LK, &LV, &[(RK, RV)]) -> OV + Send + Sync + 'static,
+{
+    fn project(&self, key: &LK, left: &LV, rights: &[(RK, RV)]) -> OV {
+        (self.0)(key, left, rights)
+    }
+}
+
+/// A left join whose output is projected directly from the indexed matches.
+pub struct JoinedValuesPlan<L, R, LK, LV, RK, RV, JK, OV, FL, FR, F>
+where
+    L: MapQuery<Key = LK, Value = LV>,
+    R: MapQuery<Key = RK, Value = RV>,
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    OV: CellValue,
+    FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
+    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    F: Fn(&LK, &LV, &[(RK, RV)]) -> OV + Send + Sync + 'static,
+{
+    join: LeftJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>,
+    projection: F,
+    _output: PhantomData<fn() -> OV>,
+}
+
+impl<L, R, LK, LV, RK, RV, JK, OV, FL, FR, F> MapQueryInstall<LK, OV>
+    for JoinedValuesPlan<L, R, LK, LV, RK, RV, JK, OV, FL, FR, F>
+where
+    L: MapQuery<Key = LK, Value = LV>,
+    R: MapQuery<Key = RK, Value = RV>,
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    OV: CellValue,
+    FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
+    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    F: Fn(&LK, &LV, &[(RK, RV)]) -> OV + Send + Sync + 'static,
+{
+    fn install<Sink>(self, sink: Sink) -> Vec<SubscriptionGuard>
+    where
+        Sink: MapDiffSink<LK, OV>,
+    {
+        install_keyed_join_runtime_via_query(
+            self.join.left,
+            self.join.right,
+            self.join.left_key,
+            self.join.right_key,
+            move |key, left, rights| Some((self.projection)(key, left, rights)),
+            sink,
+        )
+    }
+}
+
+#[allow(private_bounds)]
+impl<L, R, LK, LV, RK, RV, JK, OV, FL, FR, F> MapQuery
+    for JoinedValuesPlan<L, R, LK, LV, RK, RV, JK, OV, FL, FR, F>
+where
+    L: MapQuery<Key = LK, Value = LV>,
+    R: MapQuery<Key = RK, Value = RV>,
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    OV: CellValue,
+    FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
+    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    F: Fn(&LK, &LV, &[(RK, RV)]) -> OV + Send + Sync + 'static,
+{
+    type Key = LK;
+    type Value = OV;
+}
+
 impl<L, R, LK, LV, RK, RV, JK, FL, FR> MapQueryInstall<LK, (LV, Vec<RV>)>
     for LeftJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
 where
@@ -97,6 +217,38 @@ where
     type Value = (LV, Vec<RV>);
 }
 
+impl<L, R, LK, LV, RK, RV, JK, FL, FR> LeftJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
+where
+    L: MapQuery<Key = LK, Value = LV>,
+    R: MapQuery<Key = RK, Value = RV>,
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
+    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+{
+    /// Project a joined row directly from the left value and indexed matches.
+    ///
+    /// Unlike `map_values`, this does not first clone right values into an
+    /// intermediate `Vec`; use it when the joined tuple is not itself needed.
+    pub fn map_joined_values<OV, F>(
+        self,
+        projection: F,
+    ) -> JoinedValuesPlan<L, R, LK, LV, RK, RV, JK, OV, FL, FR, F>
+    where
+        OV: CellValue,
+        F: Fn(&LK, &LV, &[(RK, RV)]) -> OV + Send + Sync + 'static,
+    {
+        JoinedValuesPlan {
+            join: self,
+            projection,
+            _output: PhantomData,
+        }
+    }
+}
+
 /// A statically recognized `left_join -> map_values -> left_join` region.
 ///
 /// The named shape lets installation coordinate all three roots through one
@@ -134,7 +286,7 @@ pub struct TwoLeftJoinPlan<
     JK2: Hash + Eq + CellValue,
     FL1: Fn(&LK, &LV) -> JK1 + Send + Sync + 'static,
     FR1: Fn(&RK1, &RV1) -> JK1 + Send + Sync + 'static,
-    FM1: Fn(&LK, &(LV, Vec<RV1>)) -> MV + Send + Sync + 'static,
+    FM1: JoinProjection<LK, LV, RK1, RV1, MV>,
     FL2: Fn(&LK, &MV) -> JK2 + Send + Sync + 'static,
     FR2: Fn(&RK2, &RV2) -> JK2 + Send + Sync + 'static,
 {
@@ -159,7 +311,7 @@ where
     RK2: Hash + Eq + CellValue,
     RV2: CellValue,
     OV: CellValue,
-    F: Fn(&LK, &(MV, Vec<RV2>)) -> OV + Send + Sync + 'static,
+    F: JoinProjection<LK, MV, RK2, RV2, OV>,
 {
     plan: P,
     map_second: F,
@@ -202,7 +354,7 @@ where
     JK2: Hash + Eq + CellValue,
     FL1: Fn(&LK, &LV) -> JK1 + Send + Sync + 'static,
     FR1: Fn(&RK1, &RV1) -> JK1 + Send + Sync + 'static,
-    FM1: Fn(&LK, &(LV, Vec<RV1>)) -> MV + Send + Sync + 'static,
+    FM1: JoinProjection<LK, LV, RK1, RV1, MV>,
     FL2: Fn(&LK, &MV) -> JK2 + Send + Sync + 'static,
     FR2: Fn(&RK2, &RV2) -> JK2 + Send + Sync + 'static,
 {
@@ -217,13 +369,7 @@ where
             self.right2,
             self.left_key1,
             self.right_key1,
-            move |key, left, rights: &[(RK1, RV1)]| {
-                let joined = (
-                    left.clone(),
-                    rights.iter().map(|(_, value)| value.clone()).collect(),
-                );
-                map_first(key, &joined)
-            },
+            move |key, left, rights: &[(RK1, RV1)]| map_first.project(key, left, rights),
             self.left_key2,
             self.right_key2,
             |_key, middle, rights: &[(RK2, RV2)]| {
@@ -273,7 +419,7 @@ where
     JK2: Hash + Eq + CellValue,
     FL1: Fn(&LK, &LV) -> JK1 + Send + Sync + 'static,
     FR1: Fn(&RK1, &RV1) -> JK1 + Send + Sync + 'static,
-    FM1: Fn(&LK, &(LV, Vec<RV1>)) -> MV + Send + Sync + 'static,
+    FM1: JoinProjection<LK, LV, RK1, RV1, MV>,
     FL2: Fn(&LK, &MV) -> JK2 + Send + Sync + 'static,
     FR2: Fn(&RK2, &RV2) -> JK2 + Send + Sync + 'static,
 {
@@ -326,10 +472,10 @@ where
     OV: CellValue,
     FL1: Fn(&LK, &LV) -> JK1 + Send + Sync + 'static,
     FR1: Fn(&RK1, &RV1) -> JK1 + Send + Sync + 'static,
-    FM1: Fn(&LK, &(LV, Vec<RV1>)) -> MV + Send + Sync + 'static,
+    FM1: JoinProjection<LK, LV, RK1, RV1, MV>,
     FL2: Fn(&LK, &MV) -> JK2 + Send + Sync + 'static,
     FR2: Fn(&RK2, &RV2) -> JK2 + Send + Sync + 'static,
-    FM2: Fn(&LK, &(MV, Vec<RV2>)) -> OV + Send + Sync + 'static,
+    FM2: JoinProjection<LK, MV, RK2, RV2, OV>,
 {
     fn install<Sink>(self, sink: Sink) -> Vec<SubscriptionGuard>
     where
@@ -344,22 +490,10 @@ where
             plan.right2,
             plan.left_key1,
             plan.right_key1,
-            move |key, left, rights: &[(RK1, RV1)]| {
-                let joined = (
-                    left.clone(),
-                    rights.iter().map(|(_, value)| value.clone()).collect(),
-                );
-                map_first(key, &joined)
-            },
+            move |key, left, rights: &[(RK1, RV1)]| map_first.project(key, left, rights),
             plan.left_key2,
             plan.right_key2,
-            move |key, middle, rights: &[(RK2, RV2)]| {
-                let joined = (
-                    middle.clone(),
-                    rights.iter().map(|(_, value)| value.clone()).collect(),
-                );
-                map_second(key, &joined)
-            },
+            move |key, middle, rights: &[(RK2, RV2)]| map_second.project(key, middle, rights),
             sink,
         )
     }
@@ -374,7 +508,7 @@ where
     RK2: Hash + Eq + CellValue,
     RV2: CellValue,
     OV: CellValue,
-    F: Fn(&LK, &(MV, Vec<RV2>)) -> OV + Send + Sync + 'static,
+    F: JoinProjection<LK, MV, RK2, RV2, OV>,
     Self: MapQueryInstall<LK, OV>,
 {
     type Key = LK;
@@ -398,20 +532,39 @@ where
     JK2: Hash + Eq + CellValue,
     FL1: Fn(&LK, &LV) -> JK1 + Send + Sync + 'static,
     FR1: Fn(&RK1, &RV1) -> JK1 + Send + Sync + 'static,
-    FM1: Fn(&LK, &(LV, Vec<RV1>)) -> MV + Send + Sync + 'static,
+    FM1: JoinProjection<LK, LV, RK1, RV1, MV>,
     FL2: Fn(&LK, &MV) -> JK2 + Send + Sync + 'static,
     FR2: Fn(&RK2, &RV2) -> JK2 + Send + Sync + 'static,
 {
     /// Attach the final key-preserving projection without breaking the
     /// coordinated physical region apart.
-    pub fn map_values<OV, F>(self, f: F) -> TwoLeftJoinMappedPlan<Self, LK, MV, RK2, RV2, OV, F>
+    pub fn map_values<OV, F>(
+        self,
+        f: F,
+    ) -> TwoLeftJoinMappedPlan<Self, LK, MV, RK2, RV2, OV, TupleJoinProjection<F>>
     where
         OV: CellValue,
         F: Fn(&LK, &(MV, Vec<RV2>)) -> OV + Send + Sync + 'static,
     {
         TwoLeftJoinMappedPlan {
             plan: self,
-            map_second: f,
+            map_second: TupleJoinProjection(f),
+            _types: PhantomData,
+        }
+    }
+
+    /// Project the second join directly without constructing `(middle, Vec)`.
+    pub fn map_joined_values<OV, F>(
+        self,
+        f: F,
+    ) -> TwoLeftJoinMappedPlan<Self, LK, MV, RK2, RV2, OV, DirectJoinProjection<F>>
+    where
+        OV: CellValue,
+        F: Fn(&LK, &MV, &[(RK2, RV2)]) -> OV + Send + Sync + 'static,
+    {
+        TwoLeftJoinMappedPlan {
+            plan: self,
+            map_second: DirectJoinProjection(f),
             _types: PhantomData,
         }
     }
@@ -438,7 +591,25 @@ where
         right: R2,
         left_key: FL2,
         right_key: FR2,
-    ) -> TwoLeftJoinPlan<L, R1, R2, LK, LV, RK1, RV1, JK1, MV, RK2, RV2, JK2, FL1, FR1, FM1, FL2, FR2>
+    ) -> TwoLeftJoinPlan<
+        L,
+        R1,
+        R2,
+        LK,
+        LV,
+        RK1,
+        RV1,
+        JK1,
+        MV,
+        RK2,
+        RV2,
+        JK2,
+        FL1,
+        FR1,
+        TupleJoinProjection<FM1>,
+        FL2,
+        FR2,
+    >
     where
         R2: MapQuery<Key = RK2, Value = RV2>,
         RK2: Hash + Eq + CellValue,
@@ -460,7 +631,76 @@ where
             right2: right,
             left_key1,
             right_key1,
-            map_first: self.f,
+            map_first: TupleJoinProjection(self.f),
+            left_key2: left_key,
+            right_key2: right_key,
+            _types: PhantomData,
+        }
+    }
+}
+
+impl<L, R1, LK, LV, RK1, RV1, JK1, MV, FL1, FR1, FM1>
+    JoinedValuesPlan<L, R1, LK, LV, RK1, RV1, JK1, MV, FL1, FR1, FM1>
+where
+    L: MapQuery<Key = LK, Value = LV>,
+    R1: MapQuery<Key = RK1, Value = RV1>,
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK1: Hash + Eq + CellValue,
+    RV1: CellValue,
+    JK1: Hash + Eq + CellValue,
+    MV: CellValue,
+    FL1: Fn(&LK, &LV) -> JK1 + Send + Sync + 'static,
+    FR1: Fn(&RK1, &RV1) -> JK1 + Send + Sync + 'static,
+    FM1: Fn(&LK, &LV, &[(RK1, RV1)]) -> MV + Send + Sync + 'static,
+{
+    /// Extend a direct joined projection with a coordinated second left join.
+    pub fn left_join_by<R2, RK2, RV2, JK2, FL2, FR2>(
+        self,
+        right: R2,
+        left_key: FL2,
+        right_key: FR2,
+    ) -> TwoLeftJoinPlan<
+        L,
+        R1,
+        R2,
+        LK,
+        LV,
+        RK1,
+        RV1,
+        JK1,
+        MV,
+        RK2,
+        RV2,
+        JK2,
+        FL1,
+        FR1,
+        DirectJoinProjection<FM1>,
+        FL2,
+        FR2,
+    >
+    where
+        R2: MapQuery<Key = RK2, Value = RV2>,
+        RK2: Hash + Eq + CellValue,
+        RV2: CellValue,
+        JK2: Hash + Eq + CellValue,
+        FL2: Fn(&LK, &MV) -> JK2 + Send + Sync + 'static,
+        FR2: Fn(&RK2, &RV2) -> JK2 + Send + Sync + 'static,
+    {
+        let LeftJoinPlan {
+            left,
+            right: right1,
+            left_key: left_key1,
+            right_key: right_key1,
+            ..
+        } = self.join;
+        TwoLeftJoinPlan {
+            left,
+            right1,
+            right2: right,
+            left_key1,
+            right_key1,
+            map_first: DirectJoinProjection(self.projection),
             left_key2: left_key,
             right_key2: right_key,
             _types: PhantomData,
@@ -734,15 +974,15 @@ mod tests {
         let output = left
             .clone()
             .left_join_by(right1.clone(), |_, row| row.0, |_, row| row.0)
-            .map_values(|_, (left, matches)| {
+            .map_joined_values(|_, left, matches| {
                 (
                     left.0,
-                    left.1 + matches.iter().map(|row| row.1).sum::<i32>(),
+                    left.1 + matches.iter().map(|(_, row)| row.1).sum::<i32>(),
                 )
             })
             .left_join_by(right2.clone(), |_, row| row.0, |_, row| row.0)
-            .map_values(|_, (middle, matches)| {
-                middle.1 + matches.iter().map(|row| row.1).sum::<i32>()
+            .map_joined_values(|_, middle, matches| {
+                middle.1 + matches.iter().map(|(_, row)| row.1).sum::<i32>()
             })
             .materialize();
 
@@ -773,15 +1013,15 @@ mod tests {
         let output = left
             .clone()
             .left_join_by(right1.clone(), |_, row| row.0, |_, row| row.0)
-            .map_values(|_, (left, matches)| {
+            .map_joined_values(|_, left, matches| {
                 (
                     left.0,
-                    left.1 + matches.iter().map(|row| row.1).sum::<i32>(),
+                    left.1 + matches.iter().map(|(_, row)| row.1).sum::<i32>(),
                 )
             })
             .left_join_by(right2.clone(), |_, row| row.0, |_, row| row.0)
-            .map_values(|_, (middle, matches)| {
-                middle.1 + matches.iter().map(|row| row.1).sum::<i32>()
+            .map_joined_values(|_, middle, matches| {
+                middle.1 + matches.iter().map(|(_, row)| row.1).sum::<i32>()
             })
             .materialize();
 
