@@ -1,0 +1,22 @@
+   Compiling hyphae v2.0.1 (/home/trevor/Code/hyphae/hyphae)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.83s
+     Running unittests src/lib.rs (target/debug/deps/hyphae-8551ffa46ac2a9cd)
+
+running 14 tests
+test map_query::compiler::tests::concurrent_query_event_queues_behind_active_fanout ... ok
+test map_query::compiler::tests::associated_runtime_defers_root_installation_until_connected ... ok
+test map_query::compiler::tests::repeated_physical_root_is_interned_once ... ok
+test map_query::compiler::tests::repeated_relationship_assigns_exactly_one_index_maintainer ... ok
+test map_query::compiler::tests::uncontended_query_dispatch_borrows_the_source_diff ... ok
+test map_query::compiler::tests::compilation_recognizes_a_root_reused_by_two_joins ... ok
+test map_query::compiler::tests::public_eight_stage_typed_fk_region_uses_one_physical_index ... ok
+test map_query::compiler::tests::reentrant_different_root_waits_for_complete_repeated_fanout ... ok
+test map_query::compiler::tests::relationship_identity_is_scoped_to_each_join_right_root ... ok
+test map_query::compiler::tests::reentrant_root_changes_wait_for_the_active_fanout_transaction ... ok
+test map_query::compiler::tests::differently_typed_roots_share_one_fifo_transaction_gate ... ok
+test map_query::compiler::tests::panic_clears_queued_query_events_and_recovers ... ok
+test map_query::compiler::tests::synchronous_different_root_mutation_is_deferred_until_a_finishes ... ok
+test map_query::compiler::tests::deferred_physical_admits_two_readers_while_writer_waits ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 347 filtered out; finished in 0.05s
+
