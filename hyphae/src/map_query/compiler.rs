@@ -43,6 +43,65 @@ impl<K, V> Default for RootDispatch<K, V> {
     }
 }
 
+struct ActiveRootDispatch<'a, K, V> {
+    dispatch: &'a Mutex<RootDispatch<K, V>>,
+    armed: bool,
+}
+
+impl<K, V> Drop for ActiveRootDispatch<'_, K, V> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.dispatch
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .active = false;
+        }
+    }
+}
+
+fn dispatch_root_diff<K: Clone, V: Clone>(
+    dispatch: &Mutex<RootDispatch<K, V>>,
+    sinks: &[BoxedMapDiffSink<K, V>],
+    diff: &MapDiff<K, V>,
+) {
+    {
+        let mut state = dispatch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.active {
+            state.queued.push_back(diff.clone());
+            return;
+        }
+        state.active = true;
+    }
+
+    // The uncontended root event remains borrowed from the source. Only an
+    // event arriving behind active fanout needs owned queue storage.
+    let mut active = ActiveRootDispatch {
+        dispatch,
+        armed: true,
+    };
+    for sink in sinks {
+        sink(diff);
+    }
+
+    loop {
+        let mut state = dispatch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(next) = state.queued.pop_front() else {
+            state.active = false;
+            active.armed = false;
+            drop(state);
+            return;
+        };
+        drop(state);
+        for sink in sinks {
+            sink(&next);
+        }
+    }
+}
+
 struct RootRequirement {
     ordinal: usize,
     uses: usize,
@@ -242,44 +301,7 @@ impl CompileContext {
             // readers for that exact diff and no event observes a later index.
             let dispatch = Arc::new(Mutex::new(RootDispatch::default()));
             let guard = source.subscribe_diffs_reactive(move |diff| {
-                {
-                    let mut state = dispatch
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    state.queued.push_back(diff.clone());
-                    if state.active {
-                        return;
-                    }
-                    state.active = true;
-                }
-
-                loop {
-                    let next = {
-                        let mut state = dispatch
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        match state.queued.pop_front() {
-                            Some(diff) => diff,
-                            None => {
-                                state.active = false;
-                                return;
-                            }
-                        }
-                    };
-
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        for sink in &sinks {
-                            sink(&next);
-                        }
-                    }));
-                    if let Err(payload) = result {
-                        dispatch
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .active = false;
-                        std::panic::resume_unwind(payload);
-                    }
-                }
+                dispatch_root_diff(&dispatch, &sinks, diff);
             });
             vec![guard]
         }));
@@ -490,7 +512,7 @@ mod tests {
 
         let source = CellMap::<u64, u64>::new();
         let identity = SourceIdentity::from_ptr(Arc::as_ptr(&source.inner));
-        let events = Arc::new(Mutex::new(Vec::<String>::new()));
+        let events = Arc::new(Mutex::new(Vec::<(char, String)>::new()));
         let armed = Arc::new(AtomicBool::new(false));
         let triggered = Arc::new(AtomicBool::new(false));
         let mut cx = CompileContext::default();
@@ -503,7 +525,7 @@ mod tests {
             first_events
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(format!("a:{diff:?}"));
+                .push(('a', format!("{diff:?}")));
             if first_armed.load(Ordering::Acquire) && !first_triggered.swap(true, Ordering::AcqRel)
             {
                 first_source.insert(2, 20);
@@ -514,7 +536,7 @@ mod tests {
             second_events
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(format!("b:{diff:?}"));
+                .push(('b', format!("{diff:?}")));
         });
 
         let guards = cx.activate();
@@ -528,15 +550,155 @@ mod tests {
         let events = events
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert_eq!(events.len(), 4);
-        assert!(events[0].starts_with("a:"));
-        assert!(events[1].starts_with("b:"));
-        assert_eq!(&events[0][2..], &events[1][2..]);
-        assert!(events[2].starts_with("a:"));
-        assert!(events[3].starts_with("b:"));
-        assert_eq!(&events[2][2..], &events[3][2..]);
-        assert_ne!(&events[0][2..], &events[2][2..]);
+        if let [first_a, first_b, second_a, second_b] = events.as_slice() {
+            assert_eq!(first_a.0, 'a');
+            assert_eq!(first_b.0, 'b');
+            assert_eq!(first_a.1, first_b.1);
+            assert_eq!(second_a.0, 'a');
+            assert_eq!(second_b.0, 'b');
+            assert_eq!(second_a.1, second_b.1);
+            assert_ne!(first_a.1, second_a.1);
+        } else {
+            assert_eq!(events.len(), 4, "incomplete transactions: {events:?}");
+        }
+        drop(events);
         drop(guards);
+    }
+
+    #[derive(Debug)]
+    struct CloneTracked {
+        clones: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Clone for CloneTracked {
+        fn clone(&self) -> Self {
+            self.clones.fetch_add(1, Ordering::Relaxed);
+            Self {
+                clones: Arc::clone(&self.clones),
+            }
+        }
+    }
+
+    impl PartialEq for CloneTracked {
+        fn eq(&self, other: &Self) -> bool {
+            Arc::ptr_eq(&self.clones, &other.clones)
+        }
+    }
+
+    #[test]
+    fn uncontended_root_dispatch_borrows_the_source_diff() {
+        let clones = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let diff = MapDiff::Insert {
+            key: 1_u64,
+            value: CloneTracked {
+                clones: Arc::clone(&clones),
+            },
+        };
+        let dispatch = Mutex::new(RootDispatch::default());
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sink_calls = Arc::clone(&calls);
+        let sinks: Vec<BoxedMapDiffSink<u64, CloneTracked>> = vec![Arc::new(move |_| {
+            sink_calls.fetch_add(1, Ordering::Relaxed);
+        })];
+
+        dispatch_root_diff(&dispatch, &sinks, &diff);
+
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(clones.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn concurrent_root_event_queues_behind_active_fanout() {
+        let dispatch = Arc::new(Mutex::new(RootDispatch::default()));
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = Arc::new(Mutex::new(release_rx));
+        let sink_observed = Arc::clone(&observed);
+        let sink_release = Arc::clone(&release_rx);
+        let sinks: Arc<Vec<BoxedMapDiffSink<u64, u64>>> = Arc::new(vec![Arc::new(move |diff| {
+            let MapDiff::Insert { key, .. } = diff else {
+                assert!(
+                    matches!(diff, MapDiff::Insert { .. }),
+                    "unexpected test diff: {diff:?}"
+                );
+                return;
+            };
+            sink_observed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(*key);
+            if *key == 1 {
+                assert!(
+                    entered_tx.send(()).is_ok(),
+                    "test receiver must remain live"
+                );
+                assert!(
+                    sink_release
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .recv()
+                        .is_ok(),
+                    "test sender must remain live"
+                );
+            }
+        })]);
+        let first_dispatch = Arc::clone(&dispatch);
+        let first_sinks = Arc::clone(&sinks);
+        let first = std::thread::spawn(move || {
+            dispatch_root_diff(
+                &first_dispatch,
+                &first_sinks,
+                &MapDiff::Insert { key: 1, value: 10 },
+            );
+        });
+
+        assert!(entered_rx.recv().is_ok(), "first fanout must start");
+        dispatch_root_diff(&dispatch, &sinks, &MapDiff::Insert { key: 2, value: 20 });
+        assert!(
+            release_tx.send(()).is_ok(),
+            "blocked fanout must remain live"
+        );
+        assert!(first.join().is_ok(), "fanout thread must finish");
+
+        assert_eq!(
+            *observed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![1, 2]
+        );
+    }
+
+    #[test]
+    fn panic_releases_root_dispatch_for_the_next_event() {
+        let dispatch = Mutex::new(RootDispatch::default());
+        let should_panic = Arc::new(AtomicBool::new(true));
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sink_should_panic = Arc::clone(&should_panic);
+        let sink_calls = Arc::clone(&calls);
+        let sinks: Vec<BoxedMapDiffSink<u64, u64>> = vec![Arc::new(move |_| {
+            sink_calls.fetch_add(1, Ordering::Relaxed);
+            assert!(
+                !sink_should_panic.swap(false, Ordering::AcqRel),
+                "first event panic"
+            );
+        })];
+        let first = MapDiff::Insert { key: 1, value: 10 };
+        let second = MapDiff::Insert { key: 2, value: 20 };
+
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            dispatch_root_diff(&dispatch, &sinks, &first);
+        }));
+        assert!(panic.is_err());
+        dispatch_root_diff(&dispatch, &sinks, &second);
+
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+        assert!(
+            !dispatch
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .active
+        );
     }
 
     #[test]
