@@ -6,12 +6,17 @@
 //! region without tuples (and therefore without tuple-arity limits), while
 //! keeping every stage and projection statically dispatched.
 
-use std::{hash::Hash, marker::PhantomData};
+use std::{collections::hash_map::Entry, hash::Hash, marker::PhantomData};
+
+use rustc_hash::FxHashMap;
 
 use crate::{
+    cell_map::MapDiff,
     map_query::properties::{ByMapKey, Partition, PlanProperties, ZeroOrOne},
-    traits::CellValue,
+    traits::{CellValue, RightJoinKey},
 };
+
+use super::ordered_set::OrderedSet;
 
 /// The empty join-stage list.
 #[derive(Debug, Clone, Copy, Default)]
@@ -294,6 +299,244 @@ where
     type OutputPartition = <Self as StageSpec>::OutputPartition;
 }
 
+/// Executable state for one stage of an arbitrary-length join region.
+///
+/// This is deliberately independent of query installation. Each instantiated
+/// stage owns its typed relationship index; a later region executor can chain
+/// as many differently typed states as its stage list requires.
+pub(super) struct StageRuntimeState<K, I, RK, RV, JK, O, LeftKey, RightKeyFn, Project>
+where
+    K: Hash + Eq + CellValue,
+    I: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    O: CellValue,
+{
+    left_rows: FxHashMap<K, I>,
+    left_join_keys: FxHashMap<K, JK>,
+    join_to_left: FxHashMap<JK, Vec<K>>,
+    right_rows: FxHashMap<RK, RV>,
+    right_join_keys: FxHashMap<RK, JK>,
+    join_to_right: FxHashMap<JK, Vec<RK>>,
+    output_cache: FxHashMap<K, O>,
+    left_key: LeftKey,
+    right_key: RightKeyFn,
+    project: Project,
+}
+
+fn add_index_member<I, M>(index: &mut FxHashMap<I, Vec<M>>, index_key: I, member: M)
+where
+    I: Hash + Eq,
+    M: Eq,
+{
+    let members = index.entry(index_key).or_default();
+    if !members.contains(&member) {
+        members.push(member);
+    }
+}
+
+fn remove_index_member<I, M>(index: &mut FxHashMap<I, Vec<M>>, index_key: &I, member: &M)
+where
+    I: Hash + Eq,
+    M: Eq,
+{
+    if let Some(members) = index.get_mut(index_key) {
+        members.retain(|candidate| candidate != member);
+        if members.is_empty() {
+            index.remove(index_key);
+        }
+    }
+}
+
+impl<K, I, RK, RV, JK, O, LeftKey, RightKeyFn, Project>
+    StageRuntimeState<K, I, RK, RV, JK, O, LeftKey, RightKeyFn, Project>
+where
+    K: Hash + Eq + CellValue,
+    I: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    O: CellValue,
+    LeftKey: Fn(&K, &I) -> JK,
+    RightKeyFn: RightJoinKey<RK, RV, JK>,
+    Project: StageProject<K, I, RK, RV, O>,
+{
+    pub(super) fn new(left_key: LeftKey, right_key: RightKeyFn, project: Project) -> Self {
+        Self {
+            left_rows: FxHashMap::default(),
+            left_join_keys: FxHashMap::default(),
+            join_to_left: FxHashMap::default(),
+            right_rows: FxHashMap::default(),
+            right_join_keys: FxHashMap::default(),
+            join_to_right: FxHashMap::default(),
+            output_cache: FxHashMap::default(),
+            left_key,
+            right_key,
+            project,
+        }
+    }
+
+    /// Apply one left event and return the resulting output changes.
+    pub(super) fn apply_left_diff(&mut self, diff: &MapDiff<K, I>) -> Vec<MapDiff<K, O>> {
+        let mut impacted = OrderedSet::default();
+        let mut pending = vec![diff];
+        while let Some(change) = pending.pop() {
+            match change {
+                MapDiff::Initial { entries } => {
+                    impacted.extend(self.left_rows.keys().cloned());
+                    self.left_rows.clear();
+                    self.left_join_keys.clear();
+                    self.join_to_left.clear();
+                    for (key, value) in entries {
+                        self.upsert_left(key.clone(), value.clone(), &mut impacted);
+                    }
+                }
+                MapDiff::Insert { key, value }
+                | MapDiff::Update {
+                    key,
+                    new_value: value,
+                    ..
+                } => self.upsert_left(key.clone(), value.clone(), &mut impacted),
+                MapDiff::Remove { key, .. } => self.remove_left(key, &mut impacted),
+                MapDiff::Batch { changes } => pending.extend(changes.iter().rev()),
+            }
+        }
+        self.recompute_impacted(&mut impacted)
+    }
+
+    /// Apply one right event and return changes for every affected left row.
+    pub(super) fn apply_right_diff(&mut self, diff: &MapDiff<RK, RV>) -> Vec<MapDiff<K, O>> {
+        let mut changed_join_keys = OrderedSet::default();
+        let mut pending = vec![diff];
+        while let Some(change) = pending.pop() {
+            match change {
+                MapDiff::Initial { entries } => {
+                    changed_join_keys.extend(self.right_join_keys.values().cloned());
+                    self.right_rows.clear();
+                    self.right_join_keys.clear();
+                    self.join_to_right.clear();
+                    for (key, value) in entries {
+                        self.upsert_right(key.clone(), value.clone(), &mut changed_join_keys);
+                    }
+                }
+                MapDiff::Insert { key, value }
+                | MapDiff::Update {
+                    key,
+                    new_value: value,
+                    ..
+                } => self.upsert_right(key.clone(), value.clone(), &mut changed_join_keys),
+                MapDiff::Remove { key, .. } => {
+                    self.remove_right(key, &mut changed_join_keys);
+                }
+                MapDiff::Batch { changes } => pending.extend(changes.iter().rev()),
+            }
+        }
+
+        let mut impacted = OrderedSet::default();
+        for join_key in changed_join_keys.drain() {
+            if let Some(left_keys) = self.join_to_left.get(&join_key) {
+                impacted.extend(left_keys.iter().cloned());
+            }
+        }
+        self.recompute_impacted(&mut impacted)
+    }
+
+    fn upsert_left(&mut self, key: K, value: I, impacted: &mut OrderedSet<K>) {
+        let join_key = (self.left_key)(&key, &value);
+        match self.left_join_keys.insert(key.clone(), join_key.clone()) {
+            Some(old_join_key) if old_join_key != join_key => {
+                remove_index_member(&mut self.join_to_left, &old_join_key, &key);
+                add_index_member(&mut self.join_to_left, join_key, key.clone());
+            }
+            Some(_) => {}
+            None => add_index_member(&mut self.join_to_left, join_key, key.clone()),
+        }
+        self.left_rows.insert(key.clone(), value);
+        impacted.insert(key);
+    }
+
+    fn remove_left(&mut self, key: &K, impacted: &mut OrderedSet<K>) {
+        if let Some(join_key) = self.left_join_keys.remove(key) {
+            remove_index_member(&mut self.join_to_left, &join_key, key);
+        }
+        if self.left_rows.remove(key).is_some() || self.output_cache.contains_key(key) {
+            impacted.insert(key.clone());
+        }
+    }
+
+    fn upsert_right(&mut self, key: RK, value: RV, changed_join_keys: &mut OrderedSet<JK>) {
+        let new_join_key = self.right_key.right_join_key(&key, &value);
+        let old_join_key = self.right_join_keys.remove(&key);
+        if old_join_key != new_join_key
+            && let Some(old_join_key) = &old_join_key
+        {
+            remove_index_member(&mut self.join_to_right, old_join_key, &key);
+            changed_join_keys.insert(old_join_key.clone());
+        }
+
+        if let Some(join_key) = new_join_key {
+            if old_join_key.as_ref() != Some(&join_key) {
+                add_index_member(&mut self.join_to_right, join_key.clone(), key.clone());
+            }
+            changed_join_keys.insert(join_key.clone());
+            self.right_join_keys.insert(key.clone(), join_key);
+            self.right_rows.insert(key, value);
+        } else {
+            self.right_rows.remove(&key);
+        }
+    }
+
+    fn remove_right(&mut self, key: &RK, changed_join_keys: &mut OrderedSet<JK>) {
+        if let Some(join_key) = self.right_join_keys.remove(key) {
+            remove_index_member(&mut self.join_to_right, &join_key, key);
+            changed_join_keys.insert(join_key);
+        }
+        self.right_rows.remove(key);
+    }
+
+    fn recompute_impacted(&mut self, impacted: &mut OrderedSet<K>) -> Vec<MapDiff<K, O>> {
+        let mut changes = Vec::new();
+        let mut right_matches = Vec::new();
+        for key in impacted.drain() {
+            let desired = self.left_rows.get(&key).and_then(|input| {
+                right_matches.clear();
+                if let Some(join_key) = self.left_join_keys.get(&key)
+                    && let Some(right_keys) = self.join_to_right.get(join_key)
+                {
+                    right_matches.extend(right_keys.iter().filter_map(|right_key| {
+                        self.right_rows
+                            .get(right_key)
+                            .map(|value| (right_key.clone(), value.clone()))
+                    }));
+                }
+                self.project.project(&key, input, &right_matches)
+            });
+
+            match (self.output_cache.entry(key.clone()), desired) {
+                (Entry::Occupied(mut entry), Some(new_value)) if entry.get() != &new_value => {
+                    let old_value = entry.insert(new_value.clone());
+                    changes.push(MapDiff::Update {
+                        key,
+                        old_value,
+                        new_value,
+                    });
+                }
+                (Entry::Occupied(entry), None) => {
+                    let (key, old_value) = entry.remove_entry();
+                    changes.push(MapDiff::Remove { key, old_value });
+                }
+                (Entry::Vacant(entry), Some(value)) => {
+                    entry.insert(value.clone());
+                    changes.push(MapDiff::Insert { key, value });
+                }
+                (Entry::Occupied(_), Some(_)) | (Entry::Vacant(_), None) => {}
+            }
+        }
+        changes
+    }
+}
+
 /// A left plan followed by an arbitrary heterogeneous list of join stages.
 pub struct JoinRegion<Left, Stages, K, Input> {
     pub left: Left,
@@ -422,5 +665,152 @@ mod tests {
             |_: &u32, sum: &usize| sum * 2,
         );
         assert_eq!(projection.project(&0, &4, &[(1, 5), (2, 6)]), Some(30));
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn stage_runtime_tracks_optional_keys_moves_and_filter_disappearance() {
+        type Right = (Option<u32>, i32);
+        type Output = (bool, u32, Vec<i32>);
+
+        let project = FilterProject::new(
+            DirectProject(
+                |_: &u32, left: &(u32, bool), rights: &[(u32, Right)]| -> Output {
+                    (
+                        left.1,
+                        left.0,
+                        rights.iter().map(|(_, right)| right.1).collect(),
+                    )
+                },
+            ),
+            |_: &u32, output: &Output| output.0,
+        );
+        let mut runtime = StageRuntimeState::new(
+            |_: &u32, left: &(u32, bool)| left.0,
+            crate::traits::OptionalRightKey(|_: &u32, right: &Right| right.0),
+            project,
+        );
+
+        assert_eq!(
+            runtime.apply_left_diff(&MapDiff::Insert {
+                key: 1,
+                value: (10, true),
+            }),
+            vec![MapDiff::Insert {
+                key: 1,
+                value: (true, 10, vec![]),
+            }]
+        );
+
+        assert!(
+            runtime
+                .apply_right_diff(&MapDiff::Insert {
+                    key: 7,
+                    value: (None, 7),
+                })
+                .is_empty()
+        );
+        assert!(!runtime.right_rows.contains_key(&7));
+
+        assert_eq!(
+            runtime.apply_right_diff(&MapDiff::Update {
+                key: 7,
+                old_value: (None, 7),
+                new_value: (Some(10), 7),
+            }),
+            vec![MapDiff::Update {
+                key: 1,
+                old_value: (true, 10, vec![]),
+                new_value: (true, 10, vec![7]),
+            }]
+        );
+        assert_eq!(
+            runtime.apply_right_diff(&MapDiff::Update {
+                key: 7,
+                old_value: (Some(10), 7),
+                new_value: (Some(20), 7),
+            }),
+            vec![MapDiff::Update {
+                key: 1,
+                old_value: (true, 10, vec![7]),
+                new_value: (true, 10, vec![]),
+            }]
+        );
+        assert_eq!(
+            runtime.apply_left_diff(&MapDiff::Update {
+                key: 1,
+                old_value: (10, true),
+                new_value: (20, true),
+            }),
+            vec![MapDiff::Update {
+                key: 1,
+                old_value: (true, 10, vec![]),
+                new_value: (true, 20, vec![7]),
+            }]
+        );
+        assert_eq!(
+            runtime.apply_right_diff(&MapDiff::Update {
+                key: 7,
+                old_value: (Some(20), 7),
+                new_value: (Some(20), 9),
+            }),
+            vec![MapDiff::Update {
+                key: 1,
+                old_value: (true, 20, vec![7]),
+                new_value: (true, 20, vec![9]),
+            }]
+        );
+        assert_eq!(
+            runtime.apply_right_diff(&MapDiff::Update {
+                key: 7,
+                old_value: (Some(20), 9),
+                new_value: (None, 9),
+            }),
+            vec![MapDiff::Update {
+                key: 1,
+                old_value: (true, 20, vec![9]),
+                new_value: (true, 20, vec![]),
+            }]
+        );
+        assert_eq!(
+            runtime.apply_left_diff(&MapDiff::Update {
+                key: 1,
+                old_value: (20, true),
+                new_value: (20, false),
+            }),
+            vec![MapDiff::Remove {
+                key: 1,
+                old_value: (true, 20, vec![]),
+            }]
+        );
+        assert!(
+            runtime
+                .apply_right_diff(&MapDiff::Insert {
+                    key: 7,
+                    value: (Some(20), 11),
+                })
+                .is_empty()
+        );
+        assert_eq!(
+            runtime.apply_left_diff(&MapDiff::Update {
+                key: 1,
+                old_value: (20, false),
+                new_value: (20, true),
+            }),
+            vec![MapDiff::Insert {
+                key: 1,
+                value: (true, 20, vec![11]),
+            }]
+        );
+        assert_eq!(
+            runtime.apply_left_diff(&MapDiff::Remove {
+                key: 1,
+                old_value: (20, true),
+            }),
+            vec![MapDiff::Remove {
+                key: 1,
+                old_value: (true, 20, vec![11]),
+            }]
+        );
     }
 }
