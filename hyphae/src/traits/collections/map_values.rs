@@ -136,6 +136,44 @@ where
             _types: PhantomData,
         }
     }
+
+    /// Fuse a value predicate after this projection.
+    pub fn select<G>(
+        self,
+        predicate: G,
+    ) -> FilterMapValuesPlan<S, K, V, U, impl Fn(&K, &V) -> Option<U> + Send + Sync + 'static>
+    where
+        G: Fn(&U) -> bool + Send + Sync + 'static,
+    {
+        let f = self.f;
+        FilterMapValuesPlan {
+            source: self.source,
+            f: move |key, value| {
+                let value = f(key, value);
+                predicate(&value).then_some(value)
+            },
+            _types: PhantomData,
+        }
+    }
+
+    /// Fuse a key-aware predicate after this projection.
+    pub fn select_by<G>(
+        self,
+        predicate: G,
+    ) -> FilterMapValuesPlan<S, K, V, U, impl Fn(&K, &V) -> Option<U> + Send + Sync + 'static>
+    where
+        G: Fn(&K, &U) -> bool + Send + Sync + 'static,
+    {
+        let f = self.f;
+        FilterMapValuesPlan {
+            source: self.source,
+            f: move |key, value| {
+                let value = f(key, value);
+                predicate(key, &value).then_some(value)
+            },
+            _types: PhantomData,
+        }
+    }
 }
 
 /// Zero-or-one, key-preserving value projection.
