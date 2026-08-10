@@ -24,7 +24,9 @@ use crate::{
         properties::{ByMapKey, Partition, PlanProperties, ZeroOrOne},
     },
     subscription::SubscriptionGuard,
-    traits::{CellValue, RequiredRightKey, RightJoinKey},
+    traits::{
+        CellValue, ForeignKeyRelation, IdFor, OptionalRightKey, RequiredRightKey, RightJoinKey,
+    },
 };
 
 use super::{
@@ -87,8 +89,8 @@ pub trait LastStage {
     type RightValue: CellValue;
 }
 
-impl<Right, K, Input, RK, RV, JK, Output, FL, FR, Project> LastStage
-    for JCons<JoinStage<Right, K, Input, RK, RV, JK, Output, FL, FR, Project>, JNil>
+impl<Right, K, Input, RK, RV, JK, Output, FL, FR, Project, Policy> LastStage
+    for JCons<JoinStage<Right, K, Input, RK, RV, JK, Output, FL, FR, Project, Policy>, JNil>
 where
     Input: CellValue,
     RK: Hash + Eq + CellValue,
@@ -116,22 +118,26 @@ pub trait ReplaceLastProject<F, Output> {
     fn replace_last_project(self, project: F) -> Self::Stages;
 }
 
-impl<Right, K, Input, RK, RV, JK, OldOutput, FL, FR, OldProject, F, Output>
+impl<Right, K, Input, RK, RV, JK, OldOutput, FL, FR, OldProject, Policy, F, Output>
     ReplaceLastProject<F, Output>
-    for JCons<JoinStage<Right, K, Input, RK, RV, JK, OldOutput, FL, FR, OldProject>, JNil>
+    for JCons<JoinStage<Right, K, Input, RK, RV, JK, OldOutput, FL, FR, OldProject, Policy>, JNil>
 {
-    type Stages =
-        JCons<JoinStage<Right, K, Input, RK, RV, JK, Output, FL, FR, DirectProject<F>>, JNil>;
+    type Stages = JCons<
+        JoinStage<Right, K, Input, RK, RV, JK, Output, FL, FR, DirectProject<F>, Policy>,
+        JNil,
+    >;
 
     fn replace_last_project(self, project: F) -> Self::Stages {
         let JoinStage {
             right,
             left_key,
             right_key,
+            index_policy,
             ..
         } = self.head;
         JCons {
-            head: JoinStage::new(right, left_key, right_key, DirectProject(project)),
+            head: JoinStage::new(right, left_key, right_key, DirectProject(project))
+                .with_index_policy(index_policy),
             tail: JNil,
         }
     }
@@ -160,11 +166,24 @@ pub trait MapLast<F, Output> {
     fn map_last(self, map: F) -> Self::Stages;
 }
 
-impl<Right, K, Input, RK, RV, JK, Intermediate, FL, FR, Project, F, Output> MapLast<F, Output>
-    for JCons<JoinStage<Right, K, Input, RK, RV, JK, Intermediate, FL, FR, Project>, JNil>
+impl<Right, K, Input, RK, RV, JK, Intermediate, FL, FR, Project, Policy, F, Output>
+    MapLast<F, Output>
+    for JCons<JoinStage<Right, K, Input, RK, RV, JK, Intermediate, FL, FR, Project, Policy>, JNil>
 {
     type Stages = JCons<
-        JoinStage<Right, K, Input, RK, RV, JK, Output, FL, FR, ThenMap<Project, F, Intermediate>>,
+        JoinStage<
+            Right,
+            K,
+            Input,
+            RK,
+            RV,
+            JK,
+            Output,
+            FL,
+            FR,
+            ThenMap<Project, F, Intermediate>,
+            Policy,
+        >,
         JNil,
     >;
 
@@ -174,10 +193,12 @@ impl<Right, K, Input, RK, RV, JK, Intermediate, FL, FR, Project, F, Output> MapL
             left_key,
             right_key,
             project,
+            index_policy,
             ..
         } = self.head;
         JCons {
-            head: JoinStage::new(right, left_key, right_key, ThenMap::new(project, map)),
+            head: JoinStage::new(right, left_key, right_key, ThenMap::new(project, map))
+                .with_index_policy(index_policy),
             tail: JNil,
         }
     }
@@ -282,6 +303,18 @@ where
         input.clone(),
         rights.iter().map(|(_, value)| value.clone()).collect(),
     )
+}
+
+pub fn map_key<K: Clone, V>(key: &K, _: &V) -> K {
+    key.clone()
+}
+
+pub fn foreign_map_key<Rel, RK, K>(_: &RK, value: &Rel::Child) -> Option<K>
+where
+    Rel: ForeignKeyRelation,
+    Rel::ForeignKey: IdFor<Rel::Parent, MapKey = K>,
+{
+    Rel::foreign_key(value).map(|foreign_key| foreign_key.map_key())
 }
 
 impl<K, Input, RightKey, RightValue, Output, F> StageProject<K, Input, RightKey, RightValue, Output>
@@ -1225,6 +1258,65 @@ where
             + 'static,
     {
         JoinRegion::new(self.left, self.stages.replace_last_project(project))
+    }
+
+    /// Append a relationship-typed left join to this physical region.
+    #[allow(clippy::type_complexity)]
+    pub fn left_join_fk<Rel, R>(
+        self,
+        right: R,
+    ) -> JoinRegion<
+        Left,
+        <Stages as Push<
+            JoinStage<
+                R,
+                K,
+                Current,
+                R::Key,
+                Rel::Child,
+                K,
+                (Current, Vec<Rel::Child>),
+                fn(&K, &Current) -> K,
+                OptionalRightKey<fn(&R::Key, &Rel::Child) -> Option<K>>,
+                DirectProject<
+                    fn(&K, &Current, &[(R::Key, Rel::Child)]) -> (Current, Vec<Rel::Child>),
+                >,
+                SharedRelationIndex<Rel>,
+            >,
+        >>::Output,
+        K,
+        Input,
+    >
+    where
+        Rel: ForeignKeyRelation,
+        R: MapQuery<Value = Rel::Child>,
+        Rel::ForeignKey: IdFor<Rel::Parent, MapKey = K>,
+        Stages: Push<
+            JoinStage<
+                R,
+                K,
+                Current,
+                R::Key,
+                Rel::Child,
+                K,
+                (Current, Vec<Rel::Child>),
+                fn(&K, &Current) -> K,
+                OptionalRightKey<fn(&R::Key, &Rel::Child) -> Option<K>>,
+                DirectProject<
+                    fn(&K, &Current, &[(R::Key, Rel::Child)]) -> (Current, Vec<Rel::Child>),
+                >,
+                SharedRelationIndex<Rel>,
+            >,
+        >,
+    {
+        let project: DirectProject<
+            fn(&K, &Current, &[(R::Key, Rel::Child)]) -> (Current, Vec<Rel::Child>),
+        > = DirectProject(collect_matches::<K, Current, R::Key, Rel::Child>);
+        let left_key: fn(&K, &Current) -> K = map_key::<K, Current>;
+        let right_key: fn(&R::Key, &Rel::Child) -> Option<K> = foreign_map_key::<Rel, R::Key, K>;
+        let stage = JoinStage::new(right, left_key, OptionalRightKey(right_key), project)
+            .with_index_policy(SharedRelationIndex::<Rel>::new());
+        JoinRegion::new(self.left, self.stages.push(stage))
     }
 
     /// Append another ad-hoc left join to this physical region.

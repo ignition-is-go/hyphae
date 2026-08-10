@@ -17,7 +17,8 @@ use crate::{
         CellValue, ForeignKeyRelation, IdFor, OptionalRightKey, RequiredRightKey, RightJoinKey,
         collections::internal::{
             join_region::{
-                DirectProject, JCons, JNil, JoinRegion, JoinStage, StageProject, collect_matches,
+                DirectProject, JCons, JNil, JoinRegion, JoinStage, SharedRelationIndex,
+                StageProject, collect_matches,
             },
             join_runtime::{
                 install_keyed_join_runtime_via_query, install_two_keyed_join_runtime_via_query,
@@ -404,6 +405,200 @@ where
             plan: self.plan.map_joined_values(projection),
             _relation: PhantomData,
         }
+    }
+}
+
+#[allow(private_bounds)]
+impl<
+    L,
+    R1,
+    R2,
+    LK,
+    LV,
+    RK1,
+    RV1,
+    JK1,
+    MV1,
+    RK2,
+    RV2,
+    JK2,
+    MV2,
+    FL1,
+    FR1,
+    FM1,
+    FL2,
+    FR2,
+    FM2,
+    Rel1,
+    Rel2,
+>
+    RelationPlan<
+        JoinedValuesPlan<
+            RelationPlan<JoinedValuesPlan<L, R1, LK, LV, RK1, RV1, JK1, MV1, FL1, FR1, FM1>, Rel1>,
+            R2,
+            LK,
+            MV1,
+            RK2,
+            RV2,
+            JK2,
+            MV2,
+            FL2,
+            FR2,
+            FM2,
+        >,
+        Rel2,
+    >
+where
+    L: MapQuery<Key = LK, Value = LV> + PreservesMapKey<LK>,
+    R1: MapQuery<Key = RK1, Value = RV1>,
+    R2: MapQuery<Key = RK2, Value = RV2>,
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK1: Hash + Eq + CellValue,
+    RV1: CellValue,
+    JK1: Hash + Eq + CellValue,
+    MV1: CellValue,
+    RK2: Hash + Eq + CellValue,
+    RV2: CellValue,
+    JK2: Hash + Eq + CellValue,
+    MV2: CellValue,
+    FL1: Fn(&LK, &LV) -> JK1 + Send + Sync + 'static,
+    FR1: RightJoinKey<RK1, RV1, JK1>,
+    FM1: Fn(&LK, &LV, &[(RK1, RV1)]) -> MV1 + Send + Sync + 'static,
+    FL2: Fn(&LK, &MV1) -> JK2 + Send + Sync + 'static,
+    FR2: RightJoinKey<RK2, RV2, JK2>,
+    FM2: Fn(&LK, &MV1, &[(RK2, RV2)]) -> MV2 + Send + Sync + 'static,
+    Rel1: Send + Sync + 'static,
+    Rel2: Send + Sync + 'static,
+{
+    /// Promote three typed joins into an arbitrary-length coordinated region.
+    #[allow(clippy::type_complexity)]
+    pub fn left_join_fk<Rel3, R3>(
+        self,
+        right: R3,
+    ) -> JoinRegion<
+        L,
+        JCons<
+            JoinStage<
+                R1,
+                LK,
+                LV,
+                RK1,
+                RV1,
+                JK1,
+                MV1,
+                FL1,
+                FR1,
+                JoinProjectionProject<DirectJoinProjection<FM1>>,
+                SharedRelationIndex<Rel1>,
+            >,
+            JCons<
+                JoinStage<
+                    R2,
+                    LK,
+                    MV1,
+                    RK2,
+                    RV2,
+                    JK2,
+                    MV2,
+                    FL2,
+                    FR2,
+                    JoinProjectionProject<DirectJoinProjection<FM2>>,
+                    SharedRelationIndex<Rel2>,
+                >,
+                JCons<
+                    JoinStage<
+                        R3,
+                        LK,
+                        MV2,
+                        R3::Key,
+                        Rel3::Child,
+                        LK,
+                        (MV2, Vec<Rel3::Child>),
+                        fn(&LK, &MV2) -> LK,
+                        OptionalRightKey<fn(&R3::Key, &Rel3::Child) -> Option<LK>>,
+                        DirectProject<
+                            fn(&LK, &MV2, &[(R3::Key, Rel3::Child)]) -> (MV2, Vec<Rel3::Child>),
+                        >,
+                        SharedRelationIndex<Rel3>,
+                    >,
+                    JNil,
+                >,
+            >,
+        >,
+        LK,
+        LV,
+    >
+    where
+        Rel3: ForeignKeyRelation,
+        R3: MapQuery<Value = Rel3::Child>,
+        Rel3::ForeignKey: IdFor<Rel3::Parent, MapKey = LK>,
+    {
+        let JoinedValuesPlan {
+            join: second_join,
+            projection: second_projection,
+            ..
+        } = self.plan;
+        let LeftJoinPlan {
+            left: first_relation,
+            right: right2,
+            left_key: left_key2,
+            right_key: right_key2,
+            ..
+        } = second_join;
+        let JoinedValuesPlan {
+            join: first_join,
+            projection: first_projection,
+            ..
+        } = first_relation.plan;
+        let LeftJoinPlan {
+            left,
+            right: right1,
+            left_key: left_key1,
+            right_key: right_key1,
+            ..
+        } = first_join;
+        let third_project: DirectProject<
+            fn(&LK, &MV2, &[(R3::Key, Rel3::Child)]) -> (MV2, Vec<Rel3::Child>),
+        > = DirectProject(collect_matches::<LK, MV2, R3::Key, Rel3::Child>);
+        let first = JoinStage::new(
+            right1,
+            left_key1,
+            right_key1,
+            JoinProjectionProject(DirectJoinProjection(first_projection)),
+        )
+        .with_index_policy(SharedRelationIndex::<Rel1>::new());
+        let second = JoinStage::new(
+            right2,
+            left_key2,
+            right_key2,
+            JoinProjectionProject(DirectJoinProjection(second_projection)),
+        )
+        .with_index_policy(SharedRelationIndex::<Rel2>::new());
+        let third_left_key: fn(&LK, &MV2) -> LK =
+            crate::traits::collections::internal::join_region::map_key::<LK, MV2>;
+        let third_right_key: fn(&R3::Key, &Rel3::Child) -> Option<LK> =
+            crate::traits::collections::internal::join_region::foreign_map_key::<Rel3, R3::Key, LK>;
+        let third = JoinStage::new(
+            right,
+            third_left_key,
+            OptionalRightKey(third_right_key),
+            third_project,
+        )
+        .with_index_policy(SharedRelationIndex::<Rel3>::new());
+        JoinRegion::new(
+            left,
+            JCons {
+                head: first,
+                tail: JCons {
+                    head: second,
+                    tail: JCons {
+                        head: third,
+                        tail: JNil,
+                    },
+                },
+            },
+        )
     }
 }
 
@@ -1914,6 +2109,48 @@ mod tests {
         );
         assert_eq!(joined.get_value(&"u1".to_string()), Some((0, 0)));
         assert_eq!(joined.get_value(&"u2".to_string()), Some((0, 0)));
+    }
+
+    #[test]
+    fn three_stage_typed_fk_region_updates_every_stage_from_one_root() {
+        let users = CellMap::<String, User>::new();
+        let posts = CellMap::<String, Post>::new();
+        let joined = users
+            .clone()
+            .left_join_fk::<UserPosts, _>(posts.clone())
+            .map_joined_values(|_, _, rows| rows.len())
+            .left_join_fk::<UserPosts, _>(posts.clone())
+            .map_joined_values(|_, first, rows| (*first, rows.len()))
+            .left_join_fk::<UserPosts, _>(posts.clone())
+            .map_joined_values(|_, counts, rows| (counts.0, counts.1, rows.len()))
+            .materialize();
+
+        users.insert(
+            "u1".into(),
+            User {
+                name: "Alice".into(),
+            },
+        );
+        users.insert("u2".into(), User { name: "Bob".into() });
+        posts.insert(
+            "p1".into(),
+            Post {
+                user_id: UserId("u1".into()),
+                title: "First".into(),
+            },
+        );
+        assert_eq!(joined.get_value(&"u1".to_string()), Some((1, 1, 1)));
+        assert_eq!(joined.get_value(&"u2".to_string()), Some((0, 0, 0)));
+
+        posts.insert(
+            "p1".into(),
+            Post {
+                user_id: UserId("u2".into()),
+                title: "Moved".into(),
+            },
+        );
+        assert_eq!(joined.get_value(&"u1".to_string()), Some((0, 0, 0)));
+        assert_eq!(joined.get_value(&"u2".to_string()), Some((1, 1, 1)));
     }
 
     #[derive(Debug, Clone, PartialEq)]
