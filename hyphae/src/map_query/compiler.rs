@@ -1,6 +1,6 @@
 use std::{
     any::{Any, TypeId},
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     hash::Hash,
     sync::{
         Arc, Mutex, OnceLock,
@@ -9,6 +9,7 @@ use std::{
 };
 
 use crate::{
+    cell_map::MapDiff,
     subscription::SubscriptionGuard,
     traits::{CellValue, reactive_map::ReactiveMap},
 };
@@ -25,6 +26,20 @@ pub struct SourceIdentity(*const ());
 impl SourceIdentity {
     pub const fn from_ptr<T>(ptr: *const T) -> Self {
         Self(ptr.cast::<()>())
+    }
+}
+
+struct RootDispatch<K, V> {
+    active: bool,
+    queued: VecDeque<MapDiff<K, V>>,
+}
+
+impl<K, V> Default for RootDispatch<K, V> {
+    fn default() -> Self {
+        Self {
+            active: false,
+            queued: VecDeque::new(),
+        }
     }
 }
 
@@ -221,9 +236,49 @@ impl CompileContext {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner),
             );
+            // One root event is a transaction across every compiled consumer.
+            // Concurrent and reentrant notifications enqueue behind the active
+            // event, so the relationship-index maintainer always runs before
+            // readers for that exact diff and no event observes a later index.
+            let dispatch = Arc::new(Mutex::new(RootDispatch::default()));
             let guard = source.subscribe_diffs_reactive(move |diff| {
-                for sink in &sinks {
-                    sink(diff);
+                {
+                    let mut state = dispatch
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    state.queued.push_back(diff.clone());
+                    if state.active {
+                        return;
+                    }
+                    state.active = true;
+                }
+
+                loop {
+                    let next = {
+                        let mut state = dispatch
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        match state.queued.pop_front() {
+                            Some(diff) => diff,
+                            None => {
+                                state.active = false;
+                                return;
+                            }
+                        }
+                    };
+
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        for sink in &sinks {
+                            sink(&next);
+                        }
+                    }));
+                    if let Err(payload) = result {
+                        dispatch
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .active = false;
+                        std::panic::resume_unwind(payload);
+                    }
                 }
             });
             vec![guard]
@@ -357,6 +412,22 @@ mod tests {
         fn foreign_key(child: &Self::Child) -> Option<Self::ForeignKey> {
             Some(child.parent.clone())
         }
+    }
+
+    #[test]
+    fn associated_runtime_defers_root_installation_until_connected() {
+        use crate::map_query::{CompileQuery, QueryRuntime};
+
+        let source = CellMap::<u64, u64>::new();
+        let mut cx = CompileContext::default();
+        let runtime = source.compile(&mut cx);
+
+        assert_eq!(cx.root_count(), 0);
+        assert_eq!(cx.activation_count(), 0);
+
+        let guards = runtime.install_roots(&mut cx, |_| {});
+        assert_eq!(cx.root_count(), 1);
+        assert_eq!(guards.len(), 1);
     }
 
     #[test]
