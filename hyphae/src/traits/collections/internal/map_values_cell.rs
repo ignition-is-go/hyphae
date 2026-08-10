@@ -211,7 +211,7 @@ where
         }
     };
 
-    source.install(cx, upstream_sink)
+    source.compile_into(cx, upstream_sink)
 }
 
 #[cfg(test)]

@@ -15,7 +15,7 @@ use std::{
 use crate::{
     cell_map::MapDiff,
     map_query::{
-        MapDiffSink, MapQuery, MapQueryInstall,
+        CompileQuery, MapDiffSink, MapQuery,
         properties::{PlanProperties, Repartition, ZeroOrOne},
     },
     subscription::SubscriptionGuard,
@@ -64,7 +64,7 @@ where
     type OutputPartition = Repartition<K2>;
 }
 
-impl<S, K, V, K2, V2, W, F> MapQueryInstall<K2, V2> for ProjectCellPlan<S, K, V, K2, V2, W, F>
+impl<S, K, V, K2, V2, W, F> CompileQuery<K2, V2> for ProjectCellPlan<S, K, V, K2, V2, W, F>
 where
     S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
@@ -74,7 +74,7 @@ where
     W: Watchable<Option<(K2, V2)>> + Gettable<Option<(K2, V2)>> + Clone + Send + Sync + 'static,
     F: Fn(&K, &V) -> W + Send + Sync + 'static,
 {
-    fn install<Sink>(
+    fn compile_into<Sink>(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
         sink: Sink,

@@ -9,7 +9,7 @@ use std::{hash::Hash, marker::PhantomData};
 
 use crate::{
     map_query::{
-        MapDiffSink, MapQuery, MapQueryInstall,
+        CompileQuery, MapDiffSink, MapQuery,
         properties::{ByMapKey, Many, PlanProperties, Repartition},
     },
     subscription::SubscriptionGuard,
@@ -53,7 +53,7 @@ where
     type OutputPartition = ByMapKey<K>;
 }
 
-impl<L, R, K, LV, RV> MapQueryInstall<K, (LV, RV)> for InnerJoinByKeyPlan<L, R, K, LV, RV>
+impl<L, R, K, LV, RV> CompileQuery<K, (LV, RV)> for InnerJoinByKeyPlan<L, R, K, LV, RV>
 where
     L: MapQuery<Key = K, Value = LV>,
     R: MapQuery<Key = K, Value = RV>,
@@ -61,7 +61,7 @@ where
     LV: CellValue,
     RV: CellValue,
 {
-    fn install<Sink>(
+    fn compile_into<Sink>(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
         sink: Sink,
@@ -142,7 +142,7 @@ where
     type OutputPartition = Repartition<(LK, RK)>;
 }
 
-impl<L, R, LK, LV, RK, RV, JK, FL, FR> MapQueryInstall<(LK, RK), (LV, RV)>
+impl<L, R, LK, LV, RK, RV, JK, FL, FR> CompileQuery<(LK, RK), (LV, RV)>
     for InnerJoinByPairPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
 where
     L: MapQuery<Key = LK, Value = LV>,
@@ -155,7 +155,7 @@ where
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
     FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
 {
-    fn install<Sink>(
+    fn compile_into<Sink>(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
         sink: Sink,

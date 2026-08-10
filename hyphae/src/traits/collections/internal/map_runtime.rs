@@ -223,8 +223,8 @@ where
 
 /// Install map-runtime machinery that drives `sink` instead of allocating an output map.
 ///
-/// Subscribes upstream via [`MapQuery::install`](crate::map_query::MapQuery::install),
-/// maintains projection state, and emits resulting diffs (batched per upstream
+/// Compiles the upstream plan into a direct entry point, maintains projection
+/// state, and emits resulting diffs (batched per upstream
 /// diff) into the sink. Returns the subscription guards, which the caller owns.
 ///
 /// Used by `MapQuery` plan nodes (`ProjectPlan`, `ProjectManyPlan`,
@@ -266,5 +266,5 @@ where
         }
     };
 
-    source.install(cx, upstream_sink)
+    source.compile_into(cx, upstream_sink)
 }

@@ -42,27 +42,26 @@ impl<K, V, F> MapDiffSink<K, V> for F where F: Fn(&MapDiff<K, V>) + Send + Sync 
 /// Explicitly erased sink used only by the opt-in shared query boundary.
 pub(crate) type BoxedMapDiffSink<K, V> = Arc<dyn Fn(&MapDiff<K, V>) + Send + Sync>;
 
-/// Crate-private installer hook used by [`MapQuery::materialize`].
+/// Crate-private compiler hook used by [`MapQuery::materialize`].
 ///
-/// `install` consumes the plan node, subscribes upstream sources, and pipes
-/// the diff stream to the provided sink. Returns guards owning upstream
-/// subscriptions and any per-stage state that must outlive the materialized
-/// output cell map.
+/// `compile_into` consumes the plan node, constructs its concrete runtime,
+/// and registers root entry points. Root subscriptions activate only after
+/// the complete plan has compiled.
 ///
 /// This is separate from [`MapQuery`] so that the public trait stays minimal
 /// and cannot be accidentally used to subscribe without materializing.
-pub(crate) trait MapQueryInstall<K, V>: Sized + Send + Sync + 'static
+pub(crate) trait CompileQuery<K, V>: Sized + Send + Sync + 'static
 where
     K: CellValue + Hash + Eq,
     V: CellValue,
 {
-    /// Install this plan's diff propagation into `sink`, returning guards
-    /// that own the upstream subscriptions.
+    /// Compile this plan's diff propagation into `sink`, returning any guards
+    /// constructed before root activation.
     ///
     /// Consumes `self`: a plan can only be materialized once, and its
     /// owned source(s) need to move into the resulting subscription
     /// closures so chained plans compose without cloning.
-    fn install<S>(self, cx: &mut compiler::CompileContext, sink: S) -> Vec<SubscriptionGuard>
+    fn compile_into<S>(self, cx: &mut compiler::CompileContext, sink: S) -> Vec<SubscriptionGuard>
     where
         S: MapDiffSink<K, V>;
 }
@@ -81,7 +80,7 @@ where
 ///
 /// # Sealing
 ///
-/// The `MapQueryInstall<K, V>` supertrait is `pub(crate)`, which seals
+/// The `CompileQuery<K, V>` supertrait is `pub(crate)`, which seals
 /// `MapQuery` so external crates cannot define new query shapes. New plan
 /// shapes are added inside this crate.
 ///
@@ -94,7 +93,7 @@ where
 /// [`CellMap`] (which IS `Clone` — the clone is an `Arc` bump referencing
 /// the same multicast cache) and then clone the cell map.
 #[allow(private_bounds)]
-pub trait MapQuery: MapQueryInstall<Self::Key, Self::Value> + properties::PlanProperties {
+pub trait MapQuery: CompileQuery<Self::Key, Self::Value> + properties::PlanProperties {
     /// Key produced by this query plan.
     type Key: CellValue + Hash + Eq;
     /// Value produced by this query plan.
@@ -125,7 +124,7 @@ pub trait MapQuery: MapQueryInstall<Self::Key, Self::Value> + properties::PlanPr
         };
 
         let mut cx = compiler::CompileContext::default();
-        let mut guards = self.install(&mut cx, sink);
+        let mut guards = self.compile_into(&mut cx, sink);
         guards.extend(cx.activate());
         for g in guards {
             output.own(g);

@@ -8,7 +8,7 @@ use std::{hash::Hash, marker::PhantomData, sync::Arc};
 
 use crate::{
     map_query::{
-        MapDiffSink, MapQuery, MapQueryInstall,
+        CompileQuery, MapDiffSink, MapQuery,
         properties::{Many, PlanProperties, Repartition},
     },
     subscription::SubscriptionGuard,
@@ -51,7 +51,7 @@ where
     pub(crate) _types: PhantomData<fn() -> (K, V, GK)>,
 }
 
-impl<S, K, V, GK, F> MapQueryInstall<GK, usize> for CountByPlan<S, K, V, GK, F>
+impl<S, K, V, GK, F> CompileQuery<GK, usize> for CountByPlan<S, K, V, GK, F>
 where
     S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
@@ -59,7 +59,7 @@ where
     GK: Hash + Eq + CellValue,
     F: Fn(&K, &V) -> GK + Send + Sync + 'static,
 {
-    fn install<Sink>(
+    fn compile_into<Sink>(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
         sink: Sink,

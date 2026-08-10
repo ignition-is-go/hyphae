@@ -129,7 +129,7 @@ where
             sink(&mapped);
         }
     };
-    source.install(cx, upstream_sink)
+    source.compile_into(cx, upstream_sink)
 }
 
 pub fn install_filter_map_values_runtime<K, V, U, S, F, Sink>(
@@ -151,7 +151,7 @@ where
             sink(&mapped);
         }
     };
-    source.install(cx, upstream_sink)
+    source.compile_into(cx, upstream_sink)
 }
 
 #[cfg(test)]

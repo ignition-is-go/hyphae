@@ -9,7 +9,7 @@ use std::{hash::Hash, marker::PhantomData};
 
 use crate::{
     map_query::{
-        MapDiffSink, MapQuery, MapQueryInstall,
+        CompileQuery, MapDiffSink, MapQuery,
         properties::{ByMapKey, PlanProperties, ZeroOrOne},
     },
     subscription::SubscriptionGuard,
@@ -67,7 +67,7 @@ where
     type OutputPartition = ByMapKey<LK>;
 }
 
-impl<L, R, LK, LV, RK, RV, JK, FL, FR> MapQueryInstall<LK, LV>
+impl<L, R, LK, LV, RK, RV, JK, FL, FR> CompileQuery<LK, LV>
     for LeftSemiJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
 where
     L: MapQuery<Key = LK, Value = LV>,
@@ -80,7 +80,7 @@ where
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
     FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
 {
-    fn install<Sink>(
+    fn compile_into<Sink>(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
         sink: Sink,

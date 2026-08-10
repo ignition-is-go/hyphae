@@ -4,7 +4,7 @@ use std::{hash::Hash, marker::PhantomData};
 
 use crate::{
     map_query::{
-        MapDiffSink, MapQuery, MapQueryInstall,
+        CompileQuery, MapDiffSink, MapQuery,
         properties::{Many, PlanProperties, Repartition},
     },
     subscription::SubscriptionGuard,
@@ -41,8 +41,7 @@ where
     pub(crate) _types: PhantomData<fn() -> (SK, SV, LK, OV)>,
 }
 
-impl<S, SK, SV, LK, OV, F> MapQueryInstall<(SK, LK), OV>
-    for FlatMapEntriesPlan<S, SK, SV, LK, OV, F>
+impl<S, SK, SV, LK, OV, F> CompileQuery<(SK, LK), OV> for FlatMapEntriesPlan<S, SK, SV, LK, OV, F>
 where
     S: MapQuery<Key = SK, Value = SV>,
     SK: Hash + Eq + CellValue,
@@ -51,7 +50,7 @@ where
     OV: CellValue,
     F: Fn(&SK, &SV) -> Vec<(LK, OV)> + Send + Sync + 'static,
 {
-    fn install<Sink>(
+    fn compile_into<Sink>(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
         sink: Sink,

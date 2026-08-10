@@ -1,7 +1,7 @@
-//! [`MapQuery`] and [`MapQueryInstall`] implementations for reactive-map sources.
+//! [`MapQuery`] and [`CompileQuery`] implementations for reactive-map sources.
 //!
 //! Every reactive-map source — [`CellMap`], [`NestedMap`] — implements
-//! `MapQueryInstall` via a blanket on [`ReactiveMap`] so chained query
+//! `CompileQuery` via a blanket on [`ReactiveMap`] so chained query
 //! operators can subscribe to a generic upstream map. `MapQuery<K, V>` is
 //! implemented explicitly per source type so that `materialize` can be
 //! overridden when a no-op is sound.
@@ -16,7 +16,7 @@
 use std::{hash::Hash, marker::PhantomData, sync::Arc};
 
 use super::properties::{ByMapKey, ExactlyOne, PlanProperties};
-use super::{MapDiffSink, MapQuery, MapQueryInstall};
+use super::{CompileQuery, MapDiffSink, MapQuery};
 use crate::{
     cell::CellImmutable,
     cell_map::CellMap,
@@ -41,13 +41,17 @@ where
     Vec::new()
 }
 
-impl<K, V, M> MapQueryInstall<K, V> for CellMap<K, V, M>
+impl<K, V, M> CompileQuery<K, V> for CellMap<K, V, M>
 where
     K: CellValue + Hash + Eq,
     V: CellValue,
     M: Clone + Send + Sync + 'static,
 {
-    fn install<S>(self, cx: &mut super::compiler::CompileContext, sink: S) -> Vec<SubscriptionGuard>
+    fn compile_into<S>(
+        self,
+        cx: &mut super::compiler::CompileContext,
+        sink: S,
+    ) -> Vec<SubscriptionGuard>
     where
         S: MapDiffSink<K, V>,
     {
@@ -56,13 +60,17 @@ where
     }
 }
 
-impl<PK, K, V> MapQueryInstall<K, V> for NestedMap<PK, K, V>
+impl<PK, K, V> CompileQuery<K, V> for NestedMap<PK, K, V>
 where
     PK: CellValue + Hash + Eq,
     K: CellValue + Hash + Eq,
     V: CellValue,
 {
-    fn install<S>(self, cx: &mut super::compiler::CompileContext, sink: S) -> Vec<SubscriptionGuard>
+    fn compile_into<S>(
+        self,
+        cx: &mut super::compiler::CompileContext,
+        sink: S,
+    ) -> Vec<SubscriptionGuard>
     where
         S: MapDiffSink<K, V>,
     {

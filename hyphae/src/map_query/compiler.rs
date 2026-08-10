@@ -214,7 +214,7 @@ mod tests {
     use super::*;
     use crate::{
         CellMap,
-        map_query::MapQueryInstall,
+        map_query::CompileQuery,
         traits::{ForeignKeyRelation, IdFor, LeftJoinExt, MapValuesExt},
     };
 
@@ -271,7 +271,7 @@ mod tests {
             .left_join(repeated);
 
         let mut cx = CompileContext::default();
-        let mut guards = plan.install(&mut cx, |_: &crate::cell_map::MapDiff<_, _>| {});
+        let mut guards = plan.compile_into(&mut cx, |_: &crate::cell_map::MapDiff<_, _>| {});
 
         assert_eq!(cx.root_count(), 2);
         assert_eq!(cx.root_use_count(repeated_identity), 2);
@@ -291,7 +291,7 @@ mod tests {
             .left_join_fk::<ParentChildren, _>(children);
 
         let mut cx = CompileContext::default();
-        let mut guards = plan.install(&mut cx, |_| {});
+        let mut guards = plan.compile_into(&mut cx, |_| {});
 
         assert_eq!(
             cx.relationship_use_count::<ParentChildren>(children_identity),

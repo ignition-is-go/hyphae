@@ -8,7 +8,7 @@ use std::{hash::Hash, marker::PhantomData};
 
 use crate::{
     map_query::{
-        MapDiffSink, MapQuery, MapQueryInstall,
+        CompileQuery, MapDiffSink, MapQuery,
         properties::{PlanProperties, ZeroOrOne},
     },
     subscription::SubscriptionGuard,
@@ -48,14 +48,14 @@ where
     pub(crate) _types: PhantomData<fn() -> (K, V)>,
 }
 
-impl<S, K, V, F> MapQueryInstall<K, V> for SelectPlan<S, K, V, F>
+impl<S, K, V, F> CompileQuery<K, V> for SelectPlan<S, K, V, F>
 where
     S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
     V: CellValue,
     F: Fn(&K, &V) -> bool + Send + Sync + 'static,
 {
-    fn install<Sink>(
+    fn compile_into<Sink>(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
         sink: Sink,

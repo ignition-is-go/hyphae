@@ -140,7 +140,7 @@ where
 
 /// Sink-driven diff runtime for [`MapQuery`] plan nodes.
 ///
-/// Subscribes upstream by calling [`MapQuery::install`] on `source` with an
+/// Compiles `source` into an intermediate sink that
 /// intermediate sink that flattens incoming diffs, drives `apply_atomic` to
 /// build the downstream change set, and forwards a single `Batch` per
 /// upstream emission to `sink`. No intermediate `CellMap` is allocated.
@@ -180,7 +180,7 @@ where
         }
     };
 
-    source.install(cx, upstream_sink)
+    source.compile_into(cx, upstream_sink)
 }
 
 /// Sink-driven grouped runtime for [`MapQuery`] plan nodes.

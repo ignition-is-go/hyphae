@@ -621,8 +621,7 @@ where
 
 /// Install join machinery that drives `sink` instead of allocating an output map.
 ///
-/// Subscribes to both source maps via
-/// [`MapQuery::install`](crate::map_query::MapQuery::install), maintains the
+/// Compiles both source maps into direct entry points, maintains the
 /// join state, and pushes resulting `MapDiff`s into the sink. Returns the
 /// subscription guards (caller owns them — typically attaches them to the
 /// materialized output). Chains of plans compose without intermediate
@@ -728,8 +727,8 @@ where
         }
     };
 
-    let mut guards = left.install(cx, left_sink);
-    guards.extend(right.install(cx, right_sink));
+    let mut guards = left.compile_into(cx, left_sink);
+    guards.extend(right.compile_into(cx, right_sink));
     guards
 }
 
@@ -1319,11 +1318,11 @@ where
         }
     };
 
-    let mut guards = left.install(cx, left_sink);
+    let mut guards = left.compile_into(cx, left_sink);
     if let Some(relation) = relation {
-        guards.extend(cx.with_root_relation(relation, |cx| right.install(cx, right_sink)));
+        guards.extend(cx.with_root_relation(relation, |cx| right.compile_into(cx, right_sink)));
     } else {
-        guards.extend(right.install(cx, right_sink));
+        guards.extend(right.compile_into(cx, right_sink));
     }
     guards
 }
@@ -1658,8 +1657,8 @@ where
         }
     };
 
-    let mut guards = left.install(cx, left_sink);
-    guards.extend(right1.install(cx, right1_sink));
-    guards.extend(right2.install(cx, right2_sink));
+    let mut guards = left.compile_into(cx, left_sink);
+    guards.extend(right1.compile_into(cx, right1_sink));
+    guards.extend(right2.compile_into(cx, right2_sink));
     guards
 }

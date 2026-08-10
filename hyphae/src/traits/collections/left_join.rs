@@ -9,7 +9,7 @@ use std::{hash::Hash, marker::PhantomData};
 
 use crate::{
     map_query::{
-        MapDiffSink, MapQuery, MapQueryInstall,
+        CompileQuery, MapDiffSink, MapQuery,
         properties::{ByMapKey, ByRelation, ExactlyOne, PlanProperties, PreservesMapKey},
     },
     subscription::SubscriptionGuard,
@@ -40,14 +40,14 @@ where
     type OutputPartition = ByRelation<Rel>;
 }
 
-impl<K, V, P, Rel> MapQueryInstall<K, V> for RelationPlan<P, Rel>
+impl<K, V, P, Rel> CompileQuery<K, V> for RelationPlan<P, Rel>
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
     P: MapQuery<Key = K, Value = V>,
     Rel: Send + Sync + 'static,
 {
-    fn install<Sink>(
+    fn compile_into<Sink>(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
         sink: Sink,
@@ -55,7 +55,7 @@ where
     where
         Sink: MapDiffSink<K, V>,
     {
-        cx.with_relation_hint::<Rel, _>(|cx| self.plan.install(cx, sink))
+        cx.with_relation_hint::<Rel, _>(|cx| self.plan.compile_into(cx, sink))
     }
 }
 
@@ -208,7 +208,7 @@ where
     type OutputPartition = ByMapKey<LK>;
 }
 
-impl<L, R, LK, LV, RK, RV, JK, OV, FL, FR, F> MapQueryInstall<LK, OV>
+impl<L, R, LK, LV, RK, RV, JK, OV, FL, FR, F> CompileQuery<LK, OV>
     for JoinedValuesPlan<L, R, LK, LV, RK, RV, JK, OV, FL, FR, F>
 where
     L: MapQuery<Key = LK, Value = LV>,
@@ -223,7 +223,7 @@ where
     FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
     F: Fn(&LK, &LV, &[(RK, RV)]) -> OV + Send + Sync + 'static,
 {
-    fn install<Sink>(
+    fn compile_into<Sink>(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
         sink: Sink,
@@ -263,7 +263,7 @@ where
     type Value = OV;
 }
 
-impl<L, R, LK, LV, RK, RV, JK, FL, FR> MapQueryInstall<LK, (LV, Vec<RV>)>
+impl<L, R, LK, LV, RK, RV, JK, FL, FR> CompileQuery<LK, (LV, Vec<RV>)>
     for LeftJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
 where
     L: MapQuery<Key = LK, Value = LV>,
@@ -276,7 +276,7 @@ where
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
     FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
 {
-    fn install<Sink>(
+    fn compile_into<Sink>(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
         sink: Sink,
@@ -508,7 +508,7 @@ where
 }
 
 impl<L, R1, R2, LK, LV, RK1, RV1, JK1, MV, RK2, RV2, JK2, FL1, FR1, FM1, FL2, FR2>
-    MapQueryInstall<LK, (MV, Vec<RV2>)>
+    CompileQuery<LK, (MV, Vec<RV2>)>
     for TwoLeftJoinPlan<
         L,
         R1,
@@ -547,7 +547,7 @@ where
     FL2: Fn(&LK, &MV) -> JK2 + Send + Sync + 'static,
     FR2: Fn(&RK2, &RV2) -> JK2 + Send + Sync + 'static,
 {
-    fn install<Sink>(
+    fn compile_into<Sink>(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
         sink: Sink,
@@ -622,7 +622,7 @@ where
 }
 
 impl<L, R1, R2, LK, LV, RK1, RV1, JK1, MV, RK2, RV2, JK2, OV, FL1, FR1, FM1, FL2, FR2, FM2>
-    MapQueryInstall<LK, OV>
+    CompileQuery<LK, OV>
     for TwoLeftJoinMappedPlan<
         TwoLeftJoinPlan<
             L,
@@ -671,7 +671,7 @@ where
     FR2: Fn(&RK2, &RV2) -> JK2 + Send + Sync + 'static,
     FM2: JoinProjection<LK, MV, RK2, RV2, OV>,
 {
-    fn install<Sink>(
+    fn compile_into<Sink>(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
         sink: Sink,
@@ -708,7 +708,7 @@ where
     RV2: CellValue,
     OV: CellValue,
     F: JoinProjection<LK, MV, RK2, RV2, OV>,
-    Self: MapQueryInstall<LK, OV>,
+    Self: CompileQuery<LK, OV>,
 {
     type Key = LK;
     type Value = OV;

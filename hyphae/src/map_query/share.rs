@@ -36,15 +36,15 @@ use uuid::Uuid;
 use super::properties::{ByMapKey, ExactlyOne, PlanProperties};
 use crate::{
     cell_map::MapDiff,
-    map_query::{BoxedMapDiffSink, MapDiffSink, MapQuery, MapQueryInstall},
+    map_query::{BoxedMapDiffSink, CompileQuery, MapDiffSink, MapQuery},
     subscription::SubscriptionGuard,
     traits::CellValue,
 };
 
 type DiffSubscriber<K, V> = Arc<dyn Fn(&MapDiff<K, V>) + Send + Sync>;
 
-/// Type-erased one-shot installer for the wrapped upstream plan. `MapQuery`'s
-/// `install` consumes `self`, so we wrap a one-shot `FnOnce` in a slot and
+/// Type-erased one-shot compiler for the wrapped upstream plan. Compilation
+/// consumes the plan, so we wrap a one-shot `FnOnce` in a slot and
 /// take it on the first downstream install.
 type UpstreamInstall<K, V> = Box<
     dyn FnOnce(
@@ -200,7 +200,7 @@ where
     /// `query.share()` at the call site.
     pub fn new<Q: MapQuery<Key = K, Value = V>>(q: Q) -> Self {
         let upstream: UpstreamInstall<K, V> =
-            Box::new(move |cx, sink| q.install(cx, move |diff| sink(diff)));
+            Box::new(move |cx, sink| q.compile_into(cx, move |diff| sink(diff)));
         Self {
             inner: Arc::new(SharedMapQueryInner {
                 upstream: Mutex::new(Some(upstream)),
@@ -212,12 +212,12 @@ where
     }
 }
 
-impl<K, V> MapQueryInstall<K, V> for SharedMapQuery<K, V>
+impl<K, V> CompileQuery<K, V> for SharedMapQuery<K, V>
 where
     K: CellValue + Hash + Eq,
     V: CellValue,
 {
-    fn install<Sink>(
+    fn compile_into<Sink>(
         self,
         cx: &mut super::compiler::CompileContext,
         sink: Sink,

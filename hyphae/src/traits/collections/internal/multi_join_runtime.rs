@@ -512,7 +512,7 @@ where
         }
     };
 
-    let mut guards = left.install(cx, left_sink);
-    guards.extend(right.install(cx, right_sink));
+    let mut guards = left.compile_into(cx, left_sink);
+    guards.extend(right.compile_into(cx, right_sink));
     guards
 }

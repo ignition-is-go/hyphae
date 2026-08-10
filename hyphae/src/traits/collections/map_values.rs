@@ -4,7 +4,7 @@ use std::{hash::Hash, marker::PhantomData};
 
 use crate::{
     map_query::{
-        MapDiffSink, MapQuery, MapQueryInstall,
+        CompileQuery, MapDiffSink, MapQuery,
         properties::{ExactlyOne, PlanProperties, ZeroOrOne},
     },
     subscription::SubscriptionGuard,
@@ -56,7 +56,7 @@ where
     _types: PhantomData<fn() -> (K, V, U)>,
 }
 
-impl<S, K, V, U, F> MapQueryInstall<K, U> for MapValuesPlan<S, K, V, U, F>
+impl<S, K, V, U, F> CompileQuery<K, U> for MapValuesPlan<S, K, V, U, F>
 where
     S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
@@ -64,7 +64,7 @@ where
     U: CellValue,
     F: Fn(&K, &V) -> U + Send + Sync + 'static,
 {
-    fn install<Sink>(
+    fn compile_into<Sink>(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
         sink: Sink,
@@ -103,7 +103,7 @@ where
     _types: PhantomData<fn() -> (K, V, U)>,
 }
 
-impl<S, K, V, U, F> MapQueryInstall<K, U> for FilterMapValuesPlan<S, K, V, U, F>
+impl<S, K, V, U, F> CompileQuery<K, U> for FilterMapValuesPlan<S, K, V, U, F>
 where
     S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
@@ -111,7 +111,7 @@ where
     U: CellValue,
     F: Fn(&K, &V) -> Option<U> + Send + Sync + 'static,
 {
-    fn install<Sink>(
+    fn compile_into<Sink>(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
         sink: Sink,
