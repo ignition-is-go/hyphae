@@ -1,0 +1,14 @@
+compiled_query/four_join_application/steady_batch/10000
+                        time:   [20.409 ms 21.415 ms 22.533 ms]
+Found 4 outliers among 50 measurements (8.00%)
+  1 (2.00%) low mild
+  2 (4.00%) high mild
+  1 (2.00%) high severe
+
+    Finished `bench` profile [optimized] target(s) in 0.10s
+     Running benches/compiled_map_queries.rs (target/release/deps/compiled_map_queries-4ca67d3da0a0be8b)
+Gnuplot not found, using plotters backend
+Benchmarking compiled_query/four_join_application/steady_batch/10000
+Benchmarking compiled_query/four_join_application/steady_batch/10000: Warming up for 2.0000 s
+Benchmarking compiled_query/four_join_application/steady_batch/10000: Collecting 50 samples in estimated 6.2267 s (250 iterations)
+Benchmarking compiled_query/four_join_application/steady_batch/10000: Analyzing

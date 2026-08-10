@@ -7,7 +7,10 @@
 
 use std::sync::Arc;
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BatchSize, BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+
+#[path = "support/four_join_application_workload.rs"]
+mod four_join_application_workload;
 use hyphae::{
     CellMap, MapQuery,
     traits::{ForeignKeyRelation, IdFor, LeftJoinExt, MapEntriesExt, MapValuesExt, SelectExt},
@@ -330,6 +333,51 @@ fn bench_two_join_batches(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_four_join_application(c: &mut Criterion) {
+    use four_join_application_workload::{
+        APPLICATION_ROWS, EXPECTED_STAGE_MASK, assert_preflight, build_fixture, update_batch,
+    };
+
+    // This is deliberately untimed. It prevents a fast result obtained by
+    // skipping stages, publishing out of order, or returning before settlement.
+    assert_preflight();
+
+    for (name, rekey) in [("steady_batch", false), ("rekey_10pct", true)] {
+        let fixture = build_fixture();
+        // Warm the exact 10k shape and any threshold/pool transition before the
+        // steady-state measurement. Promotion cost is not silently mixed into it.
+        fixture.source.insert_many(update_batch(1, false));
+        let mut generation = 1_u64;
+        let mut current_rekey = false;
+        let benchmark_name =
+            format!("compiled_query/four_join_application/{name}/{APPLICATION_ROWS}");
+        c.bench_function(&benchmark_name, |b| {
+            b.iter_batched(
+                || {
+                    generation = generation.wrapping_add(1);
+                    current_rekey = if rekey { !current_rekey } else { false };
+                    update_batch(generation, current_rekey)
+                },
+                |changes| {
+                    let expected_generation = changes.first().map_or(0, |(_, row)| row.generation);
+                    assert_ne!(expected_generation, 0, "10k batch is non-empty");
+                    fixture.source.insert_many(changes);
+                    let sentinel = fixture.output.get_value(&0);
+                    assert_eq!(
+                        sentinel
+                            .as_ref()
+                            .map(|row| (row.generation, row.stage_mask)),
+                        Some((expected_generation, EXPECTED_STAGE_MASK)),
+                        "synchronous settled output sentinel"
+                    );
+                    black_box(sentinel);
+                },
+                BatchSize::LargeInput,
+            );
+        });
+    }
+}
+
 criterion_group!(
     benches,
     bench_projection_region,
@@ -338,5 +386,6 @@ criterion_group!(
     bench_repeated_typed_relation_four_join,
     bench_rekey_between_joins,
     bench_two_join_batches,
+    bench_four_join_application,
 );
 criterion_main!(benches);
