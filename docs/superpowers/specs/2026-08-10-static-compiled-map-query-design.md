@@ -503,7 +503,7 @@ estimated work = changed rows * compiled plan cost
 ```
 
 Plan cost accounts for joins, fan-out, expected index probes, rekeys, and user
-kernel hints where available. The calibrated estimated-work hysteresis enters parallel mode at **160,000**
+kernel hints where available. The calibrated estimated-work hysteresis enters parallel mode at **200,000**
 and exits below **96,000**. A balance gate rejects work whose shard distribution
 would make dispatch unproductive; the runtime requests the pool only after cost
 and balance eligibility are established.
@@ -594,15 +594,21 @@ every `project` with `map_entries`.
 
 ## Mandatory before/after benchmark discipline
 
-Every implementation phase begins by capturing its own pre-change baseline and
-ends by running the identical benchmark suite against the candidate. A phase is
-not complete, and no performance claim is accepted, without both sides of the
+Every new implementation phase begins by capturing its own pre-change baseline
+and ends by running the identical benchmark suite against the candidate. A
+phase-local performance claim is not accepted without both sides of that
 comparison.
 
 The baseline must be captured before modifying the code exercised by that
 phase. If implementation has already begun, reproduce the baseline from the
 phase's parent commit in a separate worktree rather than treating an older,
-adjacent benchmark as equivalent.
+adjacent benchmark as equivalent. If exact historical phase-local capture is
+no longer possible, do **not** manufacture retrospective provenance: record the
+missing phase tuple as an explicit process deviation, withdraw independent
+performance claims for that checkpoint, and use an exact-checkout consolidated
+baseline/candidate comparison for release gates. Release closure then requires
+a checked reconciliation mapping every phase to its available report and the
+consolidated evidence.
 
 Each before/after pair uses:
 
@@ -617,7 +623,8 @@ Each before/after pair uses:
 - correctness counters proving both candidates performed the same logical
   work and produced the same output cardinality.
 
-Archive a checked-in report for every phase containing:
+Archive a checked-in report for every phase containing the following fields, or
+record the missing historical report explicitly in the release reconciliation:
 
 ```text
 baseline commit and candidate commit
@@ -644,9 +651,10 @@ is inside that phase's stated gate.
 
 ## Implementation sequence
 
-Each phase is independently benchmarked and may land separately. Do not begin
-with parallel joins. For every phase below, “complete” includes its mandatory
-before/after report.
+Each phase should be independently benchmarked and may land separately. Do not
+begin with parallel joins. For every phase below, “complete” includes its
+before/after report or an explicit release-reconciliation deviation that makes
+no unsupported phase-local performance claim.
 
 ### Phase 0: benchmark and correctness harness
 
@@ -709,7 +717,9 @@ This phase must close or supersede `lv-c682`.
 3. Execute large batches on the existing dedicated Rayon pool.
 4. Add the static work-cost threshold and sequential fallback.
 5. Differential-test sequential versus parallel execution under randomized
-   mixed diffs, reentrancy, panic, and concurrent-root stress.
+   mixed diffs, reentrancy, and concurrent-root stress. Exercise panic in
+   separately forced sequential and parallel fail-stop cases: after a panic the
+   cohort is terminal, so there is intentionally no continuing state oracle.
 
 ### Phase 6: advanced physical optimization
 
@@ -823,6 +833,10 @@ design.
 - `materialize()` remains the single public compilation/observation boundary.
 - Advanced pushdown, join reorder/statistics, cross-materialization index
   sharing, and an opt-in boxed plan are deferred Phase-6 work.
+- The historical Phase-3 series has no standalone full-tuple report, and the
+  early Phase-4 report lacks some resource cells. Those checkpoints make no
+  independent release performance claim; the checked release reconciliation
+  and exact frozen v3/final comparison are authoritative.
 
 ## Final conformance record
 
@@ -838,11 +852,12 @@ design.
 | Static compiler and monomorphized edges | Conforms with boundary erasure | `CompileQuery::Runtime`, `BuildQueryRuntime`, and `QueryRuntime`; root fanout/share boundaries erase. |
 | Stateless/key-preserving fusion | Conforms for recognized shapes | Fused projection kernels; universal algebra fusion is not claimed. |
 | Coordinated arbitrary-N joins | Conforms for recognized fluent left-join regions | Third join promotes to `JoinRegion`; typed N=3/N=8 differential coverage; rekeys are boundaries. |
-| Deterministic adaptive Rayon | Conforms for eligible join runtimes | Native + `scheduler`, 160,000/96,000 hysteresis, balance gate, shared pool; sequential otherwise. |
+| Deterministic adaptive Rayon | Conforms for eligible join runtimes | Native + `scheduler`, 200,000/96,000 hysteresis, balance gate, shared pool; sequential otherwise. |
 | Synchronous settlement | Conforms | Workers compute only; caller merges/publishes before source mutation returns. |
 | Completion/error ordering | Not applicable | `ReactiveMap` exposes `MapDiff` and no terminal completion/error channel. |
 | Panic safety | Conforms to narrow `JoinRegion` fail-stop | Siblings join, failed apply publishes none, cohort poisons; no source/subscriber/global rollback. |
 | Teardown | Conforms | Output owns root guards and final sink is weak; drop tears installation down. |
-| Phase-5 differential/order | Conforms | Forced sequential/shard/Rayon state and exact trace oracle at `3d4db44`. |
-| Performance/resource gates | Conforms | Latency/scaling evidence plus final allocations/codegen/serial compile report in `benchmark-results/lv-671e/` at `db1459a`. |
+| Phase-5 differential/order | Conforms by split coverage | Randomized forced sequential/shard/Rayon state and exact trace oracle at `3d4db44`; separately forced serial/parallel terminal panic proofs at `f6e2b57`. |
+| Enabled-threshold scaling | Conforms | Exact first-enabled-row W1/W2/W4 confidence-bound floors are at least 1.660x in `benchmark-results/lv-515f/`. |
+| Performance/resource gates | Conforms at release level; historical process deviation recorded | Final latency/scaling plus allocations/codegen/serial compile report in `benchmark-results/lv-671e/`; phase mapping and missing Phase-3/4 tuple cells in `docs/superpowers/plans/2026-08-11-static-map-query-phase-evidence-reconciliation.md`. |
 | Advanced physical optimization | Deferred | Pushdown/reorder/stats/cross-materialization sharing/boxed plans remain Phase 6. |

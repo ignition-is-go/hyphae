@@ -1,0 +1,4 @@
+region_threshold_calibration/inactive/2062
+                        time:   [4.3061 ms 4.7187 ms 5.1815 ms]
+Found 2 outliers among 50 measurements (4.00%)
+  2 (4.00%) high mild

@@ -16,7 +16,7 @@ use hyphae::{
 pub const APPLICATION_ROWS: u64 = 10_000;
 /// Frozen batch sizes bracketing the four-stage region's exit and enter costs.
 #[allow(dead_code)]
-pub const REGION_CALIBRATION_ROWS: [u64; 6] = [989, 990, 991, 1_649, 1_650, 1_651];
+pub const REGION_CALIBRATION_ROWS: [u64; 6] = [989, 990, 991, 2_061, 2_062, 2_063];
 pub const RELATION_KEYS: u64 = 2_048;
 pub const MATCHES_PER_KEY: u64 = 4;
 pub const EXPECTED_STAGE_MASK: u8 = 0b1111;

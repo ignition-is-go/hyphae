@@ -20,7 +20,7 @@ fn assert_case(
     rows: u64,
     expected: Snapshot,
 ) {
-    apply(fixture, generation, 1_650);
+    apply(fixture, generation, 2_062);
     if !initially_active {
         apply(fixture, generation, 989);
     }
@@ -49,13 +49,13 @@ fn frozen_cost_brackets_and_dispatch_truth_table() {
     assert_eq!(989_usize * 97, 95_933);
     assert_eq!(990_usize * 97, 96_030);
     assert_eq!(991_usize * 97, 96_127);
-    assert_eq!(1_649_usize * 97, 159_953);
-    assert_eq!(1_650_usize * 97, 160_050);
-    assert_eq!(1_651_usize * 97, 160_147);
+    assert_eq!(2_061_usize * 97, 199_917);
+    assert_eq!(2_062_usize * 97, 200_014);
+    assert_eq!(2_063_usize * 97, 200_111);
 
     let fixture = workload::build_fixture();
     let mut generation = 0;
-    for rows in [989, 990, 991, 1_649] {
+    for rows in [989, 990, 991, 2_061] {
         assert_case(
             &fixture,
             &mut generation,
@@ -67,7 +67,7 @@ fn frozen_cost_brackets_and_dispatch_truth_table() {
             },
         );
     }
-    for rows in [1_650, 1_651] {
+    for rows in [2_062, 2_063] {
         assert_case(
             &fixture,
             &mut generation,
@@ -91,7 +91,7 @@ fn frozen_cost_brackets_and_dispatch_truth_table() {
             ..Snapshot::default()
         },
     );
-    for rows in [990, 991, 1_649, 1_650, 1_651] {
+    for rows in [990, 991, 2_061, 2_062, 2_063] {
         assert_case(
             &fixture,
             &mut generation,

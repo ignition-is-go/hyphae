@@ -1282,9 +1282,9 @@ struct RegionRouter<Runtime, K, Input> {
 }
 
 const DEFAULT_PROMOTION_WORK: usize = 8_192;
-// Criterion interval runs on frozen 10k/four-stage batches put crossover near
-// 120k cost units. The wide band prevents alternating batch sizes oscillating.
-const PARALLEL_REGION_WORK_ENTER: usize = 160_000;
+// The frozen four-stage workload clears the strict 1.5x confidence-bound gate
+// at the first 200k-cost batch. The wide band also prevents oscillation.
+const PARALLEL_REGION_WORK_ENTER: usize = 200_000;
 const PARALLEL_REGION_WORK_EXIT: usize = 96_000;
 
 #[allow(clippy::missing_const_for_fn)]
@@ -4589,7 +4589,7 @@ mod tests {
     #[cfg(feature = "scheduler")]
     fn region_parallel_policy_has_measured_hysteresis() {
         let mut router = RegionRouter::with_config(identity_runtime(), 4, 8_192);
-        let _ = router.apply_left(&insert_batch(7_000));
+        let _ = router.apply_left(&insert_batch(9_000));
         assert!(
             router.parallel_active,
             "large typed work enters parallel mode"
@@ -4605,7 +4605,7 @@ mod tests {
         });
         assert!(router.parallel_active, "work inside the band stays active");
         let _ = router.apply_left(&MapDiff::Batch {
-            changes: (0_i32..7_000)
+            changes: (0_i32..9_000)
                 .map(|step| MapDiff::Update {
                     key: 0,
                     old_value: step,
@@ -4615,7 +4615,7 @@ mod tests {
         });
         assert!(!router.parallel_active, "skew disables active mode");
         let _ = router.apply_left(&MapDiff::Batch {
-            changes: (0..7_000)
+            changes: (0..9_000)
                 .map(|key| MapDiff::Update {
                     key,
                     old_value: i32::try_from(key).unwrap_or(i32::MAX),
@@ -4693,7 +4693,7 @@ mod tests {
             return;
         }
         let mut router = RegionRouter::with_config(identity_runtime(), 4, 1);
-        let _ = router.apply_left(&insert_batch(7_000));
+        let _ = router.apply_left(&insert_batch(9_000));
         let workers: rustc_hash::FxHashSet<_> = router
             .last_left_workers
             .iter()

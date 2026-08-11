@@ -30,7 +30,7 @@ fn expected_delta(workers: usize, state: StartState, rows: u64) -> Snapshot {
         };
     }
     match state {
-        StartState::Inactive if rows >= 1_650 => Snapshot {
+        StartState::Inactive if rows >= 2_062 => Snapshot {
             left_parallel_dispatches: 1,
             inactive_to_parallel: 1,
             ..Snapshot::default()
@@ -58,7 +58,7 @@ fn prepare(fixture: &workload::ApplicationFixture, generation: &mut u64, state: 
         .insert_many(workload::calibration_update_batch(
             *generation,
             false,
-            1_650,
+            2_062,
         ));
     if matches!(state, StartState::Inactive) {
         *generation = generation.saturating_add(1);
