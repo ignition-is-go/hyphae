@@ -475,25 +475,25 @@ fn measure_four_join(revision: &str) {
         .clone()
         .left_join_by(
             shared.clone(),
-            |_key, row| row.relation,
+            |key, _row| *key,
             |_key, dimension| dimension.relation,
         )
         .project(|key, (row, matches)| Some((*key, fold_matches(row, matches, 1))))
         .left_join_by(
             shared_second.clone(),
-            |_key, row| row.relation,
+            |key, _row| *key,
             |_key, dimension| dimension.relation,
         )
         .project(|key, (row, matches)| Some((*key, fold_matches(row, matches, 2))))
         .left_join_by(
             shared,
-            |_key, row| row.relation,
+            |key, _row| *key,
             |_key, dimension| dimension.relation,
         )
         .project(|key, (row, matches)| Some((*key, fold_matches(row, matches, 3))))
         .left_join_by(
             shared_second,
-            |_key, row| row.relation,
+            |key, _row| *key,
             |_key, dimension| dimension.relation,
         )
         .project(|key, (row, matches)| Some((*key, fold_matches(row, matches, 4))));
