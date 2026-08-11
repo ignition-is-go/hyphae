@@ -1,0 +1,30 @@
+   Compiling hyphae v2.0.1 (/home/trevor/Code/hyphae/hyphae)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 28.90s
+     Running unittests src/lib.rs (target/debug/deps/hyphae-8ec7acc6742e988b)
+
+running 22 tests
+test traits::collections::left_join::tests::left_join_keeps_unmatched_left_rows ... ok
+test traits::collections::left_join::tests::fk_join_survives_key_preserving_parent_projection ... ok
+test traits::collections::left_join::tests::left_join_pairs_matched_rows ... ok
+test traits::collections::left_join::tests::left_join_fk_collects_matching_posts ... ok
+test traits::collections::left_join::tests::repeated_optional_fk_relationship_tracks_some_none_transitions ... ok
+test traits::collections::left_join::tests::left_join_fk_keeps_unmatched_with_empty_vec ... ok
+test traits::collections::left_join::tests::right_changes_publish_impacted_left_rows_in_insertion_order ... ok
+test traits::collections::left_join::tests::coordinated_two_join_region_preserves_batched_updates ... ok
+test traits::collections::left_join::tests::left_join_by_preserves_right_batch ... ok
+test traits::collections::left_join::tests::left_join_by_keeps_unmatched_with_empty_vec ... ok
+test traits::collections::left_join::tests::joined_projection_preserves_right_insertion_order ... ok
+test traits::collections::left_join::tests::coordinated_two_join_region_tracks_every_root ... ok
+test traits::collections::left_join::tests::left_join_fk_ignores_absent_foreign_keys ... ok
+test traits::collections::left_join::tests::coordinated_two_join_region_repartitions_updates_between_joins ... ok
+test traits::collections::left_join::tests::three_stage_typed_fk_region_updates_every_stage_from_one_root ... ok
+test traits::collections::left_join::tests::left_join_reacts_to_left_removal ... ok
+test traits::collections::left_join::tests::left_join_reacts_to_right_addition ... ok
+test traits::collections::left_join::tests::left_join_by_collects_multiple_right_matches ... ok
+test traits::collections::left_join::tests::left_join_reacts_to_right_removal ... ok
+test traits::collections::left_join::tests::repeated_fk_relationship_keeps_distinct_projected_right_inputs ... ok
+test traits::collections::left_join::tests::repeated_fk_relationship_reuses_index_and_updates_every_join ... ok
+test traits::collections::left_join::tests::coordinated_two_join_matches_reference_across_mixed_root_updates ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 347 filtered out; finished in 0.01s
+

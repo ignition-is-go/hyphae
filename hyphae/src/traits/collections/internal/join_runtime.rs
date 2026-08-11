@@ -40,6 +40,7 @@ pub(super) struct RelationIndex<RK, RV, JK> {
     pub(super) rows: FxHashMap<RK, RV>,
     pub(super) row_join_keys: FxHashMap<RK, JK>,
     pub(super) join_to_rows: FxHashMap<JK, Vec<RK>>,
+    pub(super) grouped_rows: FxHashMap<JK, Vec<(RK, RV)>>,
 }
 
 impl<RK, RV, JK> Clone for RelationIndex<RK, RV, JK>
@@ -53,6 +54,7 @@ where
             rows: self.rows.clone(),
             row_join_keys: self.row_join_keys.clone(),
             join_to_rows: self.join_to_rows.clone(),
+            grouped_rows: self.grouped_rows.clone(),
         }
     }
 }
@@ -63,6 +65,7 @@ impl<RK, RV, JK> Default for RelationIndex<RK, RV, JK> {
             rows: FxHashMap::default(),
             row_join_keys: FxHashMap::default(),
             join_to_rows: FxHashMap::default(),
+            grouped_rows: FxHashMap::default(),
         }
     }
 }
@@ -118,8 +121,42 @@ where
     }
 }
 
+fn remove_grouped_row<RK, RV, JK>(
+    index: &mut RelationIndex<RK, RV, JK>,
+    join_key: &JK,
+    row_key: &RK,
+) where
+    RK: Eq,
+    JK: Hash + Eq,
+{
+    if let Some(rows) = index.grouped_rows.get_mut(join_key) {
+        rows.retain(|(key, _)| key != row_key);
+        if rows.is_empty() {
+            index.grouped_rows.remove(join_key);
+        }
+    }
+}
+
+fn upsert_grouped_row<RK, RV, JK>(
+    index: &mut RelationIndex<RK, RV, JK>,
+    join_key: JK,
+    row_key: RK,
+    row_value: RV,
+) where
+    RK: Eq,
+    JK: Hash + Eq,
+{
+    let rows = index.grouped_rows.entry(join_key).or_default();
+    if let Some((_, value)) = rows.iter_mut().find(|(key, _)| key == &row_key) {
+        *value = row_value;
+    } else {
+        rows.push((row_key, row_value));
+    }
+}
+
 struct JoinScratch<LK, RK, RV, JK, OK, OV> {
     impacted: OrderedSet<LK>,
+    impacted_keys: Vec<LK>,
     changed_join_keys: OrderedSet<JK>,
     right_rows: Vec<(RK, RV)>,
     desired_rows: FxHashMap<OK, OV>,
@@ -130,6 +167,7 @@ impl<LK, RK, RV, JK, OK, OV> Default for JoinScratch<LK, RK, RV, JK, OK, OV> {
     fn default() -> Self {
         Self {
             impacted: OrderedSet::default(),
+            impacted_keys: Vec::new(),
             changed_join_keys: OrderedSet::default(),
             right_rows: Vec::new(),
             desired_rows: FxHashMap::default(),
@@ -333,6 +371,7 @@ fn upsert_right<LK, LV, RK, RV, JK, OK, OV, FR>(
             && let Some(previous_join_key) = &previous_join_key
         {
             remove_index_member(&mut right.join_to_rows, previous_join_key, &right_key);
+            remove_grouped_row(right, previous_join_key, &right_key);
             changed_join_keys.insert(previous_join_key.clone());
         }
 
@@ -340,6 +379,12 @@ fn upsert_right<LK, LV, RK, RV, JK, OK, OV, FR>(
             if previous_join_key.as_ref() != Some(&join_key) {
                 add_index_member(&mut right.join_to_rows, join_key.clone(), right_key.clone());
             }
+            upsert_grouped_row(
+                right,
+                join_key.clone(),
+                right_key.clone(),
+                right_value.clone(),
+            );
             changed_join_keys.insert(join_key.clone());
             right.row_join_keys.insert(right_key.clone(), join_key);
             right.rows.insert(right_key, right_value);
@@ -365,6 +410,7 @@ fn remove_right<LK, LV, RK, RV, JK, OK, OV>(
     state.right.write(|right| {
         if let Some(previous_join_key) = right.row_join_keys.remove(right_key) {
             remove_index_member(&mut right.join_to_rows, &previous_join_key, right_key);
+            remove_grouped_row(right, &previous_join_key, right_key);
             changed_join_keys.insert(previous_join_key);
         }
         right.rows.remove(right_key);
@@ -411,6 +457,7 @@ fn apply_right_diff<LK, LV, RK, RV, JK, OK, OV, FR>(
                     right.rows.clear();
                     right.row_join_keys.clear();
                     right.join_to_rows.clear();
+                    right.grouped_rows.clear();
                 });
                 for (key, value) in entries {
                     upsert_right(
@@ -689,19 +736,13 @@ where
     pool.install(|| {
         impacted
             .par_iter()
-            .map_init(Vec::<(RK, RV)>::new, |right_rows, left_key| {
-                right_rows.clear();
+            .map(|left_key| {
                 let desired = state.left_rows.get(left_key).and_then(|left_value| {
-                    if let Some(join_key) = state.left_join_keys.get(left_key)
-                        && let Some(right_keys) = right.join_to_rows.get(join_key)
-                    {
-                        right_rows.extend(right_keys.iter().filter_map(|right_key| {
-                            right
-                                .rows
-                                .get(right_key)
-                                .map(|right_value| (right_key.clone(), right_value.clone()))
-                        }));
-                    }
+                    let right_rows = state
+                        .left_join_keys
+                        .get(left_key)
+                        .and_then(|join_key| right.grouped_rows.get(join_key))
+                        .map_or(&[][..], Vec::as_slice);
                     compute_value(left_key, left_value, right_rows)
                 });
                 (left_key.clone(), desired)
@@ -725,7 +766,8 @@ where
     FO: Fn(&LK, &LV, &[(RK, RV)]) -> Option<OV> + Sync,
 {
     let mut changes = Vec::new();
-    let impacted: Vec<LK> = scratch.impacted.drain().collect();
+    scratch.impacted.move_into(&mut scratch.impacted_keys);
+    let impacted = &scratch.impacted_keys;
     // Keep one shared-index guard across estimation and all row lookups for
     // this callback. In particular, Rayon workers share this pinned read.
     let right = state.right.acquire_read();
@@ -747,7 +789,7 @@ where
     if state.parallel_active
         && let Some(pool) = crate::executor::worker_pool()
     {
-        let desired = compute_keyed_parallel(pool, state, &right, &impacted, compute_value);
+        let desired = compute_keyed_parallel(pool, state, &right, impacted, compute_value);
         drop(right);
         for (left_key, desired_value) in desired {
             commit_keyed_value(
@@ -757,33 +799,27 @@ where
                 &mut changes,
             );
         }
+        scratch.impacted_keys.clear();
         return changes;
     }
 
     for left_key in impacted {
-        scratch.right_rows.clear();
-        let desired_value = state.left_rows.get(&left_key).and_then(|left_value| {
-            if let Some(join_key) = state.left_join_keys.get(&left_key)
-                && let Some(right_keys) = right.join_to_rows.get(join_key)
-            {
-                scratch
-                    .right_rows
-                    .extend(right_keys.iter().filter_map(|right_key| {
-                        right
-                            .rows
-                            .get(right_key)
-                            .map(|right_value| (right_key.clone(), right_value.clone()))
-                    }));
-            }
-            compute_value(&left_key, left_value, &scratch.right_rows)
+        let desired_value = state.left_rows.get(left_key).and_then(|left_value| {
+            let right_rows = state
+                .left_join_keys
+                .get(left_key)
+                .and_then(|join_key| right.grouped_rows.get(join_key))
+                .map_or(&[][..], Vec::as_slice);
+            compute_value(left_key, left_value, right_rows)
         });
         commit_keyed_value(
             &mut state.output_cache,
-            left_key,
+            left_key.clone(),
             desired_value,
             &mut changes,
         );
     }
+    scratch.impacted_keys.clear();
 
     changes
 }
@@ -1729,21 +1765,51 @@ where
         move |first: &mut FirstState<LK, LV, RK1, RV1, JK1, MV>,
               second: &mut SecondState<LK, MV, RK2, RV2, JK2, OV>| {
             let mut scratch1 = std::mem::take(&mut first.scratch);
-            let intermediate =
-                recompute_keyed_impacted(first, &mut scratch1, &|key, value, rights| {
-                    Some(map_first(key, value, rights))
+            scratch1.impacted.move_into(&mut scratch1.impacted_keys);
+            let right = first.right.acquire_read();
+            let mut scratch2 = std::mem::take(&mut second.scratch);
+
+            for key in &scratch1.impacted_keys {
+                let desired = first.left_rows.get(key).map(|left_value| {
+                    let right_rows = first
+                        .left_join_keys
+                        .get(key)
+                        .and_then(|join_key| right.grouped_rows.get(join_key))
+                        .map_or(&[][..], Vec::as_slice);
+                    map_first(key, left_value, right_rows)
                 });
+
+                match (first.output_cache.entry(key.clone()), desired) {
+                    (Entry::Occupied(mut entry), Some(value)) if entry.get() != &value => {
+                        entry.insert(value.clone());
+                        upsert_left(
+                            second,
+                            key.clone(),
+                            value,
+                            left_join_key2.as_ref(),
+                            &mut scratch2.impacted,
+                        );
+                    }
+                    (Entry::Vacant(entry), Some(value)) => {
+                        entry.insert(value.clone());
+                        upsert_left(
+                            second,
+                            key.clone(),
+                            value,
+                            left_join_key2.as_ref(),
+                            &mut scratch2.impacted,
+                        );
+                    }
+                    (Entry::Occupied(entry), None) => {
+                        entry.remove();
+                        remove_left(second, key, &mut scratch2.impacted);
+                    }
+                    _ => {}
+                }
+            }
+            scratch1.impacted_keys.clear();
             first.scratch = scratch1;
 
-            let mut scratch2 = std::mem::take(&mut second.scratch);
-            for change in &intermediate {
-                apply_left_diff(
-                    second,
-                    change,
-                    left_join_key2.as_ref(),
-                    &mut scratch2.impacted,
-                );
-            }
             let output = recompute_keyed_impacted(second, &mut scratch2, &|key, value, rights| {
                 Some(map_second(key, value, rights))
             });
@@ -1752,6 +1818,70 @@ where
         }
     };
     let propagate_sequential = Arc::new(propagate_sequential);
+
+    let propagate_atomic_left = {
+        let left_join_key1 = Arc::clone(&left_join_key1);
+        let map_first = Arc::clone(&map_first);
+        let left_join_key2 = Arc::clone(&left_join_key2);
+        let map_second = Arc::clone(&map_second);
+        move |first: &mut FirstState<LK, LV, RK1, RV1, JK1, MV>,
+              second: &mut SecondState<LK, MV, RK2, RV2, JK2, OV>,
+              key: &LK,
+              value: &LV| {
+            first.parallel_active = false;
+            second.parallel_active = false;
+            let join_key = left_join_key1(key, value);
+            match first.left_join_keys.insert(key.clone(), join_key.clone()) {
+                Some(previous) if previous != join_key => {
+                    remove_index_member(&mut first.join_to_left, &previous, key);
+                    add_index_member(&mut first.join_to_left, join_key, key.clone());
+                }
+                Some(_) => {}
+                None => add_index_member(&mut first.join_to_left, join_key, key.clone()),
+            }
+            first.left_rows.insert(key.clone(), value.clone());
+
+            let right = first.right.acquire_read();
+            let right_rows = first
+                .left_join_keys
+                .get(key)
+                .and_then(|join_key| right.grouped_rows.get(join_key))
+                .map_or(&[][..], Vec::as_slice);
+            let middle = map_first(key, value, right_rows);
+            if first.output_cache.get(key) == Some(&middle) {
+                return Vec::new();
+            }
+            first.output_cache.insert(key.clone(), middle.clone());
+
+            let join_key = left_join_key2(key, &middle);
+            match second.left_join_keys.insert(key.clone(), join_key.clone()) {
+                Some(previous) if previous != join_key => {
+                    remove_index_member(&mut second.join_to_left, &previous, key);
+                    add_index_member(&mut second.join_to_left, join_key, key.clone());
+                }
+                Some(_) => {}
+                None => add_index_member(&mut second.join_to_left, join_key, key.clone()),
+            }
+            second.left_rows.insert(key.clone(), middle.clone());
+
+            let right = second.right.acquire_read();
+            let right_rows = second
+                .left_join_keys
+                .get(key)
+                .and_then(|join_key| right.grouped_rows.get(join_key))
+                .map_or(&[][..], Vec::as_slice);
+            let final_value = map_second(key, &middle, right_rows);
+            let mut output = Vec::with_capacity(1);
+            commit_keyed_value(
+                &mut second.output_cache,
+                key.clone(),
+                Some(final_value),
+                &mut output,
+            );
+            output
+        }
+    };
+    let propagate_atomic_left = Arc::new(propagate_atomic_left);
 
     let propagate_sharded = {
         let left_join_key2 = Arc::clone(&left_join_key2);
@@ -1836,6 +1966,7 @@ where
         let left_join_key1 = Arc::clone(&left_join_key1);
         let map_first = Arc::clone(&map_first);
         let propagate_sequential = Arc::clone(&propagate_sequential);
+        let propagate_atomic_left = Arc::clone(&propagate_atomic_left);
         let propagate_sharded = Arc::clone(&propagate_sharded);
         let promote = Arc::clone(&promote);
         let sink = Arc::clone(&sink);
@@ -1859,10 +1990,27 @@ where
                     propagate_sharded(first, second, shard_changes, &event_ordinals)
                 } else {
                     let (first, second, _) = &mut *state;
-                    let mut scratch = std::mem::take(&mut first.scratch);
-                    apply_left_diff(first, diff, left_join_key1.as_ref(), &mut scratch.impacted);
-                    first.scratch = scratch;
-                    propagate_sequential(first, second)
+                    match diff {
+                        MapDiff::Insert { key, value }
+                        | MapDiff::Update {
+                            key,
+                            new_value: value,
+                            ..
+                        } => propagate_atomic_left(first, second, key, value),
+                        MapDiff::Initial { .. }
+                        | MapDiff::Remove { .. }
+                        | MapDiff::Batch { .. } => {
+                            let mut scratch = std::mem::take(&mut first.scratch);
+                            apply_left_diff(
+                                first,
+                                diff,
+                                left_join_key1.as_ref(),
+                                &mut scratch.impacted,
+                            );
+                            first.scratch = scratch;
+                            propagate_sequential(first, second)
+                        }
+                    }
                 };
                 drop(state);
                 changes
@@ -2035,5 +2183,7 @@ mod read_acquisition_tests {
 
         assert_eq!(changes.len(), 128);
         assert_eq!(reads.load(Ordering::Relaxed), 1);
+        assert!(scratch.impacted_keys.is_empty());
+        assert!(scratch.impacted_keys.capacity() >= 128);
     }
 }

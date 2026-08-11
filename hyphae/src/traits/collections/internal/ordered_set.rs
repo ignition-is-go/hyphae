@@ -41,6 +41,16 @@ where
         std::mem::take(&mut self.values).into_iter()
     }
 
+    /// Move the ordered values into a reusable sibling buffer.
+    ///
+    /// Swapping rather than collecting preserves both vectors' allocations
+    /// across callbacks, which matters for the one-row incremental fast path.
+    pub(super) fn move_into(&mut self, buffer: &mut Vec<T>) {
+        self.seen.clear();
+        buffer.clear();
+        std::mem::swap(&mut self.values, buffer);
+    }
+
     pub(super) fn clear(&mut self) {
         self.seen.clear();
         self.values.clear();

@@ -581,6 +581,10 @@ where
     /// own the diff (one upstream clone is unavoidable when the source
     /// hands out `&diff`).
     pub fn apply_diff_owned(&self, diff: MapDiff<K, V>) {
+        if let MapDiff::Batch { changes } = diff {
+            self.apply_batch(changes);
+            return;
+        }
         self.maybe_prune_key_cells();
         match &diff {
             MapDiff::Initial { entries } => {
@@ -635,8 +639,6 @@ where
                 }
             }
             MapDiff::Batch { changes } => {
-                // Batches still go through apply_batch (preserves existing
-                // semantics for callers that emit batched diffs).
                 self.apply_batch(changes.clone());
                 return;
             }
@@ -650,13 +652,20 @@ where
     pub fn apply_batch(&self, changes: Vec<MapDiff<K, V>>) {
         fn apply_one<K, V>(
             map: &CellMap<K, V, CellMutable>,
-            diff: &MapDiff<K, V>,
+            diff: MapDiff<K, V>,
         ) -> Option<MapDiff<K, V>>
         where
             K: Hash + Eq + CellValue,
             V: CellValue,
         {
-            match diff {
+            if let MapDiff::Batch { changes } = diff {
+                let applied: Vec<_> = changes
+                    .into_iter()
+                    .filter_map(|change| apply_one(map, change))
+                    .collect();
+                return (!applied.is_empty()).then_some(MapDiff::Batch { changes: applied });
+            }
+            match &diff {
                 MapDiff::Initial { entries } => {
                     let keys: Vec<K> = map.inner.data.iter().map(|r| r.key().clone()).collect();
                     for key in keys {
@@ -667,7 +676,6 @@ where
                             cell.set(None);
                         }
                     }
-
                     for (key, value) in entries {
                         map.inner.data.insert(key.clone(), value.clone());
                         if let Some(weak) = map.inner.key_cells.get(key)
@@ -676,7 +684,6 @@ where
                             cell.set(Some(value.clone()));
                         }
                     }
-                    Some(diff.clone())
                 }
                 MapDiff::Insert { key, value } => {
                     map.inner.data.insert(key.clone(), value.clone());
@@ -685,7 +692,6 @@ where
                     {
                         cell.set(Some(value.clone()));
                     }
-                    Some(diff.clone())
                 }
                 MapDiff::Remove { key, .. } => {
                     map.inner.data.remove(key);
@@ -694,7 +700,6 @@ where
                     {
                         cell.set(None);
                     }
-                    Some(diff.clone())
                 }
                 MapDiff::Update { key, new_value, .. } => {
                     if map
@@ -705,48 +710,29 @@ where
                     {
                         return None;
                     }
-
                     map.inner.data.insert(key.clone(), new_value.clone());
                     if let Some(weak) = map.inner.key_cells.get(key)
                         && let Some(cell) = weak.upgrade()
                     {
                         cell.set(Some(new_value.clone()));
                     }
-                    Some(diff.clone())
                 }
-                MapDiff::Batch { changes } => {
-                    let mut applied = Vec::with_capacity(changes.len());
-                    for change in changes {
-                        if let Some(applied_change) = apply_one(map, change) {
-                            applied.push(applied_change);
-                        }
-                    }
-
-                    if applied.is_empty() {
-                        None
-                    } else {
-                        Some(MapDiff::Batch { changes: applied })
-                    }
-                }
+                MapDiff::Batch { .. } => return None,
             }
+            Some(diff)
         }
 
         if changes.is_empty() {
             return;
         }
         self.maybe_prune_key_cells();
-
-        let mut applied_changes = Vec::with_capacity(changes.len());
-        for change in changes {
-            if let Some(applied) = apply_one(self, &change) {
-                applied_changes.push(applied);
-            }
-        }
-
+        let applied_changes: Vec<_> = changes
+            .into_iter()
+            .filter_map(|change| apply_one(self, change))
+            .collect();
         if applied_changes.is_empty() {
             return;
         }
-
         self.inner.len_cell.set(self.inner.data.len());
         self.inner.diffs_cell.set(MapDiff::Batch {
             changes: applied_changes,
