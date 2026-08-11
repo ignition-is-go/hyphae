@@ -1,0 +1,37 @@
+{
+  "schema": "hyphae.map-query-evidence/3",
+  "requested_revision": "8a0cadf",
+  "commit": "8a0cadf2d68e267667c0cee22cf66921da9e1768",
+  "adapter_kind": "v3",
+  "sizes": [
+    1,
+    10,
+    100,
+    1000,
+    10000
+  ],
+  "scenarios": [
+    "projection_region",
+    "two_join_region",
+    "repeated_relation_four_join",
+    "rekey_between_joins"
+  ],
+  "build_command": [
+    "cargo",
+    "build",
+    "--locked",
+    "--offline",
+    "--release",
+    "-p",
+    "hyphae",
+    "--example",
+    "map_query_allocation_profile"
+  ],
+  "binary": "target/release/examples/map_query_allocation_profile",
+  "binary_sha256": "3e8efd0cefc2d45b7d29d4df64da366d9adfbffa112539d9bb6e2cbb8f629814",
+  "inputs": {
+    "map_query_allocation_profile_v3.rs": "30cdb3e09d5b202983d99a13315cd4858d20fd5a11bbfd5a05e038976bcfc6c4",
+    "bench-map-query-allocations.sh": "1e743b7df73930ac55ba1cd1dcb9f408d7d7ed0501bc85b53862506589246c5f",
+    "run-map-query-evidence.py": "680f0b0954534a67101111f878454232ab61b7337f45a0d59c29400226fa811a"
+  }
+}
