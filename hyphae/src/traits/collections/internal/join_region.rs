@@ -1274,7 +1274,8 @@ struct RegionRouter<Runtime, K, Input> {
     /// quarantined permanently rather than exposed for recovery.
     poisoned: bool,
     query_poison: QueryPoison,
-    test_config: bool,
+    #[cfg(test)]
+    test_dispatch: Option<crate::map_query::compiler::TestRegionDispatch>,
     #[cfg(test)]
     last_left_workers: Vec<String>,
     _input: PhantomData<fn() -> Input>,
@@ -1344,7 +1345,8 @@ where
             parallel_active: false,
             poisoned: false,
             query_poison: QueryPoison::default(),
-            test_config: false,
+            #[cfg(test)]
+            test_dispatch: None,
             #[cfg(test)]
             last_left_workers: Vec::new(),
             _input: PhantomData,
@@ -1359,20 +1361,43 @@ where
 
     #[cfg(test)]
     fn with_config(runtime: Runtime, shard_count: usize, promotion_work: usize) -> Self {
+        let mut router = Self::new(runtime);
+        router.shard_count = shard_count.max(1);
+        router.promotion_work = promotion_work.max(1);
+        router
+    }
+
+    #[cfg(test)]
+    fn with_test_config(
+        runtime: Runtime,
+        query_poison: QueryPoison,
+        config: crate::map_query::compiler::TestRegionConfig,
+    ) -> Self {
         Self {
             sequential: Some(runtime),
             shards: None,
             key_sequence: FxHashMap::default(),
             next_sequence: 0,
-            shard_count: shard_count.max(1),
-            promotion_work: promotion_work.max(1),
+            shard_count: config.shards.max(1),
+            promotion_work: config.promote_after.max(1),
             parallel_active: false,
             poisoned: false,
-            query_poison: QueryPoison::default(),
-            test_config: true,
-            #[cfg(test)]
+            query_poison,
+            test_dispatch: Some(config.dispatch),
             last_left_workers: Vec::new(),
             _input: PhantomData,
+        }
+    }
+
+    #[allow(clippy::unused_self)]
+    const fn test_configured(&self) -> bool {
+        #[cfg(test)]
+        {
+            self.test_dispatch.is_some()
+        }
+        #[cfg(not(test))]
+        {
+            false
         }
     }
 
@@ -1410,49 +1435,74 @@ where
     fn merge_order(&self, diff: &MapDiff<K, Input>) -> FxHashMap<K, u64> {
         let mut order = FxHashMap::default();
         let mut next = 0;
+        fn remember<K: Hash + Eq + Clone>(key: &K, order: &mut FxHashMap<K, u64>, next: &mut u64) {
+            if !order.contains_key(key) {
+                order.insert(key.clone(), *next);
+                *next = next.saturating_add(1);
+            }
+        }
         fn visit<K: Hash + Eq + Clone, V>(
             diff: &MapDiff<K, V>,
-            existing: &FxHashMap<K, u64>,
+            existing: &mut FxHashMap<K, u64>,
+            next_sequence: &mut u64,
             order: &mut FxHashMap<K, u64>,
             next: &mut u64,
         ) {
             match diff {
                 MapDiff::Initial { entries } => {
-                    // Every old row may disappear. Overlapping rows retain
-                    // their old ordinal, matching StageRuntime impacted order.
-                    order.extend(
-                        existing
-                            .iter()
-                            .map(|(key, sequence)| (key.clone(), *sequence)),
-                    );
-                    *next = (*next).max(
-                        existing
-                            .values()
-                            .copied()
-                            .max()
-                            .map_or(0, |value| value.saturating_add(1)),
-                    );
+                    // An Initial has its own deterministic event-local order:
+                    // the live rows in saved sequence, followed by new rows in
+                    // entry order. Overwrite earlier tiebreaks because tagged
+                    // output ordinals keep separate input events apart.
+                    let mut old: Vec<_> = existing.iter().collect();
+                    old.sort_by_key(|(_, sequence)| **sequence);
+                    let mut initial_next = 0;
+                    for (key, _) in old {
+                        order.insert(key.clone(), initial_next);
+                        initial_next = initial_next.saturating_add(1);
+                    }
                     for (key, _) in entries {
                         if !order.contains_key(key) {
-                            order.insert(key.clone(), *next);
-                            *next += 1;
+                            order.insert(key.clone(), initial_next);
+                            initial_next = initial_next.saturating_add(1);
                         }
                     }
-                }
-                MapDiff::Insert { key, .. }
-                | MapDiff::Update { key, .. }
-                | MapDiff::Remove { key, .. } => {
-                    if !order.contains_key(key) {
-                        order.insert(key.clone(), *next);
-                        *next += 1;
+                    existing.clear();
+                    *next_sequence = 0;
+                    for (key, _) in entries {
+                        existing.insert(key.clone(), *next_sequence);
+                        *next_sequence = next_sequence.saturating_add(1);
                     }
                 }
-                MapDiff::Batch { changes } => changes
-                    .iter()
-                    .for_each(|change| visit(change, existing, order, next)),
+                MapDiff::Insert { key, .. } | MapDiff::Update { key, .. } => {
+                    remember(key, order, next);
+                    if !existing.contains_key(key) {
+                        existing.insert(key.clone(), *next_sequence);
+                        *next_sequence = next_sequence.saturating_add(1);
+                    }
+                }
+                MapDiff::Remove { key, .. } => {
+                    remember(key, order, next);
+                    existing.remove(key);
+                }
+                MapDiff::Batch { changes } => changes.iter().for_each(|change| {
+                    visit(change, existing, next_sequence, order, next);
+                }),
             }
         }
-        visit(diff, &self.key_sequence, &mut order, &mut next);
+        let mut existing = self.key_sequence.clone();
+        let mut next_sequence = existing
+            .values()
+            .copied()
+            .max()
+            .map_or(0, |value| value.saturating_add(1));
+        visit(
+            diff,
+            &mut existing,
+            &mut next_sequence,
+            &mut order,
+            &mut next,
+        );
         order
     }
 
@@ -1538,10 +1588,106 @@ where
         }
     }
 
+    fn event_orders(&self, diff: &MapDiff<K, Input>) -> Vec<FxHashMap<K, u64>> {
+        fn visit<K: Hash + Eq + Clone, V>(
+            diff: &MapDiff<K, V>,
+            existing: &mut FxHashMap<K, u64>,
+            next_sequence: &mut u64,
+            orders: &mut Vec<FxHashMap<K, u64>>,
+        ) {
+            if let MapDiff::Batch { changes } = diff {
+                for change in changes {
+                    visit(change, existing, next_sequence, orders);
+                }
+                return;
+            }
+            let mut event = FxHashMap::default();
+            match diff {
+                MapDiff::Initial { entries } => {
+                    let mut old: Vec<_> = existing.iter().collect();
+                    old.sort_by_key(|(_, sequence)| **sequence);
+                    let mut rank: u64 = 0;
+                    for (key, _) in old {
+                        event.insert(key.clone(), rank);
+                        rank = rank.saturating_add(1);
+                    }
+                    for (key, _) in entries {
+                        if !event.contains_key(key) {
+                            event.insert(key.clone(), rank);
+                            rank = rank.saturating_add(1);
+                        }
+                    }
+                    existing.clear();
+                    *next_sequence = 0;
+                    for (key, _) in entries {
+                        existing.insert(key.clone(), *next_sequence);
+                        *next_sequence = next_sequence.saturating_add(1);
+                    }
+                }
+                MapDiff::Insert { key, .. } | MapDiff::Update { key, .. } => {
+                    event.insert(key.clone(), 0);
+                    if !existing.contains_key(key) {
+                        existing.insert(key.clone(), *next_sequence);
+                        *next_sequence = next_sequence.saturating_add(1);
+                    }
+                }
+                MapDiff::Remove { key, .. } => {
+                    event.insert(key.clone(), 0);
+                    existing.remove(key);
+                }
+                MapDiff::Batch { .. } => return,
+            }
+            orders.push(event);
+        }
+        let mut existing = self.key_sequence.clone();
+        let mut next_sequence = existing
+            .values()
+            .copied()
+            .max()
+            .map_or(0, |value| value.saturating_add(1));
+        let mut orders = Vec::new();
+        visit(diff, &mut existing, &mut next_sequence, &mut orders);
+        orders
+    }
+
+    fn apply_left_eventwise(
+        &mut self,
+        diff: &MapDiff<K, Input>,
+        output: &mut Vec<MapDiff<K, Runtime::Output>>,
+    ) {
+        if let MapDiff::Batch { changes } = diff {
+            for change in changes {
+                self.apply_left_eventwise(change, output);
+            }
+            return;
+        }
+        let order = self.merge_order(diff);
+        let changes = self
+            .sequential
+            .as_mut()
+            .expect("sequential mode")
+            .apply_left_diff(diff);
+        let mut flat = Vec::new();
+        Self::extend_flat(&mut flat, changes);
+        Self::order_changes(&order, &mut flat);
+        output.extend(flat);
+        self.remember(diff);
+    }
+
     fn apply_left(&mut self, diff: &MapDiff<K, Input>) -> Vec<MapDiff<K, Runtime::Output>> {
-        if self.shards.is_none() && self.shard_count <= 1 && !self.test_config {
+        let batch_is_unique = match diff {
+            MapDiff::Batch { changes } => Some(batch_has_unique_atomic_keys(changes)),
+            _ => None,
+        };
+        let non_unique_batch = matches!(batch_is_unique, Some(false));
+        if self.shards.is_none() && self.shard_count <= 1 && !self.test_configured() {
             #[cfg(feature = "region-calibration")]
             crate::region_calibration::left_serial_dispatch();
+            if non_unique_batch {
+                let mut changes = Vec::new();
+                self.apply_left_eventwise(diff, &mut changes);
+                return vec![MapDiff::Batch { changes }];
+            }
             if matches!(diff, MapDiff::Initial { .. }) {
                 let order = self.merge_order(diff);
                 let mut output = self
@@ -1563,9 +1709,16 @@ where
         let estimated_work = diff_work(diff).saturating_mul(Runtime::COST_UNITS);
         let promotion_warranted =
             diff_work(diff) >= self.promotion_work || estimated_work >= PARALLEL_REGION_WORK_ENTER;
-        if self.shards.is_none() && (self.shard_count <= 1 || !promotion_warranted) {
+        if self.shards.is_none()
+            && ((self.shard_count <= 1 && !self.test_configured()) || !promotion_warranted)
+        {
             #[cfg(feature = "region-calibration")]
             crate::region_calibration::left_serial_dispatch();
+            if non_unique_batch {
+                let mut changes = Vec::new();
+                self.apply_left_eventwise(diff, &mut changes);
+                return vec![MapDiff::Batch { changes }];
+            }
             if matches!(diff, MapDiff::Initial { .. }) {
                 let order = self.merge_order(diff);
                 let mut output = self
@@ -1589,11 +1742,10 @@ where
         }
 
         let order = self.merge_order(diff);
-        let preserve_batch = matches!(diff, MapDiff::Batch { .. });
-        let unique_batch = match diff {
-            MapDiff::Batch { changes } => batch_has_unique_atomic_keys(changes),
-            _ => false,
-        };
+        let event_orders = non_unique_batch.then(|| self.event_orders(diff));
+        let preserve_batch = batch_is_unique.is_some();
+        let unique_batch = batch_is_unique.unwrap_or(false);
+
         let shards = self.shards.as_mut().expect("promoted");
         let mut routed = vec![Vec::new(); shards.len()];
         let mut next_ordinal = 0;
@@ -1616,14 +1768,35 @@ where
         let max_shard_work = shard_work.iter().copied().max().unwrap_or(0);
         let balanced = active_shards > 1
             && max_shard_work.saturating_mul(4) <= diff_work(diff).saturating_mul(3);
+        #[cfg(not(feature = "scheduler"))]
+        let _ = (hysteresis_wants_parallel, balanced);
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        let forced_pool = match &self.test_dispatch {
+            Some(crate::map_query::compiler::TestRegionDispatch::InjectedRayon(pool)) => {
+                Some(Arc::clone(pool))
+            }
+            _ => None,
+        };
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        let force_parallel = forced_pool.is_some();
+        #[cfg(not(all(test, not(target_arch = "wasm32"))))]
+        let force_parallel = false;
+        #[cfg(all(test, feature = "scheduler", not(target_arch = "wasm32")))]
+        let allow_production_dispatch = self.test_dispatch.is_none();
+        #[cfg(all(not(test), feature = "scheduler", not(target_arch = "wasm32")))]
+        let allow_production_dispatch = true;
         #[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
-        let resources_available =
-            hysteresis_wants_parallel && balanced && crate::executor::worker_pool().is_some();
+        let production_resources_available = allow_production_dispatch
+            && !force_parallel
+            && hysteresis_wants_parallel
+            && balanced
+            && crate::executor::worker_pool().is_some();
         #[cfg(not(all(feature = "scheduler", not(target_arch = "wasm32"))))]
-        let resources_available = false;
+        let production_resources_available = false;
+        let resources_available = force_parallel || production_resources_available;
         #[cfg(feature = "region-calibration")]
         let was_parallel = self.parallel_active;
-        self.parallel_active = hysteresis_wants_parallel && balanced && resources_available;
+        self.parallel_active = resources_available;
         #[cfg(feature = "region-calibration")]
         match (was_parallel, self.parallel_active) {
             (false, true) => crate::region_calibration::inactive_to_parallel(),
@@ -1667,9 +1840,22 @@ where
             (tagged, worker)
         };
 
-        #[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
+        #[cfg(all(any(feature = "scheduler", test), not(target_arch = "wasm32")))]
         let per_shard = if run_parallel {
-            if let Some(pool) = crate::executor::worker_pool() {
+            #[cfg(test)]
+            let pool = forced_pool.as_deref().or_else(|| {
+                #[cfg(feature = "scheduler")]
+                {
+                    crate::executor::worker_pool()
+                }
+                #[cfg(not(feature = "scheduler"))]
+                {
+                    None
+                }
+            });
+            #[cfg(not(test))]
+            let pool = crate::executor::worker_pool();
+            if let Some(pool) = pool {
                 #[cfg(feature = "region-calibration")]
                 crate::region_calibration::left_parallel_dispatch();
                 use rayon::prelude::*;
@@ -1701,7 +1887,7 @@ where
                 .map(process)
                 .collect()
         };
-        #[cfg(not(all(feature = "scheduler", not(target_arch = "wasm32"))))]
+        #[cfg(not(all(any(feature = "scheduler", test), not(target_arch = "wasm32"))))]
         let per_shard: Vec<_> = {
             let _ = run_parallel;
             #[cfg(feature = "region-calibration")]
@@ -1726,10 +1912,19 @@ where
             .flat_map(|(changes, _)| changes)
             .collect();
         tagged.sort_by_key(|(ordinal, local, shard, change)| {
-            let key_order = diff_key(change)
-                .and_then(|key| order.get(key))
-                .copied()
-                .unwrap_or(u64::MAX);
+            let key_order = if unique_batch || event_orders.is_none() {
+                diff_key(change)
+                    .and_then(|key| order.get(key))
+                    .copied()
+                    .unwrap_or(u64::MAX)
+            } else {
+                usize::try_from(*ordinal)
+                    .ok()
+                    .and_then(|index| event_orders.as_ref().and_then(|orders| orders.get(index)))
+                    .and_then(|event| diff_key(change).and_then(|key| event.get(key)))
+                    .copied()
+                    .unwrap_or(u64::MAX)
+            };
             (*ordinal, key_order, *local, *shard)
         });
         let output = tagged.into_iter().map(|(_, _, _, change)| change).collect();
@@ -1762,12 +1957,17 @@ where
         RV: CellValue,
         Runtime: RightRoot<Location, K, Input, RK, RV>,
     {
-        if self.shards.is_none() && self.shard_count <= 1 && !self.test_config {
-            return self
+        // Canonical router traces follow stable left-source order in every
+        // execution mode. Raw stage-kernel bucket order is a hash/index
+        // implementation detail and cannot be reconstructed across shards.
+        if self.shards.is_none() && self.shard_count <= 1 && !self.test_configured() {
+            let mut output = self
                 .sequential
                 .as_mut()
                 .expect("sequential mode")
                 .apply_right_root_diff_policy(diff, maintain);
+            Self::order_changes(&self.key_sequence, &mut output);
+            return output;
         }
         if self.shards.is_none() && self.shard_count > 1 && diff_work(diff) >= self.promotion_work {
             self.promote();
@@ -1799,11 +1999,13 @@ where
             }
         } else {
             if !matches!(diff, MapDiff::Batch { .. }) {
-                return self
+                let mut output = self
                     .sequential
                     .as_mut()
                     .expect("sequential mode")
                     .apply_right_root_diff_policy(diff, maintain);
+                Self::order_changes(&self.key_sequence, &mut output);
+                return output;
             }
             let order = &self.key_sequence;
             let preserve_batch = true;
@@ -2336,10 +2538,15 @@ where
     {
         let (runtime, rights) = self.stages.split(cx);
         let query_poison = cx.query_poison();
-        let state = Arc::new(Mutex::new(RegionRouter::with_query_poison(
-            runtime,
-            query_poison,
-        )));
+        #[cfg(test)]
+        let router = if let Some(config) = cx.test_region_config() {
+            RegionRouter::with_test_config(runtime, query_poison, config)
+        } else {
+            RegionRouter::with_query_poison(runtime, query_poison)
+        };
+        #[cfg(not(test))]
+        let router = RegionRouter::with_query_poison(runtime, query_poison);
+        let state = Arc::new(Mutex::new(router));
         let sink = Arc::new(sink);
 
         // Register every right root before the left root. CompileContext then
@@ -3050,6 +3257,195 @@ mod tests {
         assert_eq!(right1.inner.diffs_cell.subscriber_count(), 0);
         assert_eq!(right2.inner.diffs_cell.subscriber_count(), 0);
         assert_eq!(right3.inner.diffs_cell.subscriber_count(), 0);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn forced_region_reentrant_different_root_settles_fifo_before_return() {
+        use crate::map_query::compiler::{TestRegionConfig, TestRegionDispatch};
+        use crate::traits::{DepNode, RequiredRightKey};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let left = crate::CellMap::<u32, u32>::new();
+        let right = crate::CellMap::<u8, (u32, i32)>::new();
+        let left_baseline = left.inner.diffs_cell.subscriber_count();
+        let right_baseline = right.inner.diffs_cell.subscriber_count();
+        let stages = JNil.push(JoinStage::new(
+            right.clone(),
+            |_: &u32, value: &u32| *value,
+            RequiredRightKey(|_: &u8, value: &(u32, i32)| value.0),
+            DirectProject(|_: &u32, left: &u32, rights: &[(u8, (u32, i32))]| {
+                (
+                    *left,
+                    rights.iter().map(|(_, value)| value.1).collect::<Vec<_>>(),
+                )
+            }),
+        ));
+        let mut cx = CompileContext::default();
+        cx.set_test_region_config(TestRegionConfig {
+            shards: 3,
+            promote_after: 1,
+            dispatch: TestRegionDispatch::ForceSerial,
+        });
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let armed = Arc::new(AtomicBool::new(false));
+        let fired = Arc::new(AtomicBool::new(false));
+        let sink_observed = Arc::clone(&observed);
+        let sink_armed = Arc::clone(&armed);
+        let sink_fired = Arc::clone(&fired);
+        let sink_right = right.clone();
+        let mut guards = JoinRegion::new(left.clone(), stages).build_into(
+            &mut cx,
+            move |diff: &MapDiff<u32, (u32, Vec<i32>)>| {
+                sink_observed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(diff.clone());
+                if sink_armed.load(Ordering::Acquire) && !sink_fired.swap(true, Ordering::AcqRel) {
+                    sink_right.insert(1, (7, 5));
+                }
+            },
+        );
+        guards.extend(cx.activate());
+        observed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        armed.store(true, Ordering::Release);
+
+        left.insert(1, 7);
+
+        assert_eq!(
+            *observed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![
+                MapDiff::Insert {
+                    key: 1,
+                    value: (7, Vec::new()),
+                },
+                MapDiff::Update {
+                    key: 1,
+                    old_value: (7, Vec::new()),
+                    new_value: (7, vec![5]),
+                },
+            ]
+        );
+        assert!(fired.load(Ordering::Acquire));
+        drop(guards);
+        assert_eq!(left.inner.diffs_cell.subscriber_count(), left_baseline);
+        assert_eq!(right.inner.diffs_cell.subscriber_count(), right_baseline);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    #[allow(clippy::too_many_lines)]
+    fn forced_region_concurrent_right_root_queues_and_settles_before_active_return() {
+        use crate::map_query::compiler::{TestRegionConfig, TestRegionDispatch};
+        use crate::traits::{DepNode, RequiredRightKey};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let left = crate::CellMap::<u32, u32>::new();
+        let right = crate::CellMap::<u8, (u32, i32)>::new();
+        let left_baseline = left.inner.diffs_cell.subscriber_count();
+        let right_baseline = right.inner.diffs_cell.subscriber_count();
+        let armed = Arc::new(AtomicBool::new(false));
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = Arc::new(Mutex::new(release_rx));
+        let projection_armed = Arc::clone(&armed);
+        let projection_release = Arc::clone(&release_rx);
+        let stages = JNil.push(JoinStage::new(
+            right.clone(),
+            |_: &u32, value: &u32| *value,
+            RequiredRightKey(|_: &u8, value: &(u32, i32)| value.0),
+            DirectProject(move |_: &u32, left: &u32, rights: &[(u8, (u32, i32))]| {
+                if projection_armed.swap(false, Ordering::AcqRel) {
+                    assert!(entered_tx.send(()).is_ok());
+                    assert!(
+                        projection_release
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .recv()
+                            .is_ok()
+                    );
+                }
+                (
+                    *left,
+                    rights.iter().map(|(_, value)| value.1).collect::<Vec<_>>(),
+                )
+            }),
+        ));
+        let mut cx = CompileContext::default();
+        cx.set_test_region_config(TestRegionConfig {
+            shards: 3,
+            promote_after: 1,
+            dispatch: TestRegionDispatch::ForceSerial,
+        });
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let sink_observed = Arc::clone(&observed);
+        let mut guards = JoinRegion::new(left.clone(), stages).build_into(
+            &mut cx,
+            move |diff: &MapDiff<u32, (u32, Vec<i32>)>| {
+                sink_observed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(diff.clone());
+            },
+        );
+        guards.extend(cx.activate());
+        observed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        armed.store(true, Ordering::Release);
+
+        let active_left = left.clone();
+        let active = std::thread::spawn(move || active_left.insert(1, 7));
+        assert!(entered_rx.recv().is_ok(), "left projection must be active");
+        let concurrent_right = right.clone();
+        let admitted = std::thread::spawn(move || concurrent_right.insert(1, (7, 5)));
+        assert!(admitted.join().is_ok(), "right event admission must return");
+        assert!(
+            observed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty(),
+            "the blocked left callback cannot publish a partial result"
+        );
+        assert!(release_tx.send(()).is_ok());
+        assert!(
+            active.join().is_ok(),
+            "active source call must settle queued work"
+        );
+
+        let trace = observed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        assert_eq!(
+            trace,
+            vec![
+                MapDiff::Insert {
+                    key: 1,
+                    value: (7, Vec::new()),
+                },
+                MapDiff::Update {
+                    key: 1,
+                    old_value: (7, Vec::new()),
+                    new_value: (7, vec![5]),
+                },
+            ]
+        );
+        let mut final_state = std::collections::BTreeMap::new();
+        apply_trace(&mut final_state, &trace);
+        assert_eq!(
+            final_state,
+            std::collections::BTreeMap::from([(1, (7, vec![5]))])
+        );
+        drop(guards);
+        assert_eq!(left.inner.diffs_cell.subscriber_count(), left_baseline);
+        assert_eq!(right.inner.diffs_cell.subscriber_count(), right_baseline);
     }
 
     #[test]
@@ -4190,6 +4586,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "scheduler")]
     fn region_parallel_policy_has_measured_hysteresis() {
         let mut router = RegionRouter::with_config(identity_runtime(), 4, 8_192);
         let _ = router.apply_left(&insert_batch(7_000));
@@ -4318,6 +4715,873 @@ mod tests {
                 .iter()
                 .all(|name| !name.starts_with("hyphae-worker-")),
             "tiny work must stay on the caller"
+        );
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct DifferentialRight<const N: usize> {
+        join: Option<i64>,
+        add: i64,
+    }
+
+    macro_rules! differential_required_stage {
+        ($n:literal, $modulus:literal) => {
+            StageRuntimeState::with_index(
+                |_: &u32, value: &i64| value.rem_euclid($modulus),
+                RequiredRightKey(|_: &u16, value: &DifferentialRight<$n>| {
+                    value.join.expect("required differential key")
+                }),
+                DirectProject(
+                    |_: &u32, left: &i64, rights: &[(u16, DifferentialRight<$n>)]| {
+                        *left + rights.iter().map(|(_, right)| right.add).sum::<i64>()
+                    },
+                ),
+                DeferredPhysical::default(),
+            )
+        };
+    }
+
+    macro_rules! differential_optional_stage {
+        ($n:literal, $modulus:literal) => {
+            StageRuntimeState::with_index(
+                |_: &u32, value: &i64| value.rem_euclid($modulus),
+                OptionalRightKey(|_: &u16, value: &DifferentialRight<$n>| value.join),
+                DirectProject(
+                    |_: &u32, left: &i64, rights: &[(u16, DifferentialRight<$n>)]| {
+                        *left + rights.iter().map(|(_, right)| right.add).sum::<i64>()
+                    },
+                ),
+                DeferredPhysical::default(),
+            )
+        };
+    }
+
+    macro_rules! differential_runtime3 {
+        () => {
+            JNil.push(differential_required_stage!(0, 5))
+                .push(differential_optional_stage!(1, 7))
+                .push(differential_required_stage!(2, 11))
+        };
+    }
+
+    macro_rules! differential_runtime8 {
+        () => {
+            JNil.push(differential_required_stage!(0, 5))
+                .push(differential_optional_stage!(1, 7))
+                .push(differential_required_stage!(2, 11))
+                .push(differential_required_stage!(3, 13))
+                .push(differential_optional_stage!(4, 17))
+                .push(differential_required_stage!(5, 19))
+                .push(differential_required_stage!(6, 23))
+                .push(differential_optional_stage!(7, 29))
+        };
+    }
+
+    fn apply_trace<K: Ord + Clone, V: Clone>(
+        state: &mut std::collections::BTreeMap<K, V>,
+        changes: &[MapDiff<K, V>],
+    ) {
+        fn apply<K: Ord + Clone, V: Clone>(
+            state: &mut std::collections::BTreeMap<K, V>,
+            change: &MapDiff<K, V>,
+        ) {
+            match change {
+                MapDiff::Initial { entries } => {
+                    state.clear();
+                    state.extend(entries.iter().cloned());
+                }
+                MapDiff::Insert { key, value } => {
+                    state.insert(key.clone(), value.clone());
+                }
+                MapDiff::Update { key, new_value, .. } => {
+                    state.insert(key.clone(), new_value.clone());
+                }
+                MapDiff::Remove { key, .. } => {
+                    state.remove(key);
+                }
+                MapDiff::Batch { changes } => {
+                    for change in changes {
+                        apply(state, change);
+                    }
+                }
+            }
+        }
+        for change in changes {
+            apply(state, change);
+        }
+    }
+
+    use std::collections::BTreeMap;
+
+    fn apply_input<V: Clone>(state: &mut BTreeMap<u32, V>, change: &MapDiff<u32, V>) {
+        apply_trace(state, std::slice::from_ref(change));
+    }
+
+    fn apply_right_input<const N: usize>(
+        states: &mut [BTreeMap<u16, (Option<i64>, i64)>; 8],
+        change: &MapDiff<u16, DifferentialRight<N>>,
+    ) {
+        fn normalized<const N: usize>(
+            change: &MapDiff<u16, DifferentialRight<N>>,
+        ) -> MapDiff<u16, (Option<i64>, i64)> {
+            match change {
+                MapDiff::Initial { entries } => MapDiff::Initial {
+                    entries: entries
+                        .iter()
+                        .map(|(key, value)| (*key, (value.join, value.add)))
+                        .collect(),
+                },
+                MapDiff::Insert { key, value } => MapDiff::Insert {
+                    key: *key,
+                    value: (value.join, value.add),
+                },
+                MapDiff::Update {
+                    key,
+                    old_value,
+                    new_value,
+                } => MapDiff::Update {
+                    key: *key,
+                    old_value: (old_value.join, old_value.add),
+                    new_value: (new_value.join, new_value.add),
+                },
+                MapDiff::Remove { key, old_value } => MapDiff::Remove {
+                    key: *key,
+                    old_value: (old_value.join, old_value.add),
+                },
+                MapDiff::Batch { changes } => MapDiff::Batch {
+                    changes: changes.iter().map(normalized).collect(),
+                },
+            }
+        }
+        if let Some(state) = states.get_mut(N) {
+            apply_trace(state, &[normalized(change)]);
+        }
+    }
+
+    fn eager_differential8(
+        left: &BTreeMap<u32, i64>,
+        rights: &[BTreeMap<u16, (Option<i64>, i64)>; 8],
+    ) -> BTreeMap<u32, i64> {
+        const MODULI: [i64; 8] = [5, 7, 11, 13, 17, 19, 23, 29];
+        left.iter()
+            .map(|(key, initial)| {
+                let mut value = *initial;
+                for (right, modulus) in rights.iter().zip(MODULI) {
+                    let join = value.rem_euclid(modulus);
+                    value = value.wrapping_add(
+                        right
+                            .values()
+                            .filter(|(right_join, _)| *right_join == Some(join))
+                            .map(|(_, add)| *add)
+                            .sum::<i64>(),
+                    );
+                }
+                (*key, value)
+            })
+            .collect()
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    #[allow(
+        clippy::arithmetic_side_effects,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::too_many_lines
+    )]
+    fn forced_static_n8_serial_parallel_differential_is_exact_and_uses_injected_workers() {
+        use crate::map_query::compiler::{TestRegionConfig, TestRegionDispatch};
+        use std::collections::BTreeMap;
+
+        let pool = Arc::new(
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(4)
+                .thread_name(|index| format!("join-region-audit-{index}"))
+                .build()
+                .expect("named injected Rayon pool"),
+        );
+        for shard_count in [3, 8] {
+            let mut oracle = RegionRouter::new(differential_runtime8!());
+            let mut serial = RegionRouter::with_test_config(
+                differential_runtime8!(),
+                QueryPoison::default(),
+                TestRegionConfig {
+                    shards: shard_count,
+                    promote_after: 1,
+                    dispatch: TestRegionDispatch::ForceSerial,
+                },
+            );
+            let mut parallel = RegionRouter::with_test_config(
+                differential_runtime8!(),
+                QueryPoison::default(),
+                TestRegionConfig {
+                    shards: shard_count,
+                    promote_after: 1,
+                    dispatch: TestRegionDispatch::InjectedRayon(Arc::clone(&pool)),
+                },
+            );
+            let mut oracle_state = BTreeMap::new();
+            let mut serial_state = BTreeMap::new();
+            let mut parallel_state = BTreeMap::new();
+            let mut eager_left = BTreeMap::new();
+            let mut eager_rights: [BTreeMap<u16, (Option<i64>, i64)>; 8] =
+                std::array::from_fn(|_| BTreeMap::new());
+
+            macro_rules! left {
+                ($change:expr, $label:literal) => {{
+                    let change = $change;
+                    apply_input(&mut eager_left, &change);
+                    let expected = oracle.apply_left(&change);
+                    let actual_serial = serial.apply_left(&change);
+                    let actual_parallel = parallel.apply_left(&change);
+                    assert_eq!(
+                        actual_serial, expected,
+                        "{}: shard {shard_count} serial trace",
+                        $label
+                    );
+                    assert_eq!(
+                        actual_parallel, expected,
+                        "{}: shard {shard_count} Rayon trace",
+                        $label
+                    );
+                    apply_trace(&mut oracle_state, &expected);
+                    apply_trace(&mut serial_state, &actual_serial);
+                    apply_trace(&mut parallel_state, &actual_parallel);
+                    assert_eq!(serial_state, oracle_state, "{}: serial state", $label);
+                    assert_eq!(parallel_state, oracle_state, "{}: Rayon state", $label);
+                    assert_eq!(
+                        oracle_state,
+                        eager_differential8(&eager_left, &eager_rights),
+                        "{}: independent eager state",
+                        $label
+                    );
+                }};
+            }
+            macro_rules! right {
+                ($location:ty, $rk:ty, $rv:ty, $change:expr, $label:literal) => {{
+                    let change: MapDiff<$rk, $rv> = $change;
+                    apply_right_input(&mut eager_rights, &change);
+                    let expected = oracle.apply_right::<$location, $rk, $rv>(&change, true);
+                    let actual_serial = serial.apply_right::<$location, $rk, $rv>(&change, true);
+                    let actual_parallel =
+                        parallel.apply_right::<$location, $rk, $rv>(&change, true);
+                    assert_eq!(
+                        actual_serial, expected,
+                        "{}: shard {shard_count} serial trace",
+                        $label
+                    );
+                    assert_eq!(
+                        actual_parallel, expected,
+                        "{}: shard {shard_count} Rayon trace",
+                        $label
+                    );
+                    apply_trace(&mut oracle_state, &expected);
+                    apply_trace(&mut serial_state, &actual_serial);
+                    apply_trace(&mut parallel_state, &actual_parallel);
+                    assert_eq!(serial_state, oracle_state, "{}: serial state", $label);
+                    assert_eq!(parallel_state, oracle_state, "{}: Rayon state", $label);
+                    assert_eq!(
+                        oracle_state,
+                        eager_differential8(&eager_left, &eager_rights),
+                        "{}: independent eager state",
+                        $label
+                    );
+                }};
+            }
+
+            // Right activation order precedes the left Initial. Every concrete
+            // Here/There entry point has a distinct value type.
+            right!(
+                Here,
+                u16,
+                DifferentialRight<0>,
+                MapDiff::Initial {
+                    entries: vec![
+                        (
+                            1,
+                            DifferentialRight {
+                                join: Some(0),
+                                add: 2
+                            }
+                        ),
+                        (
+                            2,
+                            DifferentialRight {
+                                join: Some(0),
+                                add: 3
+                            }
+                        )
+                    ]
+                },
+                "root0 Initial multiple matches"
+            );
+            right!(
+                There<Here>,
+                u16,
+                DifferentialRight<1>,
+                MapDiff::Initial {
+                    entries: vec![
+                        (
+                            1,
+                            DifferentialRight {
+                                join: None,
+                                add: 100
+                            }
+                        ),
+                        (
+                            2,
+                            DifferentialRight {
+                                join: Some(2),
+                                add: 5
+                            }
+                        )
+                    ]
+                },
+                "root1 optional Initial"
+            );
+            right!(
+                There<There<Here>>,
+                u16,
+                DifferentialRight<2>,
+                MapDiff::Initial {
+                    entries: vec![(
+                        1,
+                        DifferentialRight {
+                            join: Some(5),
+                            add: 7
+                        }
+                    )]
+                },
+                "root2 Initial"
+            );
+            right!(
+                There<There<There<Here>>>,
+                u16,
+                DifferentialRight<3>,
+                MapDiff::Initial {
+                    entries: vec![(
+                        1,
+                        DifferentialRight {
+                            join: Some(12),
+                            add: 11
+                        }
+                    )]
+                },
+                "root3 Initial"
+            );
+            right!(
+                There<There<There<There<Here>>>>,
+                u16,
+                DifferentialRight<4>,
+                MapDiff::Initial { entries: vec![] },
+                "root4 empty Initial"
+            );
+            right!(
+                There<There<There<There<There<Here>>>>>,
+                u16,
+                DifferentialRight<5>,
+                MapDiff::Initial {
+                    entries: vec![(
+                        1,
+                        DifferentialRight {
+                            join: Some(4),
+                            add: 13
+                        }
+                    )]
+                },
+                "root5 Initial"
+            );
+            right!(
+                There<There<There<There<There<There<Here>>>>>>,
+                u16,
+                DifferentialRight<6>,
+                MapDiff::Initial {
+                    entries: vec![(
+                        1,
+                        DifferentialRight {
+                            join: Some(17),
+                            add: 17
+                        }
+                    )]
+                },
+                "root6 Initial"
+            );
+            right!(
+                There<There<There<There<There<There<There<Here>>>>>>>,
+                u16,
+                DifferentialRight<7>,
+                MapDiff::Initial {
+                    entries: vec![(
+                        1,
+                        DifferentialRight {
+                            join: None,
+                            add: 19
+                        }
+                    )]
+                },
+                "root7 optional Initial"
+            );
+
+            let entries = (0..512_u32).map(|key| (key, i64::from(key % 31))).collect();
+            left!(MapDiff::Initial { entries }, "balanced left Initial");
+            let workers: rustc_hash::FxHashSet<_> = parallel.last_left_workers.iter().collect();
+            assert!(
+                workers.len() >= 2,
+                "injected execution used only {workers:?}"
+            );
+            assert!(
+                workers
+                    .iter()
+                    .all(|name| name.starts_with("join-region-audit-"))
+            );
+
+            left!(
+                MapDiff::Batch {
+                    changes: vec![
+                        MapDiff::Update {
+                            key: 3,
+                            old_value: 3,
+                            new_value: 40
+                        },
+                        MapDiff::Batch {
+                            changes: vec![
+                                MapDiff::Update {
+                                    key: 3,
+                                    old_value: 40,
+                                    new_value: 41
+                                },
+                                MapDiff::Remove {
+                                    key: 4,
+                                    old_value: 4
+                                },
+                                MapDiff::Insert { key: 700, value: 9 },
+                            ]
+                        },
+                        MapDiff::Initial {
+                            entries: vec![(9, 9), (10, 10), (11, 11), (12, 12)]
+                        },
+                        MapDiff::Initial {
+                            entries: vec![(12, 12), (9, 9), (11, 11), (10, 10)]
+                        },
+                        MapDiff::Update {
+                            key: 9,
+                            old_value: 9,
+                            new_value: 29
+                        },
+                    ]
+                },
+                "nested Batch repeated key and Initial"
+            );
+            right!(
+                There<Here>,
+                u16,
+                DifferentialRight<1>,
+                MapDiff::Update {
+                    key: 1,
+                    old_value: DifferentialRight {
+                        join: None,
+                        add: 100
+                    },
+                    new_value: DifferentialRight {
+                        join: Some(1),
+                        add: 23
+                    }
+                },
+                "optional None-Some rekey"
+            );
+            right!(
+                There<Here>,
+                u16,
+                DifferentialRight<1>,
+                MapDiff::Update {
+                    key: 1,
+                    old_value: DifferentialRight {
+                        join: Some(1),
+                        add: 23
+                    },
+                    new_value: DifferentialRight {
+                        join: None,
+                        add: 29
+                    }
+                },
+                "optional Some-None"
+            );
+            right!(
+                Here,
+                u16,
+                DifferentialRight<0>,
+                MapDiff::Update {
+                    key: 2,
+                    old_value: DifferentialRight {
+                        join: Some(0),
+                        add: 3
+                    },
+                    new_value: DifferentialRight {
+                        join: Some(4),
+                        add: 31
+                    }
+                },
+                "required right rekey"
+            );
+            right!(
+                There<There<Here>>,
+                u16,
+                DifferentialRight<2>,
+                MapDiff::Batch {
+                    changes: vec![
+                        MapDiff::Insert {
+                            key: 2,
+                            value: DifferentialRight {
+                                join: Some(7),
+                                add: 37
+                            }
+                        },
+                        MapDiff::Update {
+                            key: 2,
+                            old_value: DifferentialRight {
+                                join: Some(7),
+                                add: 37
+                            },
+                            new_value: DifferentialRight {
+                                join: Some(8),
+                                add: 41
+                            }
+                        },
+                        MapDiff::Remove {
+                            key: 2,
+                            old_value: DifferentialRight {
+                                join: Some(8),
+                                add: 41
+                            }
+                        },
+                    ]
+                },
+                "right repeated key Batch"
+            );
+            right!(
+                There<There<There<Here>>>,
+                u16,
+                DifferentialRight<3>,
+                MapDiff::Initial {
+                    entries: vec![(
+                        8,
+                        DifferentialRight {
+                            join: Some(0),
+                            add: 43
+                        }
+                    )]
+                },
+                "right Initial replacement"
+            );
+            right!(
+                There<There<There<There<Here>>>>,
+                u16,
+                DifferentialRight<4>,
+                MapDiff::Initial {
+                    entries: vec![(
+                        1,
+                        DifferentialRight {
+                            join: Some(0),
+                            add: 47
+                        }
+                    )]
+                },
+                "optional root Initial replacement"
+            );
+            right!(
+                There<There<There<There<There<Here>>>>>,
+                u16,
+                DifferentialRight<5>,
+                MapDiff::Initial { entries: vec![] },
+                "required root empty Initial"
+            );
+            right!(
+                There<There<There<There<There<There<Here>>>>>>,
+                u16,
+                DifferentialRight<6>,
+                MapDiff::Initial {
+                    entries: vec![(
+                        2,
+                        DifferentialRight {
+                            join: Some(0),
+                            add: 53
+                        }
+                    )]
+                },
+                "root6 Initial replacement"
+            );
+            right!(
+                There<There<There<There<There<There<There<Here>>>>>>>,
+                u16,
+                DifferentialRight<7>,
+                MapDiff::Initial {
+                    entries: vec![(
+                        2,
+                        DifferentialRight {
+                            join: Some(0),
+                            add: 59
+                        }
+                    )]
+                },
+                "root7 Initial replacement"
+            );
+            left!(
+                MapDiff::Remove {
+                    key: 9,
+                    old_value: 29
+                },
+                "final atomic removal"
+            );
+            let mut generated_random = 0xd1b5_4a32_d192_ed03_u64;
+            for generated_step in 0..8_u32 {
+                generated_random ^= generated_random << 13;
+                generated_random ^= generated_random >> 7;
+                generated_random ^= generated_random << 17;
+                let repeated_key = 1_000_u32.saturating_add(generated_step.saturating_mul(3));
+                let other_key = repeated_key.saturating_add(1);
+                let initial_value = i64::try_from(generated_random % 101).unwrap_or_default();
+                let other_value = i64::try_from((generated_random >> 8) % 101).unwrap_or_default();
+                let middle_value = initial_value
+                    .saturating_add(i64::from(generated_step))
+                    .saturating_add(1);
+                let final_value = middle_value
+                    .saturating_add(
+                        i64::try_from((generated_random >> 16) % 17).unwrap_or_default(),
+                    )
+                    .saturating_add(1);
+                let generated = MapDiff::Batch {
+                    changes: vec![
+                        MapDiff::Initial {
+                            entries: vec![(other_key, other_value), (repeated_key, initial_value)],
+                        },
+                        MapDiff::Batch {
+                            changes: vec![
+                                MapDiff::Update {
+                                    key: repeated_key,
+                                    old_value: initial_value,
+                                    new_value: middle_value,
+                                },
+                                MapDiff::Batch {
+                                    changes: vec![MapDiff::Update {
+                                        key: repeated_key,
+                                        old_value: middle_value,
+                                        new_value: final_value,
+                                    }],
+                                },
+                            ],
+                        },
+                    ],
+                };
+                left!(generated, "seeded nested Initial and repeated-key Batch");
+            }
+            left!(
+                MapDiff::Initial { entries: vec![] },
+                "final empty left Initial"
+            );
+            assert!(oracle_state.is_empty());
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    #[allow(clippy::arithmetic_side_effects, clippy::unwrap_used)]
+    #[allow(clippy::indexing_slicing, clippy::too_many_lines)]
+    fn forced_static_n3_has_three_concrete_entry_points() {
+        use crate::map_query::compiler::{TestRegionConfig, TestRegionDispatch};
+        let pool = Arc::new(
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(4)
+                .build()
+                .unwrap(),
+        );
+        let config = |dispatch| TestRegionConfig {
+            shards: 3,
+            promote_after: 1,
+            dispatch,
+        };
+        let mut oracle = RegionRouter::new(differential_runtime3!());
+        let mut serial = RegionRouter::with_test_config(
+            differential_runtime3!(),
+            QueryPoison::default(),
+            config(TestRegionDispatch::ForceSerial),
+        );
+        let mut parallel = RegionRouter::with_test_config(
+            differential_runtime3!(),
+            QueryPoison::default(),
+            config(TestRegionDispatch::InjectedRayon(pool)),
+        );
+        let a = MapDiff::Initial {
+            entries: vec![(
+                0,
+                DifferentialRight {
+                    join: Some(0),
+                    add: 1,
+                },
+            )],
+        };
+        let expected = oracle.apply_right::<Here, u16, DifferentialRight<0>>(&a, true);
+        assert_eq!(
+            serial.apply_right::<Here, u16, DifferentialRight<0>>(&a, true),
+            expected
+        );
+        assert_eq!(
+            parallel.apply_right::<Here, u16, DifferentialRight<0>>(&a, true),
+            expected
+        );
+        let b = MapDiff::Initial {
+            entries: vec![(0, DifferentialRight { join: None, add: 2 })],
+        };
+        let expected = oracle.apply_right::<There<Here>, u16, DifferentialRight<1>>(&b, true);
+        assert_eq!(
+            serial.apply_right::<There<Here>, u16, DifferentialRight<1>>(&b, true),
+            expected
+        );
+        assert_eq!(
+            parallel.apply_right::<There<Here>, u16, DifferentialRight<1>>(&b, true),
+            expected
+        );
+        let c = MapDiff::Initial {
+            entries: vec![(
+                0,
+                DifferentialRight {
+                    join: Some(1),
+                    add: 3,
+                },
+            )],
+        };
+        let expected =
+            oracle.apply_right::<There<There<Here>>, u16, DifferentialRight<2>>(&c, true);
+        assert_eq!(
+            serial.apply_right::<There<There<Here>>, u16, DifferentialRight<2>>(&c, true),
+            expected
+        );
+        assert_eq!(
+            parallel.apply_right::<There<There<Here>>, u16, DifferentialRight<2>>(&c, true),
+            expected
+        );
+        let left = MapDiff::Initial {
+            entries: (0..256).map(|key| (key, i64::from(key))).collect(),
+        };
+        let expected = oracle.apply_left(&left);
+        assert_eq!(serial.apply_left(&left), expected);
+        assert_eq!(parallel.apply_left(&left), expected);
+
+        // Fixed seed table: every seed drives a deterministic sequence whose
+        // old_values are interpreted against the immediately preceding leaf.
+        let mut values: Vec<i64> = (0..256).map(i64::from).collect();
+        for seed in [0x243f_6a88_u64, 0x85a3_08d3, 0x1319_8a2e] {
+            let mut random = seed;
+            for step in 0..96_u32 {
+                random ^= random << 13;
+                random ^= random >> 7;
+                random ^= random << 17;
+                let key = u32::try_from(random % 256).unwrap_or_default();
+                let index = usize::try_from(key).unwrap_or_default();
+                let old_value = values[index];
+                let new_value = i64::from(step) + i64::try_from(random % 97).unwrap_or_default();
+                values[index] = new_value;
+                let change = MapDiff::Update {
+                    key,
+                    old_value,
+                    new_value,
+                };
+                let expected = oracle.apply_left(&change);
+                assert_eq!(
+                    serial.apply_left(&change),
+                    expected,
+                    "seed={seed:#x} step={step} serial"
+                );
+                assert_eq!(
+                    parallel.apply_left(&change),
+                    expected,
+                    "seed={seed:#x} step={step} Rayon"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    #[allow(clippy::expect_used)]
+    fn shared_relationship_maintainer_writes_exactly_once_per_physical_leaf() {
+        use crate::{
+            map_query::compiler::{TestRegionConfig, TestRegionDispatch},
+            traits::DepNode as _,
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let left = crate::CellMap::<u32, u32>::new();
+        let right = SharedRight::new();
+        let baseline_left = left.inner.diffs_cell.subscriber_count();
+        let baseline_right = right.inner.diffs_cell.subscriber_count();
+        let probe = Arc::new(AtomicUsize::new(0));
+        let pool = Arc::new(
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(4)
+                .thread_name(|index| format!("join-region-maintainer-{index}"))
+                .build()
+                .expect("maintainer test pool"),
+        );
+        let stages = JNil
+            .push(shared_stage(right.clone()))
+            .push(shared_stage(right.clone()))
+            .push(shared_stage(right.clone()));
+        let mut cx = CompileContext::default();
+        cx.set_test_region_config(TestRegionConfig {
+            shards: 8,
+            promote_after: 1,
+            dispatch: TestRegionDispatch::InjectedRayon(pool),
+        });
+        cx.set_maintained_write_probe(Arc::clone(&probe));
+        let mut guards = JoinRegion::new(left.clone(), stages).build_into(&mut cx, |_| {});
+        guards.extend(cx.activate());
+        // A physical root's subscription delivers one Initial callback. Its
+        // entry count is irrelevant: the maintained index is replaced by one
+        // write for that callback, matching the physical callback contract.
+        assert_eq!(probe.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            right.inner.diffs_cell.subscriber_count(),
+            baseline_right + 1
+        );
+        assert_eq!(left.inner.diffs_cell.subscriber_count(), baseline_left + 1);
+
+        right.insert(1, (7, 10));
+        assert_eq!(probe.load(Ordering::Relaxed), 2);
+        right.apply_batch(vec![
+            MapDiff::Update {
+                key: 1,
+                old_value: (7, 10),
+                new_value: (8, 11),
+            },
+            MapDiff::Insert {
+                key: 2,
+                value: (7, 12),
+            },
+            MapDiff::Remove {
+                key: 2,
+                old_value: (7, 12),
+            },
+        ]);
+        assert_eq!(probe.load(Ordering::Relaxed), 5);
+        right.apply_diff_owned(MapDiff::Initial {
+            entries: vec![(3, (9, 13)), (4, (9, 14))],
+        });
+        assert_eq!(
+            probe.load(Ordering::Relaxed),
+            6,
+            "Initial is one physical leaf"
+        );
+
+        drop(guards);
+        assert_eq!(right.inner.diffs_cell.subscriber_count(), baseline_right);
+        assert_eq!(left.inner.diffs_cell.subscriber_count(), baseline_left);
+        let settled = probe.load(Ordering::Relaxed);
+        left.insert(99, 7);
+        right.insert(99, (7, 99));
+        assert_eq!(
+            probe.load(Ordering::Relaxed),
+            settled,
+            "teardown leaves no work"
         );
     }
 }
