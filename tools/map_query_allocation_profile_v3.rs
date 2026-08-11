@@ -16,7 +16,7 @@ use std::{
 
 use hyphae::{
     CellMap, MapQuery,
-    traits::{ForeignKeyRelation, IdFor, LeftJoinExt, MapEntriesExt, MapValuesExt, SelectExt},
+    traits::{LeftJoinExt, ProjectMapExt, SelectExt},
 };
 
 fn env_u64(name: &str, default: u64) -> u64 {
@@ -108,35 +108,6 @@ struct Row {
 struct Dimension {
     relation: u64,
     payload: u64,
-}
-
-struct EvidenceParent;
-struct EvidenceRelationA;
-struct EvidenceRelationB;
-
-impl IdFor<EvidenceParent> for u64 {
-    type MapKey = Self;
-    fn map_key(&self) -> Self::MapKey {
-        *self
-    }
-}
-
-impl ForeignKeyRelation for EvidenceRelationA {
-    type Parent = EvidenceParent;
-    type Child = Arc<Dimension>;
-    type ForeignKey = u64;
-    fn foreign_key(value: &Self::Child) -> Option<Self::ForeignKey> {
-        Some(value.relation)
-    }
-}
-
-impl ForeignKeyRelation for EvidenceRelationB {
-    type Parent = EvidenceParent;
-    type Child = Arc<Dimension>;
-    type ForeignKey = u64;
-    fn foreign_key(value: &Self::Child) -> Option<Self::ForeignKey> {
-        Some(value.relation)
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -240,10 +211,10 @@ fn updated_row(key: u64, generation: u64) -> Arc<Row> {
     })
 }
 
-fn fold_indexed_matches(row: &Row, matches: &[(u64, Arc<Dimension>)], salt: u64) -> Arc<Row> {
+fn fold_matches(row: &Row, matches: &[Arc<Dimension>], salt: u64) -> Arc<Row> {
     let (payload_sum, match_count) = matches
         .iter()
-        .fold((0_u64, 0_u64), |(sum, count), (_, dimension)| {
+        .fold((0_u64, 0_u64), |(sum, count), dimension| {
             (sum.wrapping_add(dimension.payload), count.wrapping_add(1))
         });
     let payload = row.payload.rotate_left(3)
@@ -313,20 +284,26 @@ fn measure_projection(revision: &str) {
     let plan = source
         .clone()
         .select(|row| row.payload % 2 == 0)
-        .map_values(|_key, row| {
-            Arc::new(Row {
-                relation: row.relation,
-                payload: row.payload.rotate_left(7),
-                generation: row.generation,
-            })
+        .project(|key, row| {
+            Some((
+                *key,
+                Arc::new(Row {
+                    relation: row.relation,
+                    payload: row.payload.rotate_left(7),
+                    generation: row.generation,
+                }),
+            ))
         })
         .select(|row| row.relation < 64)
-        .map_values(|_key, row| {
-            Arc::new(Row {
-                relation: row.relation,
-                payload: row.payload.wrapping_mul(33),
-                generation: row.generation,
-            })
+        .project(|key, row| {
+            Some((
+                *key,
+                Arc::new(Row {
+                    relation: row.relation,
+                    payload: row.payload.wrapping_mul(33),
+                    generation: row.generation,
+                }),
+            ))
         });
     let (after_build, build) = measure_phase("build", after_setup, started, 1);
 
@@ -413,13 +390,13 @@ fn measure_two_join(revision: &str) {
             |_key, row| row.relation,
             |_key, dimension| dimension.relation,
         )
-        .map_joined_values(|_key, row, matches| fold_indexed_matches(row, matches, 17))
+        .project(|key, (row, matches)| Some((*key, fold_matches(row, matches, 17))))
         .left_join_by(
             second,
             |_key, row| row.relation,
             |_key, dimension| dimension.relation,
         )
-        .map_joined_values(|_key, row, matches| fold_indexed_matches(row, matches, 19));
+        .project(|key, (row, matches)| Some((*key, fold_matches(row, matches, 19))));
     let (after_build, build) = measure_phase("build", after_setup, started, 1);
 
     let started = Instant::now();
@@ -496,14 +473,30 @@ fn measure_four_join(revision: &str) {
     let started = Instant::now();
     let plan = source
         .clone()
-        .left_join_fk::<EvidenceRelationA, _>(shared.clone())
-        .map_joined_values(|_key, row, matches| fold_indexed_matches(row, matches, 1))
-        .left_join_fk::<EvidenceRelationB, _>(shared_second.clone())
-        .map_joined_values(|_key, row, matches| fold_indexed_matches(row, matches, 2))
-        .left_join_fk::<EvidenceRelationA, _>(shared)
-        .map_joined_values(|_key, row, matches| fold_indexed_matches(row, matches, 3))
-        .left_join_fk::<EvidenceRelationB, _>(shared_second)
-        .map_joined_values(|_key, row, matches| fold_indexed_matches(row, matches, 4));
+        .left_join_by(
+            shared.clone(),
+            |_key, row| row.relation,
+            |_key, dimension| dimension.relation,
+        )
+        .project(|key, (row, matches)| Some((*key, fold_matches(row, matches, 1))))
+        .left_join_by(
+            shared_second.clone(),
+            |_key, row| row.relation,
+            |_key, dimension| dimension.relation,
+        )
+        .project(|key, (row, matches)| Some((*key, fold_matches(row, matches, 2))))
+        .left_join_by(
+            shared,
+            |_key, row| row.relation,
+            |_key, dimension| dimension.relation,
+        )
+        .project(|key, (row, matches)| Some((*key, fold_matches(row, matches, 3))))
+        .left_join_by(
+            shared_second,
+            |_key, row| row.relation,
+            |_key, dimension| dimension.relation,
+        )
+        .project(|key, (row, matches)| Some((*key, fold_matches(row, matches, 4))));
     let (after_build, build) = measure_phase("build", after_setup, started, 1);
 
     let started = Instant::now();
@@ -570,23 +563,6 @@ fn measure_four_join(revision: &str) {
     );
 }
 
-fn fold_matches(row: &Row, matches: &[Arc<Dimension>], salt: u64) -> Arc<Row> {
-    let (payload_sum, match_count) = matches
-        .iter()
-        .fold((0_u64, 0_u64), |(sum, count), dimension| {
-            (sum.wrapping_add(dimension.payload), count.wrapping_add(1))
-        });
-    let payload = row.payload.rotate_left(3)
-        ^ payload_sum.rotate_left(11)
-        ^ salt.wrapping_mul(match_count).rotate_left(19)
-        ^ match_count.wrapping_mul(0x9e37_79b9_7f4a_7c15);
-    Arc::new(Row {
-        relation: row.relation,
-        payload,
-        generation: row.generation,
-    })
-}
-
 fn measure_rekey(revision: &str) {
     let scenario_baseline = Snapshot::now();
     let started = Instant::now();
@@ -597,20 +573,12 @@ fn measure_rekey(revision: &str) {
     let started = Instant::now();
     let plan = source
         .clone()
-        .left_join_by(
-            first,
-            |_key, row| row.relation,
-            |_key, dimension| dimension.relation,
-        )
-        .map_entries(|key, (row, matches)| {
-            (key.wrapping_add(rows()), fold_matches(row, matches, 11))
+        .left_join_by(first, |_key, row| row.relation, |_key, d| d.relation)
+        .project(|key, (row, matches)| {
+            Some((key.wrapping_add(rows()), fold_matches(row, matches, 11)))
         })
-        .left_join_by(
-            second,
-            |_key, row| row.relation,
-            |_key, dimension| dimension.relation,
-        )
-        .map_values(|_key, (row, matches)| fold_matches(row, matches, 13));
+        .left_join_by(second, |_key, row| row.relation, |_key, d| d.relation)
+        .project(|key, (row, matches)| Some((*key, fold_matches(row, matches, 13))));
     let (after_build, build) = measure_phase("build", after_setup, started, 1);
     let started = Instant::now();
     let output = plan.materialize();
