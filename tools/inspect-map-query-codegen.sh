@@ -11,7 +11,7 @@ run="$(mktemp -d "$cache_root/codegen.XXXXXX")"; ensure_home "$run"; trap 'rm -r
 git -C "$repo_root" archive "$commit" | tar -x -C "$run"; mkdir -p "$run/hyphae/examples"; cp "$adapter" "$run/hyphae/examples/map_query_allocation_profile.rs"
 export CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR="$target" RUSTFLAGS="${RUSTFLAGS:--Csymbol-mangling-version=v0 -Ccodegen-units=1 -Cdebuginfo=1}"
 (cd "$run" && cargo rustc --locked --offline --release -p hyphae --example map_query_allocation_profile -- --emit=llvm-ir,asm) 2>&1 | tee "$out/build.txt"
-mapfile -t ll < <(find "$target/release/deps" -maxdepth 1 -type f -name 'map_query_allocation_profile-*.ll' -print); mapfile -t asm < <(find "$target/release/deps" -maxdepth 1 -type f -name 'map_query_allocation_profile-*.s' -print)
+mapfile -t ll < <(find "$target/release/examples" -maxdepth 1 -type f -name 'map_query_allocation_profile-*.ll' -print); mapfile -t asm < <(find "$target/release/examples" -maxdepth 1 -type f -name 'map_query_allocation_profile-*.s' -print)
 [[ ${#ll[@]} -eq 1 && ${#asm[@]} -eq 1 ]] || { echo "expected exactly one IR and asm artifact" >&2; exit 3; }
 cp "${ll[0]}" "$out/probe.ll"; cp "${asm[0]}" "$out/probe.s"; bin="$target/release/examples/map_query_allocation_profile"; [[ -x "$bin" ]]
 llvm-objdump -Cd "$bin" > "$out/objdump.txt"
