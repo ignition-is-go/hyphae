@@ -95,26 +95,35 @@
 //! assert_eq!(sum.get(), 10);
 //! ```
 //!
-//! ## Map Queries vs `CellMaps`
+//! ## Map Queries vs `CellMap`s
 //!
-//! Pure [`CellMap`] operators (`inner_join`, `left_join`, `left_semi_join`,
-//! `multi_left_join`, `project`, `project_many`, `project_cell`, `select`,
-//! `select_cell`, `count_by`, `group_by`) return uncompiled [`MapQuery`]
-//! plan nodes — not [`CellMap`]s. A plan tree composes freely: any plan or
-//! [`CellMap`] can feed any other operator's input.
+//! Pure [`CellMap`] operators return consuming, non-`Clone` [`MapQuery`] plans.
+//! [`MapQuery`] exposes associated [`MapQuery::Key`] and [`MapQuery::Value`]
+//! types. Semantic operators state their cardinality and key behavior:
+//! `select`/`select_by`, `map_values`/`filter_map_values`,
+//! `map_entries`/`filter_map_entries`, and `flat_map_entries`.
 //!
-//! Calling [`MapQuery::materialize`] allocates ONE output [`CellMap`] with
-//! ONE subscription per root source running the fully fused diff-propagation
-//! closure. This replaces what used to be N intermediate [`CellMap`]s, N
-//! subscriber tables, and N `ArcSwap` chains for an N-stage query.
+//! Plans compile to a statically typed, monomorphized runtime. Recognized
+//! key-preserving and join regions fuse; rekeys and unsupported shapes remain
+//! physical boundaries. No intermediate *observable* `CellMap` is created.
+//! [`MapQuery::materialize`] is the sole observation boundary: it consumes the
+//! plan, installs one subscription per interned physical root, and returns the
+//! cached output map. Materialize once and clone that map to share work.
 //!
-//! [`MapQuery`] plan nodes are deliberately not `Clone` (mirroring
-//! [`Pipeline`]). Cloning would silently duplicate join / projection work —
-//! every clone's `materialize()` would install independent root subscriptions
-//! and re-run the entire op chain. To share work across consumers,
-//! materialize once into a [`CellMap`] (which IS `Clone` — the clone is an
-//! `Arc` bump referencing the same multicast cache) and then clone the cell
-//! map.
+//! Named zero-sized [`ForeignKeyRelation`] markers give typed FK joins their
+//! semantic relationship, partition, and index identity. Repeated uses of one
+//! raw physical right source and relation share an index within a materialized
+//! plan; transformed rights intentionally do not alias it.
+//!
+//! Query closures must be deterministic, externally side-effect-free, and
+//! nonblocking. They may run repeatedly or concurrently, and their invocation
+//! count, order, and thread are not API guarantees. Output publication remains
+//! deterministic, ordered, and synchronously settled. See [`map_query`] for
+//! exact execution, collision, teardown, completion/error, and panic contracts.
+//!
+//! Native builds with the `scheduler` feature may adaptively dispatch eligible
+//! join-region work to Hyphae's shared dedicated worker pool. Wasm and builds
+//! without that feature execute map queries sequentially.
 //!
 //! ## `CellMap` Quick Start
 //!

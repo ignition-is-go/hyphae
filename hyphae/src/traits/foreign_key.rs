@@ -30,10 +30,18 @@ where
 
 /// A named foreign-key relationship between a child row and a parent keyspace.
 ///
-/// The zero-sized implementor is the relationship's identity, allowing a
-/// child type to declare multiple relationships to the same parent type. Query
-/// plans use this type identity to monomorphize access and, later, to share a
-/// single physical relationship index across repeated joins.
+/// The zero-sized implementor is the relationship's semantic, partition, and
+/// index identity, allowing one child type to declare several relationships to
+/// the same parent type. Within one materialized plan, repeated joins using the
+/// same raw physical right source and relation share one maintained index.
+/// Filtered, projected, or otherwise transformed right plans intentionally keep
+/// private indexes because their row sets have different semantics.
+///
+/// [`ForeignKeyRelation::foreign_key`] returns `Some(key)` when the relationship
+/// is present and `None` for an absent optional relationship. Required schemas
+/// use the same signature but promise `Some`. Typed joins convert the key
+/// through [`IdFor`] to the parent's map-key space; relationship identity is
+/// independent of the current left payload.
 pub trait ForeignKeyRelation: Send + Sync + 'static {
     /// Semantic parent entity type.
     type Parent: Send + Sync + 'static;

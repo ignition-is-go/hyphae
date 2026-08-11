@@ -160,6 +160,11 @@ where
     /// Joins on the left map key matching the right value's foreign key.
     /// Keeps left rows that have at least one matching right row. Unmatched
     /// left rows are excluded. Output contains only left data.
+    ///
+    /// `Rel` is the relationship's semantic, partition, and reusable-index
+    /// identity. `None` from its extractor denotes an absent optional right
+    /// relationship and is omitted from the index. The key is converted into
+    /// `IdFor<Rel::Parent>::MapKey`; it is independent of the left payload.
     #[allow(clippy::type_complexity)]
     fn left_semi_join_fk<Rel, R>(
         self,
@@ -197,6 +202,8 @@ where
     /// Left semi join using explicit key extractors.
     ///
     /// `left_key` and `right_key` extract the join key from each side.
+    /// This is an ad hoc escape hatch and carries no reusable typed relation
+    /// identity; prefer the typed FK form for schema-owned relationships.
     /// Keeps left rows that have at least one matching right row. Unmatched
     /// left rows are excluded. Output contains only left data.
     fn left_semi_join_by<R, RK, RV, JK, FL, FR>(

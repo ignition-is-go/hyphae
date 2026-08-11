@@ -11,7 +11,9 @@
 //!   it exactly like they do with `CellMap`.
 //!
 //! `NestedMap` is **read-only** — writes go to the underlying `CellMap`, and
-//! the grouped view updates reactively.
+//! the grouped view updates reactively. It is a public `ReactiveMap` and
+//! `MapQuery` source, separate from compiler-private typed relationship
+//! indexes; no naming or storage unification is implied.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -61,7 +63,8 @@ where
 
 /// A reactive grouped view over a `CellMap`, indexed by a foreign key.
 ///
-/// Created via [`CellMap::nest`] (or the planned `TreeNode::join`).
+/// Created via [`CellMap::nest`]. This closure-indexed public grouping view
+/// remains distinct from compiler-private relationship indexes.
 ///
 /// ```text
 /// CellMap<OrderId, Order>
@@ -508,7 +511,9 @@ where
     ///
     /// The returned `NestedMap` observes this `CellMap` reactively and
     /// maintains a live FK index. It implements [`ReactiveKeys`] and
-    /// [`ReactiveMap`], so it composes with joins exactly like a `CellMap`.
+    /// [`ReactiveMap`] and is a [`MapQuery`](crate::MapQuery) source, so it
+    /// composes with joins exactly like a `CellMap`. This public grouping view
+    /// is not the compiler's private typed relationship index.
     ///
     /// ```text
     /// let orders: CellMap<OrderId, Order> = CellMap::new();

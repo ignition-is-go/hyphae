@@ -1,17 +1,43 @@
-//! Uncompiled reactive map operation chains.
+//! Uncompiled, statically typed reactive-map operation chains.
 //!
-//! A [`MapQuery`] is a recipe for a reactive map computation — a chain of
-//! pure operators (joins, projections, selections) that has not yet been
-//! materialized into a [`CellMap`]. Map queries deliberately do not implement
-//! `subscribe`: to observe output you must call [`MapQuery::materialize`],
-//! which installs ONE subscription per root source and returns a
-//! subscribable cell map.
+//! A [`MapQuery`] is a consuming recipe whose associated [`MapQuery::Key`] and
+//! [`MapQuery::Value`] types describe its output. Joins, semantic projections,
+//! and selections compose without an intermediate observable [`CellMap`].
+//! [`MapQuery::materialize`] is the sole observation boundary: it compiles the
+//! concrete plan, registers each interned physical root before activation, and
+//! returns a cached, subscribable output map.
 //!
-//! This design makes the memoization boundary explicit. Chaining map operators
-//! (`inner_join`, `left_join`, `map_values`, ...) builds a plan without allocating
-//! an intermediate [`CellMap`] per stage. The final map cache, diff cell, and
-//! per-key cells are allocated only when the caller explicitly asks for them
-//! with `.materialize()`.
+//! Ordinary plan edges remain monomorphized. Recognized key-preserving and
+//! fluent left-join regions fuse; rekeys and unsupported algebra shapes are
+//! physical boundaries. Root subscriber registries and explicit query-share
+//! boundaries are intentionally erased multicast boundaries.
+//!
+//! # Closure and publication contract
+//!
+//! Query closures must be deterministic, externally side-effect-free, and
+//! nonblocking. The runtime may invoke them repeatedly or concurrently;
+//! invocation count, order, and thread are not API guarantees. Output diffs
+//! are merged and published deterministically and synchronously: the initiating
+//! source mutation does not return before query publication and its synchronous
+//! subscribers settle.
+//!
+//! [`ReactiveMap`](crate::traits::ReactiveMap) exposes [`MapDiff`] values, not
+//! scalar `Signal` completion/error terminals. Completion/error ordering is
+//! therefore not applicable to the current map-query surface.
+//!
+//! # Panic and teardown contract
+//!
+//! A panic during one application of a coordinated promoted `JoinRegion` joins
+//! sibling workers, publishes none of that failed region application's changes,
+//! clears queued/reentrant region work, and poisons all physical roots in the
+//! materialized query cohort. A later root callback panics with
+//! `"hyphae join region is poisoned after a prior callback panic"`.
+//! This fail-stop boundary does **not** roll back the source mutation, output or
+//! subscriber work published before the callback, subscriber side effects, or
+//! ordinary callbacks outside a promoted region.
+//!
+//! The materialized output owns the installed root guards while the final sink
+//! holds the output weakly. Dropping the output tears down the installation.
 
 use std::{hash::Hash, marker::PhantomData, sync::Arc};
 
@@ -173,9 +199,12 @@ where
 ///
 /// # Invariants
 ///
-/// - `materialize(self)` consumes the plan and installs ONE subscription per
-///   root source running the fully fused diff-propagation closure.
-/// - No intermediate `CellMap` is allocated anywhere in a query chain.
+/// - `materialize(self)` consumes the plan and installs one subscription per
+///   interned physical root.
+/// - Plan-to-plan edges are statically typed; recognized regions fuse without
+///   an intermediate observable `CellMap`.
+/// - Publication is deterministic, ordered, and synchronously settled.
+/// - User closures follow the module-level purity and invocation contract.
 ///
 /// # Sealing
 ///
@@ -198,11 +227,13 @@ pub trait MapQuery: CompileQuery<Self::Key, Self::Value> + properties::PlanPrope
     /// Value produced by this query plan.
     type Value: CellValue;
 
-    /// Compile the query into a [`CellMap`] and install root-source
-    /// subscriptions running the fused diff-propagation closure.
+    /// Compile the query into a [`CellMap`] and install root subscriptions
+    /// running the statically typed incremental runtime.
     ///
-    /// This is the only way to observe map-query output. Every subscribe in
-    /// the codebase is on a cell map, never on a query — which is the point.
+    /// This is the only way to observe map-query output. Every subscription is
+    /// on a materialized map, never on a plan. The returned map owns all root
+    /// guards; dropping it tears the installation down. Publication caused by
+    /// a source mutation is synchronously settled before that mutation returns.
     #[track_caller]
     fn materialize(self) -> CellMap<Self::Key, Self::Value, CellImmutable> {
         let output = CellMap::<Self::Key, Self::Value, CellMutable>::new();

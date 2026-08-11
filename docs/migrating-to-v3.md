@@ -212,22 +212,125 @@ let selected = ids
 Materialize an inner recipe only when that inner value needs its own cache or
 must be shared independently of the dynamic operator.
 
-## CellMap query plans
+## `CellMap` query plans
 
-`MapQuery` retains the explicit boundary introduced in Hyphae 2.x. Continue to
-compose joins, projections, and selections as a plan and materialize once:
+`MapQuery` uses associated key and value types and retains an explicit,
+consuming materialization boundary. Compose the complete query and materialize
+once:
 
 ```rust
+use hyphae::{MapQuery, traits::{InnerJoinExt, MapValuesExt}};
+
 let view = users
     .clone()
     .inner_join(scores.clone())
-    .project(build_row)
+    .map_values(|_user_id, (user, score)| build_row(user, score))
     .materialize();
 ```
 
-As with scalar pipelines, clone the resulting `CellMap` to share its cache, or
-use `MapQueryShareExt::share` when downstream query branches should remain
-lazy.
+Use `MapQueryShareExt::share` for an explicit shared lazy boundary, or clone the
+materialized `CellMap`. Ordinary plans intentionally are not `Clone`.
+
+### Renamed and typed query APIs
+
+| Before | Hyphae 3.0 |
+| --- | --- |
+| `MapQuery<K, V>` | `MapQuery<Key = K, Value = V>` |
+| `project` / `ProjectMapExt` preserving keys | `map_values` or `filter_map_values` |
+| `project` rekeying rows | `map_entries` or `filter_map_entries` |
+| `project_many` | no fully mechanical replacement: return local keys to `flat_map_entries`, yielding `(source_key, local_key)`, or redesign global-key consumers |
+| an implicit `HasForeignKey<Parent>` relationship | one named `ForeignKeyRelation` marker per semantic relationship |
+| schema-generated `*_join_by` calls | `*_join_fk::<Relation, _>` when the schema owns the relationship |
+
+`map_entries` and `filter_map_entries` create a semantic repartition boundary.
+Their output keys must be globally unique across current source rows. A
+collision is validated before output mutation and panics synchronously; it is
+never resolved by last-writer-wins. `flat_map_entries` returns output keys
+`(source_key, local_key)`, which prevents collisions between different source
+rows. A row must still emit each `local_key` at most once. Old `project_many`
+closures that emitted caller-chosen global keys require a downstream key-type
+migration to `(SourceKey, LocalKey)`. If global 1:N identity was semantically
+required, redesign around scoped keys or an explicit grouping/aggregation and
+materialization boundary; there is no mechanical last-writer-wins replacement.
+
+A `ForeignKeyRelation` marker is the relationship's semantic, partition, and
+index identity. Its extractor returns `Some(key)` for a present relationship
+and `None` for an absent optional relationship; absent right rows do not enter
+the relation index. `inner_join_fk` and `left_join_fk` join through
+`IdFor<Relation::Parent>::MapKey`, independently of the current left payload.
+Use the `*_join_by` variants as ad hoc extractor escape hatches when there is no
+schema-owned relationship identity. Schema owners or generators should emit
+the marker structs and their implementations. Hyphae contains no schema-code
+generator; annotation syntax is an upstream generator decision.
+
+For example, schema-owned code can name required and optional relationships to
+the same parent independently:
+
+```rust
+use hyphae::traits::{ForeignKeyRelation, IdFor, LeftJoinExt};
+
+struct User;
+struct PostAuthor;
+struct PostEditor;
+
+impl IdFor<User> for UserId {
+    type MapKey = UserId;
+    fn map_key(&self) -> UserId { self.clone() }
+}
+
+impl ForeignKeyRelation for PostAuthor {
+    type Parent = User;
+    type Child = Post;
+    type ForeignKey = UserId;
+    fn foreign_key(post: &Post) -> Option<UserId> {
+        Some(post.author_id.clone()) // required by this schema
+    }
+}
+
+impl ForeignKeyRelation for PostEditor {
+    type Parent = User;
+    type Child = Post;
+    type ForeignKey = UserId;
+    fn foreign_key(post: &Post) -> Option<UserId> {
+        post.editor_id.clone() // optional: None is absent
+    }
+}
+
+let authored = users.clone().left_join_fk::<PostAuthor, _>(posts.clone());
+let edited = users.left_join_fk::<PostEditor, _>(posts);
+```
+
+Recognized fluent left-join/projection chains retain specialized one- and
+two-join forms. The third recognized join promotes the chain to a concrete,
+statically typed `JoinRegion`; later recognized joins extend that typed region
+to arbitrary depth. A rekey or an unsupported algebra shape is a physical
+region boundary, not a promise of universal fusion.
+
+`NestedMap` remains the separate public, read-only grouped view created by
+`CellMap::nest`. It implements `ReactiveMap` and can be a `MapQuery` source. It
+has not been renamed or unified with compiler-private relationship indexes.
+
+Query closures must be deterministic, externally side-effect-free, and
+nonblocking. The runtime may repeat or concurrently invoke them; invocation
+count, order, and thread are not stable contracts. Observable output diffs are
+still deterministic and ordered, and source mutation is synchronously settled
+before returning. `ReactiveMap` carries `MapDiff` and has no completion/error
+terminal channel, so completion/error ordering is currently not applicable to
+map queries.
+
+On native builds with `scheduler`, only sufficiently costly and balanced join
+regions use the shared dedicated Rayon pool. Builds without `scheduler` and
+wasm stay sequential. `HYPHAE_WORKER_THREADS` controls the pool and zero
+disables it; `HYPHAE_WAVE_THREADS` is the compatibility fallback.
+
+A panic inside a coordinated promoted `JoinRegion` joins sibling workers,
+publishes no changes for that failed region application, clears queued or
+reentrant region work, and poisons every physical root in that materialized
+query cohort. Later root callbacks panic rather than continue from partial
+region state. This is terminal fail-stop, not rollback: it does not undo the
+source mutation, earlier output/subscriber work already published before the
+callback, subscriber side effects, or ordinary callbacks outside a promoted
+region.
 
 ## Migration checklist
 
@@ -246,5 +349,17 @@ lazy.
    `subscribe`, or passing them to a `Watchable` bound.
 9. Retain each terminal materialized cell for the full lifetime in which its
    source updates must propagate.
-10. Run the application test suite with the same Hyphae features used in
-   production, especially `scheduler`, `async`, and `profiling`.
+10. Change generic query bounds to `MapQuery<Key = K, Value = V>`.
+11. Replace `project` with the semantic projection whose cardinality and key
+    behavior match the old closure.
+12. Migrate `project_many` local identity and downstream key types to
+    `(SourceKey, LocalKey)`, or redesign callers that require global 1:N keys.
+13. Audit every rekeying closure for the new unique-output-key contract.
+14. Replace implicit foreign-key traits with named `ForeignKeyRelation`
+    markers and use typed `*_join_fk` calls where appropriate.
+15. Keep query closures pure and do not depend on their invocation order,
+    count, or worker thread.
+16. Run the application test suite with the same Hyphae features used in
+    production, especially `scheduler`, `async`, and `profiling`; also test the
+    sequential configuration when production may run on wasm or without the
+    scheduler feature.

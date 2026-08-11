@@ -162,6 +162,11 @@ where
     V: CellValue,
 {
     /// Map every input row to exactly one output row with a unique output key.
+    ///
+    /// Output keys must be globally unique across current source rows. A
+    /// collision is validated before output mutation and panics synchronously;
+    /// it never overwrites a prior owner. This semantic rekey is a repartition
+    /// boundary. The closure follows [`MapQuery`]'s purity/invocation contract.
     fn map_entries<K2, V2, F>(self, f: F) -> impl MapQuery<Key = K2, Value = V2>
     where
         K2: Hash + Eq + CellValue,
@@ -176,6 +181,10 @@ where
     }
 
     /// Map an input row to zero or one output row with a unique output key.
+    ///
+    /// Included output keys obey the same global uniqueness, pre-mutation
+    /// validation, and synchronous-panic contract as [`Self::map_entries`].
+    /// The closure follows [`MapQuery`]'s purity/invocation contract.
     fn filter_map_entries<K2, V2, F>(self, f: F) -> impl MapQuery<Key = K2, Value = V2>
     where
         K2: Hash + Eq + CellValue,

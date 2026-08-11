@@ -362,6 +362,13 @@ where
     ///
     /// Unlike `map_values`, this does not first clone right values into an
     /// intermediate `Vec`; use it when the joined tuple is not itself needed.
+    /// The closure follows [`MapQuery`]'s purity/invocation contract.
+    ///
+    /// Keeping this direct fluent projection lets the compiler recognize a
+    /// coordinated chain: one/two joins use specialized shapes, the third
+    /// recognized join promotes to a concrete `JoinRegion`, and later joins
+    /// extend its typed stage list. Rekeys and unsupported shapes are region
+    /// boundaries.
     pub fn map_joined_values<OV, F>(
         self,
         projection: F,
@@ -1320,6 +1327,11 @@ where
     /// Every left row produces exactly one output row, keyed by the left key.
     /// Right matches are collected into a `Vec`; an empty `Vec` means no
     /// matching right rows were found.
+    ///
+    /// `Rel` is the relationship's semantic, partition, and reusable-index
+    /// identity. `None` from its extractor denotes an absent optional right
+    /// relationship and is omitted from the index. The key is converted into
+    /// `IdFor<Rel::Parent>::MapKey`; it is independent of the left payload.
     #[allow(clippy::type_complexity)]
     fn left_join_fk<Rel, R>(
         self,
@@ -1360,6 +1372,8 @@ where
     /// Left join using explicit key extractors.
     ///
     /// `left_key` and `right_key` extract the join key from each side.
+    /// This is an ad hoc escape hatch and carries no reusable typed relation
+    /// identity; prefer the typed FK form for schema-owned relationships.
     /// Every left row produces exactly one output row, keyed by the left key.
     /// Right matches are collected into a `Vec`; an empty `Vec` means no
     /// matching right rows were found.

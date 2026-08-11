@@ -232,6 +232,11 @@ where
     /// Joins on the left map key matching the right value's foreign key.
     /// Produces one output row per matching (left, right) pair, keyed by
     /// `(K, RK)`. Unmatched rows from either side are excluded.
+    ///
+    /// `Rel` is the relationship's semantic, partition, and reusable-index
+    /// identity. `None` from its extractor denotes an absent optional right
+    /// relationship and is omitted from the index. The key is converted into
+    /// `IdFor<Rel::Parent>::MapKey`; it is independent of the left payload.
     #[allow(clippy::type_complexity)]
     fn inner_join_fk<Rel, R>(
         self,
@@ -269,6 +274,8 @@ where
     /// Inner join using explicit key extractors.
     ///
     /// `left_key` and `right_key` extract the join key from each side.
+    /// This is an ad hoc escape hatch and carries no reusable typed relation
+    /// identity; prefer the `*_join_fk` form for schema-owned relationships.
     /// Produces one output row per matching (left, right) pair, keyed by
     /// `(K, RK)`. Unmatched rows from either side are excluded.
     fn inner_join_by<R, RK, RV, JK, FL, FR>(

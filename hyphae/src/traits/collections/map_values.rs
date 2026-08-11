@@ -299,11 +299,16 @@ where
 }
 
 /// Semantic key-preserving projection operators.
+///
+/// Projection closures must be deterministic, externally side-effect-free,
+/// and nonblocking. They may be invoked repeatedly or concurrently; invocation
+/// count, order, and thread are not API guarantees.
 pub trait MapValuesExt<K, V>: MapQuery<Key = K, Value = V>
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
 {
+    /// Map every value while retaining its input key.
     fn map_values<U, F>(self, f: F) -> MapValuesPlan<Self, K, V, U, F>
     where
         U: CellValue,
@@ -316,6 +321,7 @@ where
         }
     }
 
+    /// Map or omit a value while retaining its input key.
     fn filter_map_values<U, F>(self, f: F) -> FilterMapValuesPlan<Self, K, V, U, F>
     where
         U: CellValue,

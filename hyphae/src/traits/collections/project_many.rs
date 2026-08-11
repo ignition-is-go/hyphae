@@ -96,6 +96,11 @@ where
 {
     /// Expand each source row into locally keyed rows. The output identity is
     /// `(source_key, local_key)`, preventing collisions between source rows.
+    ///
+    /// Each source row must emit a `local_key` at most once; pairing with the
+    /// source key does not resolve duplicates within that row. The closure
+    /// follows [`MapQuery`]'s purity/invocation contract and may run repeatedly
+    /// or concurrently without an invocation-order guarantee.
     fn flat_map_entries<LK, V2, F>(self, f: F) -> impl MapQuery<Key = (K, LK), Value = V2>
     where
         LK: Hash + Eq + CellValue,

@@ -101,34 +101,63 @@ another API break.
 
 ## Map Queries vs CellMaps
 
-Pure `CellMap` operators (`inner_join`, `left_join`, `project`, `select`,
-`count_by`, `group_by`, ...) return uncompiled `MapQuery` plan nodes — not
-`CellMap`s. Plans compose: any plan or `CellMap` can feed any other
-operator's input. Call `.materialize()` to allocate ONE output `CellMap`
-with ONE subscription per root source, replacing what would otherwise be N
-intermediate maps for an N-stage chain.
+Pure `CellMap` operators build consuming, non-`Clone` `MapQuery` plans. A plan's
+shape is expressed with associated types (`MapQuery<Key = K, Value = V>`), and
+semantic operators make cardinality and key behavior explicit:
 
-`MapQuery` plan nodes are not `Clone` (mirroring `Pipeline`). To share work
-across consumers, materialize once and clone the resulting `CellMap`.
+- `select` / `select_by` filter without changing keys;
+- `map_values` / `filter_map_values` preserve keys;
+- `map_entries` / `filter_map_entries` may rekey; and
+- `flat_map_entries` emits locally keyed one-to-many results.
+
+`map_entries` and `filter_map_entries` require globally unique output keys and
+panic synchronously after pre-mutation validation on collision.
+`flat_map_entries` changes output identity to `(source_key, local_key)`: this
+prevents cross-source collisions, but each source row must emit a local key at
+most once. See the migration guide and [`map_query`](https://docs.rs/hyphae/latest/hyphae/map_query/)
+for the full contracts.
+
+Plans compose without observable intermediate maps. `.materialize()` is the
+sole observation boundary: it consumes the plan, installs one subscription per
+interned physical root, and returns the cached, subscribable output `CellMap`.
+Materialize once and clone that `CellMap` when several consumers should share
+one installation.
 
 ```rust
-use hyphae::{CellMap, MapQuery, traits::{InnerJoinExt, ProjectMapExt}};
+use hyphae::{CellMap, MapQuery, traits::{InnerJoinExt, MapValuesExt}};
 
 let users = CellMap::<String, &'static str>::new();
 let scores = CellMap::<String, i32>::new();
 users.insert("u1".into(), "alice");
 scores.insert("u1".into(), 42);
 
-// Chained operators return plan nodes — no intermediate CellMap
-// until materialize().
 let view = users
     .clone()
     .inner_join(scores.clone())
-    .project(|user_id, (name, score)| Some((user_id.clone(), format!("{name}:{score}"))))
+    .map_values(|user_id, (name, score)| format!("{user_id}:{name}:{score}"))
     .materialize();
 
 assert!(view.contains_key(&"u1".to_string()));
 ```
+
+Typed foreign-key joins use one zero-sized `ForeignKeyRelation` marker for each
+semantic relationship. Its extractor returns `Some(foreign_key)` for a present
+relationship and `None` for an absent optional relationship. The join targets
+`IdFor<Relation::Parent>::MapKey`; it does not infer identity from the current
+left payload. Repeated uses of the same raw physical right source and relation
+reuse one relationship index within a materialized plan.
+
+Query closures must be deterministic, externally side-effect-free, and
+nonblocking. They may be invoked repeatedly or concurrently; invocation count,
+order, and thread are not API guarantees. Output diff publication remains
+deterministic by logical input/emission ordinal and synchronously settled before
+the initiating source mutation returns. Hash-map and initial-snapshot iteration
+order are not API contracts.
+
+With the `scheduler` feature on native targets, eligible expensive join regions
+adaptively use Hyphae's shared dedicated Rayon pool. Builds without `scheduler`
+and wasm execute sequentially. `HYPHAE_WORKER_THREADS=0` disables the native
+pool; `HYPHAE_WAVE_THREADS` remains a compatibility fallback.
 
 ## Async Support
 

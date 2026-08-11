@@ -1,14 +1,14 @@
 # Statically Compiled MapQuery Engine
 
 **Date:** 2026-08-10
-**Status:** Proposed v3 architecture; API decisions approved in principle, benchmark spike required before full implementation
-**Tracking:** `lv-d884`
+**Status:** Phases 1–5 implemented at runtime `5177ef5` with recorded deviations/deferred scope; final resource evidence archived at `db1459a`
+**Tracking:** `lv-db06` implementation (`lv-d884` design origin)
 **Supersedes:** The Phase B optimizer direction in `2026-04-24-cell-map-query-plans-design.md`
 
 ## Decision
 
-Hyphae's collection-query API will describe relational facts in types and
-compile each materialized query into a fully monomorphized incremental program.
+Hyphae's collection-query API describes relational facts in types and compiles
+each materialized query into a fully monomorphized incremental program.
 The default runtime favors update latency and efficient parallel work even when
 that substantially increases rustc time, memory use, and generated code size.
 
@@ -17,7 +17,7 @@ identifies coarse, partition-local regions; Rayon executes those regions over
 exclusive shards. Externally visible publication remains synchronous,
 deterministic, and ordered.
 
-The intended flow is:
+The implemented default flow is:
 
 ```text
 strongly typed MapQuery expression
@@ -74,10 +74,11 @@ visible closure chain.
 - Guaranteeing that every possible query is faster in parallel. Parallelism is
   conditional and cost-gated.
 
-## Current architecture and its remaining costs
+## Historical v3 baseline architecture (superseded)
 
-The v3 `MapQuery` work already removed intermediate observable `CellMap`s. A
-query plan is currently installed recursively, however, and every stage wraps
+At the frozen Phase-0 runtime `7fcb1421`, `MapQuery` had already removed
+intermediate observable `CellMap`s. A query plan was installed recursively,
+however, and every stage wrapped
 its downstream stage in an `Arc<dyn Fn(&MapDiff<...>)>` sink. Stateful stages
 own independent `Mutex`-protected runtimes and communicate by constructing and
 dispatching diffs.
@@ -110,7 +111,7 @@ installer erases it before execution.
 
 ### Associated key and value types
 
-The breaking v3 window should replace `MapQuery<K, V>` with associated types.
+The breaking v3 window replaced `MapQuery<K, V>` with associated types.
 This avoids repeating unconstrained key/value generic parameters throughout
 relationship-typed APIs and allows one explicit relationship generic at a join
 call site.
@@ -140,9 +141,9 @@ remains the only observation boundary.
 
 ### Projection vocabulary
 
-The general `project`/`project_many` names hide properties the compiler must
-otherwise guess. Replace them with operators whose types state cardinality and
-key behavior:
+The general `project`/`project_many` names hid properties the compiler would
+otherwise have to guess. They were replaced with operators whose types state
+cardinality and key behavior:
 
 | Operator | Cardinality | Output key | Partition effect |
 | --- | ---: | --- | --- |
@@ -150,9 +151,9 @@ key behavior:
 | `select_by` | 1:0/1 | unchanged | preserved |
 | `map_values` | 1:1 | unchanged | preserved |
 | `filter_map_values` | 1:0/1 | unchanged | preserved |
-| `map_entries` | 1:1 | may change | repartition if required |
-| `filter_map_entries` | 1:0/1 | may change | repartition if required |
-| `flat_map_entries` | 1:N | may change | repartition if required |
+| `map_entries` | 1:1 | may change | repartition boundary |
+| `filter_map_entries` | 1:0/1 | may change | repartition boundary |
+| `flat_map_entries` | 1:N | `(source key, local key)` | repartition boundary |
 
 Representative signatures:
 
@@ -214,20 +215,15 @@ operator.
 
 ### Rekey collision semantics
 
-Two source rows mapping to the same output key must not silently overwrite one
-another. The implementation must preserve deterministic incremental behavior.
-The API therefore distinguishes these cases:
+Two source rows mapping to one output key never silently overwrite each other:
 
 - Key-preserving operators are collision-free by construction.
 - Many-to-one transformations use an explicit grouping/aggregation operator.
-- `map_entries` and `filter_map_entries` carry a documented unique-output-key
-  contract. A collision is a query error, never last-writer-wins state.
-- `flat_map_entries` identifies an output by `(source_key, local_key)` unless
-  the caller explicitly requests a globally unique output-key form.
-
-The error-delivery surface for a unique-key contract violation must be decided
-before the rekeying operators are implemented. It may use Hyphae's existing
-error signal path, but it must not be a debug-only assertion.
+- `map_entries` and `filter_map_entries` require globally unique output keys.
+  The runtime validates ownership before output mutation and panics
+  synchronously on collision; there is no structured map-query error channel.
+- `flat_map_entries` identifies output by `(source_key, local_key)`, preventing
+  cross-source collisions. A source row must still emit each local key once.
 
 ### Pure closure contract
 
@@ -247,12 +243,12 @@ relative invocation order of user closures within a parallel batch.
 
 ### Relationship identity
 
-The existing `HasForeignKey<T>` identifies a foreign key only by its parent
+The former `HasForeignKey<T>` identified a foreign key only by its parent
 entity type. Rust coherence permits only one such implementation for a given
 child/parent pair, so it cannot represent both `Document.created_by -> User`
 and `Document.updated_by -> User`.
 
-Replace parent-only identity with a zero-sized relationship marker:
+It was replaced by a zero-sized relationship marker:
 
 ```rust
 pub trait ForeignKeyRelation: Send + Sync + 'static {
@@ -301,19 +297,20 @@ Associated `MapQuery` types allow the relationship to be the only named generic
 at common FK join sites:
 
 ```rust
-fn left_join_fk<R>(
+fn left_join_fk<Rel, R>(
     self,
-    right: impl MapQuery<Value = R::Child>,
-) -> impl MapQuery<Key = Self::Key, Value = (Self::Value, Vec<R::Child>)>
+    right: R,
+) -> impl MapQuery<Key = Self::Key, Value = (Self::Value, Vec<Rel::Child>)>
 where
-    R: ForeignKeyRelation,
-    R::ForeignKey: IdFor<R::Parent, MapKey = Self::Key>;
+    Rel: ForeignKeyRelation,
+    R: MapQuery<Value = Rel::Child>,
+    Rel::ForeignKey: IdFor<Rel::Parent, MapKey = Self::Key>;
 ```
 
 Usage:
 
 ```rust
-users.left_join_fk::<UserPosts>(posts)
+users.left_join_fk::<UserPosts, _>(posts)
 ```
 
 Equal-map-key joins remain type-directed without a relation marker. Arbitrary
@@ -323,69 +320,55 @@ API used by schema-generated code.
 
 ### Relationship indexes and `NestedMap`
 
-`NestedMap` already represents a materialized live foreign-key index with
-forward and reverse mappings. The new compiler should unify that concept with
-query-plan relationship indexes rather than introduce an unrelated index
-abstraction:
+The implemented compiler interns one typed relationship index for each repeated
+`(raw physical right source, ForeignKeyRelation)` pair in one materialized
+plan. Transformed or filtered right plans deliberately receive private indexes,
+because sharing them would conflate different row sets. Hot updates hold direct
+typed handles; there is no per-row `TypeId` registry lookup.
 
-- `ForeignKeyRelation` describes an index semantically.
-- A query runtime builds a private typed index for each required
-  `(root source, relationship)` pair.
-- Repeated joins inside one materialized plan reuse that index.
-- A separately materialized/indexed public view is the evolved role of
-  `NestedMap`.
-- Existing `ReactiveMap`-only `NestedMap` behavior must either become a
-  `MapQuery` source or be replaced during the v3 migration.
-
-Relation identity may be inspected during setup to intern repeated index
-requirements, but hot updates hold direct typed handles. There is no `TypeId`
-or registry lookup per row or per diff.
+`NestedMap` remains a separate public, closure-indexed, read-only grouped view.
+It implements `ReactiveMap` and is a `MapQuery` source. Unifying its storage or
+name with compiler-private relationship indexes is deferred; current semantics
+do not claim that unification.
 
 ## Static compiler
 
 ### Plan and runtime traits
 
-Replace recursive `MapQueryInstall`/`MapDiffSink` installation with an internal
-compiler whose associated runtime remains concrete:
+The implemented compiler consumes a sealed plan while preserving a concrete
+associated runtime. Ordinary stage edges use generic sinks; erasure is limited
+to physical root fanout and explicit share boundaries:
 
 ```rust
-pub(crate) trait CompileQuery: MapQuery {
-    type Runtime: QueryRuntime<Key = Self::Key, Value = Self::Value>;
-
+pub(crate) trait CompileQuery<K, V> {
+    type Runtime: QueryRuntime<Key = K, Value = V>;
     fn compile(self, cx: &mut CompileContext) -> Self::Runtime;
 }
 
-pub(crate) trait QueryRuntime: Send + Sync + 'static {
-    type Key: Hash + Eq + CellValue;
-    type Value: CellValue;
+pub(crate) trait BuildQueryRuntime<K, V> {
+    fn build_into<S: MapDiffSink<K, V>>(
+        self,
+        cx: &mut CompileContext,
+        sink: S,
+    ) -> Vec<SubscriptionGuard>;
+}
 
-    fn install_roots(
-        self: Arc<Self>,
-        output: WeakCellMap<Self::Key, Self::Value>,
+pub(crate) trait QueryRuntime {
+    type Key: CellValue + Hash + Eq;
+    type Value: CellValue;
+    fn connect<S: MapDiffSink<Self::Key, Self::Value>>(
+        self,
+        cx: &mut CompileContext,
+        sink: S,
     ) -> Vec<SubscriptionGuard>;
 }
 ```
 
-The exact ownership surface may change during the spike. The invariant is that
-the runtime type and stage calls remain statically known. `Arc<Self>` at the
-outer materialized lifetime boundary is acceptable; `Arc<dyn Fn>` between
-logical stages is not.
-
-Each operator contributes a concrete runtime component. Conceptually:
-
-```rust
-impl<S, F> CompileQuery for SelectPlan<S, F>
-where
-    S: CompileQuery,
-{
-    type Runtime = SelectRuntime<S::Runtime, F>;
-}
-```
-
-In practice, key-preserving stateless operators should compile into a generic
-sink/kernel composition rather than allocate a stateful `SelectRuntime` object.
-LLVM must see direct calls through a fused region and be able to inline the
-predicate and projection bodies.
+The blanket `PlanRuntime<P, K, V>` retains `P`'s concrete type. Compilation
+registers every physical root first, then `QueryRuntime::install_roots`
+activates the completed graph once. Key-preserving stateless operators and
+recognized join regions compose as concrete kernels rather than independently
+allocated stateful stage objects.
 
 ### Multiple roots
 
@@ -520,9 +503,10 @@ estimated work = changed rows * compiled plan cost
 ```
 
 Plan cost accounts for joins, fan-out, expected index probes, rekeys, and user
-kernel hints where available. Initial thresholds are benchmark-derived
-constants. Runtime sampling or adaptive calibration is out of scope until a
-static model is measured insufficient.
+kernel hints where available. The calibrated estimated-work hysteresis enters parallel mode at **160,000**
+and exits below **96,000**. A balance gate rejects work whose shard distribution
+would make dispatch unproductive; the runtime requests the pool only after cost
+and balance eligibility are established.
 
 Required behavior:
 
@@ -534,15 +518,12 @@ Required behavior:
 
 ### Rayon integration
 
-Use Hyphae's existing dedicated scheduler Rayon pool. Do not use the process
-global pool implicitly. Nested scheduler/query execution must reuse the same
-pool and avoid oversubscription.
-
-The current pool is private to the feature-gated scheduler module. Move its
-ownership behind a shared crate-private native executor so scheduler waves and
-compiled queries use the same workers. With the `scheduler` feature disabled,
-or on wasm, compiled queries use the sequential runtime. Enabling parallel
-query execution must not silently create a second pool.
+Eligible native join regions and scheduler waves use the same lazily created,
+dedicated Rayon pool; neither uses the process-global pool or creates a second
+pool. Parallel map-query dispatch is compiled only with `scheduler`. Wasm and
+builds without that feature execute sequentially. `HYPHAE_WORKER_THREADS`
+configures the pool (zero disables it), with `HYPHAE_WAVE_THREADS` as a
+compatibility fallback and a default cap of four workers.
 
 The scheduler may continue to parallelize independent same-height scalar cells.
 A compiled map query appears to the scheduler as one coarse reactive node while
@@ -564,25 +545,33 @@ No future, async executor, or eventual-consistency surface is introduced.
 
 ## Observable semantics
 
-The compiler must preserve:
+The implemented compiler preserves:
 
 1. Initial state is published before later live diffs can overtake it.
 2. An insert/update/remove produces the same final map as sequential source
    order.
-3. Batch members retain their logical input order at publication.
+3. Batch members retain logical input order at publication, including nested
+   `Initial` barriers and repeated/non-unique members.
 4. Multiple outputs from one input retain operator-defined local order.
-5. Completion and error delivery do not overtake prior values.
+5. `ReactiveMap` carries `MapDiff`, not completion/error terminals; terminal
+   completion/error ordering is currently non-applicable.
 6. Dropping the final materialized map tears down every root subscription and
    all plan state.
-7. Reentrant source changes do not observe partially committed output.
-8. A panic in one parallel partition follows the existing scheduler panic
-   policy and cannot strand the runtime in an active batch.
+7. Reentrant root changes queue behind the active query transaction.
+8. A panic during a coordinated promoted `JoinRegion` application joins sibling
+   workers, publishes none of that failed region apply, clears queued/reentrant
+   region work, and poisons the query cohort. Later physical-root callbacks
+   panic with `"hyphae join region is poisoned after a prior callback panic"`.
+   This is not rollback of source state, earlier publications/subscriber side
+   effects, or ordinary non-region callback panics.
 9. Stateful event semantics are never silently coalesced.
 10. Sequential and parallel execution are differential-test equivalent.
+11. The initiating source mutation returns only after deterministic caller-side
+    merge, output publication, and synchronous subscriber settlement.
 
 Hash-map iteration order is not an output-order contract. Deterministic order
-comes from explicit input and emission ordinals, not from sorting keys (which
-would require `Ord`) or relying on hash-table layout.
+comes from explicit input and emission ordinals, not sorting keys (which would
+require `Ord`) or relying on hash-table layout.
 
 ## API migration
 
@@ -592,11 +581,11 @@ This is an intentional breaking v3 change.
 | --- | --- |
 | `MapQuery<K, V>` | `MapQuery<Key = K, Value = V>` |
 | `HasForeignKey<Parent>` | `ForeignKeyRelation` marker types |
-| `project` | `map_values`, `filter_map_values`, or `map_entries` |
-| `project_many` | `flat_map_entries` or a grouping operator |
-| `left_join_by` for schema relationships | `left_join_fk::<Relation>` |
-| `inner_join_by` for schema relationships | `inner_join_fk::<Relation>` |
-| `NestedMap` as separate `ReactiveMap` facility | compiled/materialized relationship index |
+| `project` | `map_values`, `filter_map_values`, `map_entries`, or `filter_map_entries` according to cardinality/key behavior |
+| `project_many` | `flat_map_entries` with new `(source_key, local_key)` identity, or redesign around explicit grouping |
+| `left_join_by` for schema relationships | `left_join_fk::<Relation, _>` |
+| `inner_join_by` for schema relationships | `inner_join_fk::<Relation, _>` |
+| `NestedMap` | no replacement; it remains a separate public grouped view (`ReactiveMap` + `MapQuery` source) |
 
 General extractor joins remain available for truly ad hoc relationships, but
 generated/schema-owned code should emit relationship markers. Migration should
@@ -701,7 +690,7 @@ This phase must close or supersede `lv-c682`.
 
 1. Replace `HasForeignKey<Parent>` with `ForeignKeyRelation`.
 2. Port FK joins to relation markers.
-3. Unify `NestedMap` with materialized relation indexes.
+3. Keep `NestedMap` as the public grouped view; storage unification with private relation indexes is deferred (recorded deviation).
 4. Intern repeated `(root source, relation)` requirements during compilation.
 5. Ensure hot paths hold direct typed index handles.
 
@@ -810,31 +799,50 @@ the same shard of a shared index concurrently. Partition ownership is the
 primary safety mechanism; a global mutex per shared index would defeat the
 design.
 
-## Resolved decisions
+## Resolved and deferred decisions
 
-- Runtime performance takes priority over compile time and peak rustc memory.
-- Default execution remains statically typed and monomorphized.
-- Rayon remains the native parallel backend through Hyphae's dedicated pool.
-- Publication remains synchronous and deterministic.
-- The API will expose more specific projection operators.
-- Relationship types replace parent-only foreign-key identity.
-- Relationship types identify indexes and partitions as well as semantic FKs.
-- Closures remain for payload computation, not structural relationship facts.
+- Runtime performance takes priority over compile time and peak rustc memory;
+  serial compile resource use is recorded rather than treated as a release gate.
+- Default execution is statically typed and monomorphized. Physical root
+  registries and explicit share points are the intentional erased boundaries.
+- `CompileQuery`/`BuildQueryRuntime`, concrete `PlanRuntime`, `QueryRuntime`, and
+  compile-before-activate `CompileContext` root registration are the selected
+  internal shape.
+- Rayon remains the native backend through Hyphae's one dedicated shared pool;
+  publication remains synchronous, deterministic, and caller-thread merged.
+- Semantic projection operators replaced `project`/`project_many` immediately.
+- `map_entries`/`filter_map_entries` collisions panic synchronously after
+  pre-mutation validation; `MapDiff` has no structured error terminal.
+- Named relationship types identify semantic FKs, partitions, and indexes.
+  Schema owners/generators emit marker structs and implementations; annotation
+  syntax belongs to an upstream generator, not this crate.
+- `NestedMap` keeps its name and separate public grouped-view role. Storage
+  unification with compiler-private relationship indexes is deferred.
+- Closures remain for payload computation, not structural relationship facts,
+  and have the documented pure/concurrent invocation contract.
 - `materialize()` remains the single public compilation/observation boundary.
-- Every implementation phase requires checked-in before/after benchmarks from
-  equivalent workloads before it can be declared complete.
+- Advanced pushdown, join reorder/statistics, cross-materialization index
+  sharing, and an opt-in boxed plan are deferred Phase-6 work.
 
-## Open decisions required before implementation
+## Final conformance record
 
-1. Exact error-delivery behavior for a `map_entries` unique-key collision.
-2. Whether the first API migration removes `project` immediately or retains it
-   for one deprecation cycle on the v3 branch.
-3. Whether `NestedMap` keeps its name for the public materialized relationship
-   index or is replaced by `RelationIndex`/`IndexedMap`.
-4. Whether schema generators emit relation marker structs directly or derive
-   them from field annotations.
-5. The precise internal trait shape needed to give several source roots direct
-   typed entry points without placing dynamic dispatch between stages.
-
-These do not change the architectural decision. They are resolved during the
-Phase 0/1 implementation plan and API spike.
+| Requirement | Status | Evidence / exact scope |
+| --- | --- | --- |
+| Associated `MapQuery` key/value | Conforms | `map_query::MapQuery::{Key, Value}`. |
+| Semantic projections and typed properties | Conforms | `MapValuesExt`, `MapEntriesExt`, `FlatMapEntriesExt`, `SelectExt`, and `PlanProperties`. |
+| Collision-safe rekeys | Conforms with panic surface | `map_runtime` validates unique ownership before mutation; no last-writer-wins or error terminal. |
+| Pure closure/invocation contract | Conforms by contract | Bounds are `Fn + Send + Sync`; purity is documented, not type-enforced; order/count/thread are unspecified. |
+| Required/optional FK semantics | Conforms by typed-relation convention | Public typed FK extraction returns `Option`: required relations promise always-`Some`; optional `None` rows are omitted. Both use optional extraction into the parent map-key space. |
+| Repeated relationship-index reuse | Conforms for raw physical rights | `CompileContext`, `DeferredPhysical`, and `SharedRelationIndex`; transformed rights intentionally stay private. |
+| `NestedMap` unification | Partial / deferred | Already a `ReactiveMap` and `MapQuery` source; public closure-indexed storage stays separate. |
+| Static compiler and monomorphized edges | Conforms with boundary erasure | `CompileQuery::Runtime`, `BuildQueryRuntime`, and `QueryRuntime`; root fanout/share boundaries erase. |
+| Stateless/key-preserving fusion | Conforms for recognized shapes | Fused projection kernels; universal algebra fusion is not claimed. |
+| Coordinated arbitrary-N joins | Conforms for recognized fluent left-join regions | Third join promotes to `JoinRegion`; typed N=3/N=8 differential coverage; rekeys are boundaries. |
+| Deterministic adaptive Rayon | Conforms for eligible join runtimes | Native + `scheduler`, 160,000/96,000 hysteresis, balance gate, shared pool; sequential otherwise. |
+| Synchronous settlement | Conforms | Workers compute only; caller merges/publishes before source mutation returns. |
+| Completion/error ordering | Not applicable | `ReactiveMap` exposes `MapDiff` and no terminal completion/error channel. |
+| Panic safety | Conforms to narrow `JoinRegion` fail-stop | Siblings join, failed apply publishes none, cohort poisons; no source/subscriber/global rollback. |
+| Teardown | Conforms | Output owns root guards and final sink is weak; drop tears installation down. |
+| Phase-5 differential/order | Conforms | Forced sequential/shard/Rayon state and exact trace oracle at `3d4db44`. |
+| Performance/resource gates | Conforms | Latency/scaling evidence plus final allocations/codegen/serial compile report in `benchmark-results/lv-671e/` at `db1459a`. |
+| Advanced physical optimization | Deferred | Pushdown/reorder/stats/cross-materialization sharing/boxed plans remain Phase 6. |

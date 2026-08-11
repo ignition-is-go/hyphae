@@ -134,6 +134,10 @@ where
 /// `select` consumes `self` and returns an uncompiled plan node; call
 /// [`MapQuery::materialize`] on the result to obtain a subscribable
 /// [`CellMap`](crate::CellMap).
+///
+/// Predicates must be deterministic, externally side-effect-free, and
+/// nonblocking. They may run repeatedly or concurrently; invocation count,
+/// order, and thread are not API guarantees.
 pub trait SelectExt<K, V>: MapQuery<Key = K, Value = V>
 where
     K: Hash + Eq + CellValue,

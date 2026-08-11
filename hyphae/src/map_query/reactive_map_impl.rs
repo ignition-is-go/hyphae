@@ -1,10 +1,9 @@
 //! [`MapQuery`] and [`CompileQuery`] implementations for reactive-map sources.
 //!
-//! Every reactive-map source — [`CellMap`], [`NestedMap`] — implements
-//! `CompileQuery` via a blanket on [`ReactiveMap`] so chained query
-//! operators can subscribe to a generic upstream map. `MapQuery<K, V>` is
-//! implemented explicitly per source type so that `materialize` can be
-//! overridden when a no-op is sound.
+//! [`CellMap`] and [`NestedMap`] are both valid query roots. Shared plan
+//! properties are implemented through [`ReactiveMap`], while each source has
+//! its own `MapQuery<Key = K, Value = V>` implementation so materialization can
+//! be specialized where a no-op is sound.
 //!
 //! For [`CellMap`], `materialize` is a marker flip (same `Arc<inner>`, new
 //! `PhantomData<CellImmutable>`) — there is no point allocating a fresh
