@@ -1,0 +1,19 @@
+[workspace]
+
+[package]
+name = "hyphae-gpui-web-smoke"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "hyphae-gpui-web-smoke"
+path = "main.rs"
+
+[dependencies]
+gloo-timers = "0.3"
+gpui = { git = "https://github.com/zed-industries/zed.git", rev = "08827f9208b4848d62f3faf86ffa15155966d63c" }
+gpui_platform = { git = "https://github.com/zed-industries/zed.git", rev = "08827f9208b4848d62f3faf86ffa15155966d63c" }
+hyphae = { path = "../../../hyphae" }
+hyphae-gpui = { path = "../.." }
+web-sys = { version = "0.3", features = ["Document", "Window", "console"] }

@@ -11,8 +11,9 @@ cargo = ["cargo", "check", "--all-features"]
 workspace_batchable = true
 
 # Wasm compile guard for the crates that ship into wasm apps (rship's Tauri UI):
-# the core `hyphae` crate (the scheduler clock/platform seam) and the
-# `hyphae-leptos` bridge. Opted into per-crate via `[package.metadata.flux]`.
+# the core `hyphae` crate (the scheduler clock/platform seam), plus the
+# `hyphae-leptos` and `hyphae-gpui` UI bridges. Opted into per-crate via
+# `[package.metadata.flux]`.
 [tasks.check-wasm]
 cargo = ["cargo", "check", "--target", "wasm32-unknown-unknown"]
 workspace_batchable = true
