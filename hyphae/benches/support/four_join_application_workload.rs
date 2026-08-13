@@ -126,8 +126,8 @@ pub fn build_fixture() -> ApplicationFixture {
     let second = dimensions(1);
     let third = dimensions(2);
     let fourth = dimensions(3);
-    // The third join deliberately crosses the automatic two-join compilation
-    // boundary; the fourth verifies that fluent composition remains unchanged.
+    // The third join deliberately promotes the public two-join plan into a
+    // genuine arbitrary-length JoinRegion; the fourth extends that region.
     let output = source
         .clone()
         .left_join_by(

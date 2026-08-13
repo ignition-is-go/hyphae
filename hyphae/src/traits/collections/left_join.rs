@@ -9,14 +9,17 @@ use std::{hash::Hash, marker::PhantomData};
 
 use crate::{
     map_query::{
-        BuildQueryRuntime, ErasedQueryOf, MapQuery, erase_query,
+        BuildQueryRuntime, MapQuery,
         properties::{ByMapKey, ByRelation, ExactlyOne, PlanProperties, PreservesMapKey},
     },
     subscription::SubscriptionGuard,
     traits::{
         CellValue, ForeignKeyRelation, IdFor, OptionalRightKey, RequiredRightKey, RightJoinKey,
         collections::internal::{
-            join_region::StageProject,
+            join_region::{
+                DirectProject, JCons, JNil, JoinRegion, JoinStage, SharedRelationIndex,
+                StageProject, collect_matches,
+            },
             join_runtime::{
                 install_keyed_join_runtime_via_query, install_two_keyed_join_runtime_via_query,
             },
@@ -353,10 +356,10 @@ where
     /// The closure follows [`MapQuery`]'s purity/invocation contract.
     ///
     /// Keeping this direct fluent projection lets the compiler recognize a
-    /// coordinated chain. One/two joins use a specialized typed kernel; the
-    /// next join automatically caps that prefix behind a non-observable erased
-    /// builder before starting another typed region. Consumers do not manage
-    /// these bounded compilation regions.
+    /// coordinated chain: one/two joins use specialized shapes, the third
+    /// recognized join promotes to a concrete `JoinRegion`, and later joins
+    /// extend its typed stage list. Rekeys and unsupported shapes are region
+    /// boundaries.
     pub fn map_joined_values<OV, F>(
         self,
         projection: F,
@@ -466,42 +469,134 @@ where
     Rel1: Send + Sync + 'static,
     Rel2: Send + Sync + 'static,
 {
-    /// Cap the recognized two-stage prefix behind an internal erased builder,
-    /// then append the third relationship join without exposing an observable
-    /// materialization boundary.
+    /// Promote three typed joins into an arbitrary-length coordinated region.
+    #[allow(clippy::type_complexity)]
     pub fn left_join_fk<Rel3, R3>(
         self,
         right: R3,
-    ) -> RelationPlan<
-        LeftJoinPlan<
-            ErasedQueryOf<Self, LK, MV2>,
-            R3,
-            LK,
-            MV2,
-            R3::Key,
-            Rel3::Child,
-            LK,
-            fn(&LK, &MV2) -> LK,
-            OptionalRightKey<fn(&R3::Key, &Rel3::Child) -> Option<LK>>,
+    ) -> JoinRegion<
+        L,
+        JCons<
+            JoinStage<
+                R1,
+                LK,
+                LV,
+                RK1,
+                RV1,
+                JK1,
+                MV1,
+                FL1,
+                FR1,
+                JoinProjectionProject<DirectJoinProjection<FM1>>,
+                SharedRelationIndex<Rel1>,
+            >,
+            JCons<
+                JoinStage<
+                    R2,
+                    LK,
+                    MV1,
+                    RK2,
+                    RV2,
+                    JK2,
+                    MV2,
+                    FL2,
+                    FR2,
+                    JoinProjectionProject<DirectJoinProjection<FM2>>,
+                    SharedRelationIndex<Rel2>,
+                >,
+                JCons<
+                    JoinStage<
+                        R3,
+                        LK,
+                        MV2,
+                        R3::Key,
+                        Rel3::Child,
+                        LK,
+                        (MV2, Vec<Rel3::Child>),
+                        fn(&LK, &MV2) -> LK,
+                        OptionalRightKey<fn(&R3::Key, &Rel3::Child) -> Option<LK>>,
+                        DirectProject<
+                            fn(&LK, &MV2, &[(R3::Key, Rel3::Child)]) -> (MV2, Vec<Rel3::Child>),
+                        >,
+                        SharedRelationIndex<Rel3>,
+                    >,
+                    JNil,
+                >,
+            >,
         >,
-        Rel3,
+        LK,
+        LV,
     >
     where
         Rel3: ForeignKeyRelation,
         R3: MapQuery<Value = Rel3::Child>,
         Rel3::ForeignKey: IdFor<Rel3::Parent, MapKey = LK>,
     {
-        let left_key: fn(&LK, &MV2) -> LK =
+        let JoinedValuesPlan {
+            join: second_join,
+            projection: second_projection,
+            ..
+        } = self.plan;
+        let LeftJoinPlan {
+            left: first_relation,
+            right: right2,
+            left_key: left_key2,
+            right_key: right_key2,
+            ..
+        } = second_join;
+        let JoinedValuesPlan {
+            join: first_join,
+            projection: first_projection,
+            ..
+        } = first_relation.plan;
+        let LeftJoinPlan {
+            left,
+            right: right1,
+            left_key: left_key1,
+            right_key: right_key1,
+            ..
+        } = first_join;
+        let third_project: DirectProject<
+            fn(&LK, &MV2, &[(R3::Key, Rel3::Child)]) -> (MV2, Vec<Rel3::Child>),
+        > = DirectProject(collect_matches::<LK, MV2, R3::Key, Rel3::Child>);
+        let first = JoinStage::new(
+            right1,
+            left_key1,
+            right_key1,
+            JoinProjectionProject(DirectJoinProjection(first_projection)),
+        )
+        .with_index_policy(SharedRelationIndex::<Rel1>::new());
+        let second = JoinStage::new(
+            right2,
+            left_key2,
+            right_key2,
+            JoinProjectionProject(DirectJoinProjection(second_projection)),
+        )
+        .with_index_policy(SharedRelationIndex::<Rel2>::new());
+        let third_left_key: fn(&LK, &MV2) -> LK =
             crate::traits::collections::internal::join_region::map_key::<LK, MV2>;
-        let right_key: fn(&R3::Key, &Rel3::Child) -> Option<LK> =
+        let third_right_key: fn(&R3::Key, &Rel3::Child) -> Option<LK> =
             crate::traits::collections::internal::join_region::foreign_map_key::<Rel3, R3::Key, LK>;
-        RelationPlan::<_, Rel3>::new(LeftJoinPlan {
-            left: erase_query(self),
+        let third = JoinStage::new(
             right,
-            left_key,
-            right_key: OptionalRightKey(right_key),
-            _types: PhantomData,
-        })
+            third_left_key,
+            OptionalRightKey(third_right_key),
+            third_project,
+        )
+        .with_index_policy(SharedRelationIndex::<Rel3>::new());
+        JoinRegion::new(
+            left,
+            JCons {
+                head: first,
+                tail: JCons {
+                    head: second,
+                    tail: JCons {
+                        head: third,
+                        tail: JNil,
+                    },
+                },
+            },
+        )
     }
 }
 
@@ -940,25 +1035,38 @@ where
     FR2: RightJoinKey<RK2, RV2, JK2>,
     FM2: JoinProjection<LK, MV, RK2, RV2, OV>,
 {
-    /// Cap the recognized two-stage prefix behind an internal erased builder,
-    /// then append the third join as an ordinary typed plan node. The boundary
-    /// is incremental and non-observable: it connects diffs directly and does
-    /// not allocate a `CellMap` cache.
+    /// Promote a proven two-stage region and append its third left join.
+    #[allow(clippy::type_complexity)]
     pub fn left_join_by<R3, RK3, RV3, JK3, FL3, FR3>(
         self,
         right: R3,
         left_key: FL3,
         right_key: FR3,
-    ) -> LeftJoinPlan<
-        ErasedQueryOf<Self, LK, OV>,
-        R3,
+    ) -> JoinRegion<
+        L,
+        JCons<
+            JoinStage<R1, LK, LV, RK1, RV1, JK1, MV, FL1, FR1, JoinProjectionProject<FM1>>,
+            JCons<
+                JoinStage<R2, LK, MV, RK2, RV2, JK2, OV, FL2, FR2, JoinProjectionProject<FM2>>,
+                JCons<
+                    JoinStage<
+                        R3,
+                        LK,
+                        OV,
+                        RK3,
+                        RV3,
+                        JK3,
+                        (OV, Vec<RV3>),
+                        FL3,
+                        RequiredRightKey<FR3>,
+                        DirectProject<fn(&LK, &OV, &[(RK3, RV3)]) -> (OV, Vec<RV3>)>,
+                    >,
+                    JNil,
+                >,
+            >,
+        >,
         LK,
-        OV,
-        RK3,
-        RV3,
-        JK3,
-        FL3,
-        RequiredRightKey<FR3>,
+        LV,
     >
     where
         R3: MapQuery<Key = RK3, Value = RV3>,
@@ -968,13 +1076,50 @@ where
         FL3: Fn(&LK, &OV) -> JK3 + Send + Sync + 'static,
         FR3: Fn(&RK3, &RV3) -> JK3 + Send + Sync + 'static,
     {
-        LeftJoinPlan {
-            left: erase_query(self),
-            right,
-            left_key,
-            right_key: RequiredRightKey(right_key),
-            _types: PhantomData,
-        }
+        let Self {
+            plan, map_second, ..
+        } = self;
+        let TwoLeftJoinPlan {
+            left,
+            right1,
+            right2,
+            left_key1,
+            right_key1,
+            map_first,
+            left_key2,
+            right_key2,
+            ..
+        } = plan;
+        let third_project: DirectProject<fn(&LK, &OV, &[(RK3, RV3)]) -> (OV, Vec<RV3>)> =
+            DirectProject(collect_matches::<LK, OV, RK3, RV3>);
+        JoinRegion::new(
+            left,
+            JCons {
+                head: JoinStage::new(
+                    right1,
+                    left_key1,
+                    right_key1,
+                    JoinProjectionProject(map_first),
+                ),
+                tail: JCons {
+                    head: JoinStage::new(
+                        right2,
+                        left_key2,
+                        right_key2,
+                        JoinProjectionProject(map_second),
+                    ),
+                    tail: JCons {
+                        head: JoinStage::new(
+                            right,
+                            left_key,
+                            RequiredRightKey(right_key),
+                            third_project,
+                        ),
+                        tail: JNil,
+                    },
+                },
+            },
+        )
     }
 }
 
@@ -2072,10 +2217,8 @@ mod tests {
 
     #[cfg(feature = "scheduler")]
     #[test]
-    fn promoted_optional_fk_batch_omits_absent_routes() {
-        // Cross the default promotion boundary without turning a correctness
-        // test into the historical 66k-row resource benchmark.
-        const ROWS: usize = 8_192;
+    fn large_sharded_optional_fk_batch_omits_absent_routes() {
+        const ROWS: usize = 66_000;
         let users = CellMap::<String, User>::new();
         let posts = CellMap::<usize, OptionalPost>::new();
         let joined = users
