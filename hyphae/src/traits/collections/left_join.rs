@@ -2072,8 +2072,10 @@ mod tests {
 
     #[cfg(feature = "scheduler")]
     #[test]
-    fn large_sharded_optional_fk_batch_omits_absent_routes() {
-        const ROWS: usize = 66_000;
+    fn promoted_optional_fk_batch_omits_absent_routes() {
+        // Cross the default promotion boundary without turning a correctness
+        // test into the historical 66k-row resource benchmark.
+        const ROWS: usize = 8_192;
         let users = CellMap::<String, User>::new();
         let posts = CellMap::<usize, OptionalPost>::new();
         let joined = users
