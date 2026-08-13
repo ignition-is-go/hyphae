@@ -1084,34 +1084,10 @@ mod tests {
         drop(state);
     }
 
-    #[test]
-    fn public_eight_stage_typed_fk_region_uses_one_physical_index() {
-        let parents = CellMap::<ParentId, Parent>::new();
-        let children = CellMap::<u64, Child>::new();
-        let identity = SourceIdentity::from_ptr(Arc::as_ptr(&children.inner));
-        let query = parents
-            .left_join_fk::<ParentChildren, _>(children.clone())
-            .map_joined_values(|_, _, rows| rows.len())
-            .left_join_fk::<ParentChildren, _>(children.clone())
-            .map_joined_values(|_, value, rows| *value + rows.len())
-            .left_join_fk::<ParentChildren, _>(children.clone())
-            .map_joined_values(|_, value, rows| *value + rows.len())
-            .left_join_fk::<ParentChildren, _>(children.clone())
-            .map_joined_values(|_, value, rows| *value + rows.len())
-            .left_join_fk::<ParentChildren, _>(children.clone())
-            .map_joined_values(|_, value, rows| *value + rows.len())
-            .left_join_fk::<ParentChildren, _>(children.clone())
-            .map_joined_values(|_, value, rows| *value + rows.len())
-            .left_join_fk::<ParentChildren, _>(children.clone())
-            .map_joined_values(|_, value, rows| *value + rows.len())
-            .left_join_fk::<ParentChildren, _>(children)
-            .map_joined_values(|_, value, rows| *value + rows.len());
-        let mut cx = CompileContext::default();
-        let _guards = compile_runtime_into(query, &mut cx, |_: &MapDiff<ParentId, usize>| {});
-
-        assert_eq!(cx.physical_relationship_count(), 1);
-        assert_eq!(cx.relationship_use_count::<ParentChildren>(identity), 8);
-    }
+    // Deep public-query composition is covered by
+    // `tests/arbitrary_n_public_join_region.rs`. Keeping another eight-stage
+    // instantiation in the monolithic lib-test crate multiplies downstream
+    // codegen and defeats the bounded-compilation resource contract.
 
     #[test]
     fn repeated_relationship_assigns_exactly_one_index_maintainer() {
