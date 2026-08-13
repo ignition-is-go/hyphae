@@ -27,11 +27,20 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install cargo-binstall if unavailable
+      - name: Check for cargo-binstall
+        id: cargo-binstall
+        shell: bash
         run: |
-          if ! command -v cargo-binstall >/dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+          if command -v cargo-binstall >/dev/null 2>&1; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
           fi
+      - name: Install cargo-binstall
+        if: steps.cargo-binstall.outputs.available != 'true'
+        uses: cargo-bins/cargo-binstall@e00d2c94cc0067b77737821097a62d91c0301baa # v1.21.1
+        with:
+          version: "1.21.1"
       - name: Install or update cargo-flux
         run: cargo binstall cargo-flux --no-confirm --force
       - run: cargo flux run check
