@@ -68,6 +68,89 @@ impl<K, V, F> MapDiffSink<K, V> for F where F: Fn(&MapDiff<K, V>) + Send + Sync 
 /// Explicitly erased sink used only by the opt-in shared query boundary.
 pub(crate) type BoxedMapDiffSink<K, V> = Arc<dyn Fn(&MapDiff<K, V>) + Send + Sync>;
 
+type ErasedBuild<K, V> = Box<
+    dyn FnOnce(&mut compiler::CompileContext, BoxedMapDiffSink<K, V>) -> Vec<SubscriptionGuard>
+        + Send
+        + Sync,
+>;
+
+/// An internal, non-observable plan boundary used to cap the concrete type of
+/// recognized multi-join prefixes. Unlike `materialize`, this retains no map
+/// cache: compiling the boundary connects the captured plan directly to the
+/// downstream sink.
+#[doc(hidden)]
+pub struct ErasedMapQuery<K, V, C, IP, OP> {
+    build: ErasedBuild<K, V>,
+    _types: PhantomData<fn() -> (C, IP, OP)>,
+}
+
+#[doc(hidden)]
+pub type ErasedQueryOf<Q, K, V> = ErasedMapQuery<
+    K,
+    V,
+    <Q as properties::PlanProperties>::Cardinality,
+    <Q as properties::PlanProperties>::InputPartition,
+    <Q as properties::PlanProperties>::OutputPartition,
+>;
+
+impl<K, V, C, IP, OP> properties::PlanProperties for ErasedMapQuery<K, V, C, IP, OP>
+where
+    C: properties::Cardinality,
+    IP: properties::Partition,
+    OP: properties::Partition,
+{
+    type Cardinality = C;
+    type InputPartition = IP;
+    type OutputPartition = OP;
+}
+
+impl<K, V, C, IP, OP> BuildQueryRuntime<K, V> for ErasedMapQuery<K, V, C, IP, OP>
+where
+    K: CellValue + Hash + Eq,
+    V: CellValue,
+    C: properties::Cardinality,
+    IP: properties::Partition,
+    OP: properties::Partition,
+{
+    fn build_into<S>(self, cx: &mut compiler::CompileContext, sink: S) -> Vec<SubscriptionGuard>
+    where
+        S: MapDiffSink<K, V>,
+    {
+        (self.build)(cx, Arc::new(sink))
+    }
+}
+
+#[allow(private_bounds)]
+impl<K, V, C, IP, OP> MapQuery for ErasedMapQuery<K, V, C, IP, OP>
+where
+    K: CellValue + Hash + Eq,
+    V: CellValue,
+    C: properties::Cardinality,
+    IP: properties::Partition,
+    OP: properties::Partition,
+{
+    type Key = K;
+    type Value = V;
+}
+
+/// Erase only the plan builder while preserving its public key/value types and
+/// compile-time relational properties.
+pub(crate) fn erase_query<Q, K, V>(
+    query: Q,
+) -> ErasedMapQuery<K, V, Q::Cardinality, Q::InputPartition, Q::OutputPartition>
+where
+    Q: MapQuery<Key = K, Value = V>,
+    K: CellValue + Hash + Eq,
+    V: CellValue,
+{
+    ErasedMapQuery {
+        build: Box::new(move |cx, sink| {
+            compile_runtime_into(query, cx, move |diff: &MapDiff<K, V>| sink(diff))
+        }),
+        _types: PhantomData,
+    }
+}
+
 /// Internal builder implemented by each sealed plan node. Builders compose
 /// statically and are consumed into a concrete [`QueryRuntime`] by
 /// [`CompileQuery::compile`].
