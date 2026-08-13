@@ -27,7 +27,13 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
 
-      - run: cargo install cargo-flux
+      - name: Install cargo-binstall if unavailable
+        run: |
+          if ! command -v cargo-binstall >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+          fi
+      - name: Install or update cargo-flux
+        run: cargo binstall cargo-flux --no-confirm --force
       - run: cargo flux run check
       - run: cargo flux run check-wasm
       - run: cargo flux run check-wasm-features
