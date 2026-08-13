@@ -1277,10 +1277,6 @@ struct RegionRouter<Runtime, K, Input> {
     /// quarantined permanently rather than exposed for recovery.
     poisoned: bool,
     query_poison: QueryPoison,
-    #[cfg(test)]
-    test_dispatch: Option<crate::map_query::compiler::TestRegionDispatch>,
-    #[cfg(test)]
-    last_left_workers: Vec<String>,
     _input: PhantomData<fn() -> Input>,
 }
 
@@ -1348,10 +1344,6 @@ where
             parallel_active: false,
             poisoned: false,
             query_poison: QueryPoison::default(),
-            #[cfg(test)]
-            test_dispatch: None,
-            #[cfg(test)]
-            last_left_workers: Vec::new(),
             _input: PhantomData,
         }
     }
@@ -1360,48 +1352,6 @@ where
         let mut router = Self::new(runtime);
         router.query_poison = query_poison;
         router
-    }
-
-    #[cfg(test)]
-    fn with_config(runtime: Runtime, shard_count: usize, promotion_work: usize) -> Self {
-        let mut router = Self::new(runtime);
-        router.shard_count = shard_count.max(1);
-        router.promotion_work = promotion_work.max(1);
-        router
-    }
-
-    #[cfg(test)]
-    fn with_test_config(
-        runtime: Runtime,
-        query_poison: QueryPoison,
-        config: crate::map_query::compiler::TestRegionConfig,
-    ) -> Self {
-        Self {
-            sequential: Some(runtime),
-            shards: None,
-            key_sequence: FxHashMap::default(),
-            next_sequence: 0,
-            shard_count: config.shards.max(1),
-            promotion_work: config.promote_after.max(1),
-            parallel_active: false,
-            poisoned: false,
-            query_poison,
-            test_dispatch: Some(config.dispatch),
-            last_left_workers: Vec::new(),
-            _input: PhantomData,
-        }
-    }
-
-    #[allow(clippy::unused_self)]
-    const fn test_configured(&self) -> bool {
-        #[cfg(test)]
-        {
-            self.test_dispatch.is_some()
-        }
-        #[cfg(not(test))]
-        {
-            false
-        }
     }
 
     fn shard_for(key: &K, count: usize) -> usize {
@@ -1683,7 +1633,7 @@ where
             _ => None,
         };
         let non_unique_batch = matches!(batch_is_unique, Some(false));
-        if self.shards.is_none() && self.shard_count <= 1 && !self.test_configured() {
+        if self.shards.is_none() && self.shard_count <= 1 {
             #[cfg(feature = "region-calibration")]
             crate::region_calibration::left_serial_dispatch();
             if non_unique_batch {
@@ -1712,9 +1662,7 @@ where
         let estimated_work = diff_work(diff).saturating_mul(Runtime::COST_UNITS);
         let promotion_warranted =
             diff_work(diff) >= self.promotion_work || estimated_work >= PARALLEL_REGION_WORK_ENTER;
-        if self.shards.is_none()
-            && ((self.shard_count <= 1 && !self.test_configured()) || !promotion_warranted)
-        {
+        if self.shards.is_none() && ((self.shard_count <= 1) || !promotion_warranted) {
             #[cfg(feature = "region-calibration")]
             crate::region_calibration::left_serial_dispatch();
             if non_unique_batch {
@@ -1771,32 +1719,13 @@ where
         let max_shard_work = shard_work.iter().copied().max().unwrap_or(0);
         let balanced = active_shards > 1
             && max_shard_work.saturating_mul(4) <= diff_work(diff).saturating_mul(3);
-        #[cfg(not(feature = "scheduler"))]
-        let _ = (hysteresis_wants_parallel, balanced);
-        #[cfg(all(test, not(target_arch = "wasm32")))]
-        let forced_pool = match &self.test_dispatch {
-            Some(crate::map_query::compiler::TestRegionDispatch::InjectedRayon(pool)) => {
-                Some(Arc::clone(pool))
-            }
-            _ => None,
-        };
-        #[cfg(all(test, not(target_arch = "wasm32")))]
-        let force_parallel = forced_pool.is_some();
-        #[cfg(not(all(test, not(target_arch = "wasm32"))))]
-        let force_parallel = false;
-        #[cfg(all(test, feature = "scheduler", not(target_arch = "wasm32")))]
-        let allow_production_dispatch = self.test_dispatch.is_none();
-        #[cfg(all(not(test), feature = "scheduler", not(target_arch = "wasm32")))]
-        let allow_production_dispatch = true;
-        #[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
-        let production_resources_available = allow_production_dispatch
-            && !force_parallel
-            && hysteresis_wants_parallel
-            && balanced
-            && crate::executor::worker_pool().is_some();
         #[cfg(not(all(feature = "scheduler", not(target_arch = "wasm32"))))]
-        let production_resources_available = false;
-        let resources_available = force_parallel || production_resources_available;
+        let _ = (hysteresis_wants_parallel, balanced);
+        #[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
+        let resources_available =
+            hysteresis_wants_parallel && balanced && crate::executor::worker_pool().is_some();
+        #[cfg(not(all(feature = "scheduler", not(target_arch = "wasm32"))))]
+        let resources_available = false;
         #[cfg(feature = "region-calibration")]
         let was_parallel = self.parallel_active;
         self.parallel_active = resources_available;
@@ -1835,30 +1764,12 @@ where
                     }
                 }
             }
-            let worker = if cfg!(test) {
-                std::thread::current().name().map(str::to_owned)
-            } else {
-                None
-            };
-            (tagged, worker)
+            tagged
         };
 
-        #[cfg(all(any(feature = "scheduler", test), not(target_arch = "wasm32")))]
+        #[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
         let per_shard = if run_parallel {
-            #[cfg(test)]
-            let pool = forced_pool.as_deref().or_else(|| {
-                #[cfg(feature = "scheduler")]
-                {
-                    crate::executor::worker_pool()
-                }
-                #[cfg(not(feature = "scheduler"))]
-                {
-                    None
-                }
-            });
-            #[cfg(not(test))]
-            let pool = crate::executor::worker_pool();
-            if let Some(pool) = pool {
+            if let Some(pool) = crate::executor::worker_pool() {
                 #[cfg(feature = "region-calibration")]
                 crate::region_calibration::left_parallel_dispatch();
                 use rayon::prelude::*;
@@ -1890,7 +1801,7 @@ where
                 .map(process)
                 .collect()
         };
-        #[cfg(not(all(any(feature = "scheduler", test), not(target_arch = "wasm32"))))]
+        #[cfg(not(all(feature = "scheduler", not(target_arch = "wasm32"))))]
         let per_shard: Vec<_> = {
             let _ = run_parallel;
             #[cfg(feature = "region-calibration")]
@@ -1903,17 +1814,7 @@ where
                 .collect()
         };
 
-        #[cfg(test)]
-        {
-            self.last_left_workers = per_shard
-                .iter()
-                .filter_map(|(_, worker)| worker.clone())
-                .collect();
-        }
-        let mut tagged: Vec<_> = per_shard
-            .into_iter()
-            .flat_map(|(changes, _)| changes)
-            .collect();
+        let mut tagged: Vec<_> = per_shard.into_iter().flatten().collect();
         tagged.sort_by_key(|(ordinal, local, shard, change)| {
             let key_order = if unique_batch || event_orders.is_none() {
                 diff_key(change)
@@ -1963,7 +1864,7 @@ where
         // Canonical router traces follow stable left-source order in every
         // execution mode. Raw stage-kernel bucket order is a hash/index
         // implementation detail and cannot be reconstructed across shards.
-        if self.shards.is_none() && self.shard_count <= 1 && !self.test_configured() {
+        if self.shards.is_none() && self.shard_count <= 1 {
             let mut output = self
                 .sequential
                 .as_mut()
@@ -2063,8 +1964,6 @@ fn region_transaction<Runtime, K, Input, Output>(
             router.query_poison.poison();
             router.poisoned = true;
             router.parallel_active = false;
-            #[cfg(test)]
-            router.last_left_workers.clear();
             drop(router);
             std::panic::resume_unwind(payload);
         }
@@ -2534,13 +2433,6 @@ where
     ) -> Vec<SubscriptionGuard> {
         let (runtime, rights) = self.stages.split(cx);
         let query_poison = cx.query_poison();
-        #[cfg(test)]
-        let router = if let Some(config) = cx.test_region_config() {
-            RegionRouter::with_test_config(runtime, query_poison, config)
-        } else {
-            RegionRouter::with_query_poison(runtime, query_poison)
-        };
-        #[cfg(not(test))]
         let router = RegionRouter::with_query_poison(runtime, query_poison);
         let state = Arc::new(Mutex::new(router));
         let sink = sink;

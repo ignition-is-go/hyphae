@@ -8,9 +8,6 @@ use std::{
     },
 };
 
-#[cfg(test)]
-use std::sync::atomic::AtomicUsize;
-
 use crate::{
     cell_map::MapDiff,
     subscription::SubscriptionGuard,
@@ -200,8 +197,6 @@ where
 pub struct DeferredPhysical<T> {
     inner: Arc<OnceLock<Arc<parking_lot::RwLock<T>>>>,
     maintains_index: Arc<AtomicBool>,
-    #[cfg(test)]
-    maintained_write_probe: Option<Arc<AtomicUsize>>,
 }
 
 impl<T> Clone for DeferredPhysical<T> {
@@ -209,8 +204,6 @@ impl<T> Clone for DeferredPhysical<T> {
         Self {
             inner: Arc::clone(&self.inner),
             maintains_index: Arc::clone(&self.maintains_index),
-            #[cfg(test)]
-            maintained_write_probe: self.maintained_write_probe.clone(),
         }
     }
 }
@@ -220,8 +213,6 @@ impl<T> Default for DeferredPhysical<T> {
         Self {
             inner: Arc::new(OnceLock::new()),
             maintains_index: Arc::new(AtomicBool::new(false)),
-            #[cfg(test)]
-            maintained_write_probe: None,
         }
     }
 }
@@ -237,12 +228,6 @@ where
     }
 
     pub(crate) fn write<R>(&self, write: impl FnOnce(&mut T) -> R) -> R {
-        #[cfg(test)]
-        if self.maintains_index()
-            && let Some(probe) = &self.maintained_write_probe
-        {
-            probe.fetch_add(1, Ordering::Relaxed);
-        }
         let index = self
             .inner
             .get_or_init(|| Arc::new(parking_lot::RwLock::new(T::default())));
@@ -253,24 +238,6 @@ where
     pub(crate) fn maintains_index(&self) -> bool {
         self.maintains_index.load(Ordering::Acquire)
     }
-}
-
-#[cfg(test)]
-#[allow(clippy::redundant_pub_crate)]
-#[derive(Clone)]
-pub(crate) enum TestRegionDispatch {
-    ForceSerial,
-    #[cfg(not(target_arch = "wasm32"))]
-    InjectedRayon(Arc<rayon::ThreadPool>),
-}
-
-#[cfg(test)]
-#[allow(clippy::redundant_pub_crate)]
-#[derive(Clone)]
-pub(crate) struct TestRegionConfig {
-    pub(crate) shards: usize,
-    pub(crate) promote_after: usize,
-    pub(crate) dispatch: TestRegionDispatch,
 }
 
 /// Setup-time state shared by every node in one materialization.
@@ -285,30 +252,11 @@ pub struct CompileContext {
     relation_hint: Option<TypeId>,
     active_root_relation: Option<TypeId>,
     active_relationship_binding: Option<Box<dyn PhysicalRelationshipBinding>>,
-    #[cfg(test)]
-    test_region_config: Option<TestRegionConfig>,
-    #[cfg(test)]
-    maintained_write_probe: Option<Arc<AtomicUsize>>,
 }
 
 impl CompileContext {
     pub(crate) fn query_poison(&self) -> QueryPoison {
         self.query_poison.clone()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_test_region_config(&mut self, config: TestRegionConfig) {
-        self.test_region_config = Some(config);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_region_config(&self) -> Option<TestRegionConfig> {
-        self.test_region_config.clone()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_maintained_write_probe(&mut self, probe: Arc<AtomicUsize>) {
-        self.maintained_write_probe = Some(probe);
     }
 
     /// Register a typed root entry point without activating its subscription.
@@ -436,13 +384,7 @@ impl CompileContext {
 
     #[allow(clippy::unused_self)]
     pub(crate) fn prepare_relationship_index<T>(&self) -> DeferredPhysical<T> {
-        #[allow(unused_mut)]
-        let mut index = DeferredPhysical::default();
-        #[cfg(test)]
-        {
-            index.maintained_write_probe = self.maintained_write_probe.clone();
-        }
-        index
+        DeferredPhysical::default()
     }
 
     pub(crate) fn with_root_relation_index<I, T>(
