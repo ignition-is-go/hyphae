@@ -7,10 +7,11 @@
 //! concrete plan, registers each interned physical root before activation, and
 //! returns a cached, subscribable output map.
 //!
-//! Ordinary plan edges remain monomorphized. Recognized key-preserving and
-//! fluent left-join regions fuse; rekeys and unsupported algebra shapes are
-//! physical boundaries. Root subscriber registries and explicit query-share
-//! boundaries are intentionally erased multicast boundaries.
+//! Operator plans and kernels remain statically typed. Runtime diff edges use a
+//! fixed erased callback shape so a downstream continuation cannot recursively
+//! multiply the concrete types of every upstream branch. Recognized
+//! key-preserving and fluent left-join regions still fuse; rekeys and unsupported
+//! algebra shapes remain physical boundaries.
 //!
 //! # Closure and publication contract
 //!
@@ -56,16 +57,10 @@ pub(crate) mod compiler;
 
 pub use share::{MapQueryShareExt, SharedMapQuery};
 
-/// Statically typed downstream diff consumer used while compiling a query.
+/// Type-erased downstream diff consumer used on runtime edges.
 ///
-/// The blanket implementation keeps every plan-to-plan edge monomorphized.
-/// Type erasure is reserved for actual multicast boundaries and the root
-/// source subscriber registry.
-pub(crate) trait MapDiffSink<K, V>: Fn(&MapDiff<K, V>) + Send + Sync + 'static {}
-
-impl<K, V, F> MapDiffSink<K, V> for F where F: Fn(&MapDiff<K, V>) + Send + Sync + 'static {}
-
-/// Explicitly erased sink used only by the opt-in shared query boundary.
+/// Plans and sources remain statically typed, while erasing the callback keeps
+/// sink types from recursively multiplying across binary DAG branches.
 pub(crate) type BoxedMapDiffSink<K, V> = Arc<dyn Fn(&MapDiff<K, V>) + Send + Sync>;
 
 type ErasedBuild<K, V> = Box<
@@ -112,11 +107,12 @@ where
     IP: properties::Partition,
     OP: properties::Partition,
 {
-    fn build_into<S>(self, cx: &mut compiler::CompileContext, sink: S) -> Vec<SubscriptionGuard>
-    where
-        S: MapDiffSink<K, V>,
-    {
-        (self.build)(cx, Arc::new(sink))
+    fn build_into(
+        self,
+        cx: &mut compiler::CompileContext,
+        sink: BoxedMapDiffSink<K, V>,
+    ) -> Vec<SubscriptionGuard> {
+        (self.build)(cx, sink)
     }
 }
 
@@ -144,9 +140,7 @@ where
     V: CellValue,
 {
     ErasedMapQuery {
-        build: Box::new(move |cx, sink| {
-            compile_runtime_into(query, cx, move |diff: &MapDiff<K, V>| sink(diff))
-        }),
+        build: Box::new(move |cx, sink| compile_runtime_into(query, cx, sink)),
         _types: PhantomData,
     }
 }
@@ -159,9 +153,11 @@ where
     K: CellValue + Hash + Eq,
     V: CellValue,
 {
-    fn build_into<S>(self, cx: &mut compiler::CompileContext, sink: S) -> Vec<SubscriptionGuard>
-    where
-        S: MapDiffSink<K, V>;
+    fn build_into(
+        self,
+        cx: &mut compiler::CompileContext,
+        sink: BoxedMapDiffSink<K, V>,
+    ) -> Vec<SubscriptionGuard>;
 
     /// Stable identity is available only at an untransformed physical source.
     /// Operator nodes intentionally inherit `None`: sharing relationship state
@@ -173,24 +169,27 @@ where
 
 /// Concrete runtime produced by compiling a query plan.
 ///
-/// The runtime retains its exact plan type, so connecting roots does not erase
-/// operator stages behind a trait object. Only the root registry and explicit
-/// share boundaries erase callbacks.
+/// The runtime retains its exact plan type and statically typed operator state.
+/// Diff callbacks between runtime nodes have one erased shape, preventing sink
+/// types from growing multiplicatively across branched plans.
 pub(crate) trait QueryRuntime: Sized + Send + Sync + 'static {
     type Key: CellValue + Hash + Eq;
     type Value: CellValue;
 
     /// Connect this runtime to its output without activating roots. This is
     /// used by nested compilation and shared-query ownership boundaries.
-    fn connect<S>(self, cx: &mut compiler::CompileContext, sink: S) -> Vec<SubscriptionGuard>
-    where
-        S: MapDiffSink<Self::Key, Self::Value>;
+    fn connect(
+        self,
+        cx: &mut compiler::CompileContext,
+        sink: BoxedMapDiffSink<Self::Key, Self::Value>,
+    ) -> Vec<SubscriptionGuard>;
 
     /// Connect the completed runtime, then activate all registered roots.
-    fn install_roots<S>(self, cx: &mut compiler::CompileContext, sink: S) -> Vec<SubscriptionGuard>
-    where
-        S: MapDiffSink<Self::Key, Self::Value>,
-    {
+    fn install_roots(
+        self,
+        cx: &mut compiler::CompileContext,
+        sink: BoxedMapDiffSink<Self::Key, Self::Value>,
+    ) -> Vec<SubscriptionGuard> {
         let mut guards = self.connect(cx, sink);
         guards.extend(cx.activate());
         guards
@@ -212,10 +211,11 @@ where
     type Key = K;
     type Value = V;
 
-    fn connect<S>(self, cx: &mut compiler::CompileContext, sink: S) -> Vec<SubscriptionGuard>
-    where
-        S: MapDiffSink<K, V>,
-    {
+    fn connect(
+        self,
+        cx: &mut compiler::CompileContext,
+        sink: BoxedMapDiffSink<K, V>,
+    ) -> Vec<SubscriptionGuard> {
         self.plan.build_into(cx, sink)
     }
 }
@@ -259,16 +259,15 @@ where
 
 /// Compile a child plan and connect its concrete runtime without activating
 /// roots. Activation occurs once, at the outer materialization boundary.
-pub(crate) fn compile_runtime_into<Q, K, V, S>(
+pub(crate) fn compile_runtime_into<Q, K, V>(
     query: Q,
     cx: &mut compiler::CompileContext,
-    sink: S,
+    sink: BoxedMapDiffSink<K, V>,
 ) -> Vec<SubscriptionGuard>
 where
     Q: CompileQuery<K, V>,
     K: CellValue + Hash + Eq,
     V: CellValue,
-    S: MapDiffSink<K, V>,
 {
     let runtime = query.compile(cx);
     runtime.connect(cx, sink)
@@ -338,7 +337,7 @@ pub trait MapQuery: CompileQuery<Self::Key, Self::Value> + properties::PlanPrope
 
         let mut cx = compiler::CompileContext::default();
         let runtime = self.compile(&mut cx);
-        let guards = runtime.install_roots(&mut cx, sink);
+        let guards = runtime.install_roots(&mut cx, Arc::new(sink));
         for g in guards {
             output.own(g);
         }

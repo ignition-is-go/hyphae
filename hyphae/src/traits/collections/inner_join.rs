@@ -11,7 +11,7 @@ use super::left_join::RelationPlan;
 
 use crate::{
     map_query::{
-        BuildQueryRuntime, MapDiffSink, MapQuery,
+        BuildQueryRuntime, MapQuery,
         properties::{ByMapKey, Many, PlanProperties, Repartition},
     },
     subscription::SubscriptionGuard,
@@ -63,15 +63,12 @@ where
     LV: CellValue,
     RV: CellValue,
 {
-    fn build_into<Sink>(
+    fn build_into(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
-        sink: Sink,
-    ) -> Vec<SubscriptionGuard>
-    where
-        Sink: MapDiffSink<K, (LV, RV)>,
-    {
-        install_keyed_join_runtime_via_query::<K, LV, K, RV, K, (LV, RV), _, _, _, _, _, _>(
+        sink: crate::map_query::BoxedMapDiffSink<K, (LV, RV)>,
+    ) -> Vec<SubscriptionGuard> {
+        install_keyed_join_runtime_via_query::<K, LV, K, RV, K, (LV, RV), _, _, _, _, _>(
             cx,
             self.left,
             self.right,
@@ -157,15 +154,12 @@ where
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
     FR: RightJoinKey<RK, RV, JK>,
 {
-    fn build_into<Sink>(
+    fn build_into(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
-        sink: Sink,
-    ) -> Vec<SubscriptionGuard>
-    where
-        Sink: MapDiffSink<(LK, RK), (LV, RV)>,
-    {
-        install_join_runtime_via_query::<LK, LV, RK, RV, JK, (LK, RK), (LV, RV), _, _, _, _, _, _>(
+        sink: crate::map_query::BoxedMapDiffSink<(LK, RK), (LV, RV)>,
+    ) -> Vec<SubscriptionGuard> {
+        install_join_runtime_via_query::<LK, LV, RK, RV, JK, (LK, RK), (LV, RV), _, _, _, _, _>(
             cx,
             self.left,
             self.right,

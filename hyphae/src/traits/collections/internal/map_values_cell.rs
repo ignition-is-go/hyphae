@@ -14,30 +14,28 @@ use crate::{
     traits::{CellValue, Gettable, Watchable, collections::internal::map_runtime::flatten_diff},
 };
 
-struct MapValuesRuntime<K, V, U, W, F, Sink>
+struct MapValuesRuntime<K, V, U, W, F>
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
     U: CellValue,
     W: Watchable<U> + Gettable<U> + Clone + Send + Sync + 'static,
     F: Fn(&K, &V) -> W + Send + Sync + 'static,
-    Sink: crate::map_query::MapDiffSink<K, U>,
 {
     mapper: Arc<F>,
     per_key_guards: Arc<DashMap<K, SubscriptionGuard>>,
     last_value: Arc<Mutex<HashMap<K, U>>>,
-    sink: Arc<Sink>,
+    sink: crate::map_query::BoxedMapDiffSink<K, U>,
     marker: PhantomData<fn(V) -> W>,
 }
 
-impl<K, V, U, W, F, Sink> MapValuesRuntime<K, V, U, W, F, Sink>
+impl<K, V, U, W, F> MapValuesRuntime<K, V, U, W, F>
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
     U: CellValue,
     W: Watchable<U> + Gettable<U> + Clone + Send + Sync + 'static,
     F: Fn(&K, &V) -> W + Send + Sync + 'static,
-    Sink: crate::map_query::MapDiffSink<K, U>,
 {
     fn emit(&self, diff: MapDiff<K, U>, changes: Option<&mut Vec<MapDiff<K, U>>>) {
         if let Some(changes) = changes {
@@ -171,11 +169,11 @@ where
 /// The runtime is generic in `U`; `project_cell`'s `Option<(K2, V2)>` projection
 /// step lives in [`crate::traits::collections::project_cell`] as a follow-on
 /// stage on top of this primitive.
-pub fn install_map_values_cell_via_query<K, V, U, S, W, F, Sink>(
+pub fn install_map_values_cell_via_query<K, V, U, S, W, F>(
     cx: &mut crate::map_query::compiler::CompileContext,
     source: S,
     mapper: F,
-    sink: Sink,
+    sink: crate::map_query::BoxedMapDiffSink<K, U>,
 ) -> Vec<SubscriptionGuard>
 where
     K: Hash + Eq + CellValue,
@@ -184,13 +182,12 @@ where
     S: crate::map_query::MapQuery<Key = K, Value = V>,
     W: Watchable<U> + Gettable<U> + Clone + Send + Sync + 'static,
     F: Fn(&K, &V) -> W + Send + Sync + 'static,
-    Sink: crate::map_query::MapDiffSink<K, U>,
 {
-    let runtime = Arc::new(MapValuesRuntime::<K, V, U, W, F, Sink> {
+    let runtime = Arc::new(MapValuesRuntime::<K, V, U, W, F> {
         mapper: Arc::new(mapper),
         per_key_guards: Arc::new(DashMap::new()),
         last_value: Arc::new(Mutex::new(HashMap::new())),
-        sink: Arc::new(sink),
+        sink,
         marker: PhantomData,
     });
     let upstream_sink = move |diff: &MapDiff<K, V>| {
@@ -211,7 +208,7 @@ where
         }
     };
 
-    crate::map_query::compile_runtime_into(source, cx, upstream_sink)
+    crate::map_query::compile_runtime_into(source, cx, Arc::new(upstream_sink))
 }
 
 #[cfg(test)]
@@ -221,10 +218,10 @@ mod tests {
     use super::*;
     use crate::{Cell, CellMap, MapExt, Materialize, cell_map::MapDiff};
 
-    /// Capture every diff emitted into a `MapDiffSink` and replay them onto
+    /// Capture every emitted diff and replay it onto
     /// an in-memory `HashMap<K, U>` to assert per-row state.
     fn capturing_sink<K, U>() -> (
-        impl crate::map_query::MapDiffSink<K, U>,
+        crate::map_query::BoxedMapDiffSink<K, U>,
         Arc<Mutex<HashMap<K, U>>>,
         Arc<Mutex<Vec<MapDiff<K, U>>>>,
     )
@@ -248,7 +245,7 @@ mod tests {
                     .push(diff.clone());
             }
         };
-        (sink, state, diffs)
+        (Arc::new(sink), state, diffs)
     }
 
     fn apply_to_hashmap<K, U>(state: &mut HashMap<K, U>, diff: &MapDiff<K, U>)
@@ -351,7 +348,7 @@ mod tests {
             &mut cx,
             source.clone(),
             |_: &String, v: &i32| Cell::new(*v * 10).lock(),
-            sink,
+            Arc::new(sink),
         );
         guards.extend(cx.activate());
         assert!(!guards.is_empty());

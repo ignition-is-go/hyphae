@@ -832,11 +832,12 @@ where
 /// subscribers: every non-empty group of output diffs produced from a single
 /// upstream diff is delivered as one `MapDiff::Batch`, even when the group
 /// contains a single change. Empty batches are dropped.
-fn emit_changes<OK, OV, Sink>(sink: &Sink, changes: Vec<MapDiff<OK, OV>>)
-where
+fn emit_changes<OK, OV>(
+    sink: &crate::map_query::BoxedMapDiffSink<OK, OV>,
+    changes: Vec<MapDiff<OK, OV>>,
+) where
     OK: Hash + Eq + CellValue,
     OV: CellValue,
-    Sink: crate::map_query::MapDiffSink<OK, OV>,
 {
     if changes.is_empty() {
         return;
@@ -855,14 +856,14 @@ where
 /// Used by `MapQuery` join plan nodes whose materialization owns a single
 /// output cell map; multiple plan stages share that output rather than each
 /// allocating their own.
-pub fn install_join_runtime_via_query<LK, LV, RK, RV, JK, OK, OV, L, R, FL, FR, FO, Sink>(
+pub fn install_join_runtime_via_query<LK, LV, RK, RV, JK, OK, OV, L, R, FL, FR, FO>(
     cx: &mut crate::map_query::compiler::CompileContext,
     left: L,
     right: R,
     left_join_key: FL,
     right_join_key: FR,
     compute_rows: FO,
-    sink: Sink,
+    sink: crate::map_query::BoxedMapDiffSink<OK, OV>,
 ) -> Vec<SubscriptionGuard>
 where
     LK: Hash + Eq + CellValue,
@@ -877,7 +878,6 @@ where
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
     FR: RightJoinKey<RK, RV, JK> + Send + Sync + 'static,
     FO: Fn(&LK, &LV, &[(RK, RV)]) -> Vec<(OK, OV)> + Send + Sync + 'static,
-    Sink: crate::map_query::MapDiffSink<OK, OV>,
 {
     let state = Arc::new(Mutex::new(
         JoinState::<LK, LV, RK, RV, JK, OK, OV>::default(),
@@ -952,9 +952,11 @@ where
         }
     };
 
-    let mut guards = crate::map_query::compile_runtime_into(left, cx, left_sink);
+    let mut guards = crate::map_query::compile_runtime_into(left, cx, Arc::new(left_sink));
     guards.extend(crate::map_query::compile_runtime_into(
-        right, cx, right_sink,
+        right,
+        cx,
+        Arc::new(right_sink),
     ));
     guards
 }
@@ -1498,14 +1500,14 @@ where
 }
 
 /// Install the zero-or-one-output, left-key-preserving join runtime.
-pub fn install_keyed_join_runtime_via_query<LK, LV, RK, RV, JK, OV, L, R, FL, FR, FO, Sink>(
+pub fn install_keyed_join_runtime_via_query<LK, LV, RK, RV, JK, OV, L, R, FL, FR, FO>(
     cx: &mut crate::map_query::compiler::CompileContext,
     left: L,
     right: R,
     left_join_key: FL,
     right_join_key: FR,
     compute_value: FO,
-    sink: Sink,
+    sink: crate::map_query::BoxedMapDiffSink<LK, OV>,
 ) -> Vec<SubscriptionGuard>
 where
     LK: Hash + Eq + CellValue,
@@ -1519,7 +1521,6 @@ where
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
     FR: RightJoinKey<RK, RV, JK> + Send + Sync + 'static,
     FO: Fn(&LK, &LV, &[(RK, RV)]) -> Option<OV> + Send + Sync + 'static,
-    Sink: crate::map_query::MapDiffSink<LK, OV>,
 {
     let relation = cx.take_relation_hint();
     // A relation marker alone is not enough to prove that two right inputs
@@ -1555,7 +1556,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn install_keyed_join_runtime_with_index<LK, LV, RK, RV, JK, OV, L, R, FL, FR, FO, Sink, RI>(
+fn install_keyed_join_runtime_with_index<LK, LV, RK, RV, JK, OV, L, R, FL, FR, FO, RI>(
     cx: &mut crate::map_query::compiler::CompileContext,
     right_index: RI,
     relationship_binding: Option<(
@@ -1567,7 +1568,7 @@ fn install_keyed_join_runtime_with_index<LK, LV, RK, RV, JK, OV, L, R, FL, FR, F
     left_join_key: FL,
     right_join_key: FR,
     compute_value: FO,
-    sink: Sink,
+    sink: crate::map_query::BoxedMapDiffSink<LK, OV>,
 ) -> Vec<SubscriptionGuard>
 where
     LK: Hash + Eq + CellValue,
@@ -1581,7 +1582,6 @@ where
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
     FR: RightJoinKey<RK, RV, JK> + Send + Sync + 'static,
     FO: Fn(&LK, &LV, &[(RK, RV)]) -> Option<OV> + Send + Sync + 'static,
-    Sink: crate::map_query::MapDiffSink<LK, OV>,
     RI: RelationIndexStorage<RK, RV, JK>,
 {
     let shared_index = relationship_binding
@@ -1658,14 +1658,16 @@ where
         }
     };
 
-    let mut guards = crate::map_query::compile_runtime_into(left, cx, left_sink);
+    let mut guards = crate::map_query::compile_runtime_into(left, cx, Arc::new(left_sink));
     if let Some((relation, index)) = relationship_binding {
         guards.extend(cx.with_root_relation_index(relation, index, |cx| {
-            crate::map_query::compile_runtime_into(right, cx, right_sink)
+            crate::map_query::compile_runtime_into(right, cx, Arc::new(right_sink))
         }));
     } else {
         guards.extend(crate::map_query::compile_runtime_into(
-            right, cx, right_sink,
+            right,
+            cx,
+            Arc::new(right_sink),
         ));
     }
     guards
@@ -1700,7 +1702,6 @@ pub fn install_two_keyed_join_runtime_via_query<
     FL2,
     FR2,
     FM2,
-    Sink,
 >(
     cx: &mut crate::map_query::compiler::CompileContext,
     left: L,
@@ -1712,7 +1713,7 @@ pub fn install_two_keyed_join_runtime_via_query<
     left_join_key2: FL2,
     right_join_key2: FR2,
     map_second: FM2,
-    sink: Sink,
+    sink: crate::map_query::BoxedMapDiffSink<LK, OV>,
 ) -> Vec<SubscriptionGuard>
 where
     LK: Hash + Eq + CellValue,
@@ -1734,7 +1735,6 @@ where
     FL2: Fn(&LK, &MV) -> JK2 + Send + Sync + 'static,
     FR2: RightJoinKey<RK2, RV2, JK2> + Send + Sync + 'static,
     FM2: Fn(&LK, &MV, &[(RK2, RV2)]) -> OV + Send + Sync + 'static,
-    Sink: crate::map_query::MapDiffSink<LK, OV>,
 {
     type FirstState<LK, LV, RK, RV, JK, MV> = JoinState<LK, LV, RK, RV, JK, LK, MV>;
     type SecondState<LK, MV, RK, RV, JK, OV> = JoinState<LK, MV, RK, RV, JK, LK, OV>;
@@ -2113,16 +2113,16 @@ where
         }
     };
 
-    let mut guards = crate::map_query::compile_runtime_into(left, cx, left_sink);
+    let mut guards = crate::map_query::compile_runtime_into(left, cx, Arc::new(left_sink));
     guards.extend(crate::map_query::compile_runtime_into(
         right1,
         cx,
-        right1_sink,
+        Arc::new(right1_sink),
     ));
     guards.extend(crate::map_query::compile_runtime_into(
         right2,
         cx,
-        right2_sink,
+        Arc::new(right2_sink),
     ));
     guards
 }

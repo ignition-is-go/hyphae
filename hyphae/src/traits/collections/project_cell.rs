@@ -15,7 +15,7 @@ use std::{
 use crate::{
     cell_map::MapDiff,
     map_query::{
-        BuildQueryRuntime, MapDiffSink, MapQuery,
+        BuildQueryRuntime, MapQuery,
         properties::{PlanProperties, Repartition, ZeroOrOne},
     },
     subscription::SubscriptionGuard,
@@ -74,14 +74,11 @@ where
     W: Watchable<Option<(K2, V2)>> + Gettable<Option<(K2, V2)>> + Clone + Send + Sync + 'static,
     F: Fn(&K, &V) -> W + Send + Sync + 'static,
 {
-    fn build_into<Sink>(
+    fn build_into(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
-        sink: Sink,
-    ) -> Vec<SubscriptionGuard>
-    where
-        Sink: MapDiffSink<K2, V2>,
-    {
+        sink: crate::map_query::BoxedMapDiffSink<K2, V2>,
+    ) -> Vec<SubscriptionGuard> {
         // Stage 1 (install_map_values_cell_via_query) emits diffs keyed by `K`
         // with values `Option<(K2, V2)>`. Stage 2 — implemented inline by the
         // intermediate sink below — projects `Some(...) -> (K2, V2)` and `None
@@ -108,11 +105,11 @@ where
         };
 
         let mapper = self.mapper;
-        install_map_values_cell_via_query::<K, V, Option<(K2, V2)>, S, W, _, _>(
+        install_map_values_cell_via_query::<K, V, Option<(K2, V2)>, S, W, _>(
             cx,
             self.source,
             move |k, v| (mapper)(k, v),
-            intermediate_sink,
+            Arc::new(intermediate_sink),
         )
     }
 }

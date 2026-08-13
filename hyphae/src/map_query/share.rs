@@ -36,7 +36,7 @@ use uuid::Uuid;
 use super::properties::{ByMapKey, ExactlyOne, PlanProperties};
 use crate::{
     cell_map::MapDiff,
-    map_query::{BoxedMapDiffSink, BuildQueryRuntime, MapDiffSink, MapQuery},
+    map_query::{BoxedMapDiffSink, BuildQueryRuntime, MapQuery},
     subscription::SubscriptionGuard,
     traits::CellValue,
 };
@@ -199,9 +199,8 @@ where
     /// Prefer the [`MapQueryShareExt::share`] extension method — it reads as
     /// `query.share()` at the call site.
     pub fn new<Q: MapQuery<Key = K, Value = V>>(q: Q) -> Self {
-        let upstream: UpstreamInstall<K, V> = Box::new(move |cx, sink| {
-            crate::map_query::compile_runtime_into(q, cx, move |diff| sink(diff))
-        });
+        let upstream: UpstreamInstall<K, V> =
+            Box::new(move |cx, sink| crate::map_query::compile_runtime_into(q, cx, sink));
         Self {
             inner: Arc::new(SharedMapQueryInner {
                 upstream: Mutex::new(Some(upstream)),
@@ -218,16 +217,13 @@ where
     K: CellValue + Hash + Eq,
     V: CellValue,
 {
-    fn build_into<Sink>(
+    fn build_into(
         self,
         cx: &mut super::compiler::CompileContext,
-        sink: Sink,
-    ) -> Vec<SubscriptionGuard>
-    where
-        Sink: MapDiffSink<K, V>,
-    {
+        sink: crate::map_query::BoxedMapDiffSink<K, V>,
+    ) -> Vec<SubscriptionGuard> {
         let id = Uuid::new_v4();
-        let sink: DiffSubscriber<K, V> = Arc::new(sink);
+        let sink: DiffSubscriber<K, V> = sink;
 
         // Decide whether this is the first install. If the upstream slot is
         // still populated, we will:

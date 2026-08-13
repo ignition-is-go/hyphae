@@ -15,7 +15,7 @@
 use std::{hash::Hash, marker::PhantomData, sync::Arc};
 
 use super::properties::{ByMapKey, ExactlyOne, PlanProperties};
-use super::{BuildQueryRuntime, MapDiffSink, MapQuery};
+use super::{BuildQueryRuntime, MapQuery};
 use crate::{
     cell::CellImmutable,
     cell_map::CellMap,
@@ -24,17 +24,16 @@ use crate::{
     traits::{CellValue, reactive_map::ReactiveMap},
 };
 
-fn install_reactive_source<M, S>(
+fn install_reactive_source<M>(
     source: &M,
     identity: super::compiler::SourceIdentity,
     cx: &mut super::compiler::CompileContext,
-    sink: S,
+    sink: crate::map_query::BoxedMapDiffSink<M::Key, M::Value>,
 ) -> Vec<SubscriptionGuard>
 where
     M: ReactiveMap + Clone,
     M::Key: CellValue + Hash + Eq,
     M::Value: CellValue,
-    S: MapDiffSink<M::Key, M::Value>,
 {
     cx.register_root(source, identity, sink);
     Vec::new()
@@ -46,14 +45,11 @@ where
     V: CellValue,
     M: Clone + Send + Sync + 'static,
 {
-    fn build_into<S>(
+    fn build_into(
         self,
         cx: &mut super::compiler::CompileContext,
-        sink: S,
-    ) -> Vec<SubscriptionGuard>
-    where
-        S: MapDiffSink<K, V>,
-    {
+        sink: crate::map_query::BoxedMapDiffSink<K, V>,
+    ) -> Vec<SubscriptionGuard> {
         let identity = super::compiler::SourceIdentity::from_ptr(Arc::as_ptr(&self.inner));
         install_reactive_source(&self, identity, cx, sink)
     }
@@ -71,14 +67,11 @@ where
     K: CellValue + Hash + Eq,
     V: CellValue,
 {
-    fn build_into<S>(
+    fn build_into(
         self,
         cx: &mut super::compiler::CompileContext,
-        sink: S,
-    ) -> Vec<SubscriptionGuard>
-    where
-        S: MapDiffSink<K, V>,
-    {
+        sink: crate::map_query::BoxedMapDiffSink<K, V>,
+    ) -> Vec<SubscriptionGuard> {
         let identity = self.query_source_identity();
         install_reactive_source(&self, identity, cx, sink)
     }

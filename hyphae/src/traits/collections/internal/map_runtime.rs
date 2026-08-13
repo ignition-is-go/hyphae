@@ -209,11 +209,10 @@ where
 }
 
 /// Wrap a non-empty change vector in `MapDiff::Batch`, dropping empty groups.
-fn emit_changes<K, V, Sink>(changes: Vec<MapDiff<K, V>>, sink: &Sink)
+fn emit_changes<K, V>(changes: Vec<MapDiff<K, V>>, sink: &crate::map_query::BoxedMapDiffSink<K, V>)
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
-    Sink: crate::map_query::MapDiffSink<K, V>,
 {
     if changes.is_empty() {
         return;
@@ -230,11 +229,11 @@ where
 /// Used by `MapQuery` plan nodes (`ProjectPlan`, `ProjectManyPlan`,
 /// `SelectPlan`) whose materialization shares one output cell map. Chains of
 /// plans compose without intermediate [`CellMap`](crate::CellMap) allocations.
-pub fn install_map_runtime_via_query<SK, SV, OK, OV, S, FO, Sink>(
+pub fn install_map_runtime_via_query<SK, SV, OK, OV, S, FO>(
     cx: &mut crate::map_query::compiler::CompileContext,
     source: S,
     compute_rows: FO,
-    sink: Sink,
+    sink: crate::map_query::BoxedMapDiffSink<OK, OV>,
 ) -> Vec<SubscriptionGuard>
 where
     SK: Hash + Eq + CellValue,
@@ -243,7 +242,6 @@ where
     OV: CellValue,
     S: crate::map_query::MapQuery<Key = SK, Value = SV>,
     FO: Fn(&SK, &SV) -> Vec<(OK, OV)> + Send + Sync + 'static,
-    Sink: crate::map_query::MapDiffSink<OK, OV>,
 {
     let state = Arc::new(Mutex::new(MapState::<SK, SV, OK, OV>::default()));
     let upstream_sink = {
@@ -266,5 +264,5 @@ where
         }
     };
 
-    crate::map_query::compile_runtime_into(source, cx, upstream_sink)
+    crate::map_query::compile_runtime_into(source, cx, Arc::new(upstream_sink))
 }

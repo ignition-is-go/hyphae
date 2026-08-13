@@ -11,7 +11,7 @@ use super::left_join::RelationPlan;
 
 use crate::{
     map_query::{
-        BuildQueryRuntime, MapDiffSink, MapQuery,
+        BuildQueryRuntime, MapQuery,
         properties::{ByMapKey, PlanProperties, ZeroOrOne},
     },
     subscription::SubscriptionGuard,
@@ -82,15 +82,12 @@ where
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
     FR: RightJoinKey<RK, RV, JK>,
 {
-    fn build_into<Sink>(
+    fn build_into(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
-        sink: Sink,
-    ) -> Vec<SubscriptionGuard>
-    where
-        Sink: MapDiffSink<LK, LV>,
-    {
-        install_keyed_join_runtime_via_query::<LK, LV, RK, RV, JK, LV, _, _, _, _, _, _>(
+        sink: crate::map_query::BoxedMapDiffSink<LK, LV>,
+    ) -> Vec<SubscriptionGuard> {
+        install_keyed_join_runtime_via_query::<LK, LV, RK, RV, JK, LV, _, _, _, _, _>(
             cx,
             self.left,
             self.right,

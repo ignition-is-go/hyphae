@@ -17,7 +17,7 @@ use crate::{
     traits::{CellValue, reactive_map::ReactiveMap},
 };
 
-use super::{BoxedMapDiffSink, MapDiffSink};
+use super::BoxedMapDiffSink;
 
 /// Stable identity of a reactive root for the duration of query compilation.
 ///
@@ -314,17 +314,16 @@ impl CompileContext {
     /// Register a typed root entry point without activating its subscription.
     /// Repeated uses append to one root-boundary fanout and therefore install
     /// exactly one physical source subscription during activation.
-    pub(crate) fn register_root<M, S>(
+    pub(crate) fn register_root<M>(
         &mut self,
         source: &M,
         identity: SourceIdentity,
-        sink: S,
+        sink: crate::map_query::BoxedMapDiffSink<M::Key, M::Value>,
     ) -> usize
     where
         M: ReactiveMap + Clone,
         M::Key: CellValue + Hash + Eq,
         M::Value: CellValue,
-        S: MapDiffSink<M::Key, M::Value>,
     {
         let root_key = RootKey {
             source: identity,
@@ -352,7 +351,7 @@ impl CompileContext {
                 sinks
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push(Arc::new(sink));
+                    .push(sink);
                 return ordinal;
             }
 
@@ -362,8 +361,7 @@ impl CompileContext {
             let dispatch = Arc::clone(&self.query_dispatch);
             let poison = self.query_poison.clone();
             self.activations.push(Box::new(move || {
-                let sinks: Arc<Vec<BoxedMapDiffSink<M::Key, M::Value>>> =
-                    Arc::new(vec![Arc::new(sink)]);
+                let sinks: Arc<Vec<BoxedMapDiffSink<M::Key, M::Value>>> = Arc::new(vec![sink]);
                 vec![source.subscribe_diffs_reactive(move |diff| {
                     dispatch_query_root(&dispatch, &poison, &sinks, diff);
                 })]
@@ -372,7 +370,7 @@ impl CompileContext {
         }
 
         let next = self.roots.len();
-        let first_sink: BoxedMapDiffSink<M::Key, M::Value> = Arc::new(sink);
+        let first_sink: BoxedMapDiffSink<M::Key, M::Value> = sink;
         let sinks = Arc::new(Mutex::new(vec![first_sink]));
         self.roots.insert(
             root_key,
@@ -612,7 +610,7 @@ mod tests {
         assert_eq!(cx.root_count(), 0);
         assert_eq!(cx.activation_count(), 0);
 
-        let guards = runtime.install_roots(&mut cx, |_| {});
+        let guards = runtime.install_roots(&mut cx, Arc::new(|_| {}));
         assert_eq!(cx.root_count(), 1);
         assert_eq!(guards.len(), 1);
     }
@@ -622,8 +620,8 @@ mod tests {
         let source = CellMap::<u64, u64>::new();
         let identity = SourceIdentity::from_ptr(std::sync::Arc::as_ptr(&source.inner));
         let mut cx = CompileContext::default();
-        assert_eq!(cx.register_root(&source, identity, |_| {}), 0);
-        assert_eq!(cx.register_root(&source, identity, |_| {}), 0);
+        assert_eq!(cx.register_root(&source, identity, Arc::new(|_| {})), 0);
+        assert_eq!(cx.register_root(&source, identity, Arc::new(|_| {})), 0);
         assert_eq!(cx.root_count(), 1);
         assert_eq!(cx.activate().len(), 1);
     }
@@ -639,8 +637,11 @@ mod tests {
             .left_join(repeated);
 
         let mut cx = CompileContext::default();
-        let mut guards =
-            compile_runtime_into(plan, &mut cx, |_: &crate::cell_map::MapDiff<_, _>| {});
+        let mut guards = compile_runtime_into(
+            plan,
+            &mut cx,
+            Arc::new(|_: &crate::cell_map::MapDiff<_, _>| {}),
+        );
 
         assert_eq!(cx.root_count(), 2);
         assert_eq!(cx.root_use_count(repeated_identity), 2);
@@ -660,7 +661,7 @@ mod tests {
             .left_join_fk::<ParentChildren, _>(children);
 
         let mut cx = CompileContext::default();
-        let mut guards = compile_runtime_into(plan, &mut cx, |_| {});
+        let mut guards = compile_runtime_into(plan, &mut cx, Arc::new(|_| {}));
 
         assert_eq!(
             cx.relationship_use_count::<ParentChildren>(children_identity),
@@ -686,23 +687,32 @@ mod tests {
         let first_source = source.clone();
         let first_armed = Arc::clone(&armed);
         let first_triggered = Arc::clone(&triggered);
-        cx.register_root(&source, identity, move |diff| {
-            first_events
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(('a', format!("{diff:?}")));
-            if first_armed.load(Ordering::Acquire) && !first_triggered.swap(true, Ordering::AcqRel)
-            {
-                first_source.insert(2, 20);
-            }
-        });
+        cx.register_root(
+            &source,
+            identity,
+            Arc::new(move |diff| {
+                first_events
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(('a', format!("{diff:?}")));
+                if first_armed.load(Ordering::Acquire)
+                    && !first_triggered.swap(true, Ordering::AcqRel)
+                {
+                    first_source.insert(2, 20);
+                }
+            }),
+        );
         let second_events = Arc::clone(&events);
-        cx.register_root(&source, identity, move |diff| {
-            second_events
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(('b', format!("{diff:?}")));
-        });
+        cx.register_root(
+            &source,
+            identity,
+            Arc::new(move |diff| {
+                second_events
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(('b', format!("{diff:?}")));
+            }),
+        );
 
         let guards = cx.activate();
         events
@@ -746,29 +756,37 @@ mod tests {
         let first_observed = Arc::clone(&observed);
         let first_release = Arc::clone(&release_rx);
         let first_armed = Arc::clone(&armed);
-        cx.register_root(&first, first_identity, move |_| {
-            first_observed
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push("a");
-            if first_armed.load(Ordering::Acquire) {
-                assert!(entered_tx.send(()).is_ok());
-                assert!(
-                    first_release
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .recv()
-                        .is_ok()
-                );
-            }
-        });
+        cx.register_root(
+            &first,
+            first_identity,
+            Arc::new(move |_| {
+                first_observed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push("a");
+                if first_armed.load(Ordering::Acquire) {
+                    assert!(entered_tx.send(()).is_ok());
+                    assert!(
+                        first_release
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .recv()
+                            .is_ok()
+                    );
+                }
+            }),
+        );
         let second_observed = Arc::clone(&observed);
-        cx.register_root(&second, second_identity, move |_| {
-            second_observed
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push("b");
-        });
+        cx.register_root(
+            &second,
+            second_identity,
+            Arc::new(move |_| {
+                second_observed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push("b");
+            }),
+        );
         let guards = cx.activate();
         observed
             .lock()
@@ -810,26 +828,34 @@ mod tests {
         let first_observed = Arc::clone(&observed);
         let first_second = second.clone();
         let first_armed = Arc::clone(&armed);
-        cx.register_root(&first, first_identity, move |_| {
-            first_observed
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push("a-enter");
-            if first_armed.load(Ordering::Acquire) {
-                first_second.insert("key".to_owned(), "value".to_owned());
-            }
-            first_observed
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push("a-exit");
-        });
+        cx.register_root(
+            &first,
+            first_identity,
+            Arc::new(move |_| {
+                first_observed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push("a-enter");
+                if first_armed.load(Ordering::Acquire) {
+                    first_second.insert("key".to_owned(), "value".to_owned());
+                }
+                first_observed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push("a-exit");
+            }),
+        );
         let second_observed = Arc::clone(&observed);
-        cx.register_root(&second, second_identity, move |_| {
-            second_observed
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push("b");
-        });
+        cx.register_root(
+            &second,
+            second_identity,
+            Arc::new(move |_| {
+                second_observed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push("b");
+            }),
+        );
         let guards = cx.activate();
         observed
             .lock()
@@ -861,29 +887,41 @@ mod tests {
         let maintainer_observed = Arc::clone(&observed);
         let maintainer_second = second.clone();
         let maintainer_armed = Arc::clone(&armed);
-        cx.register_root(&first, first_identity, move |_| {
-            maintainer_observed
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push("maintainer");
-            if maintainer_armed.load(Ordering::Acquire) {
-                maintainer_second.insert("queued".to_owned(), 1);
-            }
-        });
+        cx.register_root(
+            &first,
+            first_identity,
+            Arc::new(move |_| {
+                maintainer_observed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push("maintainer");
+                if maintainer_armed.load(Ordering::Acquire) {
+                    maintainer_second.insert("queued".to_owned(), 1);
+                }
+            }),
+        );
         let observer_observed = Arc::clone(&observed);
-        cx.register_root(&first, first_identity, move |_| {
-            observer_observed
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push("observer");
-        });
+        cx.register_root(
+            &first,
+            first_identity,
+            Arc::new(move |_| {
+                observer_observed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push("observer");
+            }),
+        );
         let second_observed = Arc::clone(&observed);
-        cx.register_root(&second, second_identity, move |_| {
-            second_observed
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push("second-root");
-        });
+        cx.register_root(
+            &second,
+            second_identity,
+            Arc::new(move |_| {
+                second_observed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push("second-root");
+            }),
+        );
         let guards = cx.activate();
         observed
             .lock()
@@ -1098,10 +1136,10 @@ mod tests {
         let second = cx.prepare_relationship_index::<Vec<u64>>();
 
         cx.with_root_relation_index(TypeId::of::<ParentChildren>(), first.clone(), |cx| {
-            cx.register_root(&source, identity, |_| {});
+            cx.register_root(&source, identity, Arc::new(|_| {}));
         });
         cx.with_root_relation_index(TypeId::of::<ParentChildren>(), second.clone(), |cx| {
-            cx.register_root(&source, identity, |_| {});
+            cx.register_root(&source, identity, Arc::new(|_| {}));
         });
 
         assert!(first.maintains_index());

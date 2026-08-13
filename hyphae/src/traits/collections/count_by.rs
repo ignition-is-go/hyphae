@@ -8,7 +8,7 @@ use std::{hash::Hash, marker::PhantomData, sync::Arc};
 
 use crate::{
     map_query::{
-        BuildQueryRuntime, MapDiffSink, MapQuery,
+        BuildQueryRuntime, MapQuery,
         properties::{Many, PlanProperties, Repartition},
     },
     subscription::SubscriptionGuard,
@@ -59,16 +59,13 @@ where
     GK: Hash + Eq + CellValue,
     F: Fn(&K, &V) -> GK + Send + Sync + 'static,
 {
-    fn build_into<Sink>(
+    fn build_into(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
-        sink: Sink,
-    ) -> Vec<SubscriptionGuard>
-    where
-        Sink: MapDiffSink<GK, usize>,
-    {
+        sink: crate::map_query::BoxedMapDiffSink<GK, usize>,
+    ) -> Vec<SubscriptionGuard> {
         let group_key = self.group_key;
-        install_grouped_runtime_via_query::<K, V, GK, usize, usize, S, _, _, _, _, _, _, _>(
+        install_grouped_runtime_via_query::<K, V, GK, usize, usize, S, _, _, _, _, _, _>(
             cx,
             self.source,
             GroupedOps {

@@ -4,7 +4,7 @@ use std::{hash::Hash, marker::PhantomData};
 
 use crate::{
     map_query::{
-        BuildQueryRuntime, MapDiffSink, MapQuery,
+        BuildQueryRuntime, MapQuery,
         properties::{ExactlyOne, PlanProperties, ZeroOrOne},
     },
     subscription::SubscriptionGuard,
@@ -64,14 +64,11 @@ where
     U: CellValue,
     F: Fn(&K, &V) -> U + Send + Sync + 'static,
 {
-    fn build_into<Sink>(
+    fn build_into(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
-        sink: Sink,
-    ) -> Vec<SubscriptionGuard>
-    where
-        Sink: MapDiffSink<K, U>,
-    {
+        sink: crate::map_query::BoxedMapDiffSink<K, U>,
+    ) -> Vec<SubscriptionGuard> {
         install_map_values_runtime(cx, self.source, self.f, sink)
     }
 }
@@ -273,14 +270,11 @@ where
     U: CellValue,
     F: Fn(&K, &V) -> Option<U> + Send + Sync + 'static,
 {
-    fn build_into<Sink>(
+    fn build_into(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
-        sink: Sink,
-    ) -> Vec<SubscriptionGuard>
-    where
-        Sink: MapDiffSink<K, U>,
-    {
+        sink: crate::map_query::BoxedMapDiffSink<K, U>,
+    ) -> Vec<SubscriptionGuard> {
         install_filter_map_values_runtime(cx, self.source, self.f, sink)
     }
 }

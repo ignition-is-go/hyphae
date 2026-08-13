@@ -4,7 +4,7 @@ use std::{hash::Hash, marker::PhantomData};
 
 use crate::{
     map_query::{
-        BuildQueryRuntime, MapDiffSink, MapQuery,
+        BuildQueryRuntime, MapQuery,
         properties::{ExactlyOne, PlanProperties, Repartition, ZeroOrOne},
     },
     subscription::SubscriptionGuard,
@@ -71,16 +71,13 @@ where
     OV: CellValue,
     F: Fn(&SK, &SV) -> Option<(OK, OV)> + Send + Sync + 'static,
 {
-    fn build_into<Sink>(
+    fn build_into(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
-        sink: Sink,
-    ) -> Vec<SubscriptionGuard>
-    where
-        Sink: MapDiffSink<OK, OV>,
-    {
+        sink: crate::map_query::BoxedMapDiffSink<OK, OV>,
+    ) -> Vec<SubscriptionGuard> {
         let f = self.f;
-        install_map_runtime_via_query::<SK, SV, OK, OV, S, _, _>(
+        install_map_runtime_via_query::<SK, SV, OK, OV, S, _>(
             cx,
             self.source,
             move |k, v| f(k, v).into_iter().collect(),
@@ -127,14 +124,11 @@ where
     OV: CellValue,
     F: Fn(&SK, &SV) -> (OK, OV) + Send + Sync + 'static,
 {
-    fn build_into<Sink>(
+    fn build_into(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
-        sink: Sink,
-    ) -> Vec<SubscriptionGuard>
-    where
-        Sink: MapDiffSink<OK, OV>,
-    {
+        sink: crate::map_query::BoxedMapDiffSink<OK, OV>,
+    ) -> Vec<SubscriptionGuard> {
         let f = self.f;
         install_map_runtime_via_query(cx, self.source, move |k, v| vec![f(k, v)], sink)
     }

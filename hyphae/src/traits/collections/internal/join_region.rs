@@ -25,7 +25,7 @@ use rustc_hash::{FxHashMap, FxHasher};
 use crate::{
     cell_map::MapDiff,
     map_query::{
-        BuildQueryRuntime, MapDiffSink, MapQuery, compile_runtime_into,
+        BuildQueryRuntime, MapQuery, compile_runtime_into,
         compiler::{CompileContext, DeferredPhysical, QUERY_POISONED_MESSAGE, QueryPoison},
         properties::{ByMapKey, Partition, PlanProperties, ZeroOrOne},
     },
@@ -416,15 +416,14 @@ where
 
     fn prepare(cx: &CompileContext, shareable: bool) -> (Self::Storage, Option<Self::Binding>);
     fn maintains(binding: Option<&Self::Binding>) -> bool;
-    fn install<Right, Sink>(
+    fn install<Right>(
         right: Right,
         cx: &mut CompileContext,
         binding: Option<Self::Binding>,
-        sink: Sink,
+        sink: crate::map_query::BoxedMapDiffSink<RK, RV>,
     ) -> Vec<SubscriptionGuard>
     where
-        Right: MapQuery<Key = RK, Value = RV>,
-        Sink: MapDiffSink<RK, RV>;
+        Right: MapQuery<Key = RK, Value = RV>;
 }
 
 impl<RK, RV, JK> IndexPolicy<RK, RV, JK> for OwnedIndex
@@ -444,15 +443,14 @@ where
         true
     }
 
-    fn install<Right, Sink>(
+    fn install<Right>(
         right: Right,
         cx: &mut CompileContext,
         _: Option<Self::Binding>,
-        sink: Sink,
+        sink: crate::map_query::BoxedMapDiffSink<RK, RV>,
     ) -> Vec<SubscriptionGuard>
     where
         Right: MapQuery<Key = RK, Value = RV>,
-        Sink: MapDiffSink<RK, RV>,
     {
         compile_runtime_into(right, cx, sink)
     }
@@ -478,15 +476,14 @@ where
         binding.is_none_or(DeferredPhysical::maintains_index)
     }
 
-    fn install<Right, Sink>(
+    fn install<Right>(
         right: Right,
         cx: &mut CompileContext,
         binding: Option<Self::Binding>,
-        sink: Sink,
+        sink: crate::map_query::BoxedMapDiffSink<RK, RV>,
     ) -> Vec<SubscriptionGuard>
     where
         Right: MapQuery<Key = RK, Value = RV>,
-        Sink: MapDiffSink<RK, RV>,
     {
         if let Some(index) = binding {
             cx.with_root_relation_index(TypeId::of::<Rel>(), index, |cx| {
@@ -2444,14 +2441,12 @@ where
     Output: CellValue,
     Runtime: RuntimeStages<K, Input, Output = Output>,
 {
-    fn install<Sink>(
+    fn install(
         self,
         cx: &mut CompileContext,
         state: &Arc<Mutex<RegionRouter<Runtime, K, Input>>>,
-        sink: &Arc<Sink>,
-    ) -> Vec<SubscriptionGuard>
-    where
-        Sink: MapDiffSink<K, Output>;
+        sink: &crate::map_query::BoxedMapDiffSink<K, Output>,
+    ) -> Vec<SubscriptionGuard>;
 }
 
 impl<Runtime, K, Input, Output> InstallRights<Runtime, K, Input, Output> for JNil
@@ -2461,15 +2456,12 @@ where
     Output: CellValue,
     Runtime: RuntimeStages<K, Input, Output = Output>,
 {
-    fn install<Sink>(
+    fn install(
         self,
         _cx: &mut CompileContext,
         _state: &Arc<Mutex<RegionRouter<Runtime, K, Input>>>,
-        _sink: &Arc<Sink>,
-    ) -> Vec<SubscriptionGuard>
-    where
-        Sink: MapDiffSink<K, Output>,
-    {
+        _sink: &crate::map_query::BoxedMapDiffSink<K, Output>,
+    ) -> Vec<SubscriptionGuard> {
         Vec::new()
     }
 }
@@ -2496,15 +2488,12 @@ where
     Right: MapQuery<Key = RK, Value = RV>,
     Tail: InstallRights<Runtime, K, Input, Output>,
 {
-    fn install<Sink>(
+    fn install(
         self,
         cx: &mut CompileContext,
         state: &Arc<Mutex<RegionRouter<Runtime, K, Input>>>,
-        sink: &Arc<Sink>,
-    ) -> Vec<SubscriptionGuard>
-    where
-        Sink: MapDiffSink<K, Output>,
-    {
+        sink: &crate::map_query::BoxedMapDiffSink<K, Output>,
+    ) -> Vec<SubscriptionGuard> {
         let callback_binding = self.binding.clone();
         let right_state = Arc::clone(state);
         let right_sink = Arc::clone(sink);
@@ -2517,7 +2506,7 @@ where
                 right_sink(change);
             }
         };
-        let mut guards = Policy::install(self.right, cx, self.binding, callback);
+        let mut guards = Policy::install(self.right, cx, self.binding, Arc::new(callback));
         guards.extend(self.tail.install(cx, state, sink));
         guards
     }
@@ -2538,10 +2527,11 @@ where
         + Send,
     Stages::Rights: InstallRights<Stages::Runtime, K, Input, Stages::Output>,
 {
-    fn build_into<Sink>(self, cx: &mut CompileContext, sink: Sink) -> Vec<SubscriptionGuard>
-    where
-        Sink: MapDiffSink<K, Stages::Output>,
-    {
+    fn build_into(
+        self,
+        cx: &mut CompileContext,
+        sink: crate::map_query::BoxedMapDiffSink<K, Stages::Output>,
+    ) -> Vec<SubscriptionGuard> {
         let (runtime, rights) = self.stages.split(cx);
         let query_poison = cx.query_poison();
         #[cfg(test)]
@@ -2553,7 +2543,7 @@ where
         #[cfg(not(test))]
         let router = RegionRouter::with_query_poison(runtime, query_poison);
         let state = Arc::new(Mutex::new(router));
-        let sink = Arc::new(sink);
+        let sink = sink;
 
         // Register every right root before the left root. CompileContext then
         // activates their initial snapshots in this same order, so the first
@@ -2564,12 +2554,12 @@ where
         guards.extend(compile_runtime_into(
             self.left,
             cx,
-            move |diff: &MapDiff<K, Input>| {
+            Arc::new(move |diff: &MapDiff<K, Input>| {
                 let changes = region_transaction(&left_state, |runtime| runtime.apply_left(diff));
                 for change in &changes {
                     left_sink(change);
                 }
-            },
+            }),
         ));
         guards
     }

@@ -7,10 +7,7 @@
 use std::hash::Hash;
 
 use crate::{
-    cell_map::MapDiff,
-    map_query::{MapDiffSink, MapQuery},
-    subscription::SubscriptionGuard,
-    traits::CellValue,
+    cell_map::MapDiff, map_query::MapQuery, subscription::SubscriptionGuard, traits::CellValue,
 };
 
 fn map_diff<K, V, U, F>(diff: &MapDiff<K, V>, f: &F) -> Option<MapDiff<K, U>>
@@ -110,11 +107,11 @@ where
     }
 }
 
-pub fn install_map_values_runtime<K, V, U, S, F, Sink>(
+pub fn install_map_values_runtime<K, V, U, S, F>(
     cx: &mut crate::map_query::compiler::CompileContext,
     source: S,
     f: F,
-    sink: Sink,
+    sink: crate::map_query::BoxedMapDiffSink<K, U>,
 ) -> Vec<SubscriptionGuard>
 where
     K: Hash + Eq + CellValue,
@@ -122,21 +119,20 @@ where
     U: CellValue,
     S: MapQuery<Key = K, Value = V>,
     F: Fn(&K, &V) -> U + Send + Sync + 'static,
-    Sink: MapDiffSink<K, U>,
 {
     let upstream_sink = move |diff: &MapDiff<K, V>| {
         if let Some(mapped) = map_diff(diff, &f) {
             sink(&mapped);
         }
     };
-    crate::map_query::compile_runtime_into(source, cx, upstream_sink)
+    crate::map_query::compile_runtime_into(source, cx, std::sync::Arc::new(upstream_sink))
 }
 
-pub fn install_filter_map_values_runtime<K, V, U, S, F, Sink>(
+pub fn install_filter_map_values_runtime<K, V, U, S, F>(
     cx: &mut crate::map_query::compiler::CompileContext,
     source: S,
     f: F,
-    sink: Sink,
+    sink: crate::map_query::BoxedMapDiffSink<K, U>,
 ) -> Vec<SubscriptionGuard>
 where
     K: Hash + Eq + CellValue,
@@ -144,14 +140,13 @@ where
     U: CellValue,
     S: MapQuery<Key = K, Value = V>,
     F: Fn(&K, &V) -> Option<U> + Send + Sync + 'static,
-    Sink: MapDiffSink<K, U>,
 {
     let upstream_sink = move |diff: &MapDiff<K, V>| {
         if let Some(mapped) = filter_map_diff(diff, &f) {
             sink(&mapped);
         }
     };
-    crate::map_query::compile_runtime_into(source, cx, upstream_sink)
+    crate::map_query::compile_runtime_into(source, cx, std::sync::Arc::new(upstream_sink))
 }
 
 #[cfg(test)]

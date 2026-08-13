@@ -10,7 +10,7 @@ use super::map_values::FilterMapValuesPlan;
 
 use crate::{
     map_query::{
-        BuildQueryRuntime, MapDiffSink, MapQuery,
+        BuildQueryRuntime, MapQuery,
         properties::{PlanProperties, ZeroOrOne},
     },
     subscription::SubscriptionGuard,
@@ -99,14 +99,11 @@ where
     V: CellValue,
     F: Fn(&K, &V) -> bool + Send + Sync + 'static,
 {
-    fn build_into<Sink>(
+    fn build_into(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
-        sink: Sink,
-    ) -> Vec<SubscriptionGuard>
-    where
-        Sink: MapDiffSink<K, V>,
-    {
+        sink: crate::map_query::BoxedMapDiffSink<K, V>,
+    ) -> Vec<SubscriptionGuard> {
         let predicate = self.predicate;
         install_filter_map_values_runtime(
             cx,

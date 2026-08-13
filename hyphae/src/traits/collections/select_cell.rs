@@ -10,7 +10,7 @@ use std::{hash::Hash, marker::PhantomData, sync::Arc};
 use super::ProjectCellExt;
 use crate::{
     map_query::{
-        BuildQueryRuntime, MapDiffSink, MapQuery,
+        BuildQueryRuntime, MapQuery,
         properties::{ByMapKey, PlanProperties, ZeroOrOne},
     },
     pipeline::{Materialize, Pipeline},
@@ -80,14 +80,11 @@ where
         + 'static,
     F: Fn(&K, &V) -> W + Send + Sync + 'static,
 {
-    fn build_into<Sink>(
+    fn build_into(
         self,
         cx: &mut crate::map_query::compiler::CompileContext,
-        sink: Sink,
-    ) -> Vec<SubscriptionGuard>
-    where
-        Sink: MapDiffSink<K, V>,
-    {
+        sink: crate::map_query::BoxedMapDiffSink<K, V>,
+    ) -> Vec<SubscriptionGuard> {
         // Implement select_cell as a project_cell whose inner Watchable maps
         // the boolean gate into Option<(K, V)>.
         let predicate = self.predicate;

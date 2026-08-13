@@ -6,10 +6,7 @@ use std::{
 
 use super::map_runtime::flatten_diff;
 use crate::{
-    cell_map::MapDiff,
-    map_query::{MapDiffSink, MapQuery},
-    subscription::SubscriptionGuard,
-    traits::CellValue,
+    cell_map::MapDiff, map_query::MapQuery, subscription::SubscriptionGuard, traits::CellValue,
 };
 
 #[derive(Clone)]
@@ -126,11 +123,10 @@ where
 }
 
 /// Wrap a non-empty change vector in `MapDiff::Batch`, dropping empty groups.
-fn emit_changes<K, V, Sink>(changes: Vec<MapDiff<K, V>>, sink: &Sink)
+fn emit_changes<K, V>(changes: Vec<MapDiff<K, V>>, sink: &crate::map_query::BoxedMapDiffSink<K, V>)
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
-    Sink: MapDiffSink<K, V>,
 {
     if changes.is_empty() {
         return;
@@ -144,12 +140,12 @@ where
 /// intermediate sink that flattens incoming diffs, drives `apply_atomic` to
 /// build the downstream change set, and forwards a single `Batch` per
 /// upstream emission to `sink`. No intermediate `CellMap` is allocated.
-pub fn install_diff_runtime_via_query<SK, SV, OK, OV, S, ST, FS, Sink>(
+pub fn install_diff_runtime_via_query<SK, SV, OK, OV, S, ST, FS>(
     cx: &mut crate::map_query::compiler::CompileContext,
     source: S,
     initial_state: ST,
     apply_atomic: FS,
-    sink: Sink,
+    sink: crate::map_query::BoxedMapDiffSink<OK, OV>,
 ) -> Vec<SubscriptionGuard>
 where
     SK: Hash + Eq + CellValue,
@@ -159,7 +155,6 @@ where
     S: MapQuery<Key = SK, Value = SV>,
     ST: Send + Sync + 'static,
     FS: Fn(&mut ST, &MapDiff<SK, SV>, &mut Vec<MapDiff<OK, OV>>) + Send + Sync + 'static,
-    Sink: MapDiffSink<OK, OV>,
 {
     let state = Arc::new(Mutex::new(initial_state));
 
@@ -180,18 +175,18 @@ where
         }
     };
 
-    crate::map_query::compile_runtime_into(source, cx, upstream_sink)
+    crate::map_query::compile_runtime_into(source, cx, Arc::new(upstream_sink))
 }
 
 /// Sink-driven grouped runtime for [`MapQuery`] plan nodes.
 ///
 /// Used by `CountByPlan` and `GroupByPlan` to install grouping machinery
 /// into a downstream sink without materializing an intermediate `CellMap`.
-pub fn install_grouped_runtime_via_query<SK, SV, GK, GS, OV, S, FG, FI, FU, FR, FM, FE, Sink>(
+pub fn install_grouped_runtime_via_query<SK, SV, GK, GS, OV, S, FG, FI, FU, FR, FM, FE>(
     cx: &mut crate::map_query::compiler::CompileContext,
     source: S,
     ops: GroupedOps<SK, SV, GK, GS, OV, FG, FI, FU, FR, FM, FE>,
-    sink: Sink,
+    sink: crate::map_query::BoxedMapDiffSink<GK, OV>,
 ) -> Vec<SubscriptionGuard>
 where
     SK: Hash + Eq + CellValue,
@@ -206,10 +201,9 @@ where
     FR: Fn(&mut GS, &SK, &SV) + Send + Sync + 'static,
     FM: Fn(&GS) -> OV + Send + Sync + 'static,
     FE: Fn(&GS) -> bool + Send + Sync + 'static,
-    Sink: MapDiffSink<GK, OV>,
 {
     let ops = Arc::new(ops);
-    install_diff_runtime_via_query::<SK, SV, GK, OV, S, GroupedState<SK, GK, GS>, _, _>(
+    install_diff_runtime_via_query::<SK, SV, GK, OV, S, GroupedState<SK, GK, GS>, _>(
         cx,
         source,
         GroupedState::<SK, GK, GS>::default(),
