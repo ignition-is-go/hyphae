@@ -1,7 +1,7 @@
 //! Project-cell plan node implementing [`MapQuery`].
 //!
 //! `project_cell` is the reactive variant of `project`: each source row maps
-//! to a [`Watchable`]`<Option<(K2, V2)>>` whose emissions update the row's
+//! to a [`Watchable`] producing `Option<(K2, V2)>` whose emissions update the row's
 //! output. Returns an uncompiled plan node; call [`MapQuery::materialize`] to
 //! compile a plan into a subscribable [`CellMap`](crate::CellMap).
 
@@ -14,7 +14,10 @@ use std::{
 
 use crate::{
     cell_map::MapDiff,
-    map_query::{MapDiffSink, MapQuery, MapQueryInstall},
+    map_query::{
+        BuildQueryRuntime, MapQuery,
+        properties::{PlanProperties, Repartition, ZeroOrOne},
+    },
     subscription::SubscriptionGuard,
     traits::{
         CellValue, Gettable, Watchable,
@@ -24,7 +27,7 @@ use crate::{
 
 /// Plan node for [`ProjectCellExt::project_cell`].
 ///
-/// Each source row maps to a [`Watchable`]`<Option<(K2, V2)>>`; the watchable's
+/// Each source row maps to a [`Watchable`] producing `Option<(K2, V2)>`; its
 /// emissions drive that row's output. `Some((k, v))` includes/updates the row;
 /// `None` excludes it.
 ///
@@ -32,7 +35,7 @@ use crate::{
 /// work; share by materializing once.
 pub struct ProjectCellPlan<S, K, V, K2, V2, W, F>
 where
-    S: MapQuery<K, V>,
+    S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
     V: CellValue,
     K2: Hash + Eq + CellValue,
@@ -46,9 +49,9 @@ where
     pub(crate) _types: PhantomData<fn() -> (K, V, K2, V2, W)>,
 }
 
-impl<S, K, V, K2, V2, W, F> MapQueryInstall<K2, V2> for ProjectCellPlan<S, K, V, K2, V2, W, F>
+impl<S, K, V, K2, V2, W, F> PlanProperties for ProjectCellPlan<S, K, V, K2, V2, W, F>
 where
-    S: MapQuery<K, V>,
+    S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
     V: CellValue,
     K2: Hash + Eq + CellValue,
@@ -56,7 +59,26 @@ where
     W: Watchable<Option<(K2, V2)>> + Gettable<Option<(K2, V2)>> + Clone + Send + Sync + 'static,
     F: Fn(&K, &V) -> W + Send + Sync + 'static,
 {
-    fn install(self, sink: MapDiffSink<K2, V2>) -> Vec<SubscriptionGuard> {
+    type Cardinality = ZeroOrOne;
+    type InputPartition = S::OutputPartition;
+    type OutputPartition = Repartition<K2>;
+}
+
+impl<S, K, V, K2, V2, W, F> BuildQueryRuntime<K2, V2> for ProjectCellPlan<S, K, V, K2, V2, W, F>
+where
+    S: MapQuery<Key = K, Value = V>,
+    K: Hash + Eq + CellValue,
+    V: CellValue,
+    K2: Hash + Eq + CellValue,
+    V2: CellValue,
+    W: Watchable<Option<(K2, V2)>> + Gettable<Option<(K2, V2)>> + Clone + Send + Sync + 'static,
+    F: Fn(&K, &V) -> W + Send + Sync + 'static,
+{
+    fn build_into(
+        self,
+        cx: &mut crate::map_query::compiler::CompileContext,
+        sink: crate::map_query::BoxedMapDiffSink<K2, V2>,
+    ) -> Vec<SubscriptionGuard> {
         // Stage 1 (install_map_values_cell_via_query) emits diffs keyed by `K`
         // with values `Option<(K2, V2)>`. Stage 2 — implemented inline by the
         // intermediate sink below — projects `Some(...) -> (K2, V2)` and `None
@@ -64,36 +86,38 @@ where
         // we know what to Remove on transitions.
         let last_emitted: Arc<Mutex<HashMap<K, (K2, V2)>>> = Arc::new(Mutex::new(HashMap::new()));
 
-        let intermediate_sink: MapDiffSink<K, Option<(K2, V2)>> = {
-            let last_emitted = last_emitted.clone();
-            let final_sink = sink.clone();
-            Arc::new(move |diff| {
+        let intermediate_sink = {
+            let last_emitted = last_emitted;
+            move |diff: &MapDiff<K, Option<(K2, V2)>>| {
                 let mut out: Vec<MapDiff<K2, V2>> = Vec::new();
                 project_diff(&last_emitted, diff, &mut out);
                 if out.is_empty() {
                     return;
                 }
                 if out.len() == 1 {
-                    final_sink(&out.pop().unwrap());
+                    if let Some(diff) = out.pop() {
+                        sink(&diff);
+                    }
                 } else {
-                    final_sink(&MapDiff::Batch { changes: out });
+                    sink(&MapDiff::Batch { changes: out });
                 }
-            })
+            }
         };
 
         let mapper = self.mapper;
         install_map_values_cell_via_query::<K, V, Option<(K2, V2)>, S, W, _>(
+            cx,
             self.source,
             move |k, v| (mapper)(k, v),
-            intermediate_sink,
+            Arc::new(intermediate_sink),
         )
     }
 }
 
 #[allow(private_bounds)]
-impl<S, K, V, K2, V2, W, F> MapQuery<K2, V2> for ProjectCellPlan<S, K, V, K2, V2, W, F>
+impl<S, K, V, K2, V2, W, F> MapQuery for ProjectCellPlan<S, K, V, K2, V2, W, F>
 where
-    S: MapQuery<K, V>,
+    S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
     V: CellValue,
     K2: Hash + Eq + CellValue,
@@ -101,6 +125,8 @@ where
     W: Watchable<Option<(K2, V2)>> + Gettable<Option<(K2, V2)>> + Clone + Send + Sync + 'static,
     F: Fn(&K, &V) -> W + Send + Sync + 'static,
 {
+    type Key = K2;
+    type Value = V2;
 }
 
 /// Translate a single `(K, Option<(K2, V2)>)` diff into the corresponding
@@ -122,7 +148,9 @@ fn project_diff<K, K2, V2>(
         MapDiff::Initial { entries } => {
             // Reset all previously emitted output entries first.
             let stale: Vec<(K2, V2)> = {
-                let mut last = last_emitted.lock().unwrap_or_else(|e| e.into_inner());
+                let mut last = last_emitted
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 last.drain().map(|(_, v)| v).collect()
             };
             for (k2, v2) in stale {
@@ -144,7 +172,9 @@ fn project_diff<K, K2, V2>(
         MapDiff::Remove { key, .. } => {
             // Source row gone: Remove the K2 we last emitted (if any).
             let prev = {
-                let mut last = last_emitted.lock().unwrap_or_else(|e| e.into_inner());
+                let mut last = last_emitted
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 last.remove(key)
             };
             if let Some((k2, v2)) = prev {
@@ -168,11 +198,11 @@ fn project_diff<K, K2, V2>(
 /// Cases (prev = `last_emitted[k]`, new = `opt`):
 /// - prev = None,           new = None         : noop
 /// - prev = None,           new = Some(k2, v2) : Insert(k2, v2)
-/// - prev = Some(p_k2, p_v2), new = None       : Remove(p_k2)
-/// - prev = Some(p_k2, p_v2), new = Some(k2, v2):
-///     - p_k2 == k2 && p_v2 == v2 : noop
-///     - p_k2 == k2 && p_v2 != v2 : Update(k2, p_v2 -> v2)
-///     - p_k2 != k2               : Remove(p_k2) + Insert(k2, v2)
+/// - prev = `Some(p_k2`, `p_v2`), new = None       : `Remove(p_k2)`
+/// - prev = `Some(p_k2`, `p_v2`), new = Some(k2, v2):
+///     - `p_k2` == k2 && `p_v2` == v2 : noop
+///     - `p_k2` == k2 && `p_v2` != v2 : Update(k2, `p_v2` -> v2)
+///     - `p_k2` != k2               : `Remove(p_k2)` + Insert(k2, v2)
 fn apply_one<K, K2, V2>(
     last_emitted: &Arc<Mutex<HashMap<K, (K2, V2)>>>,
     k: &K,
@@ -184,7 +214,9 @@ fn apply_one<K, K2, V2>(
     V2: CellValue,
 {
     let prev = {
-        let mut last = last_emitted.lock().unwrap_or_else(|e| e.into_inner());
+        let mut last = last_emitted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match (&new_opt, last.get(k)) {
             (None, _) => last.remove(k),
             (Some(new_pair), _) => last.insert(k.clone(), new_pair.clone()),
@@ -196,25 +228,25 @@ fn apply_one<K, K2, V2>(
         (None, Some((k2, v2))) => {
             out.push(MapDiff::Insert { key: k2, value: v2 });
         }
-        (Some((p_k2, p_v2)), None) => {
+        (Some((previous_key, previous_value)), None) => {
             out.push(MapDiff::Remove {
-                key: p_k2,
-                old_value: p_v2,
+                key: previous_key,
+                old_value: previous_value,
             });
         }
-        (Some((p_k2, p_v2)), Some((k2, v2))) => {
-            if p_k2 == k2 {
-                if p_v2 != v2 {
+        (Some((previous_key, previous_value)), Some((k2, v2))) => {
+            if previous_key == k2 {
+                if previous_value != v2 {
                     out.push(MapDiff::Update {
                         key: k2,
-                        old_value: p_v2,
+                        old_value: previous_value,
                         new_value: v2,
                     });
                 }
             } else {
                 out.push(MapDiff::Remove {
-                    key: p_k2,
-                    old_value: p_v2,
+                    key: previous_key,
+                    old_value: previous_value,
                 });
                 out.push(MapDiff::Insert { key: k2, value: v2 });
             }
@@ -227,7 +259,7 @@ fn apply_one<K, K2, V2>(
 /// `project_cell` builds an uncompiled plan node; call
 /// [`MapQuery::materialize`] on the result to obtain a subscribable
 /// [`CellMap`](crate::CellMap).
-pub trait ProjectCellExt<K, V>: MapQuery<K, V>
+pub trait ProjectCellExt<K, V>: MapQuery<Key = K, Value = V>
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
@@ -237,7 +269,7 @@ where
     /// `mapper(&source_key, &source_value)` returns a watchable
     /// `Option<(output_key, output_value)>`. `None` means the row is excluded.
     #[track_caller]
-    fn project_cell<K2, V2, W, F>(self, mapper: F) -> ProjectCellPlan<Self, K, V, K2, V2, W, F>
+    fn project_cell<K2, V2, W, F>(self, mapper: F) -> impl MapQuery<Key = K2, Value = V2>
     where
         K2: Hash + Eq + CellValue,
         V2: CellValue,
@@ -256,14 +288,14 @@ impl<K, V, M> ProjectCellExt<K, V> for M
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
-    M: MapQuery<K, V>,
+    M: MapQuery<Key = K, Value = V>,
 {
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Cell, CellMap, MapExt, MaterializeDefinite};
+    use crate::{Cell, CellMap, MapExt, Materialize};
 
     #[test]
     fn project_cell_reacts_to_inner_pipeline_emissions() {
@@ -310,7 +342,6 @@ mod tests {
 
         let gates_for_mapper = gates.clone();
         let mat = src
-            .clone()
             .project_cell(move |key, value| {
                 let key = key.clone();
                 let value = *value;
@@ -361,7 +392,6 @@ mod tests {
 
         let key_choice_for_mapper = key_choice.clone();
         let mat = src
-            .clone()
             .project_cell(move |k, v| {
                 let v = *v;
                 let k = k.clone();

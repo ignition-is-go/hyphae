@@ -10,8 +10,7 @@ use std::sync::{
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use hyphae::{
-    Cell, FilterExt, MapExt, MaterializeDefinite, MaterializeEmpty, Mutable, ParallelExt, ScanExt,
-    Signal, Watchable,
+    Cell, FilterExt, MapExt, Materialize, Mutable, ParallelExt, ScanExt, Signal, Watchable,
 };
 use seq_macro::seq;
 
@@ -19,7 +18,7 @@ fn bench_single_cell_propagation(c: &mut Criterion) {
     c.bench_function("single cell set + watch", |b| {
         let cell = Cell::new(0u64);
         let counter = Arc::new(AtomicU64::new(0));
-        let cnt = counter.clone();
+        let cnt = counter;
         let _guard = cell.subscribe(move |_| {
             cnt.fetch_add(1, Ordering::Relaxed);
         });
@@ -40,12 +39,12 @@ fn bench_single_cell_propagation(c: &mut Criterion) {
 macro_rules! map_chain_bench {
     ($group:expr, $depth:literal, $tail:literal) => {
         $group.bench_with_input(
-            BenchmarkId::new("map chain", $depth as u32),
-            &($depth as u32),
+            BenchmarkId::new("map chain", $depth),
+            &$depth,
             |b, _| {
                 let source = Cell::new(0u64);
                 let chain = seq!(_N in 0..$tail {
-                    source.clone().map(|x| x + 1) #(.map(|x| x + 1))*
+                    source.clone().map(|x| x.saturating_add(1)) #(.map(|x| x.saturating_add(1)))*
                 })
                 .materialize();
 
@@ -57,7 +56,7 @@ macro_rules! map_chain_bench {
 
                 let mut i = 0u64;
                 b.iter(|| {
-                    i += 1;
+                    i = i.wrapping_add(1);
                     source.set(black_box(i));
                 });
             },
@@ -81,7 +80,7 @@ fn bench_chain_depth(c: &mut Criterion) {
 fn bench_fan_out(c: &mut Criterion) {
     let mut group = c.benchmark_group("fan out");
 
-    for num_subscribers in [10, 100, 1000, 5000].iter() {
+    for num_subscribers in &[10, 100, 1000, 5000] {
         group.bench_with_input(
             BenchmarkId::new("sequential", num_subscribers),
             num_subscribers,
@@ -100,7 +99,7 @@ fn bench_fan_out(c: &mut Criterion) {
 
                 let mut i = 0u64;
                 b.iter(|| {
-                    i += 1;
+                    i = i.wrapping_add(1);
                     source.set(black_box(i));
                 });
 
@@ -127,7 +126,7 @@ fn bench_fan_out(c: &mut Criterion) {
 
                 let mut i = 0u64;
                 b.iter(|| {
-                    i += 1;
+                    i = i.wrapping_add(1);
                     source.set(black_box(i));
                 });
 
@@ -141,7 +140,7 @@ fn bench_fan_out(c: &mut Criterion) {
 fn bench_fan_in(c: &mut Criterion) {
     let mut group = c.benchmark_group("fan in (many sources, one sink)");
 
-    for num_sources in [10, 100, 1000].iter() {
+    for num_sources in &[10, 100, 1000] {
         group.bench_with_input(
             BenchmarkId::new("sources", num_sources),
             num_sources,
@@ -154,7 +153,7 @@ fn bench_fan_in(c: &mut Criterion) {
                     .iter()
                     .map(|source| {
                         let cnt = counter.clone();
-                        let mapped = source.clone().map(|x| x * 2).materialize();
+                        let mapped = source.clone().map(|x| x.saturating_mul(2)).materialize();
                         mapped.subscribe(move |_| {
                             cnt.fetch_add(1, Ordering::Relaxed);
                         })
@@ -163,7 +162,7 @@ fn bench_fan_in(c: &mut Criterion) {
 
                 let mut i = 0u64;
                 b.iter(|| {
-                    i += 1;
+                    i = i.wrapping_add(1);
                     // Update all sources
                     for source in &sources {
                         source.set(black_box(i));
@@ -181,7 +180,7 @@ fn bench_complex_graph(c: &mut Criterion) {
     c.bench_function(
         "complex graph: 100 sources -> map -> filter -> scan -> 10 watchers each",
         |b| {
-            let sources: Vec<_> = (0..100).map(|i| Cell::new(i as u64)).collect();
+            let sources: Vec<_> = (0u64..100).map(Cell::new).collect();
             let counter = Arc::new(AtomicU64::new(0));
 
             let guards: Vec<_> = sources
@@ -192,13 +191,13 @@ fn bench_complex_graph(c: &mut Criterion) {
                     // shape: one fused (map.filter) cell, then scan on top.
                     let filtered = source
                         .clone()
-                        .map(|x| x * 2)
-                        .filter(|x| x % 2 == 0)
+                        .map(|x| x.saturating_mul(2))
+                        .filter(|x| x.is_multiple_of(2))
                         .materialize();
                     // `filtered` carries `Option<u64>` (filtered-out -> None);
                     // scan returns a pipeline, so materialize before subscribing.
                     let scanned = filtered
-                        .scan(0u64, |acc, x| *acc + (*x).unwrap_or(0))
+                        .scan(0u64, |acc, x| acc.saturating_add((*x).unwrap_or(0)))
                         .materialize();
 
                     let counter = counter.clone();
@@ -215,7 +214,7 @@ fn bench_complex_graph(c: &mut Criterion) {
 
             let mut i = 0u64;
             b.iter(|| {
-                i += 1;
+                i = i.wrapping_add(1);
                 for source in &sources {
                     source.set(black_box(i));
                 }
@@ -237,22 +236,22 @@ fn bench_pairwise_chain(c: &mut Criterion) {
         // We must materialize between each map and the next pairwise (pairwise
         // requires Watchable, which only Cell implements).
         let p1 = source.clone().pairwise();
-        let p2 = p1.map(|(a, b)| a + b).materialize();
+        let p2 = p1.map(|(a, b)| a.saturating_add(*b)).materialize();
         let p3 = p2.pairwise();
         let p4 = p3
-            .map(|(a, b)| (*a).unwrap_or(0) + (*b).unwrap_or(0))
+            .map(|(a, b)| (*a).unwrap_or(0).saturating_add((*b).unwrap_or(0)))
             .materialize();
         let p5 = p4.pairwise().materialize();
 
         let counter = Arc::new(AtomicU64::new(0));
-        let cnt = counter.clone();
+        let cnt = counter;
         let _guard = p5.subscribe(move |_| {
             cnt.fetch_add(1, Ordering::Relaxed);
         });
 
         let mut i = 0u64;
         b.iter(|| {
-            i += 1;
+            i = i.wrapping_add(1);
             source.set(black_box(i));
         });
     });
@@ -261,7 +260,7 @@ fn bench_pairwise_chain(c: &mut Criterion) {
 fn bench_parallel_heavy_callbacks(c: &mut Criterion) {
     let mut group = c.benchmark_group("parallel heavy callbacks");
 
-    for num_subscribers in [10, 100, 500].iter() {
+    for num_subscribers in &[10, 100, 500] {
         group.bench_with_input(
             BenchmarkId::new("sequential", num_subscribers),
             num_subscribers,
@@ -290,7 +289,7 @@ fn bench_parallel_heavy_callbacks(c: &mut Criterion) {
 
                 let mut i = 0u64;
                 b.iter(|| {
-                    i += 1;
+                    i = i.wrapping_add(1);
                     source.set(black_box(i));
                 });
 
@@ -327,7 +326,7 @@ fn bench_parallel_heavy_callbacks(c: &mut Criterion) {
 
                 let mut i = 0u64;
                 b.iter(|| {
-                    i += 1;
+                    i = i.wrapping_add(1);
                     source.set(black_box(i));
                 });
 

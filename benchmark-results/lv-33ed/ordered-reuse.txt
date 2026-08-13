@@ -1,0 +1,16 @@
+   Compiling hyphae v2.0.1 (/home/trevor/Code/hyphae/hyphae)
+    Finished `bench` profile [optimized] target(s) in 6.21s
+     Running benches/compiled_map_queries.rs (target/release/deps/compiled_map_queries-3dd9fd0577ebe7c4)
+Gnuplot not found, using plotters backend
+Benchmarking compiled_query/two_join_region/single
+Benchmarking compiled_query/two_join_region/single: Warming up for 3.0000 s
+Benchmarking compiled_query/two_join_region/single: Collecting 100 samples in estimated 5.0077 s (1.4M iterations)
+Benchmarking compiled_query/two_join_region/single: Analyzing
+compiled_query/two_join_region/single
+                        time:   [3.4743 µs 3.4856 µs 3.4975 µs]
+                        change: [-1.1650% -0.6556% -0.1609%] (p = 0.01 < 0.05)
+                        Change within noise threshold.
+Found 9 outliers among 100 measurements (9.00%)
+  7 (7.00%) high mild
+  2 (2.00%) high severe
+

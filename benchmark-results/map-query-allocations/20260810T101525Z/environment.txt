@@ -1,0 +1,8 @@
+timestamp_utc=20260810T101525Z
+revision=HEAD
+commit=b4967697ded36c0dc3b0ce9b43e687c3367bc5d6
+rustc=rustc 1.97.1 (8bab26f4f 2026-07-14)
+cargo=cargo 1.97.1 (c980f4866 2026-06-30)
+kernel=Linux 7.1.3-arch2-2 x86_64 GNU/Linux
+cpu=AMD Ryzen 9 7900X3D 12-Core Processor
+build_jobs=1

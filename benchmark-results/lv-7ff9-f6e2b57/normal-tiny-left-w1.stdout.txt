@@ -1,0 +1,6 @@
+compiled_query/repeated_relation_four_join/single
+                        time:   [3.6616 µs 3.6773 µs 3.6949 µs]
+                        change: [-0.6781% -0.2072% +0.2243%] (p = 0.41 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 50 measurements (2.00%)
+  1 (2.00%) high mild

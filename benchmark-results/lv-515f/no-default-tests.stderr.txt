@@ -1,0 +1,30 @@
+   Compiling hyphae v2.0.1 (/home/trevor/Code/hyphae/hyphae)
+   Compiling hyphae-leptos v2.0.1 (/home/trevor/Code/hyphae/hyphae-leptos)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.68s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/lib.rs (target/debug/deps/hyphae-48bbed8d4d40fe91)
+     Running tests/arbitrary_n_public_join_region.rs (target/debug/deps/arbitrary_n_public_join_region-7c84eb69e4a3fea1)
+     Running tests/countall_size_retention.rs (target/debug/deps/countall_size_retention-2147b9af689b0d9e)
+     Running tests/four_join_application_preflight.rs (target/debug/deps/four_join_application_preflight-f92d86a7fdf63875)
+     Running tests/parallelism_cellmap_joins.rs (target/debug/deps/parallelism_cellmap_joins-2aedecc57ea51b77)
+     Running tests/parallelism_combiners.rs (target/debug/deps/parallelism_combiners-8f252833c429993d)
+     Running tests/parallelism_slicing.rs (target/debug/deps/parallelism_slicing-e5d78969a0d35302)
+     Running tests/parallelism_time_structural.rs (target/debug/deps/parallelism_time_structural-693239d180446841)
+     Running tests/parallelism_transforms.rs (target/debug/deps/parallelism_transforms-dff3255ab07fb9ee)
+     Running tests/pipeline_construction_laziness.rs (target/debug/deps/pipeline_construction_laziness-8396b6acb5cc02fc)
+     Running tests/profiling_pass.rs (target/debug/deps/profiling_pass-e8ffd346af4943d9)
+     Running tests/scheduler_completeness.rs (target/debug/deps/scheduler_completeness-ece2838f54008958)
+     Running tests/scheduler_correctness_stress.rs (target/debug/deps/scheduler_correctness_stress-222ab202a8ab6c71)
+     Running tests/scheduler_map_join_torn.rs (target/debug/deps/scheduler_map_join_torn-c8971f69168e15fd)
+     Running tests/scheduler_no_coalesce.rs (target/debug/deps/scheduler_no_coalesce-5a92f69cc21b1d70)
+     Running tests/scheduler_no_coalesce_wave_order.rs (target/debug/deps/scheduler_no_coalesce_wave_order-a086d142b265e76b)
+     Running tests/scheduler_phase0.rs (target/debug/deps/scheduler_phase0-273cdce2421a2883)
+     Running tests/scheduler_reentrant_wave.rs (target/debug/deps/scheduler_reentrant_wave-1e3a706a0bf6b94a)
+     Running tests/scheduler_switch_map_leak.rs (target/debug/deps/scheduler_switch_map_leak-ac9b95732dc1bd40)
+     Running tests/scheduler_switch_map_stress.rs (target/debug/deps/scheduler_switch_map_stress-bf07d77cecfdbf51)
+     Running tests/scheduler_zip_mispair.rs (target/debug/deps/scheduler_zip_mispair-dd56dea09b835ad5)
+     Running tests/timer_reactor.rs (target/debug/deps/timer_reactor-47ca747c61d13078)
+     Running unittests src/lib.rs (target/debug/deps/hyphae_leptos-78e7691860a54a3a)
+   Doc-tests hyphae
+   Doc-tests hyphae_leptos

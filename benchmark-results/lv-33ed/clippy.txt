@@ -1,0 +1,21 @@
+    Checking hyphae v2.0.1 (/home/trevor/Code/hyphae/hyphae)
+error: usage of the `unreachable!` macro
+   --> hyphae/src/cell_map.rs:641:38
+    |
+641 |             MapDiff::Batch { .. } => unreachable!("batch handled above"),
+    |                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unreachable
+    = note: requested on the command line with `-D clippy::unreachable`
+
+error: usage of the `unreachable!` macro
+   --> hyphae/src/cell_map.rs:712:25
+    |
+712 |                         unreachable!()
+    |                         ^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unreachable
+
+error: could not compile `hyphae` (lib) due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `hyphae` (lib test) due to 2 previous errors

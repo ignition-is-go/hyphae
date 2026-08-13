@@ -14,13 +14,11 @@ use std::sync::{
 };
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use hyphae::{
-    Cell, JoinExt, MapExt, MaterializeDefinite, Mutable, SubscriptionGuard, Watchable, batch,
-};
+use hyphae::{Cell, JoinExt, MapExt, Materialize, Mutable, SubscriptionGuard, Watchable, batch};
 
 /// A diamond `s ─> {a, b} ─> j ─> k(solve)` plus the guards keeping it alive.
 struct Diamond {
-    s: Cell<i64, hyphae::CellMutable>,
+    source: Cell<i64, hyphae::CellMutable>,
     solves: Arc<AtomicU64>,
     _guards: Vec<SubscriptionGuard>,
     _keep: Box<dyn std::any::Any>,
@@ -34,41 +32,42 @@ struct Diamond {
 fn solve(x: i64, y: i64, work: u64) -> i64 {
     let mut acc = x.wrapping_add(y);
     for i in 0..work {
-        acc = acc.wrapping_mul(31).wrapping_add(i as i64 ^ acc);
+        acc = acc
+            .wrapping_mul(31)
+            .wrapping_add(i64::try_from(i).unwrap_or(i64::MAX) ^ acc);
     }
     black_box(acc)
 }
 
 fn build_diamond(work: u64) -> Diamond {
-    let s = Cell::new(0i64);
-    let a = s.clone().map(|x| x + 1).materialize();
-    let b = s.clone().map(|x| x * 10).materialize();
-    let j = a.join(&b);
+    let source = Cell::new(0i64);
+    let add_leg = source.clone().map(|x| x.saturating_add(1)).materialize();
+    let multiply_leg = source.clone().map(|x| x.saturating_mul(10)).materialize();
+    let joined = add_leg.clone().join(multiply_leg.clone());
 
     let solves = Arc::new(AtomicU64::new(0));
     let counter = solves.clone();
-    let k = j
-        .clone()
+    let sink = joined
         .map(move |(x, y)| {
             counter.fetch_add(1, Ordering::Relaxed);
             solve(*x, *y, work)
         })
         .materialize();
-    let g = k.subscribe(|_| {});
+    let guard = sink.subscribe(|_| {});
 
     Diamond {
-        s,
+        source,
         solves,
-        _guards: vec![g],
+        _guards: vec![guard],
         // Keep the intermediate cells alive so the graph isn't torn down.
-        _keep: Box::new((a, b, j, k)),
+        _keep: Box::new((add_leg, multiply_leg, sink)),
     }
 }
 
 fn bench_single_cell(c: &mut Criterion) {
     let cell = Cell::new(0i64);
     let hits = Arc::new(AtomicU64::new(0));
-    let h = hits.clone();
+    let h = hits;
     let _guard = cell.subscribe(move |_| {
         h.fetch_add(1, Ordering::Relaxed);
     });
@@ -76,7 +75,7 @@ fn bench_single_cell(c: &mut Criterion) {
     let mut i = 0i64;
     c.bench_function("single_cell/synchronous", |b| {
         b.iter(|| {
-            i += 1;
+            i = i.saturating_add(1);
             cell.set(black_box(i));
         });
     });
@@ -93,8 +92,8 @@ fn bench_diamond(c: &mut Criterion) {
         let mut i = 0i64;
         group.bench_function(format!("synchronous/work={work}"), |b| {
             b.iter(|| {
-                i += 1;
-                d.s.set(black_box(i));
+                i = i.saturating_add(1);
+                d.source.set(black_box(i));
             });
         });
         black_box(d.solves.load(Ordering::Relaxed));
@@ -103,8 +102,8 @@ fn bench_diamond(c: &mut Criterion) {
         let mut i = 0i64;
         group.bench_function(format!("batched/work={work}"), |b| {
             b.iter(|| {
-                i += 1;
-                batch(|| d.s.set(black_box(i)));
+                i = i.saturating_add(1);
+                batch(|| d.source.set(black_box(i)));
             });
         });
         black_box(d.solves.load(Ordering::Relaxed));

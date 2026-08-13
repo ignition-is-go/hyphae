@@ -3,12 +3,13 @@ use std::{
     marker::PhantomData,
     panic::Location,
     sync::{
-        Arc, Mutex, Weak,
+        Arc, Weak,
         atomic::{AtomicBool, Ordering},
     },
 };
 
 use dashmap::DashMap;
+use parking_lot::Mutex;
 use rustc_hash::FxHashMap;
 use uuid::Uuid;
 
@@ -36,7 +37,7 @@ pub(crate) struct CellInner<T> {
     /// `Err` values are logged via `log::error!` and do not propagate.
     pub(crate) result_subscribers: parking_lot::Mutex<SubscriberRegistry<ResultSubscriber<T>>>,
     /// The cell's current value. Stored as `Mutex<Arc<T>>` rather than
-    /// `ArcSwap<T>` so writes don't pay arc_swap's reader-debt-slot scan.
+    /// `ArcSwap<T>` so writes don't pay `arc_swap`'s reader-debt-slot scan.
     /// Reads `lock + clone (Arc bump) + unlock`. Writes
     /// `lock + assign (drops old Arc inline) + unlock`. Old values reclaim
     /// via `Arc` refcounting — readers holding clones keep the value alive
@@ -44,7 +45,7 @@ pub(crate) struct CellInner<T> {
     pub(crate) value: Mutex<Arc<T>>,
     /// Optional human-readable name for tracing/debugging. Cold path — set
     /// rarely via `with_name`, read from `DepNode::name`. Mutex avoids the
-    /// per-cell ArcSwap drop cost paid on every cell teardown.
+    /// per-cell `ArcSwap` drop cost paid on every cell teardown.
     pub(crate) name: Mutex<Option<Arc<str>>>,
     /// Subscription guards owned by this cell (dropped when cell drops, provides dependency tracking).
     pub(crate) owned: DashMap<Uuid, SubscriptionGuard>,
@@ -90,7 +91,7 @@ pub(crate) struct CellInner<T> {
     /// dependent, or that dependent would keep a stale height (a glitch).
     #[cfg(feature = "scheduler")]
     pub(crate) height_dependents: Mutex<Vec<std::sync::Weak<dyn HeightInvalidate>>>,
-    /// Source location where this cell was created (via #[track_caller]).
+    /// Source location where this cell was created (via #[`track_caller`]).
     #[allow(dead_code)]
     pub(crate) caller: &'static Location<'static>,
 }
@@ -110,6 +111,7 @@ pub struct WeakCell<T, M> {
 impl<T, M> WeakCell<T, M> {
     /// Try to upgrade to a strong Cell reference.
     /// Returns None if the Cell has been dropped.
+    #[must_use]
     pub fn upgrade(&self) -> Option<Cell<T, M>> {
         self.inner.upgrade().map(|inner| Cell {
             inner,
@@ -122,6 +124,7 @@ impl<T, M> WeakCell<T, M> {
     /// Cheaper than `upgrade().is_some()` — it only reads the strong count and
     /// never materializes (or transiently reference-counts) a `Cell`, so it is
     /// safe to call in a hot sweep over many weaks.
+    #[must_use]
     pub fn is_alive(&self) -> bool {
         self.inner.strong_count() > 0
     }
@@ -129,7 +132,7 @@ impl<T, M> WeakCell<T, M> {
 
 impl<T, M> Clone for WeakCell<T, M> {
     fn clone(&self) -> Self {
-        WeakCell {
+        Self {
             inner: self.inner.clone(),
             _marker: PhantomData,
         }
@@ -156,7 +159,7 @@ impl<T, M> Clone for WeakCell<T, M> {
 /// A notify snapshot, sized to the subscriber count so the common cases don't
 /// pay for the general one. Profiling rship's HRLV playback showed the *vast
 /// majority* of cells carry exactly one subscriber, yet churn-heavy sources
-/// (switch_map rewiring its input every fire) re-`dirty` the registry each
+/// (`switch_map` rewiring its input every fire) re-`dirty` the registry each
 /// notify — so the old always-`Arc<Vec>` snapshot heap-allocated a `Vec` *and*
 /// an `Arc` per fire just to hold a single element.
 ///
@@ -179,9 +182,9 @@ pub(crate) enum SubSnapshot<S> {
 impl<S> Clone for SubSnapshot<S> {
     fn clone(&self) -> Self {
         match self {
-            SubSnapshot::Zero => SubSnapshot::Zero,
-            SubSnapshot::One(pair) => SubSnapshot::One(pair.clone()),
-            SubSnapshot::Many(subs) => SubSnapshot::Many(subs.clone()),
+            Self::Zero => Self::Zero,
+            Self::One(pair) => Self::One(pair.clone()),
+            Self::Many(subs) => Self::Many(subs.clone()),
         }
     }
 }
@@ -193,9 +196,9 @@ impl<S> SubSnapshot<S> {
     /// drops it outside the lock) for the duration of the fanout.
     pub(crate) fn as_slice(&self) -> &[(Uuid, Arc<S>)] {
         match self {
-            SubSnapshot::Zero => &[],
-            SubSnapshot::One(pair) => std::slice::from_ref(pair),
-            SubSnapshot::Many(subs) => subs.as_slice(),
+            Self::Zero => &[],
+            Self::One(pair) => std::slice::from_ref(pair),
+            Self::Many(subs) => subs.as_slice(),
         }
     }
 }
@@ -212,7 +215,7 @@ impl<S> SubSnapshot<S> {
 ///
 /// **No demotion.** Once a registry reaches `Many` it stays there even if it
 /// shrinks back to one subscriber. Demoting would thrash the hash table's
-/// allocation for cells that oscillate across the 1/2 boundary (switch_map
+/// allocation for cells that oscillate across the 1/2 boundary (`switch_map`
 /// re-knitting subscribe-before-unsubscribe transiently holds two); keeping the
 /// map matches the previous always-`FxHashMap` behaviour for exactly those
 /// cells, while cells that never exceed one subscriber pay nothing. All
@@ -226,9 +229,9 @@ enum SubIndex<S> {
 impl<S> SubIndex<S> {
     fn len(&self) -> usize {
         match self {
-            SubIndex::Zero => 0,
-            SubIndex::One(..) => 1,
-            SubIndex::Many(map) => map.len(),
+            Self::Zero => 0,
+            Self::One(..) => 1,
+            Self::Many(map) => map.len(),
         }
     }
 
@@ -237,32 +240,33 @@ impl<S> SubIndex<S> {
     /// lock.
     fn insert(&mut self, id: Uuid, sub: Arc<S>) -> Option<Arc<S>> {
         match self {
-            SubIndex::Zero => {
-                *self = SubIndex::One(id, sub);
+            Self::Zero => {
+                *self = Self::One(id, sub);
                 return None;
             }
-            SubIndex::One(existing_id, existing_sub) => {
+            Self::One(existing_id, existing_sub) => {
                 if *existing_id == id {
                     return Some(std::mem::replace(existing_sub, sub));
                 }
                 // Different id: fall out of the match to promote (the borrow of
                 // `existing_sub` must end before we reassign `*self`).
             }
-            SubIndex::Many(map) => {
+            Self::Many(map) => {
                 return map.insert(id, sub);
             }
         }
 
         // Reached only from `One` with a different id: promote to `Many`,
         // carrying the existing single subscriber plus the new one.
-        let (old_id, old_sub) = match std::mem::replace(self, SubIndex::Zero) {
-            SubIndex::One(old_id, old_sub) => (old_id, old_sub),
-            _ => unreachable!("promotion is entered only from the One arm"),
+        let previous = std::mem::replace(self, Self::Zero);
+        let Self::One(old_id, old_sub) = previous else {
+            *self = previous;
+            return None;
         };
         let mut map = FxHashMap::default();
         map.insert(old_id, old_sub);
         map.insert(id, sub);
-        *self = SubIndex::Many(map);
+        *self = Self::Many(map);
         None
     }
 
@@ -270,17 +274,20 @@ impl<S> SubIndex<S> {
     /// caller to drop outside the lock. Never demotes `Many` (see the type doc).
     fn remove(&mut self, id: &Uuid) -> Option<Arc<S>> {
         match self {
-            SubIndex::Zero => None,
-            SubIndex::One(existing_id, _) => {
+            Self::Zero => None,
+            Self::One(existing_id, _) => {
                 if *existing_id != *id {
                     return None;
                 }
-                match std::mem::replace(self, SubIndex::Zero) {
-                    SubIndex::One(_, sub) => Some(sub),
-                    _ => unreachable!("just matched One"),
+                let previous = std::mem::replace(self, Self::Zero);
+                if let Self::One(_, sub) = previous {
+                    Some(sub)
+                } else {
+                    *self = previous;
+                    None
                 }
             }
-            SubIndex::Many(map) => map.remove(id),
+            Self::Many(map) => map.remove(id),
         }
     }
 }
@@ -292,7 +299,7 @@ pub(crate) struct SubscriberRegistry<S> {
 }
 
 impl<S> SubscriberRegistry<S> {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             index: SubIndex::Zero,
             snapshot: SubSnapshot::Zero,
@@ -370,12 +377,56 @@ pub(crate) type SubscriberCallback<T> = Arc<dyn Fn(&Signal<T>) + Send + Sync>;
 
 pub(crate) struct Subscriber<T> {
     pub(crate) callback: SubscriberCallback<T>,
+    initializing: AtomicBool,
+    pending: Mutex<Vec<Signal<T>>>,
 }
 
-impl<T> Subscriber<T> {
+impl<T: Clone> Subscriber<T> {
     pub(crate) fn new(callback: impl Fn(&Signal<T>) + Send + Sync + 'static) -> Self {
         Self {
             callback: Arc::new(callback),
+            initializing: AtomicBool::new(true),
+            pending: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub(crate) fn new_live(callback: SubscriberCallback<T>) -> Self {
+        Self {
+            callback,
+            initializing: AtomicBool::new(false),
+            pending: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Queue notifications until the synchronous current-value replay has
+    /// completed. This prevents a concurrent notify from running before that
+    /// replay and then being overwritten by an older value delivered last.
+    fn deliver(&self, signal: &Signal<T>) {
+        if self.initializing.load(Ordering::Acquire) {
+            let mut pending = self.pending.lock();
+            if self.initializing.load(Ordering::Relaxed) {
+                pending.push(signal.clone());
+                return;
+            }
+            drop(pending);
+        }
+        (self.callback)(signal);
+    }
+
+    fn finish_initial(&self, initial: &Signal<T>) {
+        (self.callback)(initial);
+        loop {
+            let pending = {
+                let mut pending = self.pending.lock();
+                if pending.is_empty() {
+                    self.initializing.store(false, Ordering::Release);
+                    return;
+                }
+                std::mem::take(&mut *pending)
+            };
+            for signal in pending {
+                (self.callback)(&signal);
+            }
         }
     }
 }
@@ -386,14 +437,51 @@ pub(crate) type ResultSubscriberCallback<T> =
 
 pub(crate) struct ResultSubscriber<T> {
     pub(crate) callback: ResultSubscriberCallback<T>,
+    initializing: AtomicBool,
+    pending: Mutex<Vec<Signal<T>>>,
 }
 
-impl<T> ResultSubscriber<T> {
+impl<T: Clone> ResultSubscriber<T> {
     pub(crate) fn new(
         callback: impl Fn(&Signal<T>) -> Result<(), String> + Send + Sync + 'static,
     ) -> Self {
         Self {
             callback: Arc::new(callback),
+            initializing: AtomicBool::new(true),
+            pending: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn deliver(&self, signal: &Signal<T>) -> Result<(), String> {
+        if self.initializing.load(Ordering::Acquire) {
+            let mut pending = self.pending.lock();
+            if self.initializing.load(Ordering::Relaxed) {
+                pending.push(signal.clone());
+                return Ok(());
+            }
+            drop(pending);
+        }
+        (self.callback)(signal)
+    }
+
+    fn finish_initial(&self, initial: &Signal<T>, on_error: impl Fn(&str)) {
+        if let Err(error) = (self.callback)(initial) {
+            on_error(&error);
+        }
+        loop {
+            let pending = {
+                let mut pending = self.pending.lock();
+                if pending.is_empty() {
+                    self.initializing.store(false, Ordering::Release);
+                    return;
+                }
+                std::mem::take(&mut *pending)
+            };
+            for signal in pending {
+                if let Err(error) = (self.callback)(&signal) {
+                    on_error(&error);
+                }
+            }
         }
     }
 }
@@ -429,6 +517,7 @@ impl<T: CellValue> Cell<T, CellMutable> {
 
     /// Lock this mutable cell, converting it to an immutable cell.
     /// The underlying data is shared; only the type changes.
+    #[must_use]
     pub fn lock(self) -> Cell<T, CellImmutable> {
         Cell {
             inner: self.inner,
@@ -436,16 +525,17 @@ impl<T: CellValue> Cell<T, CellMutable> {
         }
     }
 
+    #[must_use]
     pub fn with_name(self, name: impl Into<Arc<str>>) -> Self {
         let name = name.into();
-        *self.inner.name.lock().expect("cell name poisoned") = Some(name.clone());
+        *self.inner.name.lock() = Some(name);
         self
     }
 }
 
 impl<T, M> Clone for Cell<T, M> {
     fn clone(&self) -> Self {
-        Cell {
+        Self {
             inner: Arc::clone(&self.inner),
             _marker: PhantomData,
         }
@@ -455,6 +545,7 @@ impl<T, M> Clone for Cell<T, M> {
 impl<T, M> Cell<T, M> {
     /// Create a weak reference to this cell.
     /// The weak reference doesn't prevent the cell from being dropped.
+    #[must_use]
     pub fn downgrade(&self) -> WeakCell<T, M> {
         WeakCell {
             inner: Arc::downgrade(&self.inner),
@@ -516,8 +607,8 @@ impl<T, M> Cell<T, M> {
         // this cell and its transitive dependents recompute, not the whole graph.
         #[cfg(feature = "scheduler")]
         {
-            let dep: std::sync::Weak<dyn HeightInvalidate> =
-                Arc::downgrade(&(self.inner.clone() as Arc<dyn HeightInvalidate>));
+            let erased: Arc<dyn HeightInvalidate> = self.inner.clone();
+            let dep = Arc::downgrade(&erased);
             guard.source().add_height_dependent(dep);
         }
         self.inner.owned.insert(Uuid::new_v4(), guard);
@@ -540,8 +631,8 @@ impl<T, M> Cell<T, M> {
         // harmless extra recompute), never under-invalidates.
         #[cfg(feature = "scheduler")]
         {
-            let dep: std::sync::Weak<dyn HeightInvalidate> =
-                Arc::downgrade(&(self.inner.clone() as Arc<dyn HeightInvalidate>));
+            let erased: Arc<dyn HeightInvalidate> = self.inner.clone();
+            let dep = Arc::downgrade(&erased);
             guard.source().add_height_dependent(dep);
         }
         self.inner.owned.insert(key, guard);
@@ -562,7 +653,7 @@ impl<T, M> Cell<T, M> {
     ///
     /// Under [`batch`](crate::batch), a coalescing cell keeps only its final
     /// value per tick — correct for behavior operators (map/filter/join/
-    /// switch_map), but it silently drops intermediates for event operators
+    /// `switch_map`), but it silently drops intermediates for event operators
     /// (scan/pairwise/merge/buffer/zip) and hand-rolled stateful maps, whose
     /// result depends on seeing every emission. Marking such a cell
     /// `no_coalesce` makes the scheduler enqueue each of its notifies as a
@@ -576,6 +667,7 @@ impl<T, M> Cell<T, M> {
     /// operator, where coalescing would otherwise starve it before its inputs
     /// ever reach it. This builder is the single-cell escape hatch for sites
     /// where wrapping construction is awkward.
+    #[must_use]
     pub fn no_coalesce(self) -> Self {
         self.inner.no_coalesce.store(true, Ordering::Relaxed);
         self
@@ -609,10 +701,7 @@ impl<T: Send + Sync> HeightInvalidate for CellInner<T> {
         self.height_epoch.fetch_add(1, Ordering::Relaxed);
     }
     fn hi_dependents(&self) -> Vec<std::sync::Weak<dyn HeightInvalidate>> {
-        let mut g = self
-            .height_dependents
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let mut g = self.height_dependents.lock();
         // Amortized prune: a dropped dependent leaves a dead weak; sweep them on
         // read. NOTE: this bounds the vec to the live dependent set only because
         // `add_height_dependent` also rejects duplicates — retain alone cannot
@@ -657,9 +746,8 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
         self.inner
             .name
             .lock()
-            .expect("cell name poisoned")
             .as_ref()
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
     }
 
     fn deps(&self) -> Vec<Arc<dyn DepNode>> {
@@ -692,11 +780,7 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
 
     #[cfg(feature = "scheduler")]
     fn add_height_dependent(&self, dep: std::sync::Weak<dyn HeightInvalidate>) {
-        let mut deps = self
-            .inner
-            .height_dependents
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let mut deps = self.inner.height_dependents.lock();
         // Prune dead entries, then register only if this dependent isn't already
         // here. Both steps are load-bearing: `own`/`own_keyed` re-register the
         // SAME (source, dependent) pair on every `switch_map` re-knit whose
@@ -711,8 +795,8 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
         deps.retain(|w| w.strong_count() > 0);
         // Compare data addresses, not `Weak::ptr_eq`: these are trait-object
         // weaks and vtable identity is not guaranteed across coercion sites.
-        let new_addr = dep.as_ptr() as *const ();
-        if deps.iter().any(|w| w.as_ptr() as *const () == new_addr) {
+        let new_addr = dep.as_ptr().cast::<()>();
+        if deps.iter().any(|w| w.as_ptr().cast::<()>() == new_addr) {
             return;
         }
         deps.push(dep);
@@ -724,7 +808,11 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
     }
 
     fn subscriber_count(&self) -> usize {
-        self.inner.subscribers.lock().len() + self.inner.result_subscribers.lock().len()
+        self.inner
+            .subscribers
+            .lock()
+            .len()
+            .saturating_add(self.inner.result_subscribers.lock().len())
     }
 
     fn owned_count(&self) -> usize {
@@ -733,9 +821,10 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
 }
 
 impl<T: CellValue> Cell<T, CellImmutable> {
+    #[must_use]
     pub fn with_name(self, name: impl Into<Arc<str>>) -> Self {
         let name = name.into();
-        *self.inner.name.lock().expect("cell name poisoned") = Some(name.clone());
+        *self.inner.name.lock() = Some(name);
         self
     }
 }
@@ -771,10 +860,11 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
             // emit-then-complete operator would otherwise lose its final value
             // under `batch`) — see [`crate::scheduler::enqueue`].
             let terminal = !matches!(signal, Signal::Value(_));
-            let signal = signal.clone();
+            let signal = signal;
+            let dependency: &dyn crate::traits::DepNode = self;
             crate::scheduler::enqueue(
                 self.inner.id,
-                self as &dyn crate::traits::DepNode,
+                dependency,
                 terminal,
                 Box::new(move || {
                     cell.write_value(&signal);
@@ -792,6 +882,11 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         // exact synchronous eager-push path, with no behavioral change.
         self.write_value(&signal);
         self.fanout(&signal);
+        // `notify` owns its signal because scheduler-enabled builds may move it
+        // into the deferred tick closure. End the synchronous signal lifetime
+        // explicitly as well so feature-minimal dependent builds preserve the
+        // same ownership contract.
+        drop(signal);
     }
 
     /// Settle this cell's current value — or its terminal completed/errored
@@ -806,14 +901,14 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
                 // it hits zero), no `arc_swap::Debt::pay_all` reader-slot
                 // scan. Readers that grabbed an earlier Arc keep it alive
                 // via their own clone until they're done.
-                *self.inner.value.lock().expect("cell value poisoned") = arc_value.clone();
+                *self.inner.value.lock() = arc_value.clone();
             }
             Signal::Complete => {
                 self.inner.completed.store(true, Ordering::SeqCst);
             }
             Signal::Error(err) => {
                 self.inner.errored.store(true, Ordering::SeqCst);
-                *self.inner.error.lock().expect("cell error poisoned") = Some(err.clone());
+                *self.inner.error.lock() = Some(err.clone());
             }
         }
     }
@@ -836,7 +931,7 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         // under a per-frame span.
         #[cfg(feature = "profiling")]
         let _fanout_span = {
-            let name = self.inner.name.lock().expect("cell name poisoned").clone();
+            let name = self.inner.name.lock().clone();
             ::tracing::trace_span!(
                 "hyphae.fanout",
                 cell.id = %self.inner.id,
@@ -865,7 +960,7 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         // rest of this fanout, which is a bug in the subscriber that should surface
         // loudly rather than be silently swallowed.
         for (_subscriber_id, sub) in subs.as_slice() {
-            (sub.callback)(signal);
+            sub.deliver(signal);
         }
 
         // Fallible subscribers run after the infallible chain. Errors are logged
@@ -881,7 +976,7 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         };
 
         for (subscriber_id, sub) in result_subs.as_slice() {
-            if let Err(err) = (sub.callback)(signal) {
+            if let Err(err) = sub.deliver(signal) {
                 log::error!(
                     "hyphae: fallible subscriber {} on cell {} returned error: {}",
                     subscriber_id,
@@ -897,12 +992,7 @@ impl<T: CellValue, U: Send + Sync + 'static> Gettable<T> for Cell<T, U> {
     fn get(&self) -> T {
         // Brief lock to clone the Arc (refcount bump), release, then deref
         // and clone T outside the lock. Keeps the critical section small.
-        let arc = self
-            .inner
-            .value
-            .lock()
-            .expect("cell value poisoned")
-            .clone();
+        let arc = self.inner.value.lock().clone();
         (*arc).clone()
     }
 }
@@ -944,21 +1034,16 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
         // raced the insert above already delivers to this now-indexed
         // subscriber; a duplicate value delivery is benign, and any one-emit
         // ordering skew self-heals on the next notify.
-        let current = self
-            .inner
-            .value
-            .lock()
-            .expect("cell value poisoned")
-            .clone();
-        (sub.callback)(&Signal::Value(current));
+        let current = self.inner.value.lock().clone();
+        sub.finish_initial(&Signal::Value(current));
 
         // If already complete or errored, send that signal too
         if self.is_complete() {
-            (sub.callback)(&Signal::Complete);
+            sub.deliver(&Signal::Complete);
         } else if self.is_error()
             && let Some(err) = self.error()
         {
-            (sub.callback)(&Signal::Error(err));
+            sub.deliver(&Signal::Error(err));
         }
 
         let source: Arc<dyn DepNode> = Arc::new(self.clone());
@@ -997,11 +1082,7 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
     }
 
     fn error(&self) -> Option<Arc<anyhow::Error>> {
-        self.inner
-            .error
-            .lock()
-            .expect("cell error poisoned")
-            .clone()
+        self.inner.error.lock().clone()
     }
 }
 
@@ -1012,49 +1093,34 @@ impl<T: CellValue, U: Send + Sync + 'static> WatchableResult<T> for Cell<T, U> {
     ) -> SubscriptionGuard {
         let cell_id = self.inner.id;
         let log_err = |id: &Uuid, err: &str| {
-            log::error!(
-                "hyphae: fallible subscriber {} on cell {} returned error: {}",
-                id,
-                cell_id,
-                err
-            );
+            log::error!("hyphae: fallible subscriber {id} on cell {cell_id} returned error: {err}");
         };
 
         let id = Uuid::new_v4();
+        let sub = Arc::new(ResultSubscriber::new(callback));
+
+        // Match the infallible subscribe path: install before replay so an
+        // update racing subscription cannot fall between the replay and the
+        // registry insert. Result callbacks use the same initialization queue
+        // to preserve replay-before-live ordering.
+        let displaced = self.inner.result_subscribers.lock().insert(id, sub.clone());
+        drop(displaced);
 
         // Send current value immediately (Arc clone, no deep copy).
-        let current = self
-            .inner
-            .value
-            .lock()
-            .expect("cell value poisoned")
-            .clone();
-        if let Err(err) = callback(&Signal::Value(current)) {
-            log_err(&id, &err);
-        }
+        let current = self.inner.value.lock().clone();
+        sub.finish_initial(&Signal::Value(current), |error| log_err(&id, error));
 
         // Replay any prior terminal signal.
         if self.inner.completed.load(Ordering::SeqCst) {
-            if let Err(err) = callback(&Signal::Complete) {
+            if let Err(err) = sub.deliver(&Signal::Complete) {
                 log_err(&id, &err);
             }
         } else if self.inner.errored.load(Ordering::SeqCst)
-            && let Some(e) = self
-                .inner
-                .error
-                .lock()
-                .expect("cell error poisoned")
-                .clone()
-            && let Err(err) = callback(&Signal::Error(e))
+            && let Some(e) = self.inner.error.lock().clone()
+            && let Err(err) = sub.deliver(&Signal::Error(e))
         {
             log_err(&id, &err);
         }
-
-        let sub = Arc::new(ResultSubscriber::new(callback));
-        // O(1) indexed insert; displaced Arc drops outside the lock. See
-        // Watchable::subscribe above.
-        let displaced = self.inner.result_subscribers.lock().insert(id, sub);
-        drop(displaced);
 
         let source: Arc<dyn DepNode> = Arc::new(self.clone());
         let cell = self.clone();
@@ -1125,7 +1191,9 @@ mod sub_index_tests {
 
         // Re-inserting the same id swaps the Arc and returns the displaced one,
         // without promoting to Many.
-        let displaced = idx.insert(id, sub(2)).expect("old sub returned");
+        let displaced = idx.insert(id, sub(2));
+        assert!(displaced.is_some(), "old sub returned");
+        let Some(displaced) = displaced else { return };
         assert!(Arc::ptr_eq(&displaced, &first));
         assert!(matches!(idx, SubIndex::One(..)));
         assert_eq!(idx.len(), 1);
@@ -1154,7 +1222,9 @@ mod sub_index_tests {
         let s = sub(7);
         let _ = idx.insert(id, s.clone());
 
-        let removed = idx.remove(&id).expect("present");
+        let removed = idx.remove(&id);
+        assert!(removed.is_some(), "present");
+        let Some(removed) = removed else { return };
         assert!(Arc::ptr_eq(&removed, &s));
         assert!(matches!(idx, SubIndex::Zero));
         assert_eq!(idx.len(), 0);
@@ -1202,7 +1272,7 @@ mod sub_index_tests {
 
 #[cfg(all(test, feature = "scheduler"))]
 mod height_dependents_tests {
-    use crate::{Cell, Mutable, SwitchMapExt, Watchable};
+    use crate::{Cell, Materialize, Mutable, SwitchMapExt, Watchable};
 
     /// Re-owning the SAME live source must not grow the source's
     /// height-dependent set. This is the `switch_map`-onto-a-cached-cell shape:
@@ -1222,12 +1292,7 @@ mod height_dependents_tests {
             owner.own_keyed(key, guard);
         }
 
-        let len = source
-            .inner
-            .height_dependents
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .len();
+        let len = source.inner.height_dependents.lock().len();
         assert_eq!(
             len, 1,
             "same (source, dependent) pair re-owned 1000x should register once, got {len}"
@@ -1244,12 +1309,7 @@ mod height_dependents_tests {
             owner.own(source.subscribe(|_| {}));
         }
 
-        let len = source
-            .inner
-            .height_dependents
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .len();
+        let len = source.inner.height_dependents.lock().len();
         assert_eq!(len, 5, "each distinct dependent must register exactly once");
     }
 
@@ -1266,12 +1326,7 @@ mod height_dependents_tests {
         let owner2 = Cell::new(0i32);
         owner2.own(source.subscribe(|_| {}));
 
-        let len = source
-            .inner
-            .height_dependents
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .len();
+        let len = source.inner.height_dependents.lock().len();
         assert_eq!(len, 1, "dropped dependent should not linger, got {len}");
     }
 
@@ -1283,19 +1338,17 @@ mod height_dependents_tests {
         let outer = Cell::new(0i32);
         let shared_inner = Cell::new(100i32);
         let inner_for_closure = shared_inner.clone();
-        let switched = outer.switch_map(move |_| inner_for_closure.clone().lock());
+        let switched = outer
+            .clone()
+            .switch_map(move |_| inner_for_closure.clone().lock())
+            .materialize();
         let _guard = switched.subscribe(|_| {});
 
         for i in 1..500 {
             outer.set(i);
         }
 
-        let len = shared_inner
-            .inner
-            .height_dependents
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .len();
+        let len = shared_inner.inner.height_dependents.lock().len();
         assert!(
             len <= 2,
             "switch_map re-knit onto a cached inner cell grew dependents to {len}"

@@ -7,13 +7,29 @@
 use std::{collections::BTreeMap, hash::Hash, marker::PhantomData, sync::Arc};
 
 use crate::{
-    map_query::{MapDiffSink, MapQuery, MapQueryInstall},
+    map_query::{
+        BuildQueryRuntime, MapQuery,
+        properties::{Many, PlanProperties, Repartition},
+    },
     subscription::SubscriptionGuard,
     traits::{
         CellValue,
         collections::internal::diff_runtime::{GroupedOps, install_grouped_runtime_via_query},
     },
 };
+
+impl<S, K, V, GK, F> PlanProperties for GroupByPlan<S, K, V, GK, F>
+where
+    S: MapQuery<Key = K, Value = V>,
+    K: Hash + Eq + Ord + CellValue,
+    V: CellValue,
+    GK: Hash + Eq + CellValue,
+    F: Fn(&K, &V) -> GK + Send + Sync + 'static,
+{
+    type Cardinality = Many;
+    type InputPartition = S::OutputPartition;
+    type OutputPartition = Repartition<GK>;
+}
 
 /// Plan node for [`GroupByExt::group_by`].
 ///
@@ -24,7 +40,7 @@ use crate::{
 /// share by materializing once.
 pub struct GroupByPlan<S, K, V, GK, F>
 where
-    S: MapQuery<K, V>,
+    S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + Ord + CellValue,
     V: CellValue,
     GK: Hash + Eq + CellValue,
@@ -35,17 +51,22 @@ where
     pub(crate) _types: PhantomData<fn() -> (K, V, GK)>,
 }
 
-impl<S, K, V, GK, F> MapQueryInstall<GK, Vec<V>> for GroupByPlan<S, K, V, GK, F>
+impl<S, K, V, GK, F> BuildQueryRuntime<GK, Vec<V>> for GroupByPlan<S, K, V, GK, F>
 where
-    S: MapQuery<K, V>,
+    S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + Ord + CellValue,
     V: CellValue,
     GK: Hash + Eq + CellValue,
     F: Fn(&K, &V) -> GK + Send + Sync + 'static,
 {
-    fn install(self, sink: MapDiffSink<GK, Vec<V>>) -> Vec<SubscriptionGuard> {
+    fn build_into(
+        self,
+        cx: &mut crate::map_query::compiler::CompileContext,
+        sink: crate::map_query::BoxedMapDiffSink<GK, Vec<V>>,
+    ) -> Vec<SubscriptionGuard> {
         let group_key = self.group_key;
         install_grouped_runtime_via_query::<K, V, GK, BTreeMap<K, V>, Vec<V>, S, _, _, _, _, _, _>(
+            cx,
             self.source,
             GroupedOps {
                 make_group_key: move |k, v| group_key(k, v),
@@ -69,14 +90,16 @@ where
 }
 
 #[allow(private_bounds)]
-impl<S, K, V, GK, F> MapQuery<GK, Vec<V>> for GroupByPlan<S, K, V, GK, F>
+impl<S, K, V, GK, F> MapQuery for GroupByPlan<S, K, V, GK, F>
 where
-    S: MapQuery<K, V>,
+    S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + Ord + CellValue,
     V: CellValue,
     GK: Hash + Eq + CellValue,
     F: Fn(&K, &V) -> GK + Send + Sync + 'static,
 {
+    type Key = GK;
+    type Value = Vec<V>;
 }
 
 /// Group-by operator returning a [`MapQuery`] plan node.
@@ -84,7 +107,7 @@ where
 /// `group_by` consumes `self` and returns an uncompiled plan node; call
 /// [`MapQuery::materialize`] on the result to obtain a subscribable
 /// [`CellMap`](crate::CellMap).
-pub trait GroupByExt<K, V>: MapQuery<K, V>
+pub trait GroupByExt<K, V>: MapQuery<Key = K, Value = V>
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
@@ -94,7 +117,7 @@ where
     /// Each output key is a group id and each output value is the group's
     /// rows as `Vec<V>`.
     #[track_caller]
-    fn group_by<GK, F>(self, group_key: F) -> GroupByPlan<Self, K, V, GK, F>
+    fn group_by<GK, F>(self, group_key: F) -> impl MapQuery<Key = GK, Value = Vec<V>>
     where
         K: Ord,
         GK: Hash + Eq + CellValue,
@@ -112,7 +135,7 @@ impl<K, V, M> GroupByExt<K, V> for M
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
-    M: MapQuery<K, V>,
+    M: MapQuery<Key = K, Value = V>,
 {
 }
 
@@ -136,9 +159,9 @@ mod tests {
         source.insert_many(vec![("a".to_string(), 1), ("b".to_string(), 2)]);
         let seen: Vec<_> = rx.try_iter().collect();
         assert_eq!(seen.len(), 2);
-        match seen.last().unwrap() {
-            MapDiff::Batch { changes } => assert_eq!(changes.len(), 2),
-            _ => panic!("expected batch diff from group_by"),
-        }
+        assert!(matches!(
+            seen.last(),
+            Some(MapDiff::Batch { changes }) if changes.len() == 2
+        ));
     }
 }

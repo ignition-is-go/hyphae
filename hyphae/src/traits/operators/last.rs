@@ -5,17 +5,18 @@
 //! source never emits any values before completing, the cell stays `None`
 //! (use [`LastExt::last_or`] to pick a default in that case).
 
+use parking_lot::Mutex;
 use std::{
     marker::PhantomData,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, Ordering as AtomicOrdering},
     },
 };
 
 use super::CellValue;
 use crate::{
-    pipeline::{Empty, MaterializeEmpty, Pipeline, PipelineInstall, Seedness},
+    pipeline::{Empty, Pipeline, PipelineInstall, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -45,10 +46,10 @@ where
                     if first.swap(false, AtomicOrdering::SeqCst) {
                         return;
                     }
-                    *last_value.lock().expect("last poisoned") = Some(v.as_ref().clone());
+                    *last_value.lock() = Some(v.as_ref().clone());
                 }
                 Signal::Complete => {
-                    let val = last_value.lock().expect("last poisoned").clone();
+                    let val = last_value.lock().clone();
                     if let Some(v) = val {
                         callback(&Signal::value(v));
                     }
@@ -62,14 +63,6 @@ where
 
 #[allow(private_bounds)]
 impl<S, T, Sd> Pipeline<T, Empty> for LastPipeline<S, T, Sd>
-where
-    S: Pipeline<T, Sd>,
-    Sd: Seedness,
-    T: CellValue,
-{
-}
-
-impl<S, T, Sd> MaterializeEmpty<T> for LastPipeline<S, T, Sd>
 where
     S: Pipeline<T, Sd>,
     Sd: Seedness,
@@ -100,14 +93,11 @@ where
                     if first.swap(false, AtomicOrdering::SeqCst) {
                         return;
                     }
-                    *last_value.lock().expect("last_or poisoned") = Some(v.as_ref().clone());
+                    *last_value.lock() = Some(v.as_ref().clone());
                 }
                 Signal::Complete => {
-                    let val = last_value.lock().expect("last_or poisoned").clone();
-                    let emit = match val {
-                        Some(v) => v,
-                        None => default.clone(),
-                    };
+                    let val = last_value.lock().clone();
+                    let emit = val.unwrap_or_else(|| default.clone());
                     callback(&Signal::value(emit));
                     callback(&Signal::Complete);
                 }
@@ -126,14 +116,6 @@ where
 {
 }
 
-impl<S, T, Sd> MaterializeEmpty<T> for LastOrPipeline<S, T, Sd>
-where
-    S: Pipeline<T, Sd>,
-    Sd: Seedness,
-    T: CellValue,
-{
-}
-
 #[allow(private_bounds)]
 pub trait LastExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// Emit only the most recent value when the source completes.
@@ -141,7 +123,7 @@ pub trait LastExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// # Example
     ///
     /// ```
-    /// use hyphae::{Cell, Gettable, LastExt, MaterializeEmpty, Mutable};
+    /// use hyphae::{Cell, Gettable, LastExt, Materialize, Mutable};
     ///
     /// let source = Cell::new(0);
     /// let last = source.clone().last().materialize();
@@ -154,7 +136,7 @@ pub trait LastExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// assert_eq!(last.get(), Some(3));
     /// ```
     #[track_caller]
-    fn last(self) -> LastPipeline<Self, T, S> {
+    fn last(self) -> impl crate::Materialize<T, Empty> {
         LastPipeline {
             source: self,
             _t: PhantomData,
@@ -168,7 +150,7 @@ pub trait LastExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// # Example
     ///
     /// ```
-    /// use hyphae::{Cell, Gettable, LastExt, MaterializeEmpty, Mutable};
+    /// use hyphae::{Cell, Gettable, LastExt, Materialize, Mutable};
     ///
     /// let source = Cell::new(0);
     /// let last = source.clone().last_or(999).materialize();
@@ -178,7 +160,7 @@ pub trait LastExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// assert_eq!(last.get(), Some(999));
     /// ```
     #[track_caller]
-    fn last_or(self, default: T) -> LastOrPipeline<Self, T, S> {
+    fn last_or(self, default: T) -> impl crate::Materialize<T, Empty> {
         LastOrPipeline {
             source: self,
             default,
@@ -194,7 +176,7 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     use super::*;
-    use crate::{Cell, Gettable, MaterializeEmpty, Mutable, traits::Watchable};
+    use crate::{Cell, Gettable, Materialize, Mutable, traits::Watchable};
 
     #[test]
     fn test_last() {

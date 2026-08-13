@@ -87,38 +87,63 @@ impl<T: CellValue> BoundedOutput<T> {
     }
 
     /// Block until a value is available.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when every sender has disconnected.
     pub fn recv(&self) -> Result<T, channel::RecvError> {
         self.receiver.recv()
     }
 
     /// Block until a value is available or timeout expires.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the timeout expires or every sender disconnects.
     pub fn recv_timeout(&self, timeout: Duration) -> Result<T, channel::RecvTimeoutError> {
         self.receiver.recv_timeout(timeout)
     }
 
     /// Try to receive a value without blocking.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the channel is empty or disconnected.
     pub fn try_recv(&self) -> Result<T, TryRecvError> {
         self.receiver.try_recv()
     }
 
     /// Check if the channel is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.receiver.is_empty()
     }
 
     /// Get the number of values currently buffered.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.receiver.len()
     }
 
     /// Get an iterator over available values.
+    #[must_use]
     pub fn iter(&self) -> channel::Iter<'_, T> {
         self.receiver.iter()
     }
 
     /// Get a non-blocking iterator over currently available values.
+    #[must_use]
     pub fn try_iter(&self) -> channel::TryIter<'_, T> {
         self.receiver.try_iter()
+    }
+}
+
+impl<'a, T: CellValue> IntoIterator for &'a BoundedOutput<T> {
+    type Item = T;
+    type IntoIter = channel::Iter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
     }
 }
 

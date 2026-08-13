@@ -101,7 +101,7 @@
 //! by cell, and [`run_wave`] runs those groups — sequentially if there are few
 //! (the common/resting case: a join has 2 inputs, most fan-out is a handful of
 //! subscribers, and a pool dispatch's overhead alone would dwarf that), or
-//! across the scheduler's own dedicated [`WAVE_POOL`] if the wave crosses
+//! across Hyphae's shared dedicated worker pool if the wave crosses
 //! [`WAVE_THRESHOLD`] (genuinely wide fan-out — many independent cells settling
 //! at once). That threshold defaults high and the pool is built lazily and
 //! sized small on purpose: real graphs are overwhelmingly deep rather than
@@ -136,7 +136,7 @@
 //! (`scan`/`pairwise`/`buffer`/`zip`/`merge`), where dropping an intermediate
 //! value changes the result; scoping the opt-in away from those is the next
 //! phase. Height is memoized per tick (topology is assumed stable within a
-//! tick); recompute-at-pop for switch_map rewiring mid-drain is a later phase
+//! tick); recompute-at-pop for `switch_map` rewiring mid-drain is a later phase
 //! too.
 //!
 //! Because a batch defers value settlement to the drain, a cell read *inside*
@@ -234,7 +234,7 @@ impl SharedTick {
         run: Box<dyn FnOnce() + Send>,
     ) {
         let seq = self.seq;
-        self.seq += 1;
+        self.seq = self.seq.wrapping_add(1);
         if coalesce && let Some((prev_height, prev_seq)) = self.scheduled.insert(id, (height, seq))
         {
             // Drop the superseded op (and the value/cell it captured). We hold
@@ -267,7 +267,9 @@ impl SharedTick {
         let mut groups: Vec<Vec<Box<dyn FnOnce() + Send>>> = Vec::new();
         let mut cur_id: Option<Uuid> = None;
         while matches!(self.order.keys().next(), Some(&(h, _, _)) if h == target) {
-            let ((_, id, seq), run) = self.order.pop_first().expect("just peeked a matching key");
+            let Some(((_, id, seq), run)) = self.order.pop_first() else {
+                break;
+            };
             // Clear the coalescing back-pointer only if it still names the op we
             // popped: a coalescing cell has exactly one entry (this one); a
             // `no_coalesce` cell has none; a cell re-coalesced at a new seq keeps
@@ -280,10 +282,11 @@ impl SharedTick {
             // Same id as the previous pop → same cell → extend its group (keys
             // are already seq-ordered). Otherwise start a new group.
             if cur_id == Some(id) {
-                groups
-                    .last_mut()
-                    .expect("cur_id set implies a group exists")
-                    .push(run);
+                if let Some(group) = groups.last_mut() {
+                    group.push(run);
+                } else {
+                    groups.push(vec![run]);
+                }
             } else {
                 cur_id = Some(id);
                 groups.push(vec![run]);
@@ -340,10 +343,10 @@ fn compute_height(node: &dyn DepNode) -> u64 {
 fn height_dfs(node: &dyn DepNode, stack: &mut FxHashSet<Uuid>) -> u64 {
     let epoch = node
         .height_epoch()
-        .map(|e| e.load(Ordering::Relaxed) as u32);
+        .map(|e| u32::try_from(e.load(Ordering::Relaxed)).unwrap_or(u32::MAX));
     if let (Some(cache), Some(epoch)) = (node.height_cache(), epoch) {
         let packed = cache.load(Ordering::Relaxed);
-        if (packed >> 32) as u32 == epoch {
+        if u32::try_from(packed >> 32).unwrap_or(u32::MAX) == epoch {
             return packed & 0xFFFF_FFFF;
         }
     }
@@ -353,11 +356,11 @@ fn height_dfs(node: &dyn DepNode, stack: &mut FxHashSet<Uuid>) -> u64 {
     }
     let mut height = 0u64;
     for dep in node.deps() {
-        height = height.max(height_dfs(dep.as_ref(), stack) + 1);
+        height = height.max(height_dfs(dep.as_ref(), stack).saturating_add(1));
     }
     stack.remove(&id);
     if let (Some(cache), Some(epoch)) = (node.height_cache(), epoch) {
-        cache.store(((epoch as u64) << 32) | height, Ordering::Relaxed);
+        cache.store((u64::from(epoch) << 32) | height, Ordering::Relaxed);
     }
     height
 }
@@ -416,15 +419,9 @@ pub(crate) fn enqueue(id: Uuid, node: &dyn DepNode, terminal: bool, run: Box<dyn
 /// a heavy 1s+ rebuild wave was measured using only 1–2 cores, so parallel
 /// dispatch buys little and its fixed per-wave cost is pure loss at rest. A high
 /// threshold keeps the common/resting case sequential — and because
-/// [`WAVE_POOL`] is built lazily, a process whose waves never cross it spawns
+/// the shared worker pool is built lazily, so a process whose waves never cross it spawns
 /// zero wave threads and pays zero idle cost.
 const DEFAULT_WAVE_THRESHOLD: usize = 64;
-
-/// Default wave-pool size cap. Kept small because the workload is deep, not
-/// wide; overridable via `HYPHAE_WAVE_THREADS` (`0` disables the parallel path
-/// entirely — every wave runs sequentially).
-#[cfg(not(target_arch = "wasm32"))]
-const DEFAULT_WAVE_THREADS_CAP: usize = 4;
 
 fn env_usize(key: &str) -> Option<usize> {
     std::env::var(key).ok().and_then(|v| v.trim().parse().ok())
@@ -452,42 +449,6 @@ pub fn set_wave_threshold_for_test(groups: usize) {
     WAVE_THRESHOLD.store(groups, Ordering::Relaxed);
 }
 
-/// Configured wave-pool thread count, resolved once. `0` means "no
-/// parallelism" — [`run_wave`] then always runs sequentially and [`WAVE_POOL`]
-/// is never built.
-#[cfg(not(target_arch = "wasm32"))]
-static WAVE_THREADS: LazyLock<usize> = LazyLock::new(|| {
-    env_usize("HYPHAE_WAVE_THREADS").unwrap_or_else(|| {
-        std::thread::available_parallelism()
-            .map(|n| n.get().min(DEFAULT_WAVE_THREADS_CAP))
-            .unwrap_or(1)
-    })
-});
-
-/// The scheduler's **dedicated**, named wave-parallelism pool — `None` when
-/// disabled (`HYPHAE_WAVE_THREADS=0`). Built lazily on the first wave that
-/// genuinely crosses [`WAVE_THRESHOLD`], so a process that never has a wide wave
-/// never constructs it (and never spawns its threads).
-///
-/// Dedicated rather than rayon's global pool for two reasons the field data
-/// surfaced: (1) sizing is decoupled from the ambient core count, so a 24-core
-/// host doesn't wake 24 workers for a wave that needs 2; (2) the workers are
-/// *named* (`hyphae-wave-N`) — global-pool workers inherit the name of whichever
-/// thread first touches the pool (they showed up as `hyphae-timer-re`), which
-/// poisons every profile taken of a process that uses hyphae timers.
-#[cfg(not(target_arch = "wasm32"))]
-static WAVE_POOL: LazyLock<Option<rayon::ThreadPool>> = LazyLock::new(|| {
-    let threads = *WAVE_THREADS;
-    if threads == 0 {
-        return None;
-    }
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .thread_name(|i| format!("hyphae-wave-{i}"))
-        .build()
-        .ok()
-});
-
 /// Run one height's worth of ops, grouped by cell (see
 /// [`SharedTick::pop_min_height_groups`]). Distinct groups are distinct cells at
 /// the same height: height is `1 + max(dep.height)`, so if one group's cell
@@ -502,7 +463,7 @@ static WAVE_POOL: LazyLock<Option<rayon::ThreadPool>> = LazyLock::new(|| {
 /// The threshold compares the number of *groups* (distinct cells), not raw ops:
 /// a single event cell fired 32× is one group and stays sequential (as it must
 /// to preserve order), while a genuinely wide wave that crosses
-/// [`WAVE_THRESHOLD`] gets real parallelism on the dedicated [`WAVE_POOL`].
+/// [`WAVE_THRESHOLD`] gets real parallelism on the dedicated shared pool.
 /// Panics are caught per-op so one buggy callback can't strand or corrupt
 /// unrelated work; every payload seen is returned for the caller to pick one to
 /// re-raise.
@@ -524,7 +485,7 @@ fn run_wave(groups: Vec<Vec<Box<dyn FnOnce() + Send>>>) -> Vec<Box<dyn std::any:
     if groups.len() < wave_threshold() {
         return run_sequential(groups);
     }
-    match WAVE_POOL.as_ref() {
+    match crate::executor::worker_pool() {
         Some(pool) => {
             use rayon::prelude::*;
             pool.install(|| groups.into_par_iter().flat_map_iter(run_group).collect())
@@ -591,22 +552,24 @@ fn drain() -> Option<Box<dyn std::any::Any + Send>> {
             if waves >= DRAIN_STINT_WAVES && guard.depth > 0 {
                 guard.draining = false;
                 refresh_tick_active(&guard);
+                drop(guard);
                 return first_panic;
             }
-            match guard.pop_min_height_groups() {
-                Some(groups) => groups,
-                None => {
-                    guard.draining = false;
-                    refresh_tick_active(&guard);
-                    return first_panic;
-                }
+            if let Some(groups) = guard.pop_min_height_groups() {
+                drop(guard);
+                groups
+            } else {
+                guard.draining = false;
+                refresh_tick_active(&guard);
+                drop(guard);
+                return first_panic;
             }
         };
         let panics = run_wave(groups);
         if first_panic.is_none() {
             first_panic = panics.into_iter().next();
         }
-        waves += 1;
+        waves = waves.saturating_add(1);
     }
 }
 
@@ -616,6 +579,14 @@ fn drain() -> Option<Box<dyn std::any::Any + Send>> {
 /// finds the queue empty) never hits it, small enough that under a many-thread
 /// batch storm no single `batch()` call is pinned draining for long.
 const DRAIN_STINT_WAVES: usize = 64;
+
+struct NoCoalesceGuard;
+
+impl Drop for NoCoalesceGuard {
+    fn drop(&mut self) {
+        NO_COALESCE_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
 
 /// Construct cells that opt out of the scheduler's last-write-wins coalescing.
 ///
@@ -636,14 +607,8 @@ const DRAIN_STINT_WAVES: usize = 64;
 /// here but invoked later builds its cells outside the scope and is **not**
 /// stamped. Wrap the actual construction, not a deferred builder.
 pub fn no_coalesce<R>(f: impl FnOnce() -> R) -> R {
-    NO_COALESCE_DEPTH.with(|d| d.set(d.get() + 1));
-    struct Guard;
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            NO_COALESCE_DEPTH.with(|d| d.set(d.get() - 1));
-        }
-    }
-    let _guard = Guard;
+    NO_COALESCE_DEPTH.with(|d| d.set(d.get().saturating_add(1)));
+    let _guard = NoCoalesceGuard;
     f()
 }
 
@@ -685,14 +650,15 @@ pub(crate) fn birth_no_coalesce() -> bool {
 /// see the module docs for the deferred semantics when the feature is on.
 pub fn batch<R>(f: impl FnOnce() -> R) -> R {
     let outermost = BATCH_NEST.with(|n| {
-        let v = n.get() + 1;
+        let v = n.get().saturating_add(1);
         n.set(v);
         v == 1
     });
     {
         let mut guard = TICK.lock();
-        guard.depth += 1;
+        guard.depth = guard.depth.saturating_add(1);
         refresh_tick_active(&guard);
+        drop(guard);
     }
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
@@ -704,15 +670,16 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
     // together under the lock, which is what makes the hand-off strand-free.
     let claimed_drain = {
         let mut guard = TICK.lock();
-        guard.depth -= 1;
+        guard.depth = guard.depth.saturating_sub(1);
         let claim = outermost && !guard.draining && !guard.order.is_empty();
         if claim {
             guard.draining = true;
         }
         refresh_tick_active(&guard);
+        drop(guard);
         claim
     };
-    BATCH_NEST.with(|n| n.set(n.get() - 1));
+    BATCH_NEST.with(|n| n.set(n.get().saturating_sub(1)));
 
     let drain_panic = if claimed_drain { drain() } else { None };
 

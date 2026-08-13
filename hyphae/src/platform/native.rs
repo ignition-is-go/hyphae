@@ -52,17 +52,20 @@ fn reactor() -> &'static Reactor {
             entries: Mutex::new(Vec::new()),
             wake: Condvar::new(),
         }));
-        thread::Builder::new()
+        let _reactor_thread = thread::Builder::new()
             .name("hyphae-timer-reactor".into())
-            .spawn(move || run_reactor(reactor))
-            .expect("failed to spawn hyphae timer reactor thread");
+            .spawn(move || run_reactor(reactor));
         reactor
     })
 }
 
 fn register(entry: TimerEntry) {
     let reactor = reactor();
-    reactor.entries.lock().unwrap().push(entry);
+    reactor
+        .entries
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(entry);
     // A freshly-registered entry may have an earlier deadline than whatever
     // the reactor is currently parked/spinning on — wake it so it recomputes.
     reactor.wake.notify_all();
@@ -87,8 +90,11 @@ fn run_reactor(reactor: &'static Reactor) -> ! {
                 continue;
             }
 
-            entry.count += 1;
-            entry.next_fire += entry.period;
+            entry.count = entry.count.saturating_add(1);
+            entry.next_fire = entry
+                .next_fire
+                .checked_add(entry.period)
+                .unwrap_or(entry.next_fire);
             // Drift catch-up: if the reactor fell behind (e.g. a slow tick
             // callback, or many timers due at once), fold the missed ticks
             // into `count` and resync to one full period out — NOT to `now`,
@@ -98,13 +104,20 @@ fn run_reactor(reactor: &'static Reactor) -> ! {
             // `now + period` preserves the documented fixed-rate semantics.
             let now = Instant::now();
             if entry.next_fire < now {
-                let missed =
-                    ((now - entry.next_fire).as_nanos() / entry.period.as_nanos().max(1)) as u64;
-                entry.count += missed;
-                entry.next_fire = now + entry.period;
+                let elapsed = now.saturating_duration_since(entry.next_fire).as_nanos();
+                let missed = elapsed
+                    .checked_div(entry.period.as_nanos().max(1))
+                    .and_then(|value| u64::try_from(value).ok())
+                    .unwrap_or(u64::MAX);
+                entry.count = entry.count.saturating_add(missed);
+                entry.next_fire = now.checked_add(entry.period).unwrap_or(now);
             }
 
-            reactor.entries.lock().unwrap().push(entry);
+            reactor
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(entry);
         }
     }
 }
@@ -114,10 +127,16 @@ fn run_reactor(reactor: &'static Reactor) -> ! {
 /// tick callback that re-enters `spawn_interval`/`spawn_delayed` (registering
 /// a new timer) would otherwise deadlock on this same mutex.
 fn wait_for_due(reactor: &'static Reactor) -> Vec<TimerEntry> {
-    let mut guard = reactor.entries.lock().unwrap();
+    let mut guard = reactor
+        .entries
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     loop {
         if guard.is_empty() {
-            guard = reactor.wake.wait(guard).unwrap();
+            guard = reactor
+                .wake
+                .wait(guard)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             continue;
         }
 
@@ -126,21 +145,26 @@ fn wait_for_due(reactor: &'static Reactor) -> Vec<TimerEntry> {
         // count, not event volume), so an O(n) scan per wake is cheap and
         // avoids needing a total order (hence a `BinaryHeap`) over entries
         // that carry a non-comparable boxed closure.
-        let next_deadline = guard.iter().map(|e| e.next_fire).min().expect("non-empty");
+        let Some(next_deadline) = guard.iter().map(|entry| entry.next_fire).min() else {
+            continue;
+        };
 
         if next_deadline <= now {
             let now = Instant::now();
             return drain_due(&mut guard, now);
         }
 
-        let wait_for = next_deadline - now;
+        let wait_for = next_deadline.saturating_duration_since(now);
         if wait_for > SPIN_THRESHOLD {
             // Park for most of the wait; `notify_all` on a new, earlier
             // registration (or the timeout itself) wakes us to re-check.
+            let Some(park_for) = wait_for.checked_sub(SPIN_THRESHOLD) else {
+                continue;
+            };
             let (g, _timed_out) = reactor
                 .wake
-                .wait_timeout(guard, wait_for - SPIN_THRESHOLD)
-                .unwrap();
+                .wait_timeout(guard, park_for)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             guard = g;
             continue;
         }
@@ -150,7 +174,10 @@ fn wait_for_due(reactor: &'static Reactor) -> Vec<TimerEntry> {
         // the (short) spin.
         drop(guard);
         spin_sleep::sleep(wait_for);
-        guard = reactor.entries.lock().unwrap();
+        guard = reactor
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
     }
 }
 
@@ -173,10 +200,10 @@ fn drain_due(entries: &mut Vec<TimerEntry>, now: Instant) -> Vec<TimerEntry> {
     let mut due = Vec::new();
     let mut idx = 0;
     while idx < entries.len() {
-        if entries[idx].next_fire <= now {
+        if entries.get(idx).is_some_and(|entry| entry.next_fire <= now) {
             due.push(entries.swap_remove(idx));
         } else {
-            idx += 1;
+            idx = idx.saturating_add(1);
         }
     }
     due.sort_by_key(|e| e.next_fire);
@@ -190,7 +217,9 @@ fn drain_due(entries: &mut Vec<TimerEntry>, now: Instant) -> Vec<TimerEntry> {
 pub fn spawn_delayed(delay: Duration, f: impl FnOnce() + Send + 'static) {
     let mut f = Some(f);
     register(TimerEntry {
-        next_fire: Instant::now() + delay,
+        next_fire: Instant::now()
+            .checked_add(delay)
+            .unwrap_or_else(Instant::now),
         period: delay,
         count: 1,
         tick: Box::new(move |_count| {
@@ -217,7 +246,9 @@ pub fn spawn_interval(
     tick: impl FnMut(u64) -> bool + Send + 'static,
 ) {
     register(TimerEntry {
-        next_fire: Instant::now() + period,
+        next_fire: Instant::now()
+            .checked_add(period)
+            .unwrap_or_else(Instant::now),
         period,
         count: 1,
         tick: Box::new(tick),
@@ -265,7 +296,9 @@ mod tests {
 
         let order: Vec<Instant> = due.iter().map(|e| e.next_fire).collect();
         assert!(
-            order.windows(2).all(|w| w[0] <= w[1]),
+            order
+                .windows(2)
+                .all(|window| matches!(window, [left, right] if left <= right)),
             "due batch not in ascending next_fire order: reactor would fire a same-cell pair stale-last"
         );
         assert_eq!(due.len(), 3, "every due entry should be drained");
@@ -289,10 +322,7 @@ mod tests {
         let due = drain_due(&mut entries, base + Duration::from_millis(100));
 
         assert_eq!(due.len(), 2, "only the two past-deadline entries are due");
-        assert!(
-            due[0].next_fire <= due[1].next_fire,
-            "due batch must be sorted"
-        );
+        assert!(matches!(due.as_slice(), [first, second] if first.next_fire <= second.next_fire));
         assert_eq!(entries.len(), 1, "the far-future entry stays queued");
     }
 }

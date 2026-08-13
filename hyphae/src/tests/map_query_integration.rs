@@ -1,21 +1,22 @@
-//! Integration tests for MapQuery type.
+//! Integration tests for `MapQuery` type.
 
 use crate::{
-    CellMap, MapQuery, MaterializeDefinite,
+    CellMap, MapQuery, Materialize,
     traits::{CellValue, InnerJoinExt},
 };
+
+fn assert_query<K, V, Q: MapQuery<Key = K, Value = V>>(_: &Q)
+where
+    K: CellValue + std::hash::Hash + Eq,
+    V: CellValue,
+{
+}
 
 #[test]
 fn cell_map_is_map_query() {
     let m = CellMap::<String, i32>::new();
     m.insert("a".into(), 1);
 
-    fn assert_query<K, V, Q: MapQuery<K, V>>(_: &Q)
-    where
-        K: CellValue + std::hash::Hash + Eq,
-        V: CellValue,
-    {
-    }
     assert_query::<String, i32, _>(&m);
 }
 
@@ -79,6 +80,13 @@ fn inner_join_plan_materializes_to_joined_cell_map() {
 
     r.insert("b".into(), 20);
     assert_eq!(mat.get_value(&"b".to_string()), Some((2, 20)));
+
+    l.insert("a".into(), 3);
+    assert_eq!(mat.get_value(&"a".to_string()), Some((3, 10)));
+    r.remove(&"a".to_string());
+    assert_eq!(mat.get_value(&"a".to_string()), None);
+    r.insert("a".into(), 30);
+    assert_eq!(mat.get_value(&"a".to_string()), Some((3, 30)));
 }
 
 #[test]
@@ -119,6 +127,38 @@ fn inner_join_chain_installs_one_subscription_per_root() {
     assert_eq!(mat.get_value(&"k".to_string()), Some(((99, 2), 3)));
 }
 
+#[test]
+fn repeated_root_is_activated_once_and_fans_out_to_both_joins() {
+    use crate::traits::{DepNode, MapValuesExt};
+
+    let left = CellMap::<String, i32>::new();
+    let repeated = CellMap::<String, i32>::new();
+    left.insert("k".into(), 1);
+    repeated.insert("k".into(), 10);
+    let initial = DepNode::subscriber_count(&repeated.inner.diffs_cell);
+
+    let output = left
+        .left_join(repeated.clone())
+        .map_values(|_, (value, matches)| (*value, matches.len()))
+        .left_join(repeated.clone())
+        .materialize();
+
+    assert_eq!(
+        DepNode::subscriber_count(&repeated.inner.diffs_cell),
+        initial + 1
+    );
+    assert_eq!(output.get_value(&"k".to_string()), Some(((1, 1), vec![10])));
+
+    repeated.insert("k".into(), 20);
+    assert_eq!(output.get_value(&"k".to_string()), Some(((1, 1), vec![20])));
+
+    drop(output);
+    assert_eq!(
+        DepNode::subscriber_count(&repeated.inner.diffs_cell),
+        initial
+    );
+}
+
 use crate::traits::LeftJoinExt;
 
 #[test]
@@ -132,6 +172,13 @@ fn left_join_plan_keeps_unmatched_left() {
     let mat = l.clone().left_join(r.clone()).materialize();
     assert_eq!(mat.get_value(&"a".to_string()), Some((1, vec![10])));
     assert_eq!(mat.get_value(&"b".to_string()), Some((2, vec![])));
+
+    r.insert("a".into(), 11);
+    assert_eq!(mat.get_value(&"a".to_string()), Some((1, vec![11])));
+    r.remove(&"a".to_string());
+    assert_eq!(mat.get_value(&"a".to_string()), Some((1, vec![])));
+    l.remove(&"b".to_string());
+    assert_eq!(mat.get_value(&"b".to_string()), None);
 }
 
 use crate::traits::LeftSemiJoinExt;
@@ -147,18 +194,25 @@ fn left_semi_join_plan_keeps_left_with_match() {
     let mat = l.clone().left_semi_join(r.clone()).materialize();
     assert_eq!(mat.get_value(&"a".to_string()), Some(1));
     assert_eq!(mat.get_value(&"b".to_string()), None);
+
+    r.remove(&"a".to_string());
+    assert_eq!(mat.get_value(&"a".to_string()), None);
+    r.insert("b".into(), 20);
+    assert_eq!(mat.get_value(&"b".to_string()), Some(2));
+    l.insert("b".into(), 3);
+    assert_eq!(mat.get_value(&"b".to_string()), Some(3));
 }
 
-use crate::traits::ProjectMapExt;
+use crate::traits::MapEntriesExt;
 
 #[test]
-fn project_plan_filters_and_transforms() {
+fn filter_map_entries_plan_filters_and_transforms() {
     let src = CellMap::<String, i32>::new();
     src.insert("a".into(), 5);
 
     let mat = src
         .clone()
-        .project(|k, v| Some((format!("p:{k}"), v * 10)))
+        .filter_map_entries(|k, v| Some((format!("p:{k}"), v * 10)))
         .materialize();
     assert_eq!(mat.get_value(&"p:a".to_string()), Some(50));
 
@@ -166,19 +220,21 @@ fn project_plan_filters_and_transforms() {
     assert_eq!(mat.get_value(&"p:b".to_string()), Some(70));
 }
 
-use crate::traits::ProjectManyExt;
+use crate::traits::FlatMapEntriesExt;
 
 #[test]
-fn project_many_plan_emits_multiple_rows_per_source() {
+fn flat_map_entries_plan_emits_multiple_rows_per_source() {
     let src = CellMap::<String, i32>::new();
     src.insert("x".into(), 2);
 
     let mat = src
-        .clone()
-        .project_many(|k, v| vec![(format!("a:{k}"), v * 10), (format!("b:{k}"), v * 100)])
+        .flat_map_entries(|_, v| vec![("a".to_string(), v * 10), ("b".to_string(), v * 100)])
         .materialize();
-    assert_eq!(mat.get_value(&"a:x".to_string()), Some(20));
-    assert_eq!(mat.get_value(&"b:x".to_string()), Some(200));
+    assert_eq!(mat.get_value(&("x".to_string(), "a".to_string())), Some(20));
+    assert_eq!(
+        mat.get_value(&("x".to_string(), "b".to_string())),
+        Some(200)
+    );
 }
 
 use crate::traits::MultiLeftJoinExt;
@@ -195,8 +251,23 @@ fn multi_left_join_plan_collects_matches_per_key() {
         .clone()
         .multi_left_join_by(r.clone(), |_k, v| v.clone(), |_k, v| v.0.clone())
         .materialize();
-    let (_, right_vals) = mat.get_value(&"l1".to_string()).unwrap();
-    assert_eq!(right_vals.len(), 2);
+    assert_eq!(
+        mat.get_value(&"l1".to_string())
+            .map(|(_, right_values)| right_values.len()),
+        Some(2)
+    );
+
+    r.remove(&"r1".to_string());
+    assert_eq!(
+        mat.get_value(&"l1".to_string())
+            .map(|(_, right_values)| right_values),
+        Some(vec![("g2".to_string(), 20)])
+    );
+    l.insert("l1".into(), vec!["g1".into()]);
+    assert_eq!(
+        mat.get_value(&"l1".to_string()),
+        Some((vec!["g1".to_string()], vec![]))
+    );
 }
 
 use crate::traits::ProjectCellExt;
@@ -290,11 +361,9 @@ fn group_by_plan_groups_rows() {
     src.insert("b".into(), 1);
     src.insert("c".into(), 2);
 
-    let mat = src.clone().group_by(|_, v| *v).materialize();
-    let g1 = mat.get_value(&1).unwrap();
-    assert_eq!(g1.len(), 2);
-    let g2 = mat.get_value(&2).unwrap();
-    assert_eq!(g2, vec![2]);
+    let mat = src.group_by(|_, v| *v).materialize();
+    assert_eq!(mat.get_value(&1).map(|group| group.len()), Some(2));
+    assert_eq!(mat.get_value(&2), Some(vec![2]));
 }
 
 use crate::traits::SelectCellExt;
@@ -312,7 +381,6 @@ fn select_cell_plan_reacts_to_gate() {
 
     let gates_for_pred = gates.clone();
     let mat = values
-        .clone()
         .select_cell(move |key, _value| {
             gates_for_pred
                 .get(key)
@@ -338,22 +406,28 @@ use crate::{MapQueryShareExt, traits::DepNode};
 fn shared_map_query_subscribes_upstream_once() {
     let src = CellMap::<String, i32>::new();
     src.insert("a".into(), 1);
-    let initial_subs = DepNode::subscriber_count(&src.diffs());
+    let initial_subs = DepNode::subscriber_count(&src.diffs().materialize());
 
-    let shared = src.clone().project(|k, v| Some((k.clone(), v * 2))).share();
+    let shared = src
+        .clone()
+        .filter_map_entries(|k, v| Some((k.clone(), v * 2)))
+        .share();
 
     // Cloning the share doesn't subscribe.
     let s1 = shared.clone();
-    let s2 = shared.clone();
+    let s2 = shared;
 
-    assert_eq!(DepNode::subscriber_count(&src.diffs()), initial_subs);
+    assert_eq!(
+        DepNode::subscriber_count(&src.diffs().materialize()),
+        initial_subs
+    );
 
     // Materializing each fan-out chain causes ONE upstream subscription.
     let m1 = s1.materialize();
     let m2 = s2.materialize();
 
     assert_eq!(
-        DepNode::subscriber_count(&src.diffs()),
+        DepNode::subscriber_count(&src.diffs().materialize()),
         initial_subs + 1,
         "share point should subscribe upstream exactly once even with N consumers"
     );
@@ -369,17 +443,26 @@ fn shared_map_query_subscribes_upstream_once() {
 fn shared_map_query_drops_upstream_when_all_subscribers_drop() {
     let src = CellMap::<String, i32>::new();
     src.insert("a".into(), 1);
-    let initial_subs = DepNode::subscriber_count(&src.diffs());
+    let initial_subs = DepNode::subscriber_count(&src.diffs().materialize());
 
-    let shared = src.clone().project(|k, v| Some((k.clone(), v * 2))).share();
+    let shared = src
+        .clone()
+        .filter_map_entries(|k, v| Some((k.clone(), v * 2)))
+        .share();
     let m1 = shared.clone().materialize();
     let m2 = shared.clone().materialize();
 
-    assert_eq!(DepNode::subscriber_count(&src.diffs()), initial_subs + 1);
+    assert_eq!(
+        DepNode::subscriber_count(&src.diffs().materialize()),
+        initial_subs + 1
+    );
 
     drop(m1);
     drop(m2);
     drop(shared);
     // After all subscribers gone, share-point's upstream subscription is released.
-    assert_eq!(DepNode::subscriber_count(&src.diffs()), initial_subs);
+    assert_eq!(
+        DepNode::subscriber_count(&src.diffs().materialize()),
+        initial_subs
+    );
 }

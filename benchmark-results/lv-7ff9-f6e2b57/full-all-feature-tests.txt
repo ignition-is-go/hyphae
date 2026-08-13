@@ -1,0 +1,668 @@
+   Compiling hyphae v2.0.1 (/home/trevor/Code/hyphae/hyphae)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.37s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/lib.rs (target/debug/deps/hyphae-61a1ef8691ed670e)
+
+running 377 tests
+test cell::sub_index_tests::remove_from_one_returns_to_zero ... ok
+test cell::sub_index_tests::many_does_not_demote_when_shrinking ... ok
+test bounded_output::tests::test_bounded_output_len ... ok
+test async_support::tests::test_to_stream_updates ... ok
+test bounded_output::tests::test_bounded_output_basic ... ok
+test bounded_output::tests::test_bounded_output_try_iter ... ok
+test async_support::tests::test_to_stream_bounded ... ok
+test cell::sub_index_tests::remove_wrong_id_from_one_is_noop ... ok
+test async_support::tests::test_to_stream_immediate_value ... ok
+test cell::height_dependents_tests::dead_dependents_are_pruned ... ok
+test cell::height_dependents_tests::distinct_dependents_are_all_registered ... ok
+test cell::sub_index_tests::zero_and_one_stay_inline ... ok
+test cell::sub_index_tests::same_id_insert_overwrites_and_returns_old ... ok
+test cell::sub_index_tests::second_distinct_id_promotes_to_many_keeping_both ... ok
+test cell_map::tests::test_cellmap_diffs ... ok
+test cell_map::tests::test_cellmap_basic ... ok
+test cell_map::tests::test_apply_batch_filters_noop_updates ... ok
+test cell_map::tests::test_apply_batch_emits_single_batch_diff ... ok
+test cell_map::tests::test_cellmap_len ... ok
+test cell_map::tests::test_cellmap_items_observation ... ok
+test cell_map::tests::test_cellmap_entries_observation ... ok
+test cell_map::tests::test_cellmap_same_cell_returned ... ok
+test cell_map::tests::test_cellmap_per_key_observation ... ok
+test cell_map::tests::test_cellmap_mutable_clone_shares_inner_map ... ok
+test cell_map::tests::test_cellmap_lock ... ok
+test cell_map::tests::test_cellmap_subscribe_diffs ... ok
+test cell_map::tests::test_cellmap_size_observation ... ok
+test cell_map::tests::test_insert_same_value_is_noop_update ... ok
+test cell_map::tests::test_remove_many_full_clear_emits_empty_initial ... ok
+test cell_map::tests::test_replace_all_noop ... ok
+test cell_map::tests::test_replace_all ... ok
+test cell_set::tests::test_cellset_basic ... ok
+test cell_map::tests::test_replace_all_empty ... ok
+test cell_set::tests::test_cellset_diffs ... ok
+test cell_set::tests::test_cellset_len ... ok
+test cell_set::tests::test_cellset_lock ... ok
+test cell_set::tests::test_cellset_membership_observation ... ok
+test cell_set::tests::test_cellset_values_observation ... ok
+test cell_set::tests::values_cell_is_freed_when_dropped ... ok
+test cell_set::tests::test_cellset_same_cell_returned ... ok
+test cell_set::tests::values_cell_keeps_parent_set_alive ... ok
+test map_query::compiler::tests::concurrent_query_event_queues_behind_active_fanout ... ok
+test map_query::compiler::tests::associated_runtime_defers_root_installation_until_connected ... ok
+test map_query::compiler::tests::uncontended_query_dispatch_borrows_the_source_diff ... ok
+test pipeline::tests::materialize_prefers_installed_replay_over_a_stale_seed ... ok
+test pipeline::tests::materialize_uses_freshest_sync_value_and_replays_following_terminal ... ok
+test platform::native::tests::drain_due_leaves_future_entries_queued ... ok
+test map_query::compiler::tests::reentrant_root_changes_wait_for_the_active_fanout_transaction ... ok
+test source::tests::complete_blocks_further_emits ... ok
+test map_query::compiler::tests::repeated_physical_root_is_interned_once ... ok
+test source::tests::no_initial_emission_on_subscribe ... ok
+test platform::native::tests::drain_due_returns_ascending_deadline_order ... ok
+test map_query::compiler::tests::repeated_relationship_assigns_exactly_one_index_maintainer ... ok
+test map_query::compiler::tests::compilation_recognizes_a_root_reused_by_two_joins ... ok
+test source::tests::unsubscribe_via_guard_drop ... ok
+test source::tests::sample_on_unsubscribes_when_cell_dropped ... ok
+test subscription::tests::combined_guard_exposes_all_sources_and_drops_all_children ... ok
+test source::tests::emit_fires_subscribers ... ok
+test map_query::compiler::tests::public_eight_stage_typed_fk_region_uses_one_physical_index ... ok
+test subscription::tests::combining_one_guard_preserves_its_source ... ok
+test tests::bounded_input::test_basic_push_and_get ... ok
+test map_query::compiler::tests::reentrant_different_root_waits_for_complete_repeated_fanout ... ok
+test tests::bounded_input::test_capacity ... ok
+test cell::height_dependents_tests::repeated_own_of_same_live_source_does_not_grow_dependents ... ok
+test tests::bounded_input::test_drop_newest_policy ... ok
+test tests::bounded_input::test_complete_signal_on_close ... ok
+test tests::bounded_input::test_clone ... ok
+test map_query::compiler::tests::panic_clears_queued_query_events_and_recovers ... ok
+test tests::bounded_input::test_error_policy ... ok
+test tests::bounded_input::test_drop_oldest_policy ... ok
+test source::tests::sample_on_cell_is_freed_when_dropped ... ok
+test tests::bounded_input::test_metrics_tracking ... ok
+test tests::bounded_input::test_subscribe_receives_values ... ok
+test tests::bounded_input::test_close ... ok
+test tests::bounded_input::test_to_cell ... ok
+test tests::bounded_input::test_zero_capacity_panics - should panic ... ok
+test map_query::compiler::tests::relationship_identity_is_scoped_to_each_join_right_root ... ok
+test map_query::compiler::tests::synchronous_different_root_mutation_is_deferred_until_a_finishes ... ok
+test tests::cell::test_cell_clone_shares_state ... ok
+test map_query::compiler::tests::differently_typed_roots_share_one_fifo_transaction_gate ... ok
+test tests::cell::test_cell_new_and_get ... ok
+test tests::cell::test_cell_dep_node ... ok
+test tests::cell::test_cell_multiple_watchers ... ok
+test tests::cell::test_cell_set ... ok
+test tests::cell::test_cell_unsubscribe ... ok
+test tests::cell::test_cell_watch_immediate ... ok
+test tests::cell::test_cell_watch_on_set ... ok
+test tests::cell::test_cell_with_name ... ok
+test cell::height_dependents_tests::switch_map_onto_shared_inner_does_not_grow ... ok
+test cell_set::tests::repeated_values_calls_do_not_accumulate ... ok
+test tests::concurrency::barrage_subscriber_explosion ... ok
+test tests::concurrency::barrage_interleaved_operators ... ok
+test tests::concurrency::barrage_join_chaos ... ok
+test bounded_output::tests::test_bounded_output_timeout ... ok
+test tests::concurrency::stress_many_subscribers ... ok
+test tests::concurrency::test_concurrent_derived_chains ... ok
+test tests::concurrency::test_derived_outlives_source_with_updates ... ok
+test tests::concurrency::test_no_lost_updates ... ok
+test tests::concurrency::test_subscriber_outlives_source ... ok
+test tests::concurrency::test_concurrent_map_chain_integrity ... ok
+test tests::constructors::test_from_iter_with_delay_empty ... ok
+test tests::disposal::test_chained_operators_drop_correctly ... ok
+test tests::concurrency::test_subscriber_sees_consistent_state ... ok
+test tests::concurrency::stress_rapid_subscribe_unsubscribe ... ok
+test tests::disposal::test_chained_subscriptions_cleaned_up ... ok
+test tests::disposal::test_derived_cell_drop_stops_notifications ... ok
+test tests::disposal::test_multiple_derived_cells_independent_cleanup ... ok
+test tests::disposal::test_parent_cell_outlives_derived ... ok
+test tests::disposal::test_source_still_works_after_derived_dropped ... ok
+test tests::disposal::test_subscription_cleaned_up_on_derived_drop ... ok
+test tests::disposal::test_weak_cell_clone ... ok
+test tests::disposal::test_weak_cell_upgrade_fails_after_drop ... ok
+test tests::disposal::test_weak_cell_upgrade_succeeds_while_cell_alive ... ok
+test tests::error_handling::test_catch_error_recovers ... ok
+test tests::error_handling::test_map_err_passes_through_ok ... ok
+test tests::error_handling::test_map_err_transforms_err ... ok
+test tests::error_handling::test_catch_error_with_error_info ... ok
+test tests::error_handling::test_error_operator_chain ... ok
+test tests::concurrency::barrage_cascade_updates ... ok
+test tests::error_handling::test_try_map_failure ... ok
+test tests::error_handling::test_try_map_success ... ok
+test tests::error_handling::test_map_ok_transforms_ok ... ok
+test tests::error_handling::test_unwrap_or_else_with_ok ... ok
+test tests::error_handling::test_unwrap_or_else_with_err ... ok
+test tests::error_handling::test_unwrap_or_with_ok ... ok
+test tests::error_handling::test_unwrap_or_with_err ... ok
+test tests::concurrency::barrage_mixed_lifetimes ... ok
+test tests::map_query_integration::cell_map_is_map_query ... ok
+test tests::map_query_integration::filter_map_entries_plan_filters_and_transforms ... ok
+test tests::concurrency::test_concurrent_readers_and_writers ... ok
+test tests::map_query_integration::count_by_plan_groups_and_counts ... ok
+test tests::concurrency::test_concurrent_subscribe_unsubscribe ... ok
+test tests::map_query_integration::inner_join_chain_installs_one_subscription_per_root ... ok
+test tests::concurrency::test_concurrent_writers ... ok
+test tests::concurrency::test_concurrent_writers_with_barrier ... ok
+test tests::error_handling::test_map_ok_passes_through_err ... ok
+test tests::map_query_integration::group_by_plan_groups_rows ... ok
+test tests::map_query_integration::flat_map_entries_plan_emits_multiple_rows_per_source ... ok
+test tests::concurrency::test_concurrent_complete_signals ... ok
+test tests::map_query_integration::inner_join_plan_materializes_to_joined_cell_map ... ok
+test tests::map_query_integration::left_join_plan_keeps_unmatched_left ... ok
+test tests::map_query_integration::repeated_root_is_activated_once_and_fans_out_to_both_joins ... ok
+test tests::map_query_integration::materialize_keeps_source_alive_via_subscription ... ok
+test tests::pipeline_integration::catch_error_recovers ... ok
+test tests::map_query_integration::select_cell_plan_reacts_to_gate ... ok
+test tests::map_query_integration::left_semi_join_plan_keeps_left_with_match ... ok
+test tests::map_query_integration::shared_map_query_drops_upstream_when_all_subscribers_drop ... ok
+test tests::map_query_integration::materialize_propagates_updates_and_removes ... ok
+test tests::map_query_integration::multi_left_join_plan_collects_matches_per_key ... ok
+test tests::pipeline_integration::filter_pipeline_fuses_with_map ... ok
+test tests::map_query_integration::project_cell_plan_reacts_to_inner_pipeline_emissions ... ok
+test tests::pipeline_integration::filter_pipeline_initial_failing_predicate_yields_none ... ok
+test tests::pipeline_integration::cell_is_pipeline ... ok
+test tests::concurrency::test_concurrent_subscribe_while_notifying ... ok
+test tests::pipeline_integration::map_err_transforms_only_err ... ok
+test tests::pipeline_integration::filter_pipeline_passes_matching_and_blocks_non_matching ... ok
+test tests::pipeline_integration::map_ok_transforms_only_ok ... ok
+test tests::pipeline_integration::map_pipeline_chains_fuse_into_one_subscription ... ok
+test tests::pipeline_integration::map_pipeline_materializes_to_cell ... ok
+test tests::pipeline_integration::map_pipeline_materializes_to_subscribable_cell ... ok
+test tests::map_query_integration::shared_map_query_subscribes_upstream_once ... ok
+test tests::pipeline_integration::shared_pipeline_subscribes_upstream_once ... ok
+test tests::pipeline_integration::tap_pipeline_observes_without_modifying ... ok
+test tests::map_query_integration::select_plan_filters_rows ... ok
+test tests::subscription::test_guard_leak_prevents_unsubscribe ... ok
+test tests::pipeline_integration::pipeline_materialize_roundtrip ... ok
+test tests::pipeline_integration::shared_pipeline_drops_upstream_when_all_subscribers_drop ... ok
+test tests::subscription::test_indexed_registry_rebuilds_snapshot_after_unsubscribe ... ok
+test tests::pipeline_integration::shared_pipeline_fans_out_to_many_consumers ... ok
+test tests::subscription::test_subscribe_returns_guard ... ok
+test tests::pipeline_integration::try_map_pipeline_produces_result_cell ... ok
+test tests::pipeline_integration::unwrap_or_provides_default ... ok
+test tests::subscription::test_guard_manual_unsubscribe ... ok
+test traits::collections::count_by::tests::count_by_preserves_upstream_batch_without_extra_emissions ... ok
+test traits::collections::inner_join::tests::inner_join_by_preserves_right_batch ... ok
+test traits::collections::inner_join::tests::inner_join_by_handles_one_to_many ... ok
+test traits::collections::group_by::tests::group_by_preserves_upstream_batch_without_extra_emissions ... ok
+test tests::subscription::test_guard_unsubscribes_on_drop ... ok
+test tests::map_query_integration::materialize_plain_cell_map_mirrors_source ... ok
+test traits::collections::inner_join::tests::inner_join_excludes_unmatched ... ok
+test tests::subscription::test_indexed_registry_survives_subscription_churn ... ok
+test traits::collections::inner_join::tests::inner_join_by_produces_composite_keys ... ok
+test traits::collections::inner_join::tests::inner_join_fk_retains_relationship_partition_identity ... ok
+test traits::collections::inner_join::tests::inner_join_fk_excludes_unmatched ... ok
+test traits::collections::inner_join::tests::inner_join_fk_pairs_on_foreign_key ... ok
+test traits::collections::internal::join_region::tests::direct_projection_then_map_does_not_collect ... ok
+test traits::collections::inner_join::tests::inner_join_reacts_to_removals ... ok
+test traits::collections::inner_join::tests::inner_join_reacts_to_updates ... ok
+test traits::collections::inner_join::tests::inner_join_fk_omits_absent_children_and_tracks_some_none_transitions ... ok
+test traits::collections::internal::join_region::tests::heterogeneous_eight_stage_region_compiles ... ok
+test traits::collections::internal::join_region::tests::arbitrary_three_stage_repeated_raw_relation_shares_one_physical_index ... ok
+test traits::collections::inner_join::tests::inner_join_fk_omits_absent_keys_and_handles_key_moves ... ok
+test traits::collections::internal::join_region::tests::heterogeneous_eight_stage_runtime_smoke ... ok
+test traits::collections::inner_join::tests::inner_join_fk_handles_one_to_many ... ok
+test traits::collections::inner_join::tests::inner_join_pairs_on_equal_keys ... ok
+test traits::collections::internal::join_region::tests::heterogeneous_three_stage_region_compiles ... ok
+test traits::collections::internal::join_region::tests::collect_projection_then_map_and_filter_compose ... ok
+test traits::collections::internal::join_region::tests::heterogeneous_three_stage_runtime_propagates_every_root_directly ... ok
+test traits::collections::internal::join_region::tests::later_stage_panic_quarantines_the_whole_typed_spine ... ok
+test tests::concurrency::stress_high_frequency_updates ... ok
+test traits::collections::internal::join_region::tests::production_sequential_and_promoted_initial_replacement_match_exactly ... ok
+test traits::collections::internal::join_region::tests::explicit_three_stage_region_materializes_and_tears_down_all_roots ... ok
+test traits::collections::internal::join_region::tests::explicit_eight_stage_region_materialization_smoke ... ok
+test traits::collections::internal::join_region::tests::region_router_optional_right_rekeys_after_promotion ... ok
+test traits::collections::internal::join_region::tests::region_router_promotes_from_live_batch_without_intermediate_outputs ... ok
+test traits::collections::internal::join_region::tests::region_router_initial_replacement_writes_shared_index_once_and_invalidates_old_bucket ... ok
+test traits::collections::internal::join_region::tests::promotion_replay_panic_quarantines_region ... ok
+test map_query::compiler::tests::deferred_physical_admits_two_readers_while_writer_waits ... ok
+test traits::collections::internal::join_region::tests::public_reentrant_event_is_cleared_then_fresh_event_hits_region_poison ... ok
+test traits::collections::internal::join_region::tests::push_preserves_forward_order ... ok
+test traits::collections::internal::join_region::tests::region_router_promotes_three_stage_spine_deterministically_for_three_and_eight_shards ... ok
+test traits::collections::internal::join_runtime::read_acquisition_tests::keyed_callback_acquires_shared_index_once_for_all_impacted_keys ... ok
+test traits::collections::internal::join_region::tests::sequential_apply_panic_quarantines_left_and_right_callbacks ... ok
+test traits::collections::internal::join_region::tests::stage_batches_preserve_each_member_event ... ok
+test traits::collections::internal::map_values_cell::tests::map_values_cell_preserves_upstream_batch_without_extra_emissions ... ok
+test traits::collections::internal::join_region::tests::transformed_relation_marked_rights_keep_private_indexes ... ok
+test traits::collections::internal::join_region::tests::right_maintainer_write_then_projection_panic_quarantines_region ... ok
+test traits::collections::internal::join_region::tests::stage_runtime_tracks_optional_keys_moves_and_filter_disappearance ... ok
+test traits::collections::internal::map_values_cell::tests::map_values_cell_reacts_per_row ... ok
+test traits::collections::left_join::tests::coordinated_two_join_region_tracks_every_root ... ok
+test traits::collections::internal::stateless_runtime::tests::filter_map_update_crosses_membership_boundary ... ok
+test traits::collections::left_join::tests::coordinated_two_join_region_preserves_batched_updates ... ok
+test traits::collections::left_join::tests::coordinated_two_join_region_repartitions_updates_between_joins ... ok
+test traits::collections::left_join::tests::joined_projection_preserves_right_insertion_order ... ok
+test traits::collections::left_join::tests::left_join_by_collects_multiple_right_matches ... ok
+test traits::collections::left_join::tests::fk_join_survives_key_preserving_parent_projection ... ok
+test traits::collections::left_join::tests::left_join_by_keeps_unmatched_with_empty_vec ... ok
+test traits::collections::left_join::tests::left_join_by_preserves_right_batch ... ok
+test traits::collections::left_join::tests::left_join_keeps_unmatched_left_rows ... ok
+test traits::collections::left_join::tests::left_join_fk_collects_matching_posts ... ok
+test traits::collections::left_join::tests::left_join_fk_keeps_unmatched_with_empty_vec ... ok
+test traits::collections::left_join::tests::left_join_fk_ignores_absent_foreign_keys ... ok
+test tests::concurrency::barrage_all_operations_concurrent ... ok
+test traits::collections::left_join::tests::left_join_reacts_to_left_removal ... ok
+test traits::collections::left_join::tests::left_join_reacts_to_right_removal ... ok
+test traits::collections::left_join::tests::repeated_fk_relationship_reuses_index_and_updates_every_join ... ok
+test traits::collections::left_join::tests::left_join_pairs_matched_rows ... ok
+test traits::collections::left_join::tests::left_join_reacts_to_right_addition ... ok
+test traits::collections::left_join::tests::three_stage_typed_fk_region_updates_every_stage_from_one_root ... ok
+test traits::collections::left_semi_join::tests::left_semi_join_by_uses_custom_keys ... ok
+test cell_map::tests::test_key_cells_pruned_under_churn ... ok
+test traits::collections::left_semi_join::tests::left_semi_join_drops_unmatched_rows ... ok
+test traits::collections::left_semi_join::tests::left_semi_join_by_preserves_right_batch ... ok
+test traits::collections::left_join::tests::right_changes_publish_impacted_left_rows_in_insertion_order ... ok
+test traits::collections::left_semi_join::tests::left_semi_join_fk_ignores_absent_foreign_keys ... ok
+test traits::collections::left_semi_join::tests::left_semi_join_fk_keeps_matched_users ... ok
+test traits::collections::left_join::tests::repeated_optional_fk_relationship_tracks_some_none_transitions ... ok
+test traits::collections::left_semi_join::tests::left_semi_join_keeps_matched_rows ... ok
+test traits::collections::left_join::tests::repeated_fk_relationship_keeps_distinct_projected_right_inputs ... ok
+test traits::collections::left_semi_join::tests::left_semi_join_fk_omits_absent_children_and_tracks_transitions ... ok
+test traits::collections::left_semi_join::tests::left_semi_join_reacts_to_right_removal ... ok
+test traits::collections::map_values::tests::key_preserving_projections_track_membership_and_values ... ok
+test traits::collections::multi_left_join::tests::multi_join_deduplicates_right_items_across_keys ... ok
+test traits::collections::multi_left_join::tests::multi_join_empty_keys_produces_empty_right_vec ... ok
+test traits::collections::multi_left_join::tests::multi_join_multiple_keys_collects_from_all ... ok
+test traits::collections::multi_left_join::tests::multi_join_reacts_to_left_removal ... ok
+test cell_map::tests::test_key_cells_prune_keeps_live_observer ... ok
+test traits::collections::multi_left_join::tests::multi_join_reacts_to_right_removal ... ok
+test traits::collections::multi_left_join::tests::multi_join_single_key_matches_like_left_join ... ok
+test traits::collections::left_semi_join::tests::left_semi_join_fk_reacts_to_post_removal ... ok
+test traits::collections::project::tests::map_entries_allows_atomic_output_key_swaps ... ok
+test traits::collections::internal::join_region::tests::balanced_large_left_batch_uses_dedicated_workers_but_tiny_stays_caller_thread ... ok
+test traits::collections::multi_left_join::tests::multi_join_reacts_to_left_key_change ... ok
+test traits::collections::multi_left_join::tests::multi_join_reacts_to_right_addition ... ok
+test traits::collections::project::tests::map_entries_rejects_duplicate_output_keys ... ok
+test traits::collections::project::tests::project_handles_projection_disappearance_without_extra_rows ... ok
+test traits::collections::project_cell::tests::project_cell_drops_row_when_inner_emits_none ... ok
+test traits::collections::project_cell::tests::project_cell_remap_changes_output_key ... ok
+test traits::collections::project_many::tests::flat_map_entries_emits_multiple_rows_per_source ... ok
+test traits::collections::project_cell::tests::project_cell_static_inner_cell ... ok
+test traits::collections::project_many::tests::flat_map_entries_scopes_local_keys_by_source ... ok
+test traits::collections::select_cell::tests::select_cell_preserves_upstream_batch_without_extra_emissions ... ok
+test traits::collections::select::tests::select_filters_and_updates ... ok
+test traits::collections::select::tests::select_entries_observable ... ok
+test traits::operators::backpressure::tests::drop_newest_forwards_complete ... ok
+test traits::collections::select::tests::select_batch_resilience_and_no_extra_side_emissions ... ok
+test traits::collections::project_cell::tests::project_cell_reacts_to_inner_pipeline_emissions ... ok
+test traits::operators::backpressure::tests::drop_newest_installs_only_when_materialized ... ok
+test traits::operators::backpressure::tests::drop_oldest_is_lazy_passthrough ... ok
+test traits::operators::backpressure::tests::sample_latest_is_lazy_passthrough ... ok
+test traits::operators::buffer_count::tests::buffer_count_installs_only_when_materialized ... ok
+test traits::operators::buffer_count::tests::test_buffer_count ... ok
+test traits::operators::buffer_count::tests::test_buffer_count_emits_remainder_on_complete ... ok
+test traits::operators::cold::tests::test_cold_emits_some_on_change ... ok
+test traits::operators::buffer_time::tests::test_buffer_time_emits_remainder_on_complete ... ok
+test traits::collections::select_cell::tests::select_cell_reacts_to_predicate_changes ... ok
+test traits::operators::cold::tests::test_cold_starts_as_none ... ok
+test traits::operators::cold::tests::test_cold_does_not_replay_retained_value ... ok
+test traits::operators::concat::tests::concat_preserves_second_subscription_when_first_is_already_complete ... ok
+test traits::operators::concat::tests::test_concat ... ok
+test traits::operators::concat::tests::concat_is_lazy_until_materialized ... ok
+test tests::concurrency::stress_deep_chain ... ok
+test traits::operators::deduped::tests::test_deduped_propagates_completion ... ok
+test traits::operators::deduped::tests::test_deduped_blocks_duplicates ... ok
+test traits::operators::distinct::tests::test_distinct ... ok
+test traits::operators::distinct_until_changed_by::tests::test_distinct_until_changed_by ... ok
+test traits::collections::project::tests::semantic_entry_projections_rekey_and_filter ... ok
+test traits::operators::filter::tests::test_filter_blocks_non_matching ... ok
+test traits::operators::filter::tests::test_filter_initial_failing_predicate_is_none ... ok
+test traits::operators::filter::tests::test_filter_passes_matching ... ok
+test tests::concurrency::barrage_worst_case_contention ... ok
+test traits::operators::finalize::tests::test_finalize_called_once ... ok
+test traits::operators::finalize::tests::test_finalize_on_complete ... ok
+test traits::operators::finalize::tests::test_finalize_passes_values_through ... ok
+test traits::operators::finalize::tests::test_finalize_on_error ... ok
+test traits::operators::join::tests::test_flat_macro_chain ... ok
+test tests::concurrency::stress_wide_fan_out ... ok
+test traits::operators::first::tests::test_first ... ok
+test traits::operators::join_vec::tests::test_join_vec_empty ... ok
+test traits::collections::left_join::tests::coordinated_two_join_matches_reference_across_mixed_root_updates ... ok
+test traits::operators::join_vec::tests::test_join_vec_multiple ... ok
+test traits::operators::last::tests::test_last ... ok
+test traits::operators::last::tests::test_last_or_with_values ... ok
+test traits::operators::join::tests::test_join_combines_cells ... ok
+test traits::operators::map::tests::test_map_transform ... ok
+test traits::operators::map::tests::test_map_tracks_dependency ... ok
+test traits::operators::last::tests::test_last_or_without_values ... ok
+test traits::operators::map::tests::test_map_chain ... ok
+test traits::operators::map::tests::test_map_type_change ... ok
+test traits::operators::merge_map::tests::merge_map_does_not_build_an_inner_until_materialized ... ok
+test traits::operators::map::tests::test_four_hop_lazy_and_materialized_chains_update_synchronously ... ok
+test traits::operators::merge_map::tests::test_merge_map_merges ... ok
+test traits::operators::pairwise::tests::test_pairwise_emits_pairs ... ok
+test traits::operators::retry::tests::retry_is_lazy_until_materialized ... ok
+test traits::operators::merge::tests::test_merge ... ok
+test traits::operators::retry::tests::test_retry_passes_values ... ok
+test traits::operators::scan::tests::test_scan_accumulates ... ok
+test traits::operators::retry::tests::test_retry_retries_on_error ... ok
+test traits::operators::sample::tests::test_sample ... ok
+test traits::operators::scan::tests::test_scan_with_different_types ... ok
+test traits::operators::skip::tests::test_skip_ignores_first_n ... ok
+test traits::operators::skip_while::tests::test_skip_while ... ok
+test traits::operators::state_transition::tests::test_state_transition_guard ... ok
+test traits::operators::state_transition::tests::test_state_transition_on_enter_exit ... ok
+test traits::operators::state_transition::tests::test_state_transition_on_invalid ... ok
+test traits::operators::state_transition::tests::test_state_transition_selective_emit ... ok
+test traits::operators::state_transition::tests::test_state_transition_undefined_advances_state ... ok
+test traits::operators::state_transition::tests::test_state_transition_valid ... ok
+test traits::operators::switch_map::tests::switch_map_does_not_build_an_inner_until_materialized ... ok
+test traits::operators::take::tests::test_take_completes ... ok
+test traits::operators::take::tests::test_take_limits_emissions ... ok
+test traits::operators::switch_map::tests::test_switch_map_old_intermediate_cells_dropped ... ok
+test traits::operators::switch_map::tests::test_switch_map_switches ... ok
+test traits::operators::take_until::tests::test_take_until_completes_on_notifier ... ok
+test traits::operators::switch_map::tests::test_switch_map_inner_chain_with_map_drops ... ok
+test traits::operators::take_until::tests::test_take_until ... ok
+test traits::operators::take_while::tests::test_take_while ... ok
+test traits::operators::take_while::tests::test_take_while_completes_on_predicate_fail ... ok
+test traits::operators::tap::tests::test_tap_side_effect ... ok
+test traits::operators::throttle::tests::test_throttle_limits_rate ... ok
+test traits::operators::window::tests::test_window_size_one ... ok
+test traits::operators::window::tests::test_window_sliding ... ok
+test traits::operators::window::tests::window_installs_only_when_materialized ... ok
+test traits::operators::zip::tests::test_zip ... ok
+test traits::operators::with_latest_from::tests::test_with_latest_from ... ok
+test tests::concurrency::barrage_notification_storm ... ok
+test traits::operators::buffer_time::tests::test_buffer_time ... ok
+test traits::operators::audit::tests::audit_flushes_before_complete_and_never_emits_after_terminal ... ok
+test traits::operators::debounce::tests::debounce_flushes_before_complete_and_never_emits_after_terminal ... ok
+test traits::operators::timeout::tests::test_timeout_triggers_on_inactivity ... ok
+test traits::operators::timeout::tests::test_timeout_no_error_after_complete ... ok
+test traits::operators::delay::tests::delay_preserves_value_before_terminal_order ... ok
+test traits::operators::audit::tests::test_audit_emits_last ... ok
+test tests::concurrency::barrage_rapid_chain_creation_destruction ... ok
+test traits::operators::debounce::tests::test_debounce_waits_for_pause ... ok
+test traits::operators::timeout::tests::test_timeout_no_timeout_when_active ... ok
+test tests::concurrency::barrage_extreme_fan_out ... ok
+test tests::concurrency::subscribe_result_racing_set_never_strands ... ok
+test traits::operators::delay::tests::test_delay_delays_emission ... ok
+test traits::collections::internal::join_region::tests::parallel_shard_panic_joins_siblings_and_publishes_nothing ... ok
+test traits::collections::internal::join_region::tests::public_parallel_region_panic_publishes_no_materialized_rows ... ok
+test traits::collections::internal::join_region::tests::typed_stage_cost_promotes_deeper_plan_at_equal_row_count ... ok
+test traits::collections::internal::join_region::tests::materialized_region_preserves_repeated_and_interleaved_batch_members ... ok
+test traits::collections::internal::join_region::tests::region_parallel_policy_has_measured_hysteresis ... ok
+test tests::concurrency::subscribe_racing_set_never_strands ... ok
+test traits::collections::left_join::tests::large_parallel_join_batch_settles_synchronously_in_input_order ... ok
+test traits::collections::left_join::tests::large_sharded_optional_fk_batch_omits_absent_routes ... ok
+
+test result: ok. 377 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 43.08s
+
+     Running tests/arbitrary_n_public_join_region.rs (target/debug/deps/arbitrary_n_public_join_region-b5f931df4d577c5b)
+
+running 3 tests
+test rekey_boundary_starts_a_legal_new_join_region ... ok
+test public_three_join_region_tracks_mixed_roots_and_rekeys ... ok
+test public_eight_join_region_compiles_and_tracks_distant_right_roots ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/countall_size_retention.rs (target/debug/deps/countall_size_retention-b5d397fafad4cb16)
+
+running 4 tests
+test base_map_size_tracks_after_handle_scope ... ok
+test count_tracks_after_intermediate_map_dropped ... ok
+test count_tracks_with_materialized_held ... ok
+test fresh_count_on_populated_store_reads_n ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/four_join_application_preflight.rs (target/debug/deps/four_join_application_preflight-616b8860671f758e)
+
+running 1 test
+test four_join_application_matches_reference_order_and_settles_immediately ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.37s
+
+     Running tests/parallelism_cellmap_joins.rs (target/debug/deps/parallelism_cellmap_joins-1fa3a26edac17dde)
+
+running 3 tests
+test concurrent_left_joins_never_settle_on_a_torn_value ... ok
+test concurrent_multi_left_joins_never_settle_on_a_torn_value ... ok
+test concurrent_left_semi_joins_never_settle_on_a_stale_left_value ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.95s
+
+     Running tests/parallelism_combiners.rs (target/debug/deps/parallelism_combiners-69fb73402dec3e2f)
+
+running 3 tests
+test concurrent_merges_never_drop_or_duplicate_and_complete_once ... ok
+test concurrent_switch_map_latest_inner_wins_same_height ... ok
+test concurrent_merge_maps_complete_exactly_once ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.67s
+
+     Running tests/parallelism_slicing.rs (target/debug/deps/parallelism_slicing-2504df99e27da689)
+
+running 10 tests
+test buffer_count_no_coalesce_burst_keeps_chunks_in_order ... ok
+test last_wide_independent_wave_each_instance_exact ... ok
+test first_wide_independent_wave_each_instance_exact ... ok
+test skip_while_wide_independent_wave_each_instance_exact ... ok
+test pairwise_no_coalesce_burst_keeps_pairs_in_order ... ok
+test skip_wide_independent_wave_each_instance_exact ... ok
+test take_until_wide_independent_wave_each_instance_exact ... ok
+test take_while_wide_independent_wave_each_instance_exact ... ok
+test take_wide_independent_wave_each_instance_exact ... ok
+test window_no_coalesce_burst_keeps_windows_in_order ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.23s
+
+     Running tests/parallelism_time_structural.rs (target/debug/deps/parallelism_time_structural-efc051b591194866)
+
+running 14 tests
+test backpressure_drop_newest_wide_parallel_wave_correct ... ok
+test audit_wide_parallel_input_wave_all_fire ... ok
+test backpressure_sample_latest_wide_parallel_wave_correct ... ok
+test backpressure_drop_oldest_wide_parallel_wave_correct ... ok
+test buffer_time_wide_parallel_input_wave_all_collect ... ok
+test cold_wide_parallel_wave_settles_some ... ok
+test debounce_wide_parallel_input_wave_all_fire ... ok
+test concat_wide_parallel_wave_both_sides_correct ... ok
+test delay_wide_parallel_input_wave_all_fire ... ok
+test finalize_wide_parallel_wave_passthrough_and_terminal ... ok
+test parallel_wide_parallel_input_wave_correct ... ok
+test retry_wide_parallel_wave_value_passthrough ... ok
+test throttle_wide_parallel_wave_leading_emit_correct ... ok
+test timeout_wide_parallel_wave_value_passthrough_correct ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.43s
+
+     Running tests/parallelism_transforms.rs (target/debug/deps/parallelism_transforms-8162b6a0ec95ab6a)
+
+running 15 tests
+test deduped_event_order_under_parallel_wave_regression ... ok
+test distinct_until_changed_by_event_order_under_parallel_wave_regression ... ok
+test deduped_wide_wave_settles_each_instance_correctly ... ok
+test distinct_until_changed_by_wide_wave_settles_each_instance_correctly ... ok
+test filter_wide_wave_settles_each_instance_correctly ... ok
+test distinct_wide_wave_settles_each_instance_correctly ... ok
+test map_err_wide_wave_settles_each_instance_correctly ... ok
+test map_ok_wide_wave_settles_each_instance_correctly ... ok
+test map_wide_wave_settles_each_instance_correctly ... ok
+test scan_event_order_under_parallel_wave_regression ... ok
+test scan_wide_wave_settles_each_instance_correctly ... ok
+test state_transition_event_order_under_parallel_wave_regression ... ok
+test state_transition_wide_wave_settles_each_instance_correctly ... ok
+test tap_wide_wave_settles_each_instance_correctly ... ok
+test try_map_wide_wave_settles_each_instance_correctly ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 19.52s
+
+     Running tests/pipeline_construction_laziness.rs (target/debug/deps/pipeline_construction_laziness-ea9b1d1201f02696)
+
+running 7 tests
+test stateful_pipeline_subscribes_only_when_materialized ... ok
+test materialized_internal_view_still_exposes_only_a_pipeline_contract ... ok
+test timer_pipeline_subscribes_only_when_materialized ... ok
+test dynamic_source_pipeline_subscribes_only_when_materialized ... ok
+test multi_source_pipelines_subscribe_only_when_materialized ... ok
+test opaque_view_pipelines_do_not_borrow_their_source_handles ... ok
+test derived_collection_views_compose_before_materialization ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/profiling_pass.rs (target/debug/deps/profiling_pass-c16a9f63321b4b08)
+
+running 4 tests
+test batch_collapses_the_refire_the_pass_measures ... ok
+test no_pass_no_report ... ok
+test take_report_is_consumed_by_the_read ... ok
+test pass_reports_a_synchronous_diamond_refire ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/region_threshold_truth_table.rs (target/debug/deps/region_threshold_truth_table-cc3cb30a315ee154)
+
+running 1 test
+test frozen_cost_brackets_and_dispatch_truth_table ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.52s
+
+     Running tests/scheduler_completeness.rs (target/debug/deps/scheduler_completeness-bdf0975005f6963f)
+
+running 3 tests
+test join_vec_wide_wave_settles_correctly_under_repeated_concurrent_execution ... ok
+test no_op_is_dropped_or_stranded_under_sustained_contention ... ok
+test joiner_batches_never_hang_under_sustained_pressure ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.41s
+
+     Running tests/scheduler_correctness_stress.rs (target/debug/deps/scheduler_correctness_stress-96dceb21cbcba255)
+
+running 1 test
+test independent_diamonds_and_accumulators_settle_correctly_under_contention ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+
+     Running tests/scheduler_map_join_torn.rs (target/debug/deps/scheduler_map_join_torn-a23a27d33517a98d)
+
+running 1 test
+test concurrent_inner_joins_never_settle_on_a_torn_value ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.09s
+
+     Running tests/scheduler_no_coalesce.rs (target/debug/deps/scheduler_no_coalesce-fdc8256cf8ee60a6)
+
+running 12 tests
+test batch_tick_is_clean_after_a_panicking_body ... ok
+test cellmap_diffs_survive_a_batched_add_then_remove ... ok
+test batched_source_coalesces_a_same_rate_diamond_that_per_subscriber_batch_cannot ... ok
+test cellset_diffs_survive_a_batched_add_then_remove ... ok
+test coalescing_cell_downstream_of_no_coalesce_settles_once ... ok
+test coalescing_source_drops_an_intermediate_set_in_a_batch ... ok
+test no_coalesce_is_inert_outside_a_batch ... ok
+test no_coalesce_preserves_arrival_order ... ok
+test no_coalesce_scope_depth_restored_after_panic ... ok
+test no_coalesce_scope_stamps_cells_born_inside ... ok
+test no_coalesce_scope_preserves_multiplicity_but_settles_glitch_free ... ok
+test no_coalesce_source_preserves_every_set_in_a_batch ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/scheduler_no_coalesce_wave_order.rs (target/debug/deps/scheduler_no_coalesce_wave_order-ccb7540794847313)
+
+running 1 test
+test no_coalesce_burst_in_one_batch_keeps_events_ordered_and_serial ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+     Running tests/scheduler_phase0.rs (target/debug/deps/scheduler_phase0-946fa50caabde1a7)
+
+running 7 tests
+test batch_returns_closure_value_and_nests ... ok
+test diamond_synchronous_solves_twice_batched_once ... ok
+test diamond_with_unequal_branch_heights_solves_once ... ok
+test filtered_diamond_does_not_wait_for_a_suppressed_branch ... ok
+test switch_map_old_inner_firing_during_switch_is_glitch_free ... ok
+test switch_map_rewire_and_taller_inner_update_in_one_batch ... ok
+test unequal_diamond_settles_in_height_order ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/scheduler_reentrant_wave.rs (target/debug/deps/scheduler_reentrant_wave-1a010b319e840fc7)
+
+running 1 test
+test reentrant_batch_from_inside_a_parallel_wave_never_hangs_and_drops_nothing ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/scheduler_switch_map_leak.rs (target/debug/deps/scheduler_switch_map_leak-68194ffcd3436bbb)
+
+running 1 test
+test stacked_cellmap_query_cache_reclaims_under_batch ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/scheduler_switch_map_stress.rs (target/debug/deps/scheduler_switch_map_stress-f7e6ae368ef613a3)
+
+running 1 test
+test switch_map_latest_inner_always_wins_under_wide_prolonged_contention has been running for over 60 seconds
+test switch_map_latest_inner_always_wins_under_wide_prolonged_contention ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 72.87s
+
+     Running tests/scheduler_zip_mispair.rs (target/debug/deps/scheduler_zip_mispair-48270a46ed2fcd5c)
+
+running 1 test
+test concurrent_zips_never_mispair_the_two_streams ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+
+     Running tests/timer_reactor.rs (target/debug/deps/timer_reactor-a348f91ce6f5c845)
+
+running 3 tests
+test burst_of_delayed_timers_all_fire ... ok
+test dropped_interval_stops_firing ... ok
+test independent_intervals_share_one_reactor_thread ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.43s
+
+     Running unittests src/lib.rs (target/debug/deps/hyphae_leptos-f84d16a3b386c9cf)
+
+running 5 tests
+test signal::tests::immutable_cell_drives_read_signal ... ok
+test signal::tests::mutable_cell_drives_rw_signal ... ok
+test store::tests::value_subscribes_before_data ... ok
+test store::tests::cellmap_store_applies_diffs_per_key ... ok
+test store::tests::nested_map_store_groups_by_parent ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests hyphae
+
+running 24 tests
+test hyphae/src/async_support.rs - async_support::AsyncWatchableExt::to_stream (line 40) ... ignored
+test hyphae/src/constructors/interval.rs - constructors::interval::interval_precise (line 76) ... ignored
+test hyphae/src/cell_map.rs - cell_map::CellMap (line 75) ... ok
+test hyphae/src/bounded_output.rs - bounded_output::BoundedOutput (line 24) ... ok
+test hyphae/src/bounded_input.rs - bounded_input::BoundedInput (line 114) ... ok
+test hyphae/src/cell.rs - cell::Cell<T,M>::own (line 578) ... ok
+test hyphae/src/pipeline/share.rs - pipeline::share::SharedPipeline (line 123) ... ok
+test hyphae/src/cell_set.rs - cell_set::CellSet (line 43) ... ok
+test hyphae/src/traits/operators/buffer_count.rs - traits::operators::buffer_count::BufferCountExt::buffer_count (line 94) ... ok
+test hyphae/src/traits/operators/finalize.rs - traits::operators::finalize::FinalizeExt::finalize (line 120) ... ok
+test hyphae/src/lib.rs - (line 16) ... ok
+test hyphae/src/profiling.rs - profiling (line 23) ... ok
+test hyphae/src/lib.rs - (line 121) ... ok
+test hyphae/src/traits/operators/distinct_until_changed_by.rs - traits::operators::distinct_until_changed_by::DistinctUntilChangedByExt::distinct_until_changed_by (line 100) ... ok
+test hyphae/src/flat.rs - flat::flat (line 6) ... ok
+test hyphae/src/traits/operators/state_transition.rs - traits::operators::state_transition::StateTransitionExt::state_transition (line 220) ... ok
+test hyphae/src/traits/operators/skip_while.rs - traits::operators::skip_while::SkipWhileExt::skip_while (line 78) ... ok
+test hyphae/src/traits/operators/last.rs - traits::operators::last::LastExt::last_or (line 152) ... ok
+test hyphae/src/traits/operators/sample.rs - traits::operators::sample::SampleExt::sample (line 17) ... ok
+test hyphae/src/traits/operators/last.rs - traits::operators::last::LastExt::last (line 125) ... ok
+test hyphae/src/traits/operators/distinct.rs - traits::operators::distinct::DistinctExt::distinct (line 80) ... ok
+test hyphae/src/traits/operators/with_latest_from.rs - traits::operators::with_latest_from::WithLatestFromExt::with_latest_from (line 20) ... ok
+test hyphae/src/lib.rs - (line 77) ... ok
+test hyphae/src/traits/operators/window.rs - traits::operators::window::WindowExt::window (line 16) ... ok
+
+test result: ok. 22 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+all doctests ran in 1.60s; merged doctests compilation took 1.58s
+   Doc-tests hyphae_leptos
+
+running 2 tests
+test hyphae-leptos/src/lib.rs - (line 15) ... ignored
+test hyphae-leptos/src/lib.rs - (line 35) ... ignored
+
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 0.08s; merged doctests compilation took 0.08s

@@ -1,5 +1,5 @@
 //! Regression guard for a subscriber-snapshot retention leak on the scheduler
-//! batch path (reported via the myko CuePaused `switch_map` pattern).
+//! batch path (reported via the myko `CuePaused` `switch_map` pattern).
 //!
 //! `SubscriberRegistry::remove` only marks the registry dirty; its cached notify
 //! `snapshot` is rebuilt lazily on the *next* notify. A cell that is never
@@ -16,23 +16,22 @@
 //! `switch_map` replacing the cached value each round under `batch()`.
 #![cfg(feature = "scheduler")]
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::{collections::HashMap, sync::Arc};
 
 use hyphae::{
-    CellImmutable, CellMap, Gettable, MapExt, MaterializeDefinite, Signal, SwitchMapExt, Watchable,
-    batch, cell_map::WeakCellMap,
+    CellImmutable, CellMap, Gettable, MapExt, Materialize, Signal, SwitchMapExt, Watchable, batch,
+    cell_map::WeakCellMap,
 };
+use parking_lot::Mutex;
 
-fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
+static SCHEDULER_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn scheduler_test_serial() -> parking_lot::MutexGuard<'static, ()> {
     // Force the wave-parallel drain path at test width: production defaults
     // the group threshold high (waves stay sequential at rest), so parallelism
     // tests must lower it to actually exercise concurrent same-height groups.
     hyphae::scheduler::set_wave_threshold_for_test(4);
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|p| p.into_inner())
+    SCHEDULER_TEST_LOCK.lock()
 }
 
 /// Weak-ref query cache keyed by params — mirrors myko's query cache.
@@ -52,21 +51,20 @@ impl QueryCache {
         key: &str,
         build: impl FnOnce() -> CellMap<Arc<str>, Arc<i64>, CellImmutable>,
     ) -> CellMap<Arc<str>, Arc<i64>, CellImmutable> {
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock();
         if let Some(weak) = cache.get(key)
             && let Some(strong) = weak.upgrade()
         {
             return strong.lock();
         }
-        let built = build();
-        cache.insert(key.to_string(), built.downgrade());
-        built
+        let created = build();
+        cache.insert(key.to_string(), created.downgrade());
+        created
     }
 
     fn live_count(&self) -> usize {
         self.cache
             .lock()
-            .unwrap()
             .values()
             .filter(|w| w.upgrade().is_some())
             .count()
@@ -81,7 +79,7 @@ fn build_ids_source_map(
 ) -> CellMap<Arc<str>, Arc<i64>, CellImmutable> {
     let result: CellMap<Arc<str>, Arc<i64>> = CellMap::new();
     for id in ids {
-        let key_cell = store.get(id);
+        let key_cell = store.get(id).materialize();
         let result_weak = result.downgrade();
         let key_for_cb = id.clone();
         let guard = key_cell.subscribe(move |signal| {
@@ -108,7 +106,7 @@ fn build_ids_source_map(
 // layer (caching layer 1 directly) made the leak vanish — two stacked layers
 // are required to reproduce.
 fn typed_wrap(
-    source: CellMap<Arc<str>, Arc<i64>, CellImmutable>,
+    source: &CellMap<Arc<str>, Arc<i64>, CellImmutable>,
 ) -> CellMap<Arc<str>, Arc<i64>, CellImmutable> {
     let typed: CellMap<Arc<str>, Arc<i64>> = CellMap::new();
     let weak = typed.downgrade();
@@ -132,25 +130,26 @@ fn stacked_cellmap_query_cache_reclaims_under_batch() {
     }
     let store = store_mutable.clone().lock();
 
-    let outer_items = store.clone().items();
-    let store_for_closure = store.clone();
+    let outer_items = store.items();
+    let store_for_closure = store;
     let query_cache = Arc::new(QueryCache::new());
     let query_cache_for_closure = query_cache.clone();
 
     // switch_map builds a fresh 2-layer cached query per outer emission.
-    let switched = outer_items.switch_map(move |items| {
-        let ids: Vec<Arc<str>> = (0..items.len() as i64)
-            .map(|i| format!("id-{i}").into())
-            .collect();
-        let cache_key = format!("{ids:?}");
-        let typed = query_cache_for_closure.get_or_build(&cache_key, || {
-            typed_wrap(build_ids_source_map(&store_for_closure, &ids))
-        });
-        typed
-            .items()
-            .map(|vals| Arc::new(vals.iter().map(|v| **v).sum::<i64>()))
-            .materialize()
-    });
+    let switched = outer_items
+        .materialize()
+        .switch_map(move |items| {
+            let ids: Vec<Arc<str>> = (0..items.len()).map(|i| format!("id-{i}").into()).collect();
+            let cache_key = format!("{ids:?}");
+            let typed = query_cache_for_closure.get_or_build(&cache_key, || {
+                typed_wrap(&build_ids_source_map(&store_for_closure, &ids))
+            });
+            typed
+                .items()
+                .map(|vals| Arc::new(vals.iter().map(|v| **v).sum::<i64>()))
+                .materialize()
+        })
+        .materialize();
 
     let report_cell = switched.materialize();
     let _ = report_cell.get();
@@ -160,7 +159,10 @@ fn stacked_cellmap_query_cache_reclaims_under_batch() {
     // the previous one, which must be reclaimed.
     for i in 5..=30u64 {
         batch(|| {
-            store_mutable.insert(format!("stress-{i}").into(), Arc::new(i as i64));
+            store_mutable.insert(
+                format!("stress-{i}").into(),
+                Arc::new(i64::try_from(i).unwrap_or(i64::MAX)),
+            );
         });
         let _ = report_cell.get();
     }

@@ -4,17 +4,12 @@
 //! `f(initial, source.seed())` (the accumulator after one source emission), so
 //! `scan(0, +).materialize().get()` on `Cell::new(1)` returns `1`.
 
-use std::{
-    marker::PhantomData,
-    sync::{Arc, Mutex},
-};
+use parking_lot::Mutex;
+use std::{marker::PhantomData, sync::Arc};
 
 use super::CellValue;
 use crate::{
-    pipeline::{
-        Definite, Empty, MaterializeDefinite, MaterializeEmpty, Pipeline, PipelineInstall,
-        PipelineSeed, Seedness,
-    },
+    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -46,7 +41,7 @@ where
             Arc::new(move |signal: &Signal<T>| match signal {
                 Signal::Value(v) => {
                     let next = {
-                        let mut guard = acc.lock().expect("scan poisoned");
+                        let mut guard = acc.lock();
                         let next = f(&*guard, v.as_ref());
                         *guard = next.clone();
                         next
@@ -60,41 +55,34 @@ where
     }
 }
 
-impl<S, T, U, F> PipelineSeed<U> for ScanPipeline<S, T, U, F, Definite>
+impl<S, T, U, F, Sd> PipelineSeed<U> for ScanPipeline<S, T, U, F, Sd>
 where
-    S: PipelineSeed<T>,
-    T: CellValue,
-    U: CellValue,
-    F: Fn(&U, &T) -> U + Send + Sync + 'static,
-{
-    fn seed(&self) -> U {
-        (self.f)(&self.initial, &self.source.seed())
-    }
-}
-
-#[allow(private_bounds)]
-impl<S, T, U, F, Sd> Pipeline<U, Sd> for ScanPipeline<S, T, U, F, Sd>
-where
-    S: Pipeline<T, Sd>,
+    S: Pipeline<T, crate::pipeline::Definite>,
     Sd: Seedness,
     T: CellValue,
     U: CellValue,
     F: Fn(&U, &T) -> U + Send + Sync + 'static,
 {
+    fn seed(&self) -> U {
+        (self.f)(&self.initial, &self.source.pipeline_seed())
+    }
 }
 
-impl<S, T, U, F> MaterializeDefinite<U> for ScanPipeline<S, T, U, F, Definite>
+#[allow(private_bounds)]
+impl<S, T, U, F> Pipeline<U, crate::pipeline::Definite>
+    for ScanPipeline<S, T, U, F, crate::pipeline::Definite>
 where
-    S: Pipeline<T, Definite> + PipelineSeed<T>,
+    S: Pipeline<T, crate::pipeline::Definite>,
     T: CellValue,
     U: CellValue,
     F: Fn(&U, &T) -> U + Send + Sync + 'static,
 {
 }
 
-impl<S, T, U, F> MaterializeEmpty<U> for ScanPipeline<S, T, U, F, Empty>
+impl<S, T, U, F> Pipeline<U, crate::pipeline::Empty>
+    for ScanPipeline<S, T, U, F, crate::pipeline::Empty>
 where
-    S: Pipeline<T, Empty>,
+    S: Pipeline<T, crate::pipeline::Empty>,
     T: CellValue,
     U: CellValue,
     F: Fn(&U, &T) -> U + Send + Sync + 'static,
@@ -104,7 +92,16 @@ where
 #[allow(private_bounds)]
 pub trait ScanExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     #[track_caller]
-    fn scan<U, F>(self, initial: U, f: F) -> ScanPipeline<Self, T, U, F, S>
+    fn scan<U, F>(self, initial: U, f: F) -> impl crate::Materialize<U, S>
+    where
+        U: CellValue,
+        F: Fn(&U, &T) -> U + Send + Sync + 'static;
+}
+
+impl<T: CellValue, P: Pipeline<T, crate::pipeline::Definite>> ScanExt<T, crate::pipeline::Definite>
+    for P
+{
+    fn scan<U, F>(self, initial: U, f: F) -> impl crate::Materialize<U, crate::pipeline::Definite>
     where
         U: CellValue,
         F: Fn(&U, &T) -> U + Send + Sync + 'static,
@@ -119,12 +116,28 @@ pub trait ScanExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     }
 }
 
-impl<T: CellValue, S: Seedness, P: Pipeline<T, S>> ScanExt<T, S> for P {}
+impl<T: CellValue, P: Pipeline<T, crate::pipeline::Empty>> ScanExt<T, crate::pipeline::Empty>
+    for P
+{
+    fn scan<U, F>(self, initial: U, f: F) -> impl crate::Materialize<U, crate::pipeline::Empty>
+    where
+        U: CellValue,
+        F: Fn(&U, &T) -> U + Send + Sync + 'static,
+    {
+        ScanPipeline {
+            source: self,
+            initial,
+            f: Arc::new(f),
+            _t: PhantomData,
+            _sd: PhantomData,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Cell, Gettable, MaterializeDefinite, Mutable};
+    use crate::{Cell, Gettable, Materialize, Mutable};
 
     #[test]
     fn test_scan_accumulates() {
@@ -146,7 +159,7 @@ mod tests {
         let source = Cell::new(1);
         let collected = source
             .clone()
-            .scan(String::new(), |acc, x| format!("{}{}", acc, x))
+            .scan(String::new(), |acc, x| format!("{acc}{x}"))
             .materialize();
 
         assert_eq!(collected.get(), "1");

@@ -1,42 +1,91 @@
-use std::time::Duration;
-
-use super::{CellValue, Watchable};
-use crate::{
-    cell::{Cell, CellImmutable, CellMutable},
-    platform,
+use parking_lot::Mutex;
+use std::{
+    collections::BTreeMap,
+    marker::PhantomData,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+    time::Duration,
 };
 
-pub trait DelayExt<T>: Watchable<T> {
-    #[track_caller]
-    fn delay(&self, duration: Duration) -> Cell<T, CellImmutable>
-    where
-        T: CellValue,
-        Self: Clone + Send + Sync + 'static,
-    {
-        let cell = Cell::<T, CellMutable>::new(self.get());
-        let cell = if let Some(name) = self.name() {
-            cell.with_name(format!("{}::delay", name))
-        } else {
-            cell
-        };
+use super::CellValue;
+use crate::{
+    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed},
+    platform,
+    signal::Signal,
+    subscription::SubscriptionGuard,
+};
 
-        let weak = cell.downgrade();
-        let guard = self.subscribe(move |signal| {
+pub struct DelayPipeline<S, T> {
+    source: S,
+    duration: Duration,
+    _t: PhantomData<fn(T)>,
+}
+
+impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for DelayPipeline<S, T> {
+    fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
+        let duration = self.duration;
+        let first = AtomicBool::new(true);
+        let sequence = Arc::new(AtomicU64::new(0));
+        let ready = Arc::new(Mutex::new((0_u64, BTreeMap::<u64, Signal<T>>::new())));
+        self.source.install(Arc::new(move |signal| {
+            if matches!(signal, Signal::Value(_)) && first.swap(false, Ordering::SeqCst) {
+                return;
+            }
+            let my_sequence = sequence.fetch_add(1, Ordering::SeqCst);
             let signal = signal.clone();
-            let weak = weak.clone();
+            let callback = callback.clone();
+            let ready = ready.clone();
             platform::spawn_delayed(duration, move || {
-                if let Some(c) = weak.upgrade() {
-                    c.notify(signal);
+                let deliver = {
+                    let mut state = ready.lock();
+                    state.1.insert(my_sequence, signal);
+                    let mut deliver = Vec::new();
+                    loop {
+                        let next = state.0;
+                        let Some(signal) = state.1.remove(&next) else {
+                            break;
+                        };
+                        state.0 = state.0.saturating_add(1);
+                        deliver.push(signal);
+                    }
+                    drop(state);
+                    deliver
+                };
+                for signal in deliver {
+                    callback(&signal);
                 }
             });
-        });
-        cell.own(guard);
-
-        cell.lock()
+        }))
     }
 }
 
-impl<T, W: Watchable<T>> DelayExt<T> for W {}
+impl<S: PipelineSeed<T>, T: CellValue> PipelineSeed<T> for DelayPipeline<S, T> {
+    fn seed(&self) -> T {
+        self.source.seed()
+    }
+}
+
+#[allow(private_bounds)]
+impl<S: Pipeline<T, Definite> + PipelineSeed<T>, T: CellValue> Pipeline<T, Definite>
+    for DelayPipeline<S, T>
+{
+}
+
+#[allow(private_bounds)]
+pub trait DelayExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
+    #[track_caller]
+    fn delay(self, duration: Duration) -> impl crate::Materialize<T, Definite> {
+        DelayPipeline {
+            source: self,
+            duration,
+            _t: PhantomData,
+        }
+    }
+}
+
+impl<T: CellValue, P: Pipeline<T, Definite> + PipelineSeed<T>> DelayExt<T> for P {}
 
 #[cfg(test)]
 mod tests {
@@ -49,12 +98,15 @@ mod tests {
     };
 
     use super::*;
-    use crate::{Mutable, Signal};
+    use crate::{Cell, Materialize, Mutable, Signal, traits::Watchable};
 
     #[test]
     fn test_delay_delays_emission() {
         let source = Cell::new(0u64);
-        let delayed = source.delay(Duration::from_millis(50));
+        let delayed = source
+            .clone()
+            .delay(Duration::from_millis(50))
+            .materialize();
         let received = Arc::new(AtomicU64::new(0));
 
         let r = received.clone();
@@ -64,18 +116,33 @@ mod tests {
             }
         });
 
-        // Wait for the initial delayed value (0) to arrive before triggering a new one.
         thread::sleep(Duration::from_millis(100));
         assert_eq!(received.load(Ordering::SeqCst), 0);
-
         source.set(42);
-
-        // Not yet (delay is 50ms, so after 20ms value should still be 0)
         thread::sleep(Duration::from_millis(20));
         assert_eq!(received.load(Ordering::SeqCst), 0);
-
-        // Now (wait 100ms more to ensure delay has passed with margin for thread scheduling)
         thread::sleep(Duration::from_millis(100));
         assert_eq!(received.load(Ordering::SeqCst), 42);
+    }
+
+    #[test]
+    fn delay_preserves_value_before_terminal_order() {
+        let source = Cell::new(0u64);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let pipeline = source.clone().delay(Duration::from_millis(20));
+        let _guard = pipeline.install(Arc::new(move |signal| {
+            captured.lock().push(match signal {
+                Signal::Value(value) => format!("value:{}", **value),
+                Signal::Complete => "complete".into(),
+                Signal::Error(_) => "error".into(),
+            });
+        }));
+
+        source.set(7);
+        source.complete();
+        thread::sleep(Duration::from_millis(60));
+
+        assert_eq!(&*events.lock(), &["value:7", "complete"]);
     }
 }

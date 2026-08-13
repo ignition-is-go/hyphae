@@ -4,8 +4,8 @@
 //! Returns a [`Pipeline`] (specifically a [`MapPipeline`] over self).
 //! Materialize to subscribe; further operators can also chain off it.
 
-use super::{super::operators::MapExt, CellValue, Gettable, MapPipeline};
-use crate::pipeline::{Pipeline, PipelineSeed};
+use super::{super::operators::MapExt, CellValue, Gettable};
+use crate::pipeline::{Definite, Materialize, Pipeline, PipelineSeed};
 
 #[allow(private_bounds)]
 pub trait WithLatestFromExt<T: CellValue>: Pipeline<T> + PipelineSeed<T> {
@@ -18,7 +18,7 @@ pub trait WithLatestFromExt<T: CellValue>: Pipeline<T> + PipelineSeed<T> {
     /// # Example
     ///
     /// ```
-    /// use hyphae::{Cell, Gettable, MaterializeDefinite, Mutable, WithLatestFromExt};
+    /// use hyphae::{Cell, Gettable, Materialize, Mutable, WithLatestFromExt};
     ///
     /// let clicks = Cell::new(0u32);
     /// let mouse_pos = Cell::new((0, 0));
@@ -30,10 +30,7 @@ pub trait WithLatestFromExt<T: CellValue>: Pipeline<T> + PipelineSeed<T> {
     /// clicks.set(1);           // emits (1, (30, 40))
     /// ```
     #[track_caller]
-    fn with_latest_from<U, W2>(
-        &self,
-        other: &W2,
-    ) -> MapPipeline<Self, T, (T, U), impl Fn(&T) -> (T, U) + Send + Sync + 'static>
+    fn with_latest_from<U, W2>(&self, other: &W2) -> impl Materialize<(T, U), Definite>
     where
         T: CellValue,
         U: CellValue,
@@ -50,9 +47,7 @@ impl<T: CellValue, P: Pipeline<T> + PipelineSeed<T>> WithLatestFromExt<T> for P 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        Cell, MaterializeDefinite, Mutable, Signal, cell::CellImmutable, traits::Watchable,
-    };
+    use crate::{Cell, Materialize, Mutable, Signal, cell::CellImmutable, traits::Watchable};
 
     #[test]
     fn test_with_latest_from() {

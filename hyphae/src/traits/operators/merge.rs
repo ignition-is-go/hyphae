@@ -1,111 +1,113 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicU8, Ordering},
+use std::{
+    marker::PhantomData,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU8, Ordering},
+    },
 };
 
-use super::{CellValue, Watchable};
+use super::CellValue;
 use crate::{
-    cell::{Cell, CellImmutable, CellMutable},
+    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed},
     signal::Signal,
+    subscription::SubscriptionGuard,
 };
 
-// Completion state flags for merge (both must complete)
-const SELF_COMPLETE: u8 = 0b01;
-const OTHER_COMPLETE: u8 = 0b10;
+const LEFT_COMPLETE: u8 = 0b01;
+const RIGHT_COMPLETE: u8 = 0b10;
 
-pub trait MergeExt<T>: Watchable<T> {
-    /// Merge with another cell - emit from whichever updates.
-    #[track_caller]
-    fn merge<M>(&self, other: &Cell<T, M>) -> Cell<T, CellImmutable>
-    where
-        T: CellValue,
-        M: Send + Sync + 'static,
-        Self: Clone + Send + Sync + 'static,
-    {
-        let initial = self.get();
-        let derived = Cell::<T, CellMutable>::new(initial);
-        let derived = if let Some(name) = self.name() {
-            derived.with_name(format!("{}::merge", name))
-        } else {
-            derived
-        };
+pub struct MergePipeline<L, R, T> {
+    left: L,
+    right: R,
+    _type: PhantomData<fn() -> T>,
+}
 
-        let complete_state = Arc::new(AtomicU8::new(0));
-
-        // Subscribe to self
-        let weak1 = derived.downgrade();
-        let first1 = Arc::new(AtomicBool::new(true));
-        let cs1 = complete_state.clone();
-        let guard1 = self.subscribe(move |signal| {
-            if let Some(d) = weak1.upgrade() {
-                match signal {
-                    Signal::Value(_) => {
-                        if first1.swap(false, Ordering::SeqCst) {
-                            return;
-                        }
-                        d.notify(signal.clone());
-                    }
-                    Signal::Complete => {
-                        let prev = cs1.fetch_or(SELF_COMPLETE, Ordering::SeqCst);
-                        if prev == OTHER_COMPLETE {
-                            d.notify(Signal::Complete);
-                        }
-                    }
-                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
-                }
+impl<L, R, T> PipelineInstall<T> for MergePipeline<L, R, T>
+where
+    L: PipelineInstall<T>,
+    R: PipelineInstall<T>,
+    T: CellValue,
+{
+    fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
+        let complete = Arc::new(AtomicU8::new(0));
+        let left_complete = complete.clone();
+        let left_callback = callback.clone();
+        let first = AtomicBool::new(true);
+        let left = self.left.install(Arc::new(move |signal| match signal {
+            Signal::Value(_) if first.swap(false, Ordering::SeqCst) => {}
+            Signal::Value(_) => left_callback(signal),
+            Signal::Complete
+                if left_complete.fetch_or(LEFT_COMPLETE, Ordering::SeqCst) == RIGHT_COMPLETE =>
+            {
+                left_callback(&Signal::Complete);
             }
-        });
-        derived.own(guard1);
-
-        // Subscribe to other
-        // NOTE(ts): No first-skip for the right side. The merged cell initialized with
-        // the left side's value — the right side's current value is genuinely new
-        // information that downstream stateful operators need for baselining.
-        let weak2 = derived.downgrade();
-        let guard2 = other.subscribe(move |signal| {
-            if let Some(d) = weak2.upgrade() {
-                match signal {
-                    Signal::Value(_) => {
-                        d.notify(signal.clone());
-                    }
-                    Signal::Complete => {
-                        let prev = complete_state.fetch_or(OTHER_COMPLETE, Ordering::SeqCst);
-                        if prev == SELF_COMPLETE {
-                            d.notify(Signal::Complete);
-                        }
-                    }
-                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
-                }
+            Signal::Complete => {}
+            Signal::Error(error) => left_callback(&Signal::Error(error.clone())),
+        }));
+        // The right seed is intentionally emitted during installation: merge is
+        // left-seeded, so the right current value is a real second event.
+        let right = self.right.install(Arc::new(move |signal| match signal {
+            Signal::Value(_) => callback(signal),
+            Signal::Complete
+                if complete.fetch_or(RIGHT_COMPLETE, Ordering::SeqCst) == LEFT_COMPLETE =>
+            {
+                callback(&Signal::Complete);
             }
-        });
-        derived.own(guard2);
-
-        derived.lock()
+            Signal::Complete => {}
+            Signal::Error(error) => callback(&Signal::Error(error.clone())),
+        }));
+        SubscriptionGuard::combine(vec![left, right])
     }
 }
 
-impl<T, W: Watchable<T>> MergeExt<T> for W {}
+impl<L, R, T> PipelineSeed<T> for MergePipeline<L, R, T>
+where
+    L: PipelineSeed<T>,
+    R: PipelineInstall<T>,
+    T: CellValue,
+{
+    fn seed(&self) -> T {
+        self.left.seed()
+    }
+}
+
+impl<L, R, T> Pipeline<T, Definite> for MergePipeline<L, R, T>
+where
+    L: Pipeline<T, Definite> + PipelineSeed<T>,
+    R: Pipeline<T, Definite>,
+    T: CellValue,
+{
+}
+
+pub trait MergeExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
+    fn merge<R>(self, other: R) -> impl crate::Materialize<T, Definite>
+    where
+        R: Pipeline<T, Definite>,
+    {
+        MergePipeline {
+            left: self,
+            right: other,
+            _type: PhantomData,
+        }
+    }
+}
+impl<T: CellValue, P> MergeExt<T> for P where P: Pipeline<T, Definite> + PipelineSeed<T> {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Gettable, Mutable};
+    use crate::{Cell, Gettable, Materialize, Mutable};
 
     #[test]
     fn test_merge() {
         let a = Cell::new(1);
         let b = Cell::new(10);
-        let merged = a.merge(&b);
-
-        // Right side's initial value flows through during setup
+        let merged = a.clone().merge(b.clone()).materialize();
         assert_eq!(merged.get(), 10);
-
         a.set(2);
         assert_eq!(merged.get(), 2);
-
         b.set(20);
         assert_eq!(merged.get(), 20);
-
         a.set(3);
         assert_eq!(merged.get(), 3);
     }

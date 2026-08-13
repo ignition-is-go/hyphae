@@ -21,7 +21,7 @@ use std::{
 
 use super::CellValue;
 use crate::{
-    pipeline::{Empty, MaterializeEmpty, Pipeline, PipelineInstall, Seedness},
+    pipeline::{Empty, Pipeline, PipelineInstall, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -67,14 +67,6 @@ where
 {
 }
 
-impl<S, T, Sd> MaterializeEmpty<Arc<T>> for ColdPipeline<S, T, Sd>
-where
-    S: Pipeline<T, Sd>,
-    Sd: Seedness,
-    T: CellValue,
-{
-}
-
 #[allow(private_bounds)]
 pub trait ColdExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// Drop the synchronous-on-subscribe initial emission; subsequent values
@@ -84,7 +76,7 @@ pub trait ColdExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// post-subscribe emission arrives, the cell flips to `Some(Arc<value>)`
     /// and stays `Some` from then on (it tracks the most recent emission).
     #[track_caller]
-    fn cold(self) -> ColdPipeline<Self, T, S> {
+    fn cold(self) -> impl crate::Materialize<Arc<T>, Empty> {
         ColdPipeline {
             source: self,
             _t: PhantomData,
@@ -100,12 +92,12 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
     use super::*;
-    use crate::{Cell, Gettable, MaterializeEmpty, Mutable, traits::Watchable};
+    use crate::{Cell, Gettable, Materialize, Mutable, traits::Watchable};
 
     #[test]
     fn test_cold_starts_as_none() {
         let source = Cell::new(42u64);
-        let cold = source.clone().cold().materialize();
+        let cold = source.cold().materialize();
         assert_eq!(cold.get(), None);
     }
 

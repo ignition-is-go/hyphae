@@ -1,0 +1,12 @@
+compiled_query/repeated_relation_four_join/single
+                        time:   [4.0827 µs 4.2245 µs 4.3904 µs]
+                        change: [+11.327% +15.057% +19.300%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+
+    Finished `bench` profile [optimized] target(s) in 0.04s
+     Running benches/compiled_map_queries.rs (target/release/deps/compiled_map_queries-3dd9fd0577ebe7c4)
+Gnuplot not found, using plotters backend
+Benchmarking compiled_query/repeated_relation_four_join/single
+Benchmarking compiled_query/repeated_relation_four_join/single: Warming up for 3.0000 s
+Benchmarking compiled_query/repeated_relation_four_join/single: Collecting 100 samples in estimated 5.0051 s (1.3M iterations)
+Benchmarking compiled_query/repeated_relation_four_join/single: Analyzing

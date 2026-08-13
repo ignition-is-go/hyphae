@@ -14,7 +14,7 @@
 //! same wide wave — that's the shape `join`/`join_vec` had to be hardened for.
 //!
 //! **None of the twelve operators covered here is that shape.** Every one is
-//! either single-input (debounce/throttle/delay/timeout/buffer_time/
+//! either single-input (`debounce/throttle/delay/timeout/buffer_time`/
 //! backpressure/cold/finalize/retry/audit/parallel) or a *sequential* two-input
 //! composition that never combines its inputs (concat: one input is live at a
 //! time). So none is a genuine torn-value / Template-A candidate — there is no
@@ -40,9 +40,9 @@
 //!
 //! Classification (see the per-test NOTEs for detail):
 //!   - Synchronous output, fully wave-tested:   throttle (leading edge),
-//!     timeout (value pass-through), drop_oldest, drop_newest, sample_latest,
+//!     timeout (value pass-through), `drop_oldest`, `drop_newest`, `sample_latest`,
 //!     concat, cold, finalize, retry, parallel.
-//!   - Timer-driven output, input-side wave only: debounce, delay, buffer_time,
+//!   - Timer-driven output, input-side wave only: debounce, delay, `buffer_time`,
 //!     audit.
 //!   - Genuine torn-value (Template-A) candidates: NONE — all are single-input
 //!     or sequential-two-input, documented above.
@@ -50,36 +50,46 @@
 
 use std::{
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicI64, Ordering},
     },
     thread,
     time::{Duration, Instant},
 };
 
+use parking_lot::Mutex;
+
 use hyphae::{
     AuditExt, BackpressureExt, BufferTimeExt, Cell, ColdExt, ConcatExt, DebounceExt, DelayExt,
-    FinalizeExt, Gettable, MaterializeDefinite, MaterializeEmpty, Mutable, ParallelExt, RetryExt,
-    Signal, ThrottleExt, TimeoutExt, Watchable, batch,
+    FinalizeExt, Gettable, Materialize, Mutable, RetryExt, Signal, ThrottleExt, TimeoutExt,
+    Watchable, batch,
 };
 
 /// The scheduler's tick queue is one process-wide structure, so `#[test]` fns
 /// (run as concurrent threads by the test harness) would otherwise interleave
 /// their batches. Serialize every test in this file through one lock. Copied
 /// verbatim from `scheduler_completeness.rs`.
-fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
+static SCHEDULER_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn scheduler_test_serial() -> parking_lot::MutexGuard<'static, ()> {
     // Force the wave-parallel drain path at test width: production defaults
     // the group threshold high (waves stay sequential at rest), so parallelism
     // tests must lower it to actually exercise concurrent same-height groups.
     hyphae::scheduler::set_wave_threshold_for_test(4);
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    SCHEDULER_TEST_LOCK.lock()
 }
 
-/// Width of every parallel wave below. 16 > PARALLEL_WAVE_THRESHOLD (8), so
+fn index_value(index: usize) -> i64 {
+    i64::try_from(index).unwrap_or(i64::MAX)
+}
+
+/// Width of every parallel wave below. 16 > `PARALLEL_WAVE_THRESHOLD` (8), so
 /// each wave genuinely dispatches across rayon rather than taking the
 /// small-wave sequential fallback.
 const WIDE: usize = 16;
+const TIMEOUT_ITERS: i64 = 100;
+const STRUCTURAL_ITERS: i64 = 200;
+const DROP_NEWEST_CAPACITY: usize = 8;
 
 /// Poll `settled` until it holds or `deadline` elapses; returns whether it
 /// settled. Timer-driven operators emit their output from the shared reactor
@@ -123,12 +133,15 @@ fn debounce_wide_parallel_input_wave_all_fire() {
     let dur = Duration::from_millis(30);
 
     let sources: Vec<Cell<i64, _>> = (0..WIDE).map(|_| Cell::new(0i64)).collect();
-    let outs: Vec<_> = sources.iter().map(|s| s.debounce(dur)).collect();
+    let outs: Vec<_> = sources
+        .iter()
+        .map(|s| s.clone().debounce(dur).materialize())
+        .collect();
 
     // One wide batch: all WIDE source ops land at height 0 → parallel wave.
     batch(|| {
         for (i, s) in sources.iter().enumerate() {
-            s.set(1000 + i as i64);
+            s.set(1000 + index_value(i));
         }
     });
 
@@ -136,12 +149,12 @@ fn debounce_wide_parallel_input_wave_all_fire() {
     wait_until(SETTLE_DEADLINE, || {
         outs.iter()
             .enumerate()
-            .all(|(i, o)| o.get() == 1000 + i as i64)
+            .all(|(i, o)| o.get() == 1000 + index_value(i))
     });
     for (i, out) in outs.iter().enumerate() {
         assert_eq!(
             out.get(),
-            1000 + i as i64,
+            1000 + index_value(i),
             "debounce instance {i} settled on the wrong value under a wide input wave"
         );
     }
@@ -158,7 +171,10 @@ fn throttle_wide_parallel_wave_leading_emit_correct() {
     let dur = Duration::from_millis(20);
 
     let sources: Vec<Cell<i64, _>> = (0..WIDE).map(|_| Cell::new(0i64)).collect();
-    let outs: Vec<_> = sources.iter().map(|s| s.throttle(dur)).collect();
+    let outs: Vec<_> = sources
+        .iter()
+        .map(|s| s.clone().throttle(dur).materialize())
+        .collect();
 
     for round in 0..3i64 {
         // Let every instance's `can_emit` reset before the next leading edge.
@@ -166,13 +182,13 @@ fn throttle_wide_parallel_wave_leading_emit_correct() {
         let base = (round + 1) * 1000;
         batch(|| {
             for (i, s) in sources.iter().enumerate() {
-                s.set(base + i as i64);
+                s.set(base + index_value(i));
             }
         });
         for (i, out) in outs.iter().enumerate() {
             assert_eq!(
                 out.get(),
-                base + i as i64,
+                base + index_value(i),
                 "throttle instance {i} leading-edge emit wrong under a wide wave (round {round})"
             );
         }
@@ -190,23 +206,26 @@ fn delay_wide_parallel_input_wave_all_fire() {
     let dur = Duration::from_millis(30);
 
     let sources: Vec<Cell<i64, _>> = (0..WIDE).map(|_| Cell::new(0i64)).collect();
-    let outs: Vec<_> = sources.iter().map(|s| s.delay(dur)).collect();
+    let outs: Vec<_> = sources
+        .iter()
+        .map(|s| s.clone().delay(dur).materialize())
+        .collect();
 
     batch(|| {
         for (i, s) in sources.iter().enumerate() {
-            s.set(2000 + i as i64);
+            s.set(2000 + index_value(i));
         }
     });
 
     wait_until(SETTLE_DEADLINE, || {
         outs.iter()
             .enumerate()
-            .all(|(i, o)| o.get() == 2000 + i as i64)
+            .all(|(i, o)| o.get() == 2000 + index_value(i))
     });
     for (i, out) in outs.iter().enumerate() {
         assert_eq!(
             out.get(),
-            2000 + i as i64,
+            2000 + index_value(i),
             "delay instance {i} delivered the wrong value under a wide input wave"
         );
     }
@@ -220,22 +239,24 @@ fn delay_wide_parallel_input_wave_all_fire() {
 #[test]
 fn timeout_wide_parallel_wave_value_passthrough_correct() {
     let _serial = scheduler_test_serial();
-    const ITERS: i64 = 100;
     let dur = Duration::from_millis(500);
 
     let sources: Vec<Cell<i64, _>> = (0..WIDE).map(|_| Cell::new(0i64)).collect();
-    let outs: Vec<_> = sources.iter().map(|s| s.timeout(dur)).collect();
+    let outs: Vec<_> = sources
+        .iter()
+        .map(|s| s.clone().timeout(dur).materialize())
+        .collect();
 
-    for it in 1..=ITERS {
+    for it in 1..=TIMEOUT_ITERS {
         batch(|| {
             for (i, s) in sources.iter().enumerate() {
-                s.set(it * 1000 + i as i64);
+                s.set(it * 1000 + index_value(i));
             }
         });
         for (i, out) in outs.iter().enumerate() {
             assert_eq!(
                 out.get(),
-                it * 1000 + i as i64,
+                it * 1000 + index_value(i),
                 "timeout instance {i} passed a torn/stale value under a wide wave (iter {it})"
             );
         }
@@ -254,25 +275,28 @@ fn buffer_time_wide_parallel_input_wave_all_collect() {
     let dur = Duration::from_millis(30);
 
     let sources: Vec<Cell<i64, _>> = (0..WIDE).map(|_| Cell::new(0i64)).collect();
-    let outs: Vec<_> = sources.iter().map(|s| s.buffer_time(dur)).collect();
+    let outs: Vec<_> = sources
+        .iter()
+        .map(|s| s.clone().buffer_time(dur).materialize())
+        .collect();
 
     // Accumulate every non-empty flattened emission per instance.
     let seen: Vec<Arc<Mutex<Vec<i64>>>> = (0..WIDE)
         .map(|_| Arc::new(Mutex::new(Vec::new())))
         .collect();
     let mut guards = Vec::new();
-    for (i, out) in outs.iter().enumerate() {
-        let sink = seen[i].clone();
+    for (out, sink) in outs.iter().zip(&seen) {
+        let sink = sink.clone();
         guards.push(out.subscribe(move |sig| {
             if let Signal::Value(v) = sig {
-                sink.lock().unwrap().extend(v.iter().copied());
+                sink.lock().extend(v.iter().copied());
             }
         }));
     }
 
     batch(|| {
         for (i, s) in sources.iter().enumerate() {
-            s.set(3000 + i as i64);
+            s.set(3000 + index_value(i));
         }
     });
 
@@ -280,12 +304,12 @@ fn buffer_time_wide_parallel_input_wave_all_collect() {
     wait_until(SETTLE_DEADLINE, || {
         seen.iter()
             .enumerate()
-            .all(|(i, s)| *s.lock().unwrap() == vec![3000 + i as i64])
+            .all(|(i, s)| *s.lock() == vec![3000 + index_value(i)])
     });
     for (i, s) in seen.iter().enumerate() {
         assert_eq!(
-            *s.lock().unwrap(),
-            vec![3000 + i as i64],
+            *s.lock(),
+            vec![3000 + index_value(i)],
             "buffer_time instance {i} lost/leaked its buffered value under a wide input wave"
         );
     }
@@ -304,23 +328,26 @@ fn audit_wide_parallel_input_wave_all_fire() {
     let dur = Duration::from_millis(30);
 
     let sources: Vec<Cell<i64, _>> = (0..WIDE).map(|_| Cell::new(0i64)).collect();
-    let outs: Vec<_> = sources.iter().map(|s| s.audit(dur)).collect();
+    let outs: Vec<_> = sources
+        .iter()
+        .map(|s| s.clone().audit(dur).materialize())
+        .collect();
 
     batch(|| {
         for (i, s) in sources.iter().enumerate() {
-            s.set(4000 + i as i64);
+            s.set(4000 + index_value(i));
         }
     });
 
     wait_until(SETTLE_DEADLINE, || {
         outs.iter()
             .enumerate()
-            .all(|(i, o)| o.get() == 4000 + i as i64)
+            .all(|(i, o)| o.get() == 4000 + index_value(i))
     });
     for (i, out) in outs.iter().enumerate() {
         assert_eq!(
             out.get(),
-            4000 + i as i64,
+            4000 + index_value(i),
             "audit instance {i} sampled the wrong last value under a wide input wave"
         );
     }
@@ -337,21 +364,22 @@ fn audit_wide_parallel_input_wave_all_fire() {
 #[test]
 fn backpressure_drop_oldest_wide_parallel_wave_correct() {
     let _serial = scheduler_test_serial();
-    const ITERS: i64 = 200;
-
     let sources: Vec<Cell<i64, _>> = (0..WIDE).map(|_| Cell::new(0i64)).collect();
-    let outs: Vec<_> = sources.iter().map(|s| s.drop_oldest(8)).collect();
+    let outs: Vec<_> = sources
+        .iter()
+        .map(|s| s.clone().drop_oldest(8).materialize())
+        .collect();
 
-    for it in 1..=ITERS {
+    for it in 1..=STRUCTURAL_ITERS {
         batch(|| {
             for (i, s) in sources.iter().enumerate() {
-                s.set(it * 1000 + i as i64);
+                s.set(it * 1000 + index_value(i));
             }
         });
         for (i, out) in outs.iter().enumerate() {
             assert_eq!(
                 out.get(),
-                it * 1000 + i as i64,
+                it * 1000 + index_value(i),
                 "drop_oldest instance {i} wrong under a wide wave (iter {it})"
             );
         }
@@ -364,19 +392,16 @@ fn backpressure_drop_oldest_wide_parallel_wave_correct() {
 #[test]
 fn backpressure_drop_newest_wide_parallel_wave_correct() {
     let _serial = scheduler_test_serial();
-    const ITERS: i64 = 200;
-
-    const CAP: i64 = 8;
     let sources: Vec<Cell<i64, _>> = (0..WIDE).map(|_| Cell::new(0i64)).collect();
     let outs: Vec<_> = sources
         .iter()
-        .map(|s| s.drop_newest(CAP as usize))
+        .map(|s| s.clone().drop_newest(DROP_NEWEST_CAPACITY).materialize())
         .collect();
 
-    for it in 1..=ITERS {
+    for it in 1..=STRUCTURAL_ITERS {
         batch(|| {
             for (i, s) in sources.iter().enumerate() {
-                s.set(it * 1000 + i as i64);
+                s.set(it * 1000 + index_value(i));
             }
         });
         for (i, out) in outs.iter().enumerate() {
@@ -387,7 +412,7 @@ fn backpressure_drop_newest_wide_parallel_wave_correct() {
             // its CAP-th value. The wide-wave property under test is that no
             // instance is corrupted by a concurrent sibling — each output only
             // ever holds ITS OWN source's values, frozen at exactly the right one.
-            let expected = it.min(CAP) * 1000 + i as i64;
+            let expected = it.min(index_value(DROP_NEWEST_CAPACITY)) * 1000 + index_value(i);
             assert_eq!(
                 out.get(),
                 expected,
@@ -402,21 +427,22 @@ fn backpressure_drop_newest_wide_parallel_wave_correct() {
 #[test]
 fn backpressure_sample_latest_wide_parallel_wave_correct() {
     let _serial = scheduler_test_serial();
-    const ITERS: i64 = 200;
-
     let sources: Vec<Cell<i64, _>> = (0..WIDE).map(|_| Cell::new(0i64)).collect();
-    let outs: Vec<_> = sources.iter().map(|s| s.sample_latest()).collect();
+    let outs: Vec<_> = sources
+        .iter()
+        .map(|s| s.clone().sample_latest().materialize())
+        .collect();
 
-    for it in 1..=ITERS {
+    for it in 1..=STRUCTURAL_ITERS {
         batch(|| {
             for (i, s) in sources.iter().enumerate() {
-                s.set(it * 1000 + i as i64);
+                s.set(it * 1000 + index_value(i));
             }
         });
         for (i, out) in outs.iter().enumerate() {
             assert_eq!(
                 out.get(),
-                it * 1000 + i as i64,
+                it * 1000 + index_value(i),
                 "sample_latest instance {i} wrong under a wide wave (iter {it})"
             );
         }
@@ -442,19 +468,19 @@ fn concat_wide_parallel_wave_both_sides_correct() {
     let outs: Vec<_> = firsts
         .iter()
         .zip(seconds.iter())
-        .map(|(f, s)| f.concat(s))
+        .map(|(f, s)| f.clone().concat(s.clone()).materialize())
         .collect();
 
     // Phase 1: drive the FIRST input side under a wide wave.
     batch(|| {
         for (i, f) in firsts.iter().enumerate() {
-            f.set(5000 + i as i64);
+            f.set(5000 + index_value(i));
         }
     });
     for (i, out) in outs.iter().enumerate() {
         assert_eq!(
             out.get(),
-            5000 + i as i64,
+            5000 + index_value(i),
             "concat instance {i} wrong on the first-input side under a wide wave"
         );
     }
@@ -468,13 +494,13 @@ fn concat_wide_parallel_wave_both_sides_correct() {
     // Phase 2: drive the SECOND input side under a wide wave.
     batch(|| {
         for (i, s) in seconds.iter().enumerate() {
-            s.set(6000 + i as i64);
+            s.set(6000 + index_value(i));
         }
     });
     for (i, out) in outs.iter().enumerate() {
         assert_eq!(
             out.get(),
-            6000 + i as i64,
+            6000 + index_value(i),
             "concat instance {i} wrong on the second-input side after the completion hand-off"
         );
     }
@@ -487,8 +513,6 @@ fn concat_wide_parallel_wave_both_sides_correct() {
 #[test]
 fn cold_wide_parallel_wave_settles_some() {
     let _serial = scheduler_test_serial();
-    const ITERS: i64 = 200;
-
     let sources: Vec<Cell<i64, _>> = (0..WIDE).map(|_| Cell::new(0i64)).collect();
     let outs: Vec<_> = sources
         .iter()
@@ -501,16 +525,16 @@ fn cold_wide_parallel_wave_settles_some() {
         assert_eq!(out.get(), None, "cold instance {i} should start None");
     }
 
-    for it in 1..=ITERS {
+    for it in 1..=STRUCTURAL_ITERS {
         batch(|| {
             for (i, s) in sources.iter().enumerate() {
-                s.set(it * 1000 + i as i64);
+                s.set(it * 1000 + index_value(i));
             }
         });
         for (i, out) in outs.iter().enumerate() {
             assert_eq!(
                 out.get(),
-                Some(Arc::new(it * 1000 + i as i64)),
+                Some(Arc::new(it * 1000 + index_value(i))),
                 "cold instance {i} settled wrong under a wide wave (iter {it})"
             );
         }
@@ -525,8 +549,6 @@ fn cold_wide_parallel_wave_settles_some() {
 #[test]
 fn finalize_wide_parallel_wave_passthrough_and_terminal() {
     let _serial = scheduler_test_serial();
-    const ITERS: i64 = 200;
-
     let flags: Vec<Arc<AtomicI64>> = (0..WIDE).map(|_| Arc::new(AtomicI64::new(0))).collect();
     let sources: Vec<Cell<i64, _>> = (0..WIDE).map(|_| Cell::new(0i64)).collect();
     let outs: Vec<_> = sources
@@ -542,16 +564,16 @@ fn finalize_wide_parallel_wave_passthrough_and_terminal() {
         })
         .collect();
 
-    for it in 1..=ITERS {
+    for it in 1..=STRUCTURAL_ITERS {
         batch(|| {
             for (i, s) in sources.iter().enumerate() {
-                s.set(it * 1000 + i as i64);
+                s.set(it * 1000 + index_value(i));
             }
         });
         for (i, out) in outs.iter().enumerate() {
             assert_eq!(
                 out.get(),
-                it * 1000 + i as i64,
+                it * 1000 + index_value(i),
                 "finalize instance {i} passed a wrong value under a wide wave (iter {it})"
             );
         }
@@ -577,21 +599,22 @@ fn finalize_wide_parallel_wave_passthrough_and_terminal() {
 #[test]
 fn retry_wide_parallel_wave_value_passthrough() {
     let _serial = scheduler_test_serial();
-    const ITERS: i64 = 200;
-
     let sources: Vec<Cell<i64, _>> = (0..WIDE).map(|_| Cell::new(0i64)).collect();
-    let outs: Vec<_> = sources.iter().map(|s| s.retry(1_000)).collect();
+    let outs: Vec<_> = sources
+        .iter()
+        .map(|s| s.clone().retry(1_000).materialize())
+        .collect();
 
-    for it in 1..=ITERS {
+    for it in 1..=STRUCTURAL_ITERS {
         batch(|| {
             for (i, s) in sources.iter().enumerate() {
-                s.set(it * 1000 + i as i64);
+                s.set(it * 1000 + index_value(i));
             }
         });
         for (i, out) in outs.iter().enumerate() {
             assert_eq!(
                 out.get(),
-                it * 1000 + i as i64,
+                it * 1000 + index_value(i),
                 "retry instance {i} passed a wrong value under a wide wave (iter {it})"
             );
         }
@@ -608,17 +631,15 @@ fn retry_wide_parallel_wave_value_passthrough() {
 #[test]
 fn parallel_wide_parallel_input_wave_correct() {
     let _serial = scheduler_test_serial();
-    const ITERS: i64 = 200;
-
     let sources: Vec<Cell<i64, _>> = (0..WIDE).map(|_| Cell::new(0i64)).collect();
-    let cells: Vec<_> = sources.iter().map(|s| s.parallel()).collect();
+    let cells: Vec<_> = sources.iter().map(hyphae::ParallelExt::parallel).collect();
 
     let slots: Vec<Arc<AtomicI64>> = (0..WIDE)
         .map(|_| Arc::new(AtomicI64::new(i64::MIN)))
         .collect();
     let mut guards = Vec::new();
-    for (i, cell) in cells.iter().enumerate() {
-        let slot = slots[i].clone();
+    for (cell, slot) in cells.iter().zip(&slots) {
+        let slot = slot.clone();
         guards.push(cell.subscribe(move |sig| {
             if let Signal::Value(v) = sig {
                 slot.store(**v, Ordering::SeqCst);
@@ -626,10 +647,10 @@ fn parallel_wide_parallel_input_wave_correct() {
         }));
     }
 
-    for it in 1..=ITERS {
+    for it in 1..=STRUCTURAL_ITERS {
         batch(|| {
             for (i, s) in sources.iter().enumerate() {
-                s.set(it * 1000 + i as i64);
+                s.set(it * 1000 + index_value(i));
             }
         });
         // parallel's fan-out is synchronous within the wave op, so all slots
@@ -637,7 +658,7 @@ fn parallel_wide_parallel_input_wave_correct() {
         for (i, slot) in slots.iter().enumerate() {
             assert_eq!(
                 slot.load(Ordering::SeqCst),
-                it * 1000 + i as i64,
+                it * 1000 + index_value(i),
                 "parallel instance {i} delivered a wrong value under a wide wave (iter {it})"
             );
         }

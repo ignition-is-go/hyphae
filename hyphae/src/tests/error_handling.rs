@@ -1,5 +1,5 @@
 use crate::{
-    CatchErrorExt, Cell, Gettable, MapErrExt, MapOkExt, MaterializeDefinite, Mutable, TryMapExt,
+    CatchErrorExt, Cell, Gettable, MapErrExt, MapOkExt, Materialize, Mutable, TryMapExt,
     UnwrapOrExt,
 };
 
@@ -28,7 +28,7 @@ fn test_try_map_failure() {
         .clone()
         .try_map(|v| -> Result<u32, &str> {
             if *v >= 0 {
-                Ok(*v as u32)
+                u32::try_from(*v).map_err(|_| "must be non-negative")
             } else {
                 Err("must be non-negative")
             }
@@ -125,7 +125,7 @@ fn test_catch_error_with_error_info() {
     let source: Cell<Result<String, i32>, _> = Cell::new(Err(404));
     let recovered = source
         .clone()
-        .catch_error(|code| format!("Error {}", code))
+        .catch_error(|code| format!("Error {code}"))
         .materialize();
 
     assert_eq!(recovered.get(), "Error 404");
@@ -177,7 +177,7 @@ fn test_unwrap_or_else_with_err() {
     let source: Cell<Result<String, i32>, _> = Cell::new(Err(404));
     let unwrapped = source
         .clone()
-        .unwrap_or_else(|code| format!("default-{}", code))
+        .unwrap_or_else(|code| format!("default-{code}"))
         .materialize();
 
     assert_eq!(unwrapped.get(), "default-404");

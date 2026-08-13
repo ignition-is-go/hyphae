@@ -29,12 +29,14 @@
 //! [`Empty`](crate::pipeline::Empty) pipelines are not share-able yet — sharing
 //! a may-be-empty stream needs additional design for the seed contract.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use uuid::Uuid;
 
 use crate::{
-    pipeline::{Definite, MaterializeDefinite, Pipeline, PipelineInstall, PipelineSeed},
+    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed},
     signal::Signal,
     subscription::SubscriptionGuard,
     traits::CellValue,
@@ -119,10 +121,10 @@ impl<T: CellValue> SharedPipelineInner<T> {
 /// # Example
 ///
 /// ```
-/// use hyphae::{Cell, Gettable, MapExt, MaterializeDefinite, Mutable, PipelineShareExt};
+/// use hyphae::{Cell, Gettable, MapExt, Materialize, Mutable, PipelineShareExt};
 ///
 /// let src = Cell::new(1u64);
-/// let shared = src.clone().map(|x| x * 2).share();
+/// let shared = src.clone().map(|x| x * 2).materialize().share();
 ///
 /// // Cloning the share is cheap — no upstream subscription yet.
 /// let m1 = shared.clone().map(|x| x + 1).materialize();
@@ -182,11 +184,7 @@ impl<T: CellValue> PipelineInstall<T> for SharedPipeline<T> {
         //    after construction (or after a drain-and-revive race) wins; the
         //    others see `Some(_)` and bail out.
         {
-            let mut guard_slot = self
-                .inner
-                .upstream_guard
-                .lock()
-                .expect("share upstream_guard poisoned");
+            let mut guard_slot = self.inner.upstream_guard.lock();
             if guard_slot.is_none() {
                 let weak = Arc::downgrade(&self.inner);
                 let fanout: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
@@ -208,20 +206,14 @@ impl<T: CellValue> PipelineInstall<T> for SharedPipeline<T> {
 
         // 3. Build a SubscriptionGuard whose Drop removes this subscriber and
         //    releases the upstream guard if it was the last one.
-        let weak = Arc::downgrade(&self.inner);
+        let inner = Arc::clone(&self.inner);
         SubscriptionGuard::from_callback(move || {
-            let Some(inner) = weak.upgrade() else {
-                return;
-            };
             let remaining = inner.remove_subscriber(id);
             if remaining == 0 {
-                let mut slot = inner
-                    .upstream_guard
-                    .lock()
-                    .expect("share upstream_guard poisoned");
-                let _drop_outside_lock = slot.take();
+                let mut slot = inner.upstream_guard.lock();
+                let drop_outside_lock = slot.take();
                 drop(slot);
-                drop(_drop_outside_lock);
+                drop(drop_outside_lock);
             }
         })
     }
@@ -229,12 +221,6 @@ impl<T: CellValue> PipelineInstall<T> for SharedPipeline<T> {
 
 #[allow(private_bounds)]
 impl<T: CellValue> Pipeline<T, Definite> for SharedPipeline<T> {}
-
-impl<T: CellValue> MaterializeDefinite<T> for SharedPipeline<T> {
-    // Default body is correct: allocate a Cell, install through
-    // PipelineInstall above (which adds one entry to the share-point
-    // subscriber list and, on first install, one upstream subscription).
-}
 
 /// Extension trait that adds [`share`](PipelineShareExt::share) to any
 /// [`Definite`] [`Pipeline`].

@@ -6,9 +6,11 @@ use std::{
     thread,
 };
 
-use crate::{
-    Cell, Gettable, MapExt, MaterializeDefinite, MaterializeEmpty, Mutable, Signal, Watchable,
-};
+use crate::{Cell, Gettable, MapExt, Materialize, Mutable, Signal, Watchable, WatchableResult};
+
+fn u64_value<T: TryInto<u64>>(value: T) -> u64 {
+    value.try_into().unwrap_or(u64::MAX)
+}
 
 // ============================================================================
 // Concurrent Write Tests
@@ -32,7 +34,7 @@ fn test_concurrent_writers() {
         .collect();
 
     for handle in handles {
-        handle.join().unwrap();
+        assert!(handle.join().is_ok(), "writer thread panicked");
     }
 
     // Cell should have some value (last write wins, but we don't know which)
@@ -53,14 +55,14 @@ fn test_concurrent_writers_with_barrier() {
             thread::spawn(move || {
                 barrier.wait(); // Synchronize all threads to start at once
                 for i in 0..1000 {
-                    cell.set((thread_id * 1000 + i) as u64);
+                    cell.set(u64_value(thread_id * 1000 + i));
                 }
             })
         })
         .collect();
 
     for handle in handles {
-        handle.join().unwrap();
+        assert!(handle.join().is_ok(), "barrier writer thread panicked");
     }
 
     // Should complete without panics or deadlocks
@@ -87,7 +89,7 @@ fn test_concurrent_readers_and_writers() {
         let cell = cell.clone();
         handles.push(thread::spawn(move || {
             for i in 0..operations {
-                cell.set(i as u64);
+                cell.set(u64_value(i));
             }
         }));
     }
@@ -105,12 +107,12 @@ fn test_concurrent_readers_and_writers() {
     }
 
     for handle in handles {
-        handle.join().unwrap();
+        assert!(handle.join().is_ok(), "reader or writer thread panicked");
     }
 
     assert_eq!(
         read_count.load(Ordering::Relaxed),
-        (num_readers * operations) as u64
+        u64_value(num_readers * operations)
     );
 }
 
@@ -142,7 +144,7 @@ fn test_concurrent_subscribe_unsubscribe() {
         .collect();
 
     for handle in handles {
-        handle.join().unwrap();
+        assert!(handle.join().is_ok(), "subscriber thread panicked");
     }
 
     // Should complete without panics
@@ -179,14 +181,17 @@ fn test_concurrent_subscribe_while_notifying() {
         let cell = cell.clone();
         handles.push(thread::spawn(move || {
             for i in 0..operations {
-                cell.set(i as u64);
+                cell.set(u64_value(i));
                 thread::yield_now();
             }
         }));
     }
 
     for handle in handles {
-        handle.join().unwrap();
+        assert!(
+            handle.join().is_ok(),
+            "subscriber or writer thread panicked"
+        );
     }
 
     // Should have received some notifications
@@ -217,26 +222,11 @@ fn test_concurrent_subscribe_while_notifying() {
 /// Each round syncs a subscriber and a setter on a barrier and widens the
 /// window with a brief spin in the seed callback to make the race observable.
 ///
-/// NOTE: the assertion is "observed `R` at least once", not "last-observed ==
-/// `R`". A rarer out-of-order tail remains — the seed (older value) can execute
-/// after a concurrent notify(`R`), leaving the FINAL observed value stale on a
-/// source that then goes quiet. That self-heals on any subsequent emit (so it
-/// is invisible to continuous sources like clocks) and fully closing it would
-/// need a per-subscriber version gate on the notify hot path. The load-bearing
-/// bug — permanently MISSING the update — is what this guards.
-///
-/// Pre-fix the "observed at least once" assertion failed on ~3-5% of rounds.
-/// Post-`insert-before-seed` it is reliably green in isolation and dramatically
-/// less frequent, but STILL fails occasionally under heavy parallel load (e.g.
-/// the full test suite). That residual indicates `insert-before-seed` alone is
-/// not a complete fix — the subscribe/notify path needs a deeper change (a
-/// per-subscriber version gate, or store+snapshot and read+insert made mutually
-/// atomic) to fully guarantee no missed update under contention. Left #[ignore]
-/// as an on-demand characterization until that lands; run with `--ignored`.
+/// Notifications that race the initial replay are queued by the subscriber and
+/// drained after that replay, so an older seed can no longer overwrite a newer
+/// value. A second barrier keeps the subscription alive until the setter has
+/// definitely completed; timing sleeps cannot prove that property.
 #[test]
-#[ignore = "characterizes the subscribe/notify strand; insert-before-seed reduces \
-            but does not fully eliminate it under heavy contention — needs the \
-            deeper subscriber-registry fix. Run with --ignored."]
 fn subscribe_racing_set_never_strands() {
     const ROUNDS: usize = 3_000;
     const R: u64 = 42;
@@ -246,11 +236,13 @@ fn subscribe_racing_set_never_strands() {
         let saw_target = Arc::new(AtomicBool::new(false));
         let first = Arc::new(AtomicBool::new(true));
         let barrier = Arc::new(Barrier::new(2));
+        let completed = Arc::new(Barrier::new(2));
 
         let sub_cell = cell.clone();
         let sub_saw = saw_target.clone();
         let sub_first = first.clone();
         let sub_barrier = barrier.clone();
+        let sub_completed = completed.clone();
         let sub = thread::spawn(move || {
             sub_barrier.wait();
             let guard = sub_cell.subscribe(move |sig| {
@@ -268,19 +260,21 @@ fn subscribe_racing_set_never_strands() {
                     }
                 }
             });
-            thread::sleep(std::time::Duration::from_micros(300));
+            sub_completed.wait();
             drop(guard);
         });
 
         let set_cell = cell.clone();
         let set_barrier = barrier.clone();
+        let set_completed = completed.clone();
         let setter = thread::spawn(move || {
             set_barrier.wait();
             set_cell.set(R);
+            set_completed.wait();
         });
 
-        sub.join().unwrap();
-        setter.join().unwrap();
+        assert!(sub.join().is_ok(), "subscriber thread panicked");
+        assert!(setter.join().is_ok(), "setter thread panicked");
 
         assert_eq!(
             cell.get(),
@@ -292,6 +286,65 @@ fn subscribe_racing_set_never_strands() {
             "round {round}: live subscription MISSED the update entirely — a \
              subscribe racing a concurrent set() never observed {R}. The \
              subscribe/notify insert-before-seed ordering has regressed."
+        );
+    }
+}
+
+/// The fallible subscription path must provide the same insert-before-replay
+/// guarantee as `Watchable::subscribe`; otherwise an update can disappear in
+/// the replay-to-insert gap and leave the subscriber permanently stale.
+#[test]
+fn subscribe_result_racing_set_never_strands() {
+    const ROUNDS: usize = 1_000;
+    const TARGET: u64 = 42;
+
+    for round in 0..ROUNDS {
+        let cell = Cell::new(0u64);
+        let saw_target = Arc::new(AtomicBool::new(false));
+        let first = Arc::new(AtomicBool::new(true));
+        let start = Arc::new(Barrier::new(2));
+        let completed = Arc::new(Barrier::new(2));
+
+        let sub_cell = cell.clone();
+        let sub_saw = saw_target.clone();
+        let sub_first = first.clone();
+        let sub_start = start.clone();
+        let sub_completed = completed.clone();
+        let subscriber = thread::spawn(move || {
+            sub_start.wait();
+            let guard = sub_cell.subscribe_result(move |signal| {
+                if let Signal::Value(value) = signal {
+                    if **value == TARGET {
+                        sub_saw.store(true, Ordering::SeqCst);
+                    }
+                    if sub_first.swap(false, Ordering::SeqCst) {
+                        let began = std::time::Instant::now();
+                        while began.elapsed() < std::time::Duration::from_micros(120) {
+                            std::hint::spin_loop();
+                        }
+                    }
+                }
+                Ok(())
+            });
+            sub_completed.wait();
+            drop(guard);
+        });
+
+        let set_cell = cell.clone();
+        let set_start = start.clone();
+        let set_completed = completed.clone();
+        let setter = thread::spawn(move || {
+            set_start.wait();
+            set_cell.set(TARGET);
+            set_completed.wait();
+        });
+
+        assert!(subscriber.join().is_ok(), "subscriber thread panicked");
+        assert!(setter.join().is_ok(), "setter thread panicked");
+
+        assert!(
+            saw_target.load(Ordering::SeqCst),
+            "round {round}: fallible subscription missed the racing update"
         );
     }
 }
@@ -311,10 +364,10 @@ fn test_concurrent_derived_chains() {
             let mapped = source.clone().map(|x| x * 2).materialize();
             let count = Arc::new(AtomicU64::new(0));
             let cnt = count.clone();
-            let _guard = mapped.subscribe(move |_| {
+            let guard = mapped.subscribe(move |_| {
                 cnt.fetch_add(1, Ordering::Relaxed);
             });
-            (mapped, count, _guard)
+            (mapped, count, guard)
         })
         .collect();
 
@@ -324,14 +377,14 @@ fn test_concurrent_derived_chains() {
             let source = source.clone();
             thread::spawn(move || {
                 for i in 0..updates {
-                    source.set((thread_id * updates + i) as u64);
+                    source.set(u64_value(thread_id * updates + i));
                 }
             })
         })
         .collect();
 
     for handle in handles {
-        handle.join().unwrap();
+        assert!(handle.join().is_ok(), "derived-chain writer panicked");
     }
 
     // Each chain should have received notifications
@@ -359,7 +412,7 @@ fn test_concurrent_map_chain_integrity() {
             let checks = checks.clone();
             thread::spawn(move || {
                 for i in 0..operations {
-                    source.set(i as u64);
+                    source.set(u64_value(i));
                     let result = mapped.get();
                     checks.fetch_add(1, Ordering::Relaxed);
                     // Result should be (some_value * 2 + 1), always odd
@@ -372,7 +425,7 @@ fn test_concurrent_map_chain_integrity() {
         .collect();
 
     for handle in handles {
-        handle.join().unwrap();
+        assert!(handle.join().is_ok(), "map-chain worker panicked");
     }
 
     assert_eq!(
@@ -382,7 +435,7 @@ fn test_concurrent_map_chain_integrity() {
     );
     assert_eq!(
         checks.load(Ordering::Relaxed),
-        (num_threads * operations) as u64
+        u64_value(num_threads * operations)
     );
 }
 
@@ -427,13 +480,13 @@ fn stress_many_subscribers() {
     // Initial subscription calls
     assert_eq!(
         total_notifications.load(Ordering::Relaxed),
-        num_subscribers as u64
+        u64_value(num_subscribers)
     );
 
     cell.set(1);
     assert_eq!(
         total_notifications.load(Ordering::Relaxed),
-        (num_subscribers * 2) as u64
+        u64_value(num_subscribers * 2)
     );
 
     drop(guards);
@@ -472,7 +525,7 @@ fn stress_wide_fan_out() {
 
     let counts: Vec<_> = (0..fan_out)
         .map(|i| {
-            let mapped = source.clone().map(move |x| x + i as u64).materialize();
+            let mapped = source.clone().map(move |x| x + u64_value(i)).materialize();
             let count = Arc::new(AtomicU64::new(0));
             let cnt = count.clone();
             let guard = mapped.subscribe(move |_| {
@@ -551,9 +604,6 @@ fn test_subscriber_sees_consistent_state() {
         })
         .materialize();
 
-    let inconsistencies = Arc::new(AtomicU64::new(0));
-    let _inc = inconsistencies.clone();
-
     let _guard = sum.subscribe(move |signal| {
         if let Signal::Value(v) = signal {
             // Value should always be even (both a and b updated together)
@@ -631,7 +681,7 @@ fn test_concurrent_complete_signals() {
         Signal::Complete => {
             cc.fetch_add(1, Ordering::SeqCst);
         }
-        _ => {}
+        Signal::Error(_) => {}
     });
 
     // Send more than 5 values from multiple threads
@@ -648,7 +698,7 @@ fn test_concurrent_complete_signals() {
         .collect();
 
     for handle in handles {
-        handle.join().unwrap();
+        assert!(handle.join().is_ok(), "completion writer panicked");
     }
 
     // Should receive exactly one Complete signal
@@ -687,7 +737,7 @@ fn barrage_all_operations_concurrent() {
                     match op {
                         0 => {
                             // Write
-                            source.set((thread_id * 1000 + i) as u64);
+                            source.set(u64_value(thread_id * 1000 + i));
                         }
                         1 => {
                             // Read
@@ -715,7 +765,7 @@ fn barrage_all_operations_concurrent() {
                                 .materialize();
                             let _ = scanned.get();
                         }
-                        _ => unreachable!(),
+                        _ => return,
                     }
                     total_ops.fetch_add(1, Ordering::Relaxed);
                 }
@@ -732,7 +782,7 @@ fn barrage_all_operations_concurrent() {
     assert_eq!(errors.load(Ordering::Relaxed), 0, "Some threads panicked");
     assert_eq!(
         total_ops.load(Ordering::Relaxed),
-        (num_threads * ops_per_thread) as u64
+        u64_value(num_threads * ops_per_thread)
     );
 }
 
@@ -761,8 +811,8 @@ fn barrage_rapid_chain_creation_destruction() {
                         cnt.fetch_add(1, Ordering::Relaxed);
                     });
 
-                    source.set(i as u64);
-                    source.set((i + 1) as u64);
+                    source.set(u64_value(i));
+                    source.set(u64_value(i + 1));
 
                     drop(guard);
                     // chain also dropped here
@@ -772,7 +822,7 @@ fn barrage_rapid_chain_creation_destruction() {
         .collect();
 
     for handle in handles {
-        handle.join().expect("Thread panicked");
+        assert!(handle.join().is_ok(), "chain worker panicked");
     }
 }
 
@@ -797,7 +847,7 @@ fn barrage_subscriber_explosion() {
 
         // Hammer updates while subscribers are active
         for i in 0..updates_per_wave {
-            source.set((wave * updates_per_wave + i) as u64);
+            source.set(u64_value(wave * updates_per_wave + i));
         }
 
         // All guards dropped here - mass unsubscribe
@@ -830,7 +880,7 @@ fn barrage_interleaved_operators() {
                     0 => {
                         let p = source.map(|x| x * 2).materialize().take(100).materialize();
                         let _g = p.subscribe(move |s| {
-                            if let Signal::Complete = s {
+                            if matches!(s, Signal::Complete) {
                                 cc.fetch_add(1, Ordering::Relaxed);
                             }
                         });
@@ -851,7 +901,6 @@ fn barrage_interleaved_operators() {
                     }
                     2 => {
                         let p = source
-                            .clone()
                             .scan(0u64, |acc, x| acc.wrapping_add(*x))
                             .materialize();
                         Box::new(move || p.get())
@@ -869,7 +918,7 @@ fn barrage_interleaved_operators() {
                             .materialize();
                         Box::new(move || p.get().unwrap_or(0))
                     }
-                    _ => unreachable!(),
+                    _ => Box::new(|| 0),
                 };
 
                 // Read many times while source is being updated
@@ -887,7 +936,7 @@ fn barrage_interleaved_operators() {
     }
 
     for handle in handles {
-        handle.join().expect("Thread panicked");
+        assert!(handle.join().is_ok(), "operator worker panicked");
     }
 }
 
@@ -899,7 +948,12 @@ fn barrage_join_chaos() {
     let b = Cell::new(0u64);
     let c = Cell::new(0u64);
 
-    let joined = a.join(&b).join(&c);
+    let joined = a
+        .clone()
+        .join(b.clone())
+        .materialize()
+        .join(c.clone())
+        .materialize();
 
     let read_count = Arc::new(AtomicU64::new(0));
     let barrier = Arc::new(Barrier::new(4));
@@ -907,7 +961,7 @@ fn barrage_join_chaos() {
     let mut handles = Vec::new();
 
     // Writer for a
-    let a_clone = a.clone();
+    let a_clone = a;
     let b1 = barrier.clone();
     handles.push(thread::spawn(move || {
         b1.wait();
@@ -917,7 +971,7 @@ fn barrage_join_chaos() {
     }));
 
     // Writer for b
-    let b_clone = b.clone();
+    let b_clone = b;
     let b2 = barrier.clone();
     handles.push(thread::spawn(move || {
         b2.wait();
@@ -927,7 +981,7 @@ fn barrage_join_chaos() {
     }));
 
     // Writer for c
-    let c_clone = c.clone();
+    let c_clone = c;
     let b3 = barrier.clone();
     handles.push(thread::spawn(move || {
         b3.wait();
@@ -937,9 +991,9 @@ fn barrage_join_chaos() {
     }));
 
     // Reader of joined
-    let joined_clone = joined.clone();
+    let joined_clone = joined;
     let rc = read_count.clone();
-    let b4 = barrier.clone();
+    let b4 = barrier;
     handles.push(thread::spawn(move || {
         b4.wait();
         for _ in 0..10000 {
@@ -949,7 +1003,7 @@ fn barrage_join_chaos() {
     }));
 
     for handle in handles {
-        handle.join().expect("Thread panicked");
+        assert!(handle.join().is_ok(), "join worker panicked");
     }
 
     assert_eq!(read_count.load(Ordering::Relaxed), 10000);
@@ -986,14 +1040,14 @@ fn barrage_notification_storm() {
             let source = source.clone();
             thread::spawn(move || {
                 for i in 0..updates_per_writer {
-                    source.set((writer_id * updates_per_writer + i) as u64);
+                    source.set(u64_value(writer_id * updates_per_writer + i));
                 }
             })
         })
         .collect();
 
     for handle in handles {
-        handle.join().expect("Thread panicked");
+        assert!(handle.join().is_ok(), "notification writer panicked");
     }
 
     // Work should have been done
@@ -1030,8 +1084,8 @@ fn barrage_mixed_lifetimes() {
                     });
 
                     // Trigger updates
-                    source.set(i as u64);
-                    source.set((i + 1) as u64);
+                    source.set(u64_value(i));
+                    source.set(u64_value(i + 1));
 
                     // Short-lived guard and temp dropped
                     drop(guard);
@@ -1041,7 +1095,7 @@ fn barrage_mixed_lifetimes() {
         .collect();
 
     for handle in handles {
-        handle.join().expect("Thread panicked");
+        assert!(handle.join().is_ok(), "lifetime worker panicked");
     }
 
     // Long-lived subscriber should have received many notifications
@@ -1058,7 +1112,7 @@ fn barrage_extreme_fan_out() {
     // Create massive fan-out
     let guards: Vec<_> = (0..fan_out)
         .map(|i| {
-            let derived = source.clone().map(move |x| x + i as u64).materialize();
+            let derived = source.clone().map(move |x| x + u64_value(i)).materialize();
             let tn = total_notifications.clone();
             derived.subscribe(move |_| {
                 tn.fetch_add(1, Ordering::Relaxed);
@@ -1073,7 +1127,7 @@ fn barrage_extreme_fan_out() {
 
     let total = total_notifications.load(Ordering::Relaxed);
     // Should have: fan_out initial + fan_out * 1000 updates
-    assert_eq!(total, fan_out as u64 * 1001);
+    assert_eq!(total, u64_value(fan_out) * 1001);
 
     drop(guards);
 }
@@ -1107,7 +1161,7 @@ fn barrage_cascade_updates() {
         .collect();
 
     for handle in handles {
-        handle.join().expect("Thread panicked");
+        assert!(handle.join().is_ok(), "cascade worker panicked");
     }
 
     // Every update should cascade through
@@ -1137,7 +1191,7 @@ fn barrage_worst_case_contention() {
 
                 for i in 0..ops_per_thread {
                     if i % 2 == 0 {
-                        cell.set((thread_id * ops_per_thread + i) as u64);
+                        cell.set(u64_value(thread_id * ops_per_thread + i));
                         writes.fetch_add(1, Ordering::Relaxed);
                     } else {
                         let _ = cell.get();
@@ -1149,11 +1203,11 @@ fn barrage_worst_case_contention() {
         .collect();
 
     for handle in handles {
-        handle.join().expect("Thread panicked");
+        assert!(handle.join().is_ok(), "contention worker panicked");
     }
 
     let writes = total_writes.load(Ordering::Relaxed);
     let reads = total_reads.load(Ordering::Relaxed);
 
-    assert_eq!(writes + reads, (num_threads * ops_per_thread) as u64);
+    assert_eq!(writes + reads, u64_value(num_threads * ops_per_thread));
 }

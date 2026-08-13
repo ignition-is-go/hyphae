@@ -12,7 +12,24 @@ authors = ["Trevor"]
 license = "MIT OR Apache-2.0"
 
 [workspace.lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
 disallowed_types = "deny"
+# Panic-prone operations are forbidden across production code, tests, examples,
+# and benchmarks.
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+unreachable = "deny"
+unimplemented = "deny"
+unchecked_time_subtraction = "deny"
+todo = "deny"
+string_slice = "deny"
+panic_in_result_fn = "deny"
+panic = "deny"
+exit = "deny"
+as_conversions = "deny"
 # Reactive combinators and keyed signal maps nest generics deeply; the layered
 # types are the natural shape here, so don't fail the lint pipeline on them.
 type_complexity = "allow"

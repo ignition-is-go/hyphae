@@ -42,15 +42,11 @@ where
     V: CellValue,
 {
     fn clone(&self) -> Self {
-        *self
+        Self {
+            keys: self.keys,
+            values: self.values,
+        }
     }
-}
-
-impl<K, V> Copy for MapGroup<K, V>
-where
-    K: Hash + Eq + CellValue,
-    V: CellValue,
-{
 }
 
 impl<K, V> MapGroup<K, V>
@@ -67,6 +63,7 @@ where
 
     /// Reactive list of keys. Use with Leptos `<For>` to render one view per
     /// entry; it updates only on inserts/removals, not value changes.
+    #[must_use]
     pub fn keys(&self) -> Signal<Vec<K>> {
         self.keys.into()
     }
@@ -107,6 +104,7 @@ where
     }
 
     /// Whether the group is empty (non-reactive).
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -186,7 +184,7 @@ where
     V: CellValue,
 {
     group: MapGroup<K, V>,
-    _guard: StoredValue<Option<SubscriptionGuard>>,
+    guard: StoredValue<Option<SubscriptionGuard>>,
 }
 
 impl<K, V> Clone for CellMapStore<K, V>
@@ -195,15 +193,11 @@ where
     V: CellValue,
 {
     fn clone(&self) -> Self {
-        *self
+        Self {
+            group: self.group.clone(),
+            guard: self.guard,
+        }
     }
-}
-
-impl<K, V> Copy for CellMapStore<K, V>
-where
-    K: Hash + Eq + CellValue,
-    V: CellValue,
-{
 }
 
 impl<K, V> Deref for CellMapStore<K, V>
@@ -227,11 +221,13 @@ where
         let group = MapGroup::new();
         // `subscribe_diffs` emits an `Initial` snapshot synchronously, so the
         // group is fully populated before this returns.
-        let guard = map.subscribe_diffs(move |diff| group.apply(diff));
-        on_cleanup(move || group.dispose());
+        let subscribed_group = group.clone();
+        let guard = map.subscribe_diffs(move |diff| subscribed_group.apply(diff));
+        let cleanup_group = group.clone();
+        on_cleanup(move || cleanup_group.dispose());
         Self {
             group,
-            _guard: StoredValue::new(Some(guard)),
+            guard: StoredValue::new(Some(guard)),
         }
     }
 }
@@ -246,7 +242,7 @@ where
 {
     parents: RwSignal<Vec<PK>>,
     groups: StoredValue<HashMap<PK, MapGroup<K, V>>>,
-    _guard: StoredValue<Option<SubscriptionGuard>>,
+    guard: StoredValue<Option<SubscriptionGuard>>,
 }
 
 impl<PK, K, V> Clone for NestedMapStore<PK, K, V>
@@ -256,16 +252,12 @@ where
     V: CellValue,
 {
     fn clone(&self) -> Self {
-        *self
+        Self {
+            parents: self.parents,
+            groups: self.groups,
+            guard: self.guard,
+        }
     }
-}
-
-impl<PK, K, V> Copy for NestedMapStore<PK, K, V>
-where
-    PK: Hash + Eq + CellValue,
-    K: Hash + Eq + CellValue,
-    V: CellValue,
-{
 }
 
 impl<PK, K, V> NestedMapStore<PK, K, V>
@@ -280,16 +272,16 @@ where
 
         let guard = nested.subscribe_grouped(move |pk, diff| {
             // Get-or-create the child group for this parent.
-            let (group, is_new) = match groups.with_value(|g| g.get(pk).copied()) {
-                Some(group) => (group, false),
-                None => {
+            let (group, is_new) = groups.with_value(|g| g.get(pk).cloned()).map_or_else(
+                || {
                     let group = MapGroup::new();
                     groups.update_value(|g| {
-                        g.insert(pk.clone(), group);
+                        g.insert(pk.clone(), group.clone());
                     });
                     (group, true)
-                }
-            };
+                },
+                |group| (group, false),
+            );
             if is_new {
                 parents.update(|p| p.push(pk.clone()));
             }
@@ -317,12 +309,13 @@ where
         Self {
             parents,
             groups,
-            _guard: StoredValue::new(Some(guard)),
+            guard: StoredValue::new(Some(guard)),
         }
     }
 
     /// Reactive list of parent keys. Drive a Leptos `<For>` from this to render
     /// one section per parent.
+    #[must_use]
     pub fn parents(&self) -> Signal<Vec<PK>> {
         self.parents.into()
     }
@@ -330,7 +323,7 @@ where
     /// The child [`MapGroup`] for `parent`, if any children are currently
     /// grouped under it.
     pub fn group(&self, parent: &PK) -> Option<MapGroup<K, V>> {
-        self.groups.with_value(|g| g.get(parent).copied())
+        self.groups.with_value(|g| g.get(parent).cloned())
     }
 }
 
@@ -454,11 +447,14 @@ mod tests {
             parents.sort();
             assert_eq!(parents, vec!["cust_a".to_string(), "cust_b".to_string()]);
 
-            let group_a = store.group(&"cust_a".to_string()).expect("group a");
-            assert_eq!(group_a.len(), 2);
-
-            let group_b = store.group(&"cust_b".to_string()).expect("group b");
-            assert_eq!(group_b.len(), 1);
+            assert_eq!(
+                store.group(&"cust_a".to_string()).map(|group| group.len()),
+                Some(2)
+            );
+            assert_eq!(
+                store.group(&"cust_b".to_string()).map(|group| group.len()),
+                Some(1)
+            );
         });
     }
 }

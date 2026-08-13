@@ -7,6 +7,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{cell_map::MapDiff, subscription::SubscriptionGuard, traits::CellValue};
 
+use super::ordered_set::OrderedSet;
+
 // Internal projection state — keys are workspace-trusted (entity IDs, etc.),
 // so we use FxHash for ~2-3× faster hashing than std's SipHash13.
 struct MapState<SK, SV, OK, OV>
@@ -17,7 +19,9 @@ where
     OV: CellValue,
 {
     source_rows: FxHashMap<SK, SV>,
-    source_output_keys: FxHashMap<SK, FxHashSet<OK>>,
+    source_order: OrderedSet<SK>,
+    source_output_keys: FxHashMap<SK, OrderedSet<OK>>,
+    output_owners: FxHashMap<OK, SK>,
     output_cache: FxHashMap<OK, OV>,
 }
 
@@ -31,7 +35,9 @@ where
     fn default() -> Self {
         Self {
             source_rows: FxHashMap::default(),
+            source_order: OrderedSet::default(),
             source_output_keys: FxHashMap::default(),
+            output_owners: FxHashMap::default(),
             output_cache: FxHashMap::default(),
         }
     }
@@ -39,28 +45,30 @@ where
 
 fn apply_source_diff<SK, SV>(
     source_rows: &mut FxHashMap<SK, SV>,
+    source_order: &mut OrderedSet<SK>,
     diff: &MapDiff<SK, SV>,
-    impacted: &mut FxHashSet<SK>,
+    impacted: &mut OrderedSet<SK>,
 ) where
     SK: Hash + Eq + CellValue,
     SV: CellValue,
 {
     if let MapDiff::Batch { changes } = diff {
         for change in changes {
-            apply_source_diff(source_rows, change, impacted);
+            apply_source_diff(source_rows, source_order, change, impacted);
         }
         return;
     }
 
     match diff {
         MapDiff::Initial { entries } => {
-            let previous: Vec<SK> = source_rows.keys().cloned().collect();
+            let previous: Vec<SK> = source_order.drain().collect();
             source_rows.clear();
             for key in previous {
                 impacted.insert(key);
             }
             for (key, value) in entries {
                 source_rows.insert(key.clone(), value.clone());
+                source_order.insert(key.clone());
                 impacted.insert(key.clone());
             }
         }
@@ -71,19 +79,21 @@ fn apply_source_diff<SK, SV>(
             ..
         } => {
             source_rows.insert(key.clone(), value.clone());
+            source_order.insert(key.clone());
             impacted.insert(key.clone());
         }
         MapDiff::Remove { key, .. } => {
             source_rows.remove(key);
+            source_order.remove(key);
             impacted.insert(key.clone());
         }
-        MapDiff::Batch { .. } => unreachable!("batch handled above"),
+        MapDiff::Batch { .. } => {}
     }
 }
 
 fn recompute_impacted<SK, SV, OK, OV, FO>(
     state: &mut MapState<SK, SV, OK, OV>,
-    impacted: FxHashSet<SK>,
+    mut impacted: OrderedSet<SK>,
     compute_rows: &FO,
 ) -> Vec<MapDiff<OK, OV>>
 where
@@ -93,48 +103,53 @@ where
     OV: CellValue,
     FO: Fn(&SK, &SV) -> Vec<(OK, OV)>,
 {
-    let mut changes: Vec<MapDiff<OK, OV>> = Vec::new();
+    let impacted: Vec<SK> = impacted.drain().collect();
+    let impacted_set: FxHashSet<SK> = impacted.iter().cloned().collect();
+    let mut claimed_outputs = FxHashMap::<OK, SK>::default();
+    let mut computed = Vec::with_capacity(impacted.len());
 
     for source_key in impacted {
-        let previous_output_keys = state
+        let mut desired_keys = OrderedSet::default();
+        let mut desired_rows = Vec::new();
+        if let Some(source_value) = state.source_rows.get(&source_key) {
+            for (output_key, output_value) in compute_rows(&source_key, source_value) {
+                assert!(
+                    desired_keys.insert(output_key.clone()),
+                    "map query unique-output-key contract violated within one source row"
+                );
+                let previous_claim = claimed_outputs.insert(output_key.clone(), source_key.clone());
+                assert!(
+                    previous_claim.is_none(),
+                    "map query unique-output-key contract violated across source rows"
+                );
+                desired_rows.push((output_key, output_value));
+            }
+        }
+        computed.push((source_key, desired_keys, desired_rows));
+    }
+
+    for (source_key, _, desired_rows) in &computed {
+        for (output_key, _) in desired_rows {
+            if let Some(owner) = state.output_owners.get(output_key) {
+                assert!(
+                    owner == source_key || impacted_set.contains(owner),
+                    "map query unique-output-key contract violated by an existing source row"
+                );
+            }
+        }
+    }
+
+    let mut changes = Vec::new();
+    for (source_key, desired_keys, _) in &computed {
+        let previous_keys = state
             .source_output_keys
-            .remove(&source_key)
+            .remove(source_key)
             .unwrap_or_default();
-
-        let Some(source_value) = state.source_rows.get(&source_key) else {
-            // Fast-path for removes/absent rows that were never projected:
-            // no previous output keys means no downstream work at all.
-            if previous_output_keys.is_empty() {
-                continue;
-            }
-            for stale_key in previous_output_keys {
-                if let Some(old_value) = state.output_cache.remove(&stale_key) {
-                    changes.push(MapDiff::Remove {
-                        key: stale_key,
-                        old_value,
-                    });
-                }
-            }
-            continue;
-        };
-
-        let mut desired_rows: FxHashMap<OK, OV> = FxHashMap::default();
-        for (out_key, out_value) in compute_rows(&source_key, source_value) {
-            desired_rows.insert(out_key, out_value);
-        }
-
-        // If nothing was previously projected and nothing is now projected,
-        // skip all downstream bookkeeping.
-        if previous_output_keys.is_empty() && desired_rows.is_empty() {
-            continue;
-        }
-
-        let desired_keys: FxHashSet<OK> = desired_rows.keys().cloned().collect();
-
-        for stale_key in previous_output_keys
+        for stale_key in previous_keys
             .iter()
             .filter(|output_key| !desired_keys.contains(*output_key))
         {
+            state.output_owners.remove(stale_key);
             if let Some(old_value) = state.output_cache.remove(stale_key) {
                 changes.push(MapDiff::Remove {
                     key: stale_key.clone(),
@@ -142,33 +157,34 @@ where
                 });
             }
         }
+    }
 
-        for (out_key, new_value) in desired_rows {
-            match state.output_cache.get(&out_key).cloned() {
-                Some(old_value) => {
-                    if old_value != new_value {
-                        state
-                            .output_cache
-                            .insert(out_key.clone(), new_value.clone());
-                        changes.push(MapDiff::Update {
-                            key: out_key,
-                            old_value,
-                            new_value,
-                        });
-                    }
-                }
-                None => {
+    for (source_key, desired_keys, desired_rows) in computed {
+        for (output_key, new_value) in desired_rows {
+            state
+                .output_owners
+                .insert(output_key.clone(), source_key.clone());
+            if let Some(old_value) = state.output_cache.get(&output_key).cloned() {
+                if old_value != new_value {
                     state
                         .output_cache
-                        .insert(out_key.clone(), new_value.clone());
-                    changes.push(MapDiff::Insert {
-                        key: out_key,
-                        value: new_value,
+                        .insert(output_key.clone(), new_value.clone());
+                    changes.push(MapDiff::Update {
+                        key: output_key,
+                        old_value,
+                        new_value,
                     });
                 }
+            } else {
+                state
+                    .output_cache
+                    .insert(output_key.clone(), new_value.clone());
+                changes.push(MapDiff::Insert {
+                    key: output_key,
+                    value: new_value,
+                });
             }
         }
-
         if !desired_keys.is_empty() {
             state.source_output_keys.insert(source_key, desired_keys);
         }
@@ -177,7 +193,7 @@ where
     changes
 }
 
-pub(crate) fn flatten_diff<K, V>(diff: &MapDiff<K, V>, out: &mut Vec<MapDiff<K, V>>)
+pub fn flatten_diff<K, V>(diff: &MapDiff<K, V>, out: &mut Vec<MapDiff<K, V>>)
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
@@ -193,7 +209,7 @@ where
 }
 
 /// Wrap a non-empty change vector in `MapDiff::Batch`, dropping empty groups.
-fn emit_changes<K, V>(changes: Vec<MapDiff<K, V>>, sink: &crate::map_query::MapDiffSink<K, V>)
+fn emit_changes<K, V>(changes: Vec<MapDiff<K, V>>, sink: &crate::map_query::BoxedMapDiffSink<K, V>)
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
@@ -206,42 +222,47 @@ where
 
 /// Install map-runtime machinery that drives `sink` instead of allocating an output map.
 ///
-/// Subscribes upstream via [`MapQuery::install`](crate::map_query::MapQuery::install),
-/// maintains projection state, and emits resulting diffs (batched per upstream
+/// Compiles the upstream plan into a direct entry point, maintains projection
+/// state, and emits resulting diffs (batched per upstream
 /// diff) into the sink. Returns the subscription guards, which the caller owns.
 ///
 /// Used by `MapQuery` plan nodes (`ProjectPlan`, `ProjectManyPlan`,
 /// `SelectPlan`) whose materialization shares one output cell map. Chains of
 /// plans compose without intermediate [`CellMap`](crate::CellMap) allocations.
-pub(crate) fn install_map_runtime_via_query<SK, SV, OK, OV, S, FO>(
+pub fn install_map_runtime_via_query<SK, SV, OK, OV, S, FO>(
+    cx: &mut crate::map_query::compiler::CompileContext,
     source: S,
     compute_rows: FO,
-    sink: crate::map_query::MapDiffSink<OK, OV>,
+    sink: crate::map_query::BoxedMapDiffSink<OK, OV>,
 ) -> Vec<SubscriptionGuard>
 where
     SK: Hash + Eq + CellValue,
     SV: CellValue,
     OK: Hash + Eq + CellValue,
     OV: CellValue,
-    S: crate::map_query::MapQuery<SK, SV>,
+    S: crate::map_query::MapQuery<Key = SK, Value = SV>,
     FO: Fn(&SK, &SV) -> Vec<(OK, OV)> + Send + Sync + 'static,
 {
     let state = Arc::new(Mutex::new(MapState::<SK, SV, OK, OV>::default()));
-    let compute_rows = Arc::new(compute_rows);
-
-    let upstream_sink: crate::map_query::MapDiffSink<SK, SV> = {
-        let state = state.clone();
-        let compute_rows = compute_rows.clone();
-        let sink = sink.clone();
-        Arc::new(move |diff| {
-            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-            let mut impacted: FxHashSet<SK> = FxHashSet::default();
-            apply_source_diff(&mut state.source_rows, diff, &mut impacted);
-            let changes = recompute_impacted(&mut state, impacted, compute_rows.as_ref());
+    let upstream_sink = {
+        move |diff: &MapDiff<SK, SV>| {
+            let mut state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut impacted = OrderedSet::default();
+            let mut source_order = std::mem::take(&mut state.source_order);
+            apply_source_diff(
+                &mut state.source_rows,
+                &mut source_order,
+                diff,
+                &mut impacted,
+            );
+            state.source_order = source_order;
+            let changes = recompute_impacted(&mut state, impacted, &compute_rows);
             drop(state);
             emit_changes(changes, &sink);
-        })
+        }
     };
 
-    source.install(upstream_sink)
+    crate::map_query::compile_runtime_into(source, cx, Arc::new(upstream_sink))
 }

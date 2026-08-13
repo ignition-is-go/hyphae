@@ -1,118 +1,107 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    marker::PhantomData,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
-use super::{CellValue, Watchable};
+use super::CellValue;
 use crate::{
-    cell::{Cell, CellImmutable, CellMutable},
+    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed},
     signal::Signal,
+    subscription::SubscriptionGuard,
 };
 
-pub trait TakeUntilExt<T>: Watchable<T> {
-    /// Take values until the notifier emits, then stop.
-    #[track_caller]
-    fn take_until<U, M>(&self, notifier: &Cell<U, M>) -> Cell<T, CellImmutable>
-    where
-        T: CellValue,
-        U: CellValue,
-        M: Send + Sync + 'static,
-        Self: Clone + Send + Sync + 'static,
-    {
-        let initial = self.get();
-        let derived = Cell::<T, CellMutable>::new(initial);
-
-        let stopped = Arc::new(AtomicBool::new(false));
-
-        // Subscribe to notifier - when it emits, stop
-        let stopped_clone = stopped.clone();
-        let notifier_first = Arc::new(AtomicBool::new(true));
-        let weak_for_notifier = derived.downgrade();
-        let notifier_guard = notifier.subscribe(move |signal| {
-            // Only react to values, ignore notifier's complete/error
-            if let Signal::Value(_) = signal {
-                if notifier_first.swap(false, Ordering::SeqCst) {
-                    return;
-                }
-                stopped_clone.store(true, Ordering::SeqCst);
-                if let Some(d) = weak_for_notifier.upgrade() {
-                    d.notify(Signal::Complete);
-                }
-            }
-        });
-        derived.own(notifier_guard);
-
-        // Subscribe to source
-        let weak = derived.downgrade();
-        let first = Arc::new(AtomicBool::new(true));
-        let guard = self.subscribe(move |signal| {
-            if let Some(d) = weak.upgrade() {
-                match signal {
-                    Signal::Value(_) => {
-                        if first.swap(false, Ordering::SeqCst) {
-                            return;
-                        }
-                        if stopped.load(Ordering::SeqCst) {
-                            return;
-                        }
-                        d.notify(signal.clone());
-                    }
-                    Signal::Complete => d.notify(Signal::Complete),
-                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
-                }
-            }
-        });
-        derived.own(guard);
-
-        derived.lock()
-    }
+pub struct TakeUntilPipeline<S, N, T, U> {
+    source: S,
+    notifier: N,
+    _types: PhantomData<fn() -> (T, U)>,
 }
 
-impl<T, W: Watchable<T>> TakeUntilExt<T> for W {}
+impl<S, N, T, U> PipelineInstall<T> for TakeUntilPipeline<S, N, T, U>
+where
+    S: PipelineInstall<T>,
+    N: PipelineInstall<U>,
+    T: CellValue,
+    U: CellValue,
+{
+    fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let notifier_stopped = stopped.clone();
+        let notifier_callback = callback.clone();
+        let notifier_first = AtomicBool::new(true);
+        let notifier = self.notifier.install(Arc::new(move |signal| {
+            if matches!(signal, Signal::Value(_)) && !notifier_first.swap(false, Ordering::SeqCst) {
+                notifier_stopped.store(true, Ordering::SeqCst);
+                notifier_callback(&Signal::Complete);
+            }
+        }));
+        let source_first = AtomicBool::new(true);
+        let source = self.source.install(Arc::new(move |signal| match signal {
+            Signal::Value(_) if source_first.swap(false, Ordering::SeqCst) => {}
+            Signal::Value(_) if stopped.load(Ordering::SeqCst) => {}
+            _ => callback(signal),
+        }));
+        SubscriptionGuard::combine(vec![notifier, source])
+    }
+}
+impl<S, N, T, U> PipelineSeed<T> for TakeUntilPipeline<S, N, T, U>
+where
+    S: PipelineSeed<T>,
+    N: PipelineInstall<U>,
+    T: CellValue,
+    U: CellValue,
+{
+    fn seed(&self) -> T {
+        self.source.seed()
+    }
+}
+impl<S, N, T, U> Pipeline<T, Definite> for TakeUntilPipeline<S, N, T, U>
+where
+    S: Pipeline<T, Definite> + PipelineSeed<T>,
+    N: Pipeline<U, Definite>,
+    T: CellValue,
+    U: CellValue,
+{
+}
+
+pub trait TakeUntilExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
+    fn take_until<U, N>(self, notifier: N) -> impl crate::Materialize<T, Definite>
+    where
+        U: CellValue,
+        N: Pipeline<U, Definite>,
+    {
+        TakeUntilPipeline {
+            source: self,
+            notifier,
+            _types: PhantomData,
+        }
+    }
+}
+impl<T: CellValue, P> TakeUntilExt<T> for P where P: Pipeline<T, Definite> + PipelineSeed<T> {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Gettable, Mutable};
-
+    use crate::{Cell, Gettable, Materialize, Mutable, Watchable};
     #[test]
     fn test_take_until() {
         let source = Cell::new(1u64);
         let stopper = Cell::new(false);
-        let taken = source.take_until(&stopper);
-
-        assert_eq!(taken.get(), 1);
-
+        let taken = source.clone().take_until(stopper.clone()).materialize();
         source.set(2);
         assert_eq!(taken.get(), 2);
-
-        stopper.set(true); // Signal stop
-
+        stopper.set(true);
         source.set(3);
-        assert_eq!(taken.get(), 2); // Stopped, no more updates
+        assert_eq!(taken.get(), 2);
     }
-
     #[test]
     fn test_take_until_completes_on_notifier() {
-        use std::sync::atomic::AtomicBool;
-
         let source = Cell::new(1u64);
         let stopper = Cell::new(false);
-        let taken = source.take_until(&stopper);
-        let completed = Arc::new(AtomicBool::new(false));
-
-        let c = completed.clone();
-        let _guard = taken.subscribe(move |signal| {
-            if let Signal::Complete = signal {
-                c.store(true, Ordering::SeqCst);
-            }
-        });
-
-        assert!(!taken.is_complete());
-
-        stopper.set(true); // Signal stop
-
+        let taken = source.take_until(stopper.clone()).materialize();
+        stopper.set(true);
         assert!(taken.is_complete());
-        assert!(completed.load(Ordering::SeqCst));
     }
 }

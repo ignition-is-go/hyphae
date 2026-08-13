@@ -1,0 +1,30 @@
+lv-671e candidate generated-code/profile audit
+runtime commit: 5177ef5f290c8481ce45609ab45ac04e38c9970b
+harness/tooling commit: 9803def418e0a5da965b8cac6f1369c71990605d
+RUSTFLAGS: -Csymbol-mangling-version=v0 -Ccodegen-units=1 -Cdebuginfo=1
+
+Scoped probe IR
+- map_query_codegen_probe monomorph: lines 432-490 of probe.ll (59 lines), archived as probe-function.ll.
+- LLVM call/invoke instructions: 8.
+- indirect call/invoke operands: 0. Every call target is a concrete @symbol.
+- The probe makes the required semantic Row Arc allocation, then directly calls the concrete CellMap<u64, Arc<Row>>::insert monomorph.
+
+Scoped fused root callback disassembly
+- symbol address range: 0x912e0..0x920a0, selected from nm -n and archived as fused-root-callback.objdump.txt.
+- machine call instructions: 100.
+- direct calls: 45 (note: calculation below distinguishes GOT imports separately; see next lines).
+- RIP-relative GOT import calls: 55 (allocator/deallocator/panic/runtime imports; not stage dispatch).
+- register- or object-relative indirect calls: 0.
+- Therefore the complete nested select -> map_values -> select -> map_values callback has no dynamic/indirect dispatch between stages. The callback is one monomorph whose demangled type contains the full nested FilterMapValuesPlan/SelectPlan chain.
+- One RawVec reserve site is present in the compiled QueryDispatch queued-event slow branch. The measured uncontended single-update path does not take this branch; it is not an intermediate stage collection.
+
+Sampling profile
+- Command: HYPHAE_EVIDENCE_SCENARIO=projection_region HYPHAE_EVIDENCE_ROWS=1000 HYPHAE_EVIDENCE_BATCH=100 HYPHAE_EVIDENCE_SINGLE_UPDATES=100000 perf record -F 999 -g --call-graph dwarf -- <exact codegen binary>
+- 282 samples, zero lost.
+- The profile exposes one fully nested install_filter_map_values_runtime<...SelectPlan...map_values...select...map_values...> callback symbol, not separate dynamically dispatched stage frames.
+- Dominant costs are CellMap maybe_prune_key_cells (39.63%), CellMap::insert (27.10%), and final CellMap::apply_diff_owned (21.82%). The nested fused callback is visible as a single monomorph.
+
+Allocation corroboration
+- Full paired matrix records setup/build/materialize/100 single updates/batch/teardown for 4 shapes x 5 N x 5 B, one fresh process per cell.
+- At N=1000/B=100 projection single_updates: v3 3000 calls / 168800 bytes; candidate 900 calls / 34400 bytes (70.0% fewer calls, 79.6% fewer bytes). Counts include required input/output Arc and CellMap publication allocations; no recurring intermediate per-stage collection is visible.
+- Existing exact forced differential evidence at commit 3d4db44 proves state and ordered traces for sequential/sharded/Rayon execution; this profile is scoped to code shape, not a replacement correctness oracle.

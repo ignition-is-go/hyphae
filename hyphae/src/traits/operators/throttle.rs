@@ -1,4 +1,5 @@
 use std::{
+    marker::PhantomData,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -6,66 +7,80 @@ use std::{
     time::Duration,
 };
 
-use super::{CellValue, Watchable};
+use super::CellValue;
 use crate::{
-    cell::{Cell, CellImmutable, CellMutable},
+    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed},
     platform,
     signal::Signal,
+    subscription::SubscriptionGuard,
 };
 
-pub trait ThrottleExt<T>: Watchable<T> {
-    #[track_caller]
-    fn throttle(&self, duration: Duration) -> Cell<T, CellImmutable>
-    where
-        T: CellValue,
-        Self: Clone + Send + Sync + 'static,
-    {
-        let cell = Cell::<T, CellMutable>::new(self.get());
-        let cell = if let Some(name) = self.name() {
-            cell.with_name(format!("{}::throttle", name))
-        } else {
-            cell
-        };
+pub struct ThrottlePipeline<S, T> {
+    source: S,
+    duration: Duration,
+    _t: PhantomData<fn(T)>,
+}
 
+impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for ThrottlePipeline<S, T> {
+    fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
         let can_emit = Arc::new(AtomicBool::new(true));
-        let weak = cell.downgrade();
-        let guard = self.subscribe(move |signal| {
-            if let Some(c) = weak.upgrade() {
-                match signal {
-                    Signal::Value(_) => {
-                        if can_emit.swap(false, Ordering::SeqCst) {
-                            c.notify(signal.clone());
-
-                            let can_emit = can_emit.clone();
-                            platform::spawn_delayed(duration, move || {
-                                can_emit.store(true, Ordering::SeqCst);
-                            });
-                        }
-                    }
-                    Signal::Complete => c.notify(Signal::Complete),
-                    Signal::Error(e) => c.notify(Signal::Error(e.clone())),
+        let duration = self.duration;
+        self.source.install(Arc::new(move |signal| match signal {
+            Signal::Value(_) => {
+                if can_emit.swap(false, Ordering::SeqCst) {
+                    callback(signal);
+                    let can_emit = can_emit.clone();
+                    platform::spawn_delayed(duration, move || {
+                        can_emit.store(true, Ordering::SeqCst);
+                    });
                 }
             }
-        });
-        cell.own(guard);
-
-        cell.lock()
+            Signal::Complete => callback(&Signal::Complete),
+            Signal::Error(error) => callback(&Signal::Error(error.clone())),
+        }))
     }
 }
 
-impl<T, W: Watchable<T>> ThrottleExt<T> for W {}
+impl<S: PipelineSeed<T>, T: CellValue> PipelineSeed<T> for ThrottlePipeline<S, T> {
+    fn seed(&self) -> T {
+        self.source.seed()
+    }
+}
+
+#[allow(private_bounds)]
+impl<S: Pipeline<T, Definite> + PipelineSeed<T>, T: CellValue> Pipeline<T, Definite>
+    for ThrottlePipeline<S, T>
+{
+}
+
+#[allow(private_bounds)]
+pub trait ThrottleExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
+    #[track_caller]
+    fn throttle(self, duration: Duration) -> impl crate::Materialize<T, Definite> {
+        ThrottlePipeline {
+            source: self,
+            duration,
+            _t: PhantomData,
+        }
+    }
+}
+
+impl<T: CellValue, P: Pipeline<T, Definite> + PipelineSeed<T>> ThrottleExt<T> for P {}
 
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::AtomicU64;
 
     use super::*;
-    use crate::Mutable;
+    use crate::{Cell, Materialize, Mutable, traits::Watchable};
 
     #[test]
     fn test_throttle_limits_rate() {
         let source = Cell::new(0u64);
-        let throttled = source.throttle(Duration::from_millis(50));
+        let throttled = source
+            .clone()
+            .throttle(Duration::from_millis(50))
+            .materialize();
         let count = Arc::new(AtomicU64::new(0));
 
         let c = count.clone();
@@ -73,17 +88,9 @@ mod tests {
             c.fetch_add(1, Ordering::SeqCst);
         });
 
-        // Rapid updates
         for i in 1..=10 {
             source.set(i);
         }
-
-        // Should have limited emissions
-        let emissions = count.load(Ordering::SeqCst);
-        assert!(
-            emissions < 10,
-            "throttle should limit emissions, got {}",
-            emissions
-        );
+        assert!(count.load(Ordering::SeqCst) < 10);
     }
 }

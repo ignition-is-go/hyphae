@@ -1,7 +1,7 @@
 //! Select-cell plan node implementing [`MapQuery`].
 //!
 //! `select_cell` is the reactive variant of `select`: each row's inclusion is
-//! gated by a [`Watchable`]`<bool>`. Returns an uncompiled plan node; call
+//! gated by a [`Watchable`] producing `bool`. Returns an uncompiled plan node; call
 //! [`MapQuery::materialize`] to compile a plan into a subscribable
 //! [`CellMap`](crate::CellMap).
 
@@ -9,16 +9,19 @@ use std::{hash::Hash, marker::PhantomData, sync::Arc};
 
 use super::ProjectCellExt;
 use crate::{
-    map_query::{MapDiffSink, MapQuery, MapQueryInstall},
-    pipeline::{MaterializeDefinite, Pipeline},
+    map_query::{
+        BuildQueryRuntime, MapQuery,
+        properties::{ByMapKey, PlanProperties, ZeroOrOne},
+    },
+    pipeline::{Materialize, Pipeline},
     subscription::SubscriptionGuard,
-    traits::{CellValue, Gettable, MapExt, collections::ProjectCellPlan},
+    traits::{CellValue, Gettable, MapExt},
 };
 
 /// Plan node for [`SelectCellExt::select_cell`].
 ///
 /// Reactive filter: each row's inclusion is decided by a per-row
-/// [`Watchable`]`<bool>` produced by `predicate(&key, &value)`. The row is
+/// [`Watchable`] producing `bool` from `predicate(&key, &value)`. The row is
 /// included while the gate is `true` and excluded when `false`.
 ///
 /// Not [`Clone`]: cloning a plan would silently duplicate per-row
@@ -26,7 +29,7 @@ use crate::{
 #[allow(private_bounds)]
 pub struct SelectCellPlan<S, K, V, W, F>
 where
-    S: MapQuery<K, V>,
+    S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
     V: CellValue,
     W: Pipeline<bool>
@@ -43,9 +46,10 @@ where
     pub(crate) _types: PhantomData<fn() -> (K, V, W)>,
 }
 
-impl<S, K, V, W, F> MapQueryInstall<K, V> for SelectCellPlan<S, K, V, W, F>
+#[allow(private_bounds)]
+impl<S, K, V, W, F> PlanProperties for SelectCellPlan<S, K, V, W, F>
 where
-    S: MapQuery<K, V>,
+    S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
     V: CellValue,
     W: Pipeline<bool>
@@ -57,32 +61,54 @@ where
         + 'static,
     F: Fn(&K, &V) -> W + Send + Sync + 'static,
 {
-    fn install(self, sink: MapDiffSink<K, V>) -> Vec<SubscriptionGuard> {
+    type Cardinality = ZeroOrOne;
+    type InputPartition = S::OutputPartition;
+    type OutputPartition = ByMapKey<K>;
+}
+
+impl<S, K, V, W, F> BuildQueryRuntime<K, V> for SelectCellPlan<S, K, V, W, F>
+where
+    S: MapQuery<Key = K, Value = V>,
+    K: Hash + Eq + CellValue,
+    V: CellValue,
+    W: Pipeline<bool>
+        + crate::pipeline::PipelineSeed<bool>
+        + Gettable<bool>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    F: Fn(&K, &V) -> W + Send + Sync + 'static,
+{
+    fn build_into(
+        self,
+        cx: &mut crate::map_query::compiler::CompileContext,
+        sink: crate::map_query::BoxedMapDiffSink<K, V>,
+    ) -> Vec<SubscriptionGuard> {
         // Implement select_cell as a project_cell whose inner Watchable maps
         // the boolean gate into Option<(K, V)>.
         let predicate = self.predicate;
-        let inner_plan: ProjectCellPlan<S, K, V, K, V, _, _> =
-            self.source.project_cell(move |k, v| {
-                let k = k.clone();
-                let v = v.clone();
-                predicate(&k, &v)
-                    .map(move |include| {
-                        if *include {
-                            Some((k.clone(), v.clone()))
-                        } else {
-                            None
-                        }
-                    })
-                    .materialize()
-            });
-        inner_plan.install(sink)
+        let inner_plan = self.source.project_cell(move |k: &K, v: &V| {
+            let k = k.clone();
+            let v = v.clone();
+            predicate(&k, &v)
+                .map(move |include| {
+                    if *include {
+                        Some((k.clone(), v.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .materialize()
+        });
+        crate::map_query::compile_runtime_into(inner_plan, cx, sink)
     }
 }
 
 #[allow(private_bounds)]
-impl<S, K, V, W, F> MapQuery<K, V> for SelectCellPlan<S, K, V, W, F>
+impl<S, K, V, W, F> MapQuery for SelectCellPlan<S, K, V, W, F>
 where
-    S: MapQuery<K, V>,
+    S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
     V: CellValue,
     W: Pipeline<bool>
@@ -94,6 +120,8 @@ where
         + 'static,
     F: Fn(&K, &V) -> W + Send + Sync + 'static,
 {
+    type Key = K;
+    type Value = V;
 }
 
 /// Select-cell operator returning a [`MapQuery`] plan node.
@@ -101,7 +129,7 @@ where
 /// `select_cell` consumes `self` and returns an uncompiled plan node; call
 /// [`MapQuery::materialize`] on the result to obtain a subscribable
 /// [`CellMap`](crate::CellMap).
-pub trait SelectCellExt<K, V>: MapQuery<K, V>
+pub trait SelectCellExt<K, V>: MapQuery<Key = K, Value = V>
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
@@ -112,7 +140,7 @@ where
     /// included when true and excluded when false.
     #[track_caller]
     #[allow(private_bounds)]
-    fn select_cell<W, F>(self, predicate: F) -> SelectCellPlan<Self, K, V, W, F>
+    fn select_cell<W, F>(self, predicate: F) -> impl MapQuery<Key = K, Value = V>
     where
         W: Pipeline<bool>
             + crate::pipeline::PipelineSeed<bool>
@@ -135,7 +163,7 @@ impl<K, V, M> SelectCellExt<K, V> for M
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
-    M: MapQuery<K, V>,
+    M: MapQuery<Key = K, Value = V>,
 {
 }
 
@@ -144,7 +172,7 @@ mod tests {
     use std::sync::mpsc;
 
     use super::*;
-    use crate::{Cell, CellMap, MapExt, cell_map::MapDiff};
+    use crate::{Cell, CellMap, MapExt, Materialize, cell_map::MapDiff};
 
     #[test]
     fn select_cell_reacts_to_predicate_changes() {
@@ -157,21 +185,20 @@ mod tests {
         gates.insert("b".to_string(), true);
 
         let filtered = values
-            .clone()
             .select_cell({
                 let gates = gates.clone();
                 move |key, _value| gates.get(key).map(|v| v.unwrap_or(false)).materialize()
             })
             .materialize();
 
-        assert_eq!(filtered.entries().get().len(), 1);
+        assert_eq!(filtered.entries().materialize().get().len(), 1);
         assert!(!filtered.contains_key(&"a".to_string()));
         assert!(filtered.contains_key(&"b".to_string()));
 
         gates.insert("a".to_string(), true);
-        assert_eq!(filtered.entries().get().len(), 2);
+        assert_eq!(filtered.entries().materialize().get().len(), 2);
         gates.insert("b".to_string(), false);
-        assert_eq!(filtered.entries().get().len(), 1);
+        assert_eq!(filtered.entries().materialize().get().len(), 1);
     }
 
     #[test]
@@ -190,9 +217,9 @@ mod tests {
         source.insert_many(vec![("a".to_string(), 1), ("b".to_string(), 2)]);
         let seen: Vec<_> = rx.try_iter().collect();
         assert_eq!(seen.len(), 2);
-        match seen.last().unwrap() {
-            MapDiff::Batch { changes } => assert_eq!(changes.len(), 2),
-            _ => panic!("expected batch diff from select_cell"),
-        }
+        assert!(matches!(
+            seen.last(),
+            Some(MapDiff::Batch { changes }) if changes.len() == 2
+        ));
     }
 }

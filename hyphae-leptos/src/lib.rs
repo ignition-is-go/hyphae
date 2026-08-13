@@ -26,7 +26,7 @@
 //! view! { <p>"Temp: " {move || reading.get()}</p> };
 //! ```
 //!
-//! ## CellMaps → stores
+//! ## `CellMaps` → stores
 //!
 //! Each key owns its own signal, so editing one entry re-renders only that
 //! row — the fine-grained behaviour of a Leptos store, applied to a dynamic,

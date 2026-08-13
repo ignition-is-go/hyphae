@@ -2,14 +2,14 @@
 //!
 //! Mirrors the chain shapes, scale, and operator mix observed in production
 //! reactive applications: derived views composed of multiple joins +
-//! projections + group_by over event-driven entity tables. Patterns:
+//! projections + `group_by` over event-driven entity tables. Patterns:
 //!
-//! - **mid_view (4-hop)**: `instances.left_join_by(&lanes).left_join_by(&keyframes).project()`
-//! - **assets_view (5-hop)**: `files.group_by().left_join_by(transfers).project().left_join_by(metadata).project()`
-//! - **deep_view (7-hop)**: `targets.left_join_by(actions).project().left_join_by(emitters).project().left_join_by(statuses).project()`
-//! - **fan_out**: a mid_view materialized once, then read by N subscribers
-//! - **batch_mutation**: insert_many of K rows through a mid_view
-//! - **select_project**: `select` (filter) followed by `project` (reshape)
+//! - **`mid_view` (4-hop)**: joins followed by `filter_map_entries`
+//! - **`assets_view` (5-hop)**: grouping, joins, and semantic projections
+//! - **`deep_view` (7-hop)**: three joins separated by semantic projections
+//! - **`fan_out`**: a `mid_view` materialized once, then read by N subscribers
+//! - **`batch_mutation`**: `insert_many` of K rows through a `mid_view`
+//! - **`select_project`**: `select` (filter) followed by `project` (reshape)
 //!
 //! Entity values use `Arc<str>` keys + `Arc<EntityStruct>` values to match the
 //! lightweight-Arc-handle data shape that real applications use.
@@ -21,8 +21,28 @@ use std::sync::Arc;
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use hyphae::{
     CellMap, MapQuery,
-    traits::{GroupByExt, LeftJoinExt, ProjectMapExt, SelectExt},
+    traits::{GroupByExt, LeftJoinExt, MapEntriesExt, SelectExt},
 };
+
+fn safe_mod(value: usize, modulus: usize) -> usize {
+    value.checked_rem(modulus).unwrap_or(0)
+}
+
+fn tick_index(value: u64) -> usize {
+    usize::try_from(value).unwrap_or(usize::MAX)
+}
+
+fn usize_u64(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
+}
+
+fn usize_f64(value: usize) -> f64 {
+    f64::from(u32::try_from(value).unwrap_or(u32::MAX))
+}
+
+fn usize_f32(value: usize) -> f32 {
+    f32::from(u16::try_from(value).unwrap_or(u16::MAX))
+}
 
 // ── Entity types ─────────────────────────────────────────────────────────────
 
@@ -163,29 +183,29 @@ fn populate_value_track_sources(
     }
 
     for i in 0..n {
-        let lane_id = s("lane:", i % lane_count);
+        let lane_id = s("lane:", safe_mod(i, lane_count));
         let id = s("inst:", i);
         instances.insert(
             id.clone(),
             Arc::new(Instance {
                 id: id.clone(),
                 lane_id: lane_id.clone(),
-                track_id: s("track:", i % 16),
+                track_id: s("track:", safe_mod(i, 16)),
                 seq: 0,
             }),
         );
     }
 
     // ~3 keyframes per lane on average.
-    for i in 0..(lane_count * 3) {
-        let lane_id = s("lane:", i % lane_count);
+    for i in 0..lane_count.saturating_mul(3) {
+        let lane_id = s("lane:", safe_mod(i, lane_count));
         let id = s("kf:", i);
         keyframes.insert(
             id.clone(),
             Arc::new(Keyframe {
                 id: id.clone(),
                 lane_id,
-                value: i as f64 * 0.5,
+                value: usize_f64(i).mul_add(0.5, 0.0),
             }),
         );
     }
@@ -208,14 +228,14 @@ fn populate_assets_sources(
     let asset_count = (n / 4).max(1);
 
     for i in 0..n {
-        let asset_path = s("asset:", i % asset_count);
+        let asset_path = s("asset:", safe_mod(i, asset_count));
         let id = s("file:", i);
         files.insert(
             id.clone(),
             Arc::new(File {
                 id: id.clone(),
                 asset_path,
-                size: 1024 * (i as u64 + 1),
+                size: usize_u64(i).saturating_add(1).saturating_mul(1024),
                 seq: 0,
             }),
         );
@@ -227,18 +247,18 @@ fn populate_assets_sources(
             Arc::new(Transfer {
                 id: id.clone(),
                 asset_path: s("asset:", i),
-                progress: (i % 100) as f32 / 100.0,
+                progress: usize_f32(safe_mod(i, 100)).mul_add(0.01, 0.0),
             }),
         );
     }
-    for i in 0..(asset_count * 2) {
+    for i in 0..asset_count.saturating_mul(2) {
         let id = s("meta:", i);
         metadata.insert(
             id.clone(),
             Arc::new(Metadata {
                 id: id.clone(),
-                asset_path: s("asset:", i % asset_count),
-                tag: s("tag:", i % 8),
+                asset_path: s("asset:", safe_mod(i, asset_count)),
+                tag: s("tag:", safe_mod(i, 8)),
             }),
         );
     }
@@ -272,26 +292,26 @@ fn populate_session_sources(
         );
     }
     // ~3 actions per target.
-    for i in 0..(n_targets * 3) {
+    for i in 0..n_targets.saturating_mul(3) {
         let id = s("act:", i);
         actions.insert(
             id.clone(),
             Arc::new(Action {
                 id: id.clone(),
-                target_id: s("tgt:", i % n_targets),
+                target_id: s("tgt:", safe_mod(i, n_targets)),
                 name: s("act ", i),
                 seq: 0,
             }),
         );
     }
     // ~2 emitters per target.
-    for i in 0..(n_targets * 2) {
+    for i in 0..n_targets.saturating_mul(2) {
         let id = s("emit:", i);
         emitters.insert(
             id.clone(),
             Arc::new(Emitter {
                 id: id.clone(),
-                target_id: s("tgt:", i % n_targets),
+                target_id: s("tgt:", safe_mod(i, n_targets)),
                 rate: 60.0,
             }),
         );
@@ -314,7 +334,7 @@ fn populate_session_sources(
 
 // ── Scenario 1: mid_view (4-hop, ValueTrackEditor-like) ──────────────────────
 //
-//   instances.left_join_by(&lanes).left_join_by(&keyframes).project()
+//   instances.left_join_by(&lanes).left_join_by(&keyframes).filter_map_entries()
 
 fn build_mid_view(
     instances: &CellMap<Arc<str>, Arc<Instance>>,
@@ -333,7 +353,7 @@ fn build_mid_view(
             |_inst_id, (inst, _lanes)| inst.lane_id.clone(),
             |_kf_id, kf| kf.lane_id.clone(),
         )
-        .project(|inst_id, ((inst, lane_matches), kf_list)| {
+        .filter_map_entries(|inst_id, ((inst, lane_matches), kf_list)| {
             let lane = lane_matches.first()?.clone();
             Some((
                 inst_id.clone(),
@@ -358,13 +378,16 @@ fn bench_mid_view(c: &mut Criterion) {
             let mut tick = 0u64;
             b.iter(|| {
                 tick = tick.wrapping_add(1);
-                let id = s("inst:", (tick as usize) % n);
+                let id = s("inst:", safe_mod(tick_index(tick), n));
                 instances.insert(
                     id.clone(),
                     Arc::new(Instance {
                         id,
-                        lane_id: s("lane:", (tick as usize) % (n / 4).max(1)),
-                        track_id: s("track:", black_box(tick) as usize % 16),
+                        lane_id: s(
+                            "lane:",
+                            safe_mod(tick_index(tick), n.checked_div(4).unwrap_or(0).max(1)),
+                        ),
+                        track_id: s("track:", safe_mod(tick_index(black_box(tick)), 16)),
                         seq: tick,
                     }),
                 );
@@ -377,8 +400,8 @@ fn bench_mid_view(c: &mut Criterion) {
 // ── Scenario 2: assets_view (5-hop, AssetsView-like with group_by) ───────────
 //
 //   files.group_by(asset_path)
-//        .left_join_by(transfers, ...).project(...)
-//        .left_join_by(metadata, ...).project(...)
+//        .left_join_by(transfers, ...).filter_map_entries(...)
+//        .left_join_by(metadata, ...).filter_map_entries(...)
 
 fn build_assets_view(
     files: &CellMap<Arc<str>, Arc<File>>,
@@ -391,13 +414,12 @@ fn build_assets_view(
         .materialize();
 
     by_asset
-        .clone()
         .left_join_by(
             transfers.clone(),
             |asset_path, _files| asset_path.clone(),
             |_id, t| t.asset_path.clone(),
         )
-        .project(|asset_path, (files, transfers)| {
+        .filter_map_entries(|asset_path, (files, transfers)| {
             Some((asset_path.clone(), (files.clone(), transfers.clone())))
         })
         .left_join_by(
@@ -405,7 +427,7 @@ fn build_assets_view(
             |asset_path, _v| asset_path.clone(),
             |_id, m| m.asset_path.clone(),
         )
-        .project(|asset_path, ((files, transfers), metadata)| {
+        .filter_map_entries(|asset_path, ((files, transfers), metadata)| {
             Some((
                 asset_path.clone(),
                 Arc::new(AssetView {
@@ -429,12 +451,15 @@ fn bench_assets_view(c: &mut Criterion) {
             let mut tick = 0u64;
             b.iter(|| {
                 tick = tick.wrapping_add(1);
-                let id = s("file:", (tick as usize) % n);
+                let id = s("file:", safe_mod(tick_index(tick), n));
                 files.insert(
                     id.clone(),
                     Arc::new(File {
                         id,
-                        asset_path: s("asset:", (tick as usize) % (n / 4).max(1)),
+                        asset_path: s(
+                            "asset:",
+                            safe_mod(tick_index(tick), n.checked_div(4).unwrap_or(0).max(1)),
+                        ),
                         size: black_box(tick),
                         seq: tick,
                     }),
@@ -447,9 +472,9 @@ fn bench_assets_view(c: &mut Criterion) {
 
 // ── Scenario 3: deep_view (7-hop, SessionTargets-like) ───────────────────────
 //
-//   targets.left_join_by(actions).project()
-//          .left_join_by(emitters).project()
-//          .left_join_by(statuses).project()
+//   targets.left_join_by(actions).filter_map_entries()
+//          .left_join_by(emitters).filter_map_entries()
+//          .left_join_by(statuses).filter_map_entries()
 
 fn build_session_view(
     targets: &CellMap<Arc<str>, Arc<Target>>,
@@ -464,7 +489,7 @@ fn build_session_view(
             |id, _t| id.clone(),
             |_id, a| a.target_id.clone(),
         )
-        .project(|tgt_id, (target, action_list)| {
+        .filter_map_entries(|tgt_id, (target, action_list)| {
             Some((tgt_id.clone(), (target.clone(), action_list.clone())))
         })
         .left_join_by(
@@ -472,7 +497,7 @@ fn build_session_view(
             |id, _v| id.clone(),
             |_id, e| e.target_id.clone(),
         )
-        .project(|tgt_id, ((target, actions), emitter_list)| {
+        .filter_map_entries(|tgt_id, ((target, actions), emitter_list)| {
             Some((
                 tgt_id.clone(),
                 (target.clone(), actions.clone(), emitter_list.clone()),
@@ -483,7 +508,7 @@ fn build_session_view(
             |id, _v| id.clone(),
             |_id, s| s.target_id.clone(),
         )
-        .project(|tgt_id, ((target, actions, emitters), status_list)| {
+        .filter_map_entries(|tgt_id, ((target, actions, emitters), status_list)| {
             Some((
                 tgt_id.clone(),
                 Arc::new(SessionTargetView {
@@ -509,13 +534,13 @@ fn bench_deep_view(c: &mut Criterion) {
             b.iter(|| {
                 tick = tick.wrapping_add(1);
                 // Mutate an action — exercises the deepest join's right-side update path.
-                let id = s("act:", (tick as usize) % (n * 3));
+                let id = s("act:", safe_mod(tick_index(tick), n.saturating_mul(3)));
                 actions.insert(
                     id.clone(),
                     Arc::new(Action {
                         id,
-                        target_id: s("tgt:", (tick as usize) % n),
-                        name: s("act ", black_box(tick) as usize),
+                        target_id: s("tgt:", safe_mod(tick_index(tick), n)),
+                        name: s("act ", tick_index(black_box(tick))),
                         seq: tick,
                     }),
                 );
@@ -554,13 +579,16 @@ fn bench_fan_out(c: &mut Criterion) {
                 let mut tick = 0u64;
                 b.iter(|| {
                     tick = tick.wrapping_add(1);
-                    let id = s("inst:", (tick as usize) % n);
+                    let id = s("inst:", safe_mod(tick_index(tick), n));
                     instances.insert(
                         id.clone(),
                         Arc::new(Instance {
                             id,
-                            lane_id: s("lane:", (tick as usize) % (n / 4).max(1)),
-                            track_id: s("track:", black_box(tick) as usize % 16),
+                            lane_id: s(
+                                "lane:",
+                                safe_mod(tick_index(tick), n.checked_div(4).unwrap_or(0).max(1)),
+                            ),
+                            track_id: s("track:", safe_mod(tick_index(black_box(tick)), 16)),
                             seq: tick,
                         }),
                     );
@@ -590,13 +618,22 @@ fn bench_batch_mutation(c: &mut Criterion) {
                     let entries: Vec<(Arc<str>, Arc<Instance>)> = (0..batch_size)
                         .map(|i| {
                             tick = tick.wrapping_add(1);
-                            let id = s("inst:", (tick as usize) % n);
+                            let id = s("inst:", safe_mod(tick_index(tick), n));
                             (
                                 id.clone(),
                                 Arc::new(Instance {
                                     id,
-                                    lane_id: s("lane:", (tick as usize) % (n / 4).max(1)),
-                                    track_id: s("track:", black_box(i + tick as usize) % 16),
+                                    lane_id: s(
+                                        "lane:",
+                                        safe_mod(
+                                            tick_index(tick),
+                                            n.checked_div(4).unwrap_or(0).max(1),
+                                        ),
+                                    ),
+                                    track_id: s(
+                                        "track:",
+                                        safe_mod(black_box(i.saturating_add(tick_index(tick))), 16),
+                                    ),
                                     seq: tick,
                                 }),
                             )
@@ -612,7 +649,7 @@ fn bench_batch_mutation(c: &mut Criterion) {
 
 // ── Scenario 6: select-then-project (filtering + reshape, very common) ───────
 //
-//   targets.select(|t| t.parent_id.is_some()).project(...)
+//   targets.select(|t| t.parent_id.is_some()).filter_map_entries(...)
 
 fn bench_select_project(c: &mut Criterion) {
     let mut group = c.benchmark_group("view/select_project");
@@ -623,19 +660,19 @@ fn bench_select_project(c: &mut Criterion) {
             let _view = targets
                 .clone()
                 .select(|t| t.parent_id.is_some())
-                .project(|id, t| Some((id.clone(), t.name.clone())))
+                .filter_map_entries(|id, t| Some((id.clone(), t.name.clone())))
                 .materialize();
             let mut tick = 0u64;
             b.iter(|| {
                 tick = tick.wrapping_add(1);
-                let i = (tick as usize) % n;
+                let i = safe_mod(tick_index(tick), n);
                 let id = s("tgt:", i);
                 targets.insert(
                     id.clone(),
                     Arc::new(Target {
                         id,
                         parent_id: if i > 0 { Some(s("tgt:", i / 4)) } else { None },
-                        name: s("Target ", black_box(tick) as usize),
+                        name: s("Target ", tick_index(black_box(tick))),
                         seq: tick,
                     }),
                 );

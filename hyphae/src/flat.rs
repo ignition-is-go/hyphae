@@ -1,10 +1,10 @@
 /// Macro to flatten nested tuple patterns from chained `join()` calls.
 ///
-/// Chained joins produce left-nested tuples: `a.join(&b).join(&c)` → `((A, B), C)`.
+/// Chained joins produce left-nested tuples: `a.join(b).join(c)` → `((A, B), C)`.
 /// This macro generates the nested pattern from a flat parameter list:
 ///
 /// ```
-/// use hyphae::{Cell, Gettable, JoinExt, MapExt, MaterializeDefinite, flat};
+/// use hyphae::{Cell, Gettable, JoinExt, MapExt, Materialize, flat};
 ///
 /// let a = Cell::new(1);
 /// let b = Cell::new(2);
@@ -13,9 +13,11 @@
 ///
 /// // flat!(|a, b, c, d| ...) expands to |(((a, b), c), d)| ...
 /// let sum = a
-///     .join(&b)
-///     .join(&c)
-///     .join(&d)
+///     .join(b)
+///     .materialize()
+///     .join(c)
+///     .materialize()
+///     .join(d)
 ///     .map(flat!(|a, b, c, d| a + b + c + d))
 ///     .materialize();
 /// assert_eq!(sum.get(), 10);

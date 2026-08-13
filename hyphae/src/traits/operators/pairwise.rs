@@ -4,14 +4,12 @@
 //! produce, so the materialized cell starts as `None` and flips to
 //! `Some((prev, current))` once the second emission lands.
 
-use std::{
-    marker::PhantomData,
-    sync::{Arc, Mutex},
-};
+use parking_lot::Mutex;
+use std::{marker::PhantomData, sync::Arc};
 
 use super::CellValue;
 use crate::{
-    pipeline::{Empty, MaterializeEmpty, Pipeline, PipelineInstall, PipelineSeed, Seedness},
+    pipeline::{Empty, Pipeline, PipelineInstall, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -25,37 +23,25 @@ pub struct PairwisePipeline<S, T, Sd = crate::pipeline::Definite> {
 
 impl<S, T, Sd> PipelineInstall<(T, T)> for PairwisePipeline<S, T, Sd>
 where
-    S: PipelineInstall<T> + PipelineSeed<T> + Send + Sync + 'static,
+    S: PipelineInstall<T> + Send + Sync + 'static,
     Sd: Seedness,
     T: CellValue,
 {
     fn install(&self, callback: Arc<dyn Fn(&Signal<(T, T)>) + Send + Sync>) -> SubscriptionGuard {
-        // Seed `last` with source.seed(). The synchronous initial emit will
-        // come in with the same value, so we want to swallow it (no pair yet).
-        // Use a flag to detect the very first emission and store it without
-        // emitting; subsequent emissions emit (prev, curr) and update prev.
-        let last: Arc<Mutex<T>> = Arc::new(Mutex::new(self.source.seed()));
-        let saw_first = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> = Arc::new(move |signal: &Signal<T>| {
-            match signal {
+        let last: Arc<Mutex<Option<T>>> = Arc::new(Mutex::new(None));
+        let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
+            Arc::new(move |signal: &Signal<T>| match signal {
                 Signal::Value(v) => {
-                    if !saw_first.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                        // First emission: just remember it, no pair to emit.
-                        *last.lock().expect("pairwise poisoned") = (**v).clone();
+                    let mut guard = last.lock();
+                    let Some(prev) = guard.replace((**v).clone()) else {
                         return;
-                    }
-                    let prev = {
-                        let mut guard = last.lock().expect("pairwise poisoned");
-                        let prev = guard.clone();
-                        *guard = (**v).clone();
-                        prev
                     };
+                    drop(guard);
                     callback(&Signal::value((prev, v.as_ref().clone())));
                 }
                 Signal::Complete => callback(&Signal::Complete),
                 Signal::Error(e) => callback(&Signal::Error(e.clone())),
-            }
-        });
+            });
         self.source.install(wrapped)
     }
 }
@@ -63,25 +49,17 @@ where
 #[allow(private_bounds)]
 impl<S, T, Sd> Pipeline<(T, T), Empty> for PairwisePipeline<S, T, Sd>
 where
-    S: Pipeline<T, Sd> + PipelineSeed<T>,
-    Sd: Seedness,
-    T: CellValue,
-{
-}
-
-impl<S, T, Sd> MaterializeEmpty<(T, T)> for PairwisePipeline<S, T, Sd>
-where
-    S: Pipeline<T, Sd> + PipelineSeed<T>,
+    S: Pipeline<T, Sd>,
     Sd: Seedness,
     T: CellValue,
 {
 }
 
 #[allow(private_bounds)]
-pub trait PairwiseExt<T: CellValue, S: Seedness>: Pipeline<T, S> + PipelineSeed<T> {
+pub trait PairwiseExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// Emit `(prev, current)` pairs for each consecutive pair of values.
     #[track_caller]
-    fn pairwise(self) -> PairwisePipeline<Self, T, S> {
+    fn pairwise(self) -> impl crate::Materialize<(T, T), Empty> {
         PairwisePipeline {
             source: self,
             _t: PhantomData,
@@ -90,12 +68,12 @@ pub trait PairwiseExt<T: CellValue, S: Seedness>: Pipeline<T, S> + PipelineSeed<
     }
 }
 
-impl<T: CellValue, S: Seedness, P: Pipeline<T, S> + PipelineSeed<T>> PairwiseExt<T, S> for P {}
+impl<T: CellValue, S: Seedness, P: Pipeline<T, S>> PairwiseExt<T, S> for P {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Cell, Gettable, MaterializeEmpty, Mutable};
+    use crate::{Cell, Gettable, Materialize, Mutable};
 
     #[test]
     fn test_pairwise_emits_pairs() {

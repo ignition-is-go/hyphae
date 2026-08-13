@@ -1,0 +1,12 @@
+compiled_query/four_join_application/steady_batch/10000
+                        time:   [18.180 ms 18.765 ms 19.358 ms]
+                        change: [-4.3836% -0.2682% +4.1339%] (p = 0.90 > 0.05)
+                        No change in performance detected.
+
+    Finished `bench` profile [optimized] target(s) in 0.05s
+     Running benches/compiled_map_queries.rs (target/release/deps/compiled_map_queries-4ca67d3da0a0be8b)
+Gnuplot not found, using plotters backend
+Benchmarking compiled_query/four_join_application/steady_batch/10000
+Benchmarking compiled_query/four_join_application/steady_batch/10000: Warming up for 2.0000 s
+Benchmarking compiled_query/four_join_application/steady_batch/10000: Collecting 50 samples in estimated 5.8319 s (300 iterations)
+Benchmarking compiled_query/four_join_application/steady_batch/10000: Analyzing

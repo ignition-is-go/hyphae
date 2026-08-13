@@ -1,0 +1,40 @@
+   Compiling hyphae v2.0.1 (/home/trevor/Code/hyphae/hyphae)
+    Finished `bench` profile [optimized] target(s) in 1.62s
+     Running benches/region_threshold_calibration.rs (target/release/deps/region_threshold_calibration-fcc1e54becfd1351)
+Gnuplot not found, using plotters backend
+Benchmarking region_threshold_calibration/inactive/989
+Benchmarking region_threshold_calibration/inactive/989: Warming up for 2.0000 s
+
+Warning: Unable to complete 50 samples in 5.0s. You may wish to increase target time to 5.2s, enable flat sampling, or reduce sample count to 30.
+Benchmarking region_threshold_calibration/inactive/989: Collecting 50 samples in estimated 5.2314 s (1275 iterations)
+Benchmarking region_threshold_calibration/inactive/989: Analyzing
+Benchmarking region_threshold_calibration/inactive/990
+Benchmarking region_threshold_calibration/inactive/990: Warming up for 2.0000 s
+
+Warning: Unable to complete 50 samples in 5.0s. You may wish to increase target time to 5.1s, enable flat sampling, or reduce sample count to 30.
+Benchmarking region_threshold_calibration/inactive/990: Collecting 50 samples in estimated 5.1040 s (1275 iterations)
+Benchmarking region_threshold_calibration/inactive/990: Analyzing
+Benchmarking region_threshold_calibration/inactive/991
+Benchmarking region_threshold_calibration/inactive/991: Warming up for 2.0000 s
+
+Warning: Unable to complete 50 samples in 5.0s. You may wish to increase target time to 5.2s, enable flat sampling, or reduce sample count to 30.
+Benchmarking region_threshold_calibration/inactive/991: Collecting 50 samples in estimated 5.1911 s (1275 iterations)
+Benchmarking region_threshold_calibration/inactive/991: Analyzing
+Benchmarking region_threshold_calibration/inactive/1649
+Benchmarking region_threshold_calibration/inactive/1649: Warming up for 2.0000 s
+
+Warning: Unable to complete 50 samples in 5.0s. You may wish to increase target time to 6.2s, enable flat sampling, or reduce sample count to 30.
+Benchmarking region_threshold_calibration/inactive/1649: Collecting 50 samples in estimated 6.1788 s (1275 iterations)
+Benchmarking region_threshold_calibration/inactive/1649: Analyzing
+Benchmarking region_threshold_calibration/inactive/1650
+Benchmarking region_threshold_calibration/inactive/1650: Warming up for 2.0000 s
+
+Warning: Unable to complete 50 samples in 5.0s. You may wish to increase target time to 6.2s, enable flat sampling, or reduce sample count to 30.
+Benchmarking region_threshold_calibration/inactive/1650: Collecting 50 samples in estimated 6.2059 s (1275 iterations)
+Benchmarking region_threshold_calibration/inactive/1650: Analyzing
+Benchmarking region_threshold_calibration/inactive/1651
+Benchmarking region_threshold_calibration/inactive/1651: Warming up for 2.0000 s
+
+Warning: Unable to complete 50 samples in 5.0s. You may wish to increase target time to 6.8s, enable flat sampling, or reduce sample count to 30.
+Benchmarking region_threshold_calibration/inactive/1651: Collecting 50 samples in estimated 6.8083 s (1275 iterations)
+Benchmarking region_threshold_calibration/inactive/1651: Analyzing

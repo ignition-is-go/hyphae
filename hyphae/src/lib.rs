@@ -1,11 +1,11 @@
-//! # hyphae - Lock-Free Reactive Programming Library
+//! # hyphae - High-Performance Reactive Programming Library
 //!
-//! A high-performance, type-safe reactive programming library featuring true lock-free operations,
-//! heterogeneous cell combinations, and comprehensive dependency tracking.
+//! A high-performance, type-safe concurrent reactive programming library with
+//! heterogeneous cell combinations and comprehensive dependency tracking.
 //!
 //! ## Features
 //!
-//! - **Lock-Free**: Uses `arc-swap` for atomic value updates without blocking
+//! - **Fast Reads**: Uses `arc-swap` for atomic value snapshots
 //! - **Type-Safe**: Full compile-time type checking with heterogeneous cell support
 //! - **Automatic Propagation**: Changes flow through dependency chains automatically
 //! - **Dependency Tracking**: Inspect and visualize cell relationships
@@ -14,7 +14,7 @@
 //! ## Quick Start
 //!
 //! ```rust
-//! use hyphae::{Cell, MapExt, MaterializeDefinite, Mutable, Watchable, JoinExt, Pipeline, Signal, flat};
+//! use hyphae::{Cell, MapExt, Materialize, Mutable, Watchable, JoinExt, Pipeline, Signal, flat};
 //!
 //! // Create reactive cells
 //! let x = Cell::new(5).with_name("x");
@@ -24,10 +24,9 @@
 //! // until you materialize.
 //! let doubled = x.clone().map(|val| val * 2).materialize().with_name("doubled");
 //!
-//! // Combine multiple cells with join + flat!. join is stateful — it
-//! // returns a Cell directly. Chaining .map fuses into the join's
-//! // installed callback when materialized.
-//! let sum = x.join(&y).map(flat!(|a, b| a + b)).materialize().with_name("sum");
+//! // Combine multiple cells with join + flat!. join stays lazy, then creates
+//! // its required fan-in coalescing boundary when the chain is materialized.
+//! let sum = x.clone().join(y).map(flat!(|a, b| a + b)).materialize().with_name("sum");
 //!
 //! // Subscribe on the materialized cell
 //! let _guard = sum.subscribe(|signal| {
@@ -45,25 +44,38 @@
 //! `catch_error`, `unwrap_or`) return a [`Pipeline`] — an uncompiled chain
 //! that has not yet been materialized into a [`Cell`]. Chaining pipelines
 //! fuses closures at compile time; the fused closure runs only when a
-//! consumer calls [`Pipeline::materialize`].
+//! consumer calls [`Materialize::materialize`].
 //!
 //! [`Cell`] is the materialized, cached, multicast form. Subscribing requires
 //! a cell — there is no `Pipeline::subscribe` by design, forcing callers to
 //! make the memoization decision explicit.
+//! [`Definite`] pipelines materialize to `Cell<T>`; [`Empty`] pipelines such
+//! as `filter` materialize to `Cell<Option<T>>` because they may not have an
+//! honest initial value.
 //!
-//! Stateful operators (`scan`, `debounce`, `throttle`, `buffer_*`, `pairwise`,
-//! `window`, `distinct*`, `sample`, `delay`, `take`, `first`, `last`, `merge`,
-//! `merge_map`, `switch_map`, `with_latest_from`, `zip`, `join`) return cells
-//! directly — they hold per-subscription state, so memoization is unavoidable.
+//! Operators that need state or multiple sources (`debounce`, `buffer_*`,
+//! `join`, `merge`, `switch_map`, and others) are lazy pipelines too. Their
+//! state and any required fan-in boundary are created only when the pipeline
+//! is installed. Materialize at the point where a cached value, [`Gettable`],
+//! or [`Watchable`] boundary is required.
+//!
+//! Derived collection views (`CellMap::get`, `entries`, `items`, `keys`,
+//! `size`, `len`, `diffs`, and their `CellSet` counterparts) also expose
+//! definite pipelines. Some reuse an internal cell today, making terminal
+//! materialization a no-op, but callers cannot rely on that implementation
+//! detail as an implicit observation boundary.
+//!
+//! See the [Hyphae 3.0 migration guide](https://github.com/ignition-is-go/hyphae/blob/main/docs/migrating-to-v3.md)
+//! for owned-input and sharing examples.
 //!
 //! ## Combining Cells
 //!
 //! Use `join()` to combine cells, and the `flat!` macro to avoid nested tuple destructuring.
-//! `join` is stateful and returns a [`Cell`] directly, so the chain below is a cell
-//! once `.map(...)` fuses onto it — no `.materialize()` needed for `.get()`:
+//! `join` consumes its inputs into a lazy pipeline. It creates its required
+//! fan-in coalescing boundary only when the chain is materialized:
 //!
 //! ```rust
-//! use hyphae::{Cell, Gettable, JoinExt, MapExt, MaterializeDefinite, flat};
+//! use hyphae::{Cell, Gettable, JoinExt, MapExt, Materialize, flat};
 //!
 //! let a = Cell::new(1);
 //! let b = Cell::new(2);
@@ -73,39 +85,50 @@
 //! // Without flat!: |(((a, b), c), d)| - deeply nested
 //! // With flat!: |a, b, c, d| - clean and simple
 //! let sum = a
-//!     .join(&b)
-//!     .join(&c)
-//!     .join(&d)
+//!     .join(b)
+//!     .materialize()
+//!     .join(c)
+//!     .materialize()
+//!     .join(d)
 //!     .map(flat!(|a, b, c, d| a + b + c + d))
 //!     .materialize();
 //! assert_eq!(sum.get(), 10);
 //! ```
 //!
-//! ## Map Queries vs CellMaps
+//! ## Map Queries vs `CellMap`s
 //!
-//! Pure [`CellMap`] operators (`inner_join`, `left_join`, `left_semi_join`,
-//! `multi_left_join`, `project`, `project_many`, `project_cell`, `select`,
-//! `select_cell`, `count_by`, `group_by`) return uncompiled [`MapQuery`]
-//! plan nodes — not [`CellMap`]s. A plan tree composes freely: any plan or
-//! [`CellMap`] can feed any other operator's input.
+//! Pure [`CellMap`] operators return consuming, non-`Clone` [`MapQuery`] plans.
+//! [`MapQuery`] exposes associated [`MapQuery::Key`] and [`MapQuery::Value`]
+//! types. Semantic operators state their cardinality and key behavior:
+//! `select`/`select_by`, `map_values`/`filter_map_values`,
+//! `map_entries`/`filter_map_entries`, and `flat_map_entries`.
 //!
-//! Calling [`MapQuery::materialize`] allocates ONE output [`CellMap`] with
-//! ONE subscription per root source running the fully fused diff-propagation
-//! closure. This replaces what used to be N intermediate [`CellMap`]s, N
-//! subscriber tables, and N `ArcSwap` chains for an N-stage query.
+//! Plans compile to a statically typed, monomorphized runtime. Recognized
+//! key-preserving and join regions fuse; rekeys and unsupported shapes remain
+//! physical boundaries. No intermediate *observable* `CellMap` is created.
+//! [`MapQuery::materialize`] is the sole observation boundary: it consumes the
+//! plan, installs one subscription per interned physical root, and returns the
+//! cached output map. Materialize once and clone that map to share work.
 //!
-//! [`MapQuery`] plan nodes are deliberately not `Clone` (mirroring
-//! [`Pipeline`]). Cloning would silently duplicate join / projection work —
-//! every clone's `materialize()` would install independent root subscriptions
-//! and re-run the entire op chain. To share work across consumers,
-//! materialize once into a [`CellMap`] (which IS `Clone` — the clone is an
-//! `Arc` bump referencing the same multicast cache) and then clone the cell
-//! map.
+//! Named zero-sized [`ForeignKeyRelation`] markers give typed FK joins their
+//! semantic relationship, partition, and index identity. Repeated uses of one
+//! raw physical right source and relation share an index within a materialized
+//! plan; transformed rights intentionally do not alias it.
 //!
-//! ## CellMap Quick Start
+//! Query closures must be deterministic, externally side-effect-free, and
+//! nonblocking. They may run repeatedly or concurrently, and their invocation
+//! count, order, and thread are not API guarantees. Output publication remains
+//! deterministic, ordered, and synchronously settled. See [`map_query`] for
+//! exact execution, collision, teardown, completion/error, and panic contracts.
+//!
+//! Native builds with the `scheduler` feature may adaptively dispatch eligible
+//! join-region work to Hyphae's shared dedicated worker pool. Wasm and builds
+//! without that feature execute map queries sequentially.
+//!
+//! ## `CellMap` Quick Start
 //!
 //! ```rust
-//! use hyphae::{CellMap, MapQuery, traits::{InnerJoinExt, ProjectMapExt}};
+//! use hyphae::{CellMap, MapQuery, traits::{InnerJoinExt, MapValuesExt}};
 //!
 //! let users = CellMap::<String, &'static str>::new();
 //! let scores = CellMap::<String, i32>::new();
@@ -117,7 +140,7 @@
 //! let view = users
 //!     .clone()
 //!     .inner_join(scores.clone())
-//!     .project(|user_id, (name, score)| Some((user_id.clone(), format!("{name}:{score}"))))
+//!     .map_values(|_, (name, score)| format!("{name}:{score}"))
 //!     .materialize();
 //!
 //! assert!(view.contains_key(&"u1".to_string()));
@@ -135,12 +158,16 @@ pub mod cell_set;
 #[cfg(feature = "scheduler")]
 pub mod clock;
 pub mod constructors;
+#[cfg(feature = "scheduler")]
+pub(crate) mod executor;
 pub mod map_query;
 pub mod nested_map;
 pub mod pipeline;
 pub(crate) mod platform;
 #[cfg(feature = "profiling")]
 pub mod profiling;
+#[cfg(feature = "region-calibration")]
+pub mod region_calibration;
 #[cfg(feature = "scheduler")]
 pub mod scheduler;
 pub mod signal;
@@ -171,8 +198,7 @@ pub use constructors::{
 pub use map_query::{MapQuery, MapQueryShareExt, SharedMapQuery};
 pub use nested_map::NestedMap;
 pub use pipeline::{
-    Definite, Empty, MaterializeDefinite, MaterializeEmpty, Pipeline, PipelineShareExt, Seedness,
-    SharedPipeline,
+    Definite, Empty, Materialize, Pipeline, PipelineShareExt, Seedness, SharedPipeline,
 };
 #[cfg(feature = "scheduler")]
 pub use scheduler::batch;
@@ -181,16 +207,18 @@ pub use source::{SampleOnSourceExt, Source, WeakSource};
 pub use subscription::SubscriptionGuard;
 pub use traits::{
     AuditExt, BackpressureExt, BufferCountExt, BufferTimeExt, CatchErrorExt, CellValue, ColdExt,
-    ConcatExt, CountByExt, CountByPlan, DebounceExt, DedupedExt, DelayExt, DepNode, DistinctExt,
-    DistinctUntilChangedByExt, FilterExt, FilterPipeline, FinalizeExt, FirstExt, Gettable,
-    GroupByExt, GroupByPlan, HasForeignKey, IdFor, IdType, InnerJoinByKeyPlan, InnerJoinByPairPlan,
-    InnerJoinExt, JoinExt, JoinKeyFrom, KeyChange, LastExt, LeftJoinExt, LeftJoinPlan,
-    LeftSemiJoinExt, LeftSemiJoinPlan, MapErrExt, MapExt, MapOkExt, MapPipeline, MergeExt,
-    MergeMapExt, MultiLeftJoinExt, MultiLeftJoinPlan, Mutable, PairwiseExt, ParallelCell,
-    ParallelExt, ProjectCellExt, ProjectCellPlan, ProjectManyExt, ProjectManyPlan, ProjectMapExt,
-    ProjectPlan, ReactiveKeys, ReactiveMap, RetryExt, SampleExt, ScanExt, SelectCellExt,
-    SelectCellPlan, SelectExt, SelectPlan, SkipExt, SkipWhileExt, StateMachineBuilder,
-    StateTransitionExt, SwitchMapExt, TakeExt, TakeUntilExt, TakeWhileExt, TapExt, TapPipeline,
-    ThrottleExt, TimeoutExt, TryMapExt, TryMapPipeline, UnwrapOrExt, Watchable, WatchableResult,
-    WindowExt, WithLatestFromExt, ZipExt, join_vec,
+    CollectProject, ConcatExt, CountByExt, DebounceExt, DedupedExt, DelayExt, DepNode,
+    DirectJoinProjection, DirectProject, DistinctExt, DistinctUntilChangedByExt, FilterExt,
+    FilterMapValuesPlan, FinalizeExt, FirstExt, FlatMapEntriesExt, ForeignKeyRelation, Gettable,
+    GroupByExt, IdFor, IdType, InnerJoinExt, JCons, JNil, JoinExt, JoinKeyFrom, JoinProjection,
+    JoinRegion, JoinStage, JoinedValuesPlan, KeyChange, LastExt, LastStage, LeftJoinExt,
+    LeftJoinPlan, LeftSemiJoinExt, MapEntriesExt, MapErrExt, MapExt, MapLast, MapOkExt,
+    MapValuesExt, MapValuesPlan, MergeExt, MergeMapExt, MultiLeftJoinExt, Mutable,
+    OptionalRightKey, OwnedIndex, PairwiseExt, ParallelCell, ParallelExt, ProjectCellExt, Push,
+    ReactiveKeys, ReactiveMap, RelationPlan, ReplaceLastProject, RequiredRightKey, RetryExt,
+    RightJoinKey, SampleExt, ScanExt, SelectCellExt, SelectExt, SharedRelationIndex, SkipExt,
+    SkipWhileExt, StageList, StateMachineBuilder, StateTransitionExt, SwitchMapExt, TakeExt,
+    TakeUntilExt, TakeWhileExt, TapExt, ThenMap, ThrottleExt, TimeoutExt, TryMapExt,
+    TupleJoinProjection, TwoLeftJoinMappedPlan, TwoLeftJoinPlan, UnwrapOrExt, Watchable,
+    WatchableResult, WindowExt, WithLatestFromExt, ZipExt, join_vec,
 };

@@ -1,8 +1,13 @@
 //! Integration tests for Pipeline type.
 
-use crate::{
-    Cell, CellMutable, Gettable, MapExt, MaterializeDefinite, MaterializeEmpty, Mutable, Pipeline,
-};
+use crate::{Cell, CellMutable, Gettable, MapExt, Materialize, Mutable, Pipeline};
+
+fn assert_pipeline<T, P>(_pipeline: &P)
+where
+    T: crate::traits::CellValue,
+    P: Pipeline<T>,
+{
+}
 
 #[test]
 fn cell_is_pipeline() {
@@ -10,12 +15,6 @@ fn cell_is_pipeline() {
     // Cell stops implementing Pipeline. Pipelines no longer have a public get,
     // so we read through materialize.
     let c = Cell::new(10);
-    fn assert_pipeline<T, P>(_p: &P)
-    where
-        T: crate::traits::CellValue,
-        P: Pipeline<T>,
-    {
-    }
     assert_pipeline::<i32, Cell<i32, CellMutable>>(&c);
     assert_eq!(c.get(), 10);
 }
@@ -190,7 +189,7 @@ fn map_err_transforms_only_err() {
     let src: Cell<Result<i32, String>, _> = Cell::new(Err("oops".to_string()));
     let wrapped = src
         .clone()
-        .map_err(|e| format!("wrapped: {}", e))
+        .map_err(|e| format!("wrapped: {e}"))
         .materialize();
 
     assert_eq!(wrapped.get(), Err("wrapped: oops".to_string()));
@@ -227,13 +226,16 @@ fn shared_pipeline_subscribes_upstream_once() {
     let src = Cell::new(0u64).with_name("src");
     let initial_subs = crate::traits::DepNode::subscriber_count(&src);
 
-    let shared = src.clone().map(|x| x * 2).share();
+    let shared = src.clone().map(|x| x * 2).materialize().share();
 
     // Cloning the share doesn't subscribe.
     let s1 = shared.clone();
-    let s2 = shared.clone();
+    let s2 = shared;
 
-    assert_eq!(crate::traits::DepNode::subscriber_count(&src), initial_subs);
+    assert_eq!(
+        crate::traits::DepNode::subscriber_count(&src),
+        initial_subs + 1
+    );
 
     // Materializing each fan-out chain causes ONE upstream subscription on src.
     let m1 = s1.map(|x| x + 1).materialize();
@@ -255,7 +257,7 @@ fn shared_pipeline_drops_upstream_when_all_subscribers_drop() {
     let src = Cell::new(0u64).with_name("src");
     let initial_subs = crate::traits::DepNode::subscriber_count(&src);
 
-    let shared = src.clone().map(|x| x * 2).share();
+    let shared = src.clone().map(|x| x * 2).materialize().share();
     let m1 = shared.clone().materialize();
     let m2 = shared.clone().materialize();
 
@@ -281,7 +283,7 @@ fn shared_pipeline_fans_out_to_many_consumers() {
     use crate::Watchable;
 
     let src = Cell::new(1u64);
-    let shared = src.clone().map(|x| x * 10).share();
+    let shared = src.clone().map(|x| x * 10).materialize().share();
 
     // Five direct subscribers via materialize -> subscribe.
     let counters: Vec<StdArc<AtomicU64>> = (0..5).map(|_| StdArc::new(AtomicU64::new(0))).collect();

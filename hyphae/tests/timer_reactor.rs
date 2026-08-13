@@ -11,18 +11,23 @@
 //! actual regression gate for that bug; the rest cover that the reactor
 //! didn't lose basic interval/delayed-timer correctness in the rewrite.
 
-#![cfg(not(target_arch = "wasm32"))]
+#![cfg(all(not(target_arch = "wasm32"), feature = "scheduler"))]
 
 use std::{
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicUsize, Ordering},
     },
     thread::ThreadId,
     time::Duration,
 };
 
-use hyphae::{Cell, DelayExt, Mutable, Signal, Watchable, interval_source};
+use parking_lot::Mutex;
+
+use hyphae::{Cell, DelayExt, Materialize, Mutable, Signal, Watchable, interval_source};
+
+const DELAYED_TIMER_COUNT: usize = 200;
+static SCHEDULER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// The timer reactor thread is a single process-wide singleton (that's the
 /// point of this file). Serializing these tests isn't needed for
@@ -34,8 +39,9 @@ fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
     // the group threshold high (waves stay sequential at rest), so parallelism
     // tests must lower it to actually exercise concurrent same-height groups.
     hyphae::scheduler::set_wave_threshold_for_test(4);
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    SCHEDULER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Two independently-created interval sources at different periods must fire
@@ -53,14 +59,14 @@ fn independent_intervals_share_one_reactor_thread() {
     let seen_fast = seen.clone();
     let guard_fast = fast.subscribe(move |signal| {
         if matches!(signal, Signal::Value(_)) {
-            seen_fast.lock().unwrap().push(std::thread::current().id());
+            seen_fast.lock().push(std::thread::current().id());
         }
     });
 
     let seen_slow = seen.clone();
     let guard_slow = slow.subscribe(move |signal| {
         if matches!(signal, Signal::Value(_)) {
-            seen_slow.lock().unwrap().push(std::thread::current().id());
+            seen_slow.lock().push(std::thread::current().id());
         }
     });
 
@@ -68,19 +74,18 @@ fn independent_intervals_share_one_reactor_thread() {
     drop(guard_fast);
     drop(guard_slow);
 
-    let seen = seen.lock().unwrap();
+    let seen = seen.lock();
     assert!(
         seen.len() >= 4,
         "expected both intervals to have fired several times, got {} events",
         seen.len()
     );
-    let distinct: std::collections::HashSet<_> = seen.iter().collect();
+    let distinct: std::collections::HashSet<_> = seen.iter().copied().collect();
+    let distinct_len = distinct.len();
+    drop(seen);
     assert_eq!(
-        distinct.len(),
-        1,
-        "interval callbacks fired from {} distinct threads, expected 1 (shared reactor): {:?}",
-        distinct.len(),
-        distinct
+        distinct_len, 1,
+        "interval callbacks fired from {distinct_len} distinct threads, expected 1 (shared reactor): {distinct:?}"
     );
 }
 
@@ -121,16 +126,20 @@ fn dropped_interval_stops_firing() {
 #[test]
 fn burst_of_delayed_timers_all_fire() {
     let _serial = scheduler_test_serial();
-    const N: usize = 200;
     let fired = Arc::new(AtomicUsize::new(0));
 
-    let handles: Vec<_> = (0..N)
+    let handles: Vec<_> = (0..DELAYED_TIMER_COUNT)
         .map(|i| {
             let fired = fired.clone();
             std::thread::spawn(move || {
                 let source = Cell::new(0u64);
-                let delayed = source.delay(Duration::from_millis(5 + (i % 7) as u64));
-                let fired = fired.clone();
+                let delayed = source
+                    .clone()
+                    .delay(Duration::from_millis(5u64.saturating_add(
+                        u64::try_from(i.rem_euclid(7)).unwrap_or(u64::MAX),
+                    )))
+                    .materialize();
+                let fired = fired;
                 let guard = delayed.subscribe(move |signal| {
                     if let Signal::Value(v) = signal
                         && **v == 42
@@ -145,10 +154,10 @@ fn burst_of_delayed_timers_all_fire() {
         })
         .collect();
 
-    for h in handles {
-        h.join().unwrap();
+    for handle in handles {
+        assert!(handle.join().is_ok());
     }
 
     std::thread::sleep(Duration::from_millis(200));
-    assert_eq!(fired.load(Ordering::SeqCst), N);
+    assert_eq!(fired.load(Ordering::SeqCst), DELAYED_TIMER_COUNT);
 }

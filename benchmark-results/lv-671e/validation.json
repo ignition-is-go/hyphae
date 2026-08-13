@@ -1,0 +1,40 @@
+{
+  "v3_rows": 600,
+  "candidate_rows": 600,
+  "paired_rows": 600,
+  "expected_rows_per_revision": 600,
+  "key_duplicates_v3": 0,
+  "key_duplicates_candidate": 0,
+  "output_rows_mismatches": 0,
+  "output_checksum_mismatches": 0,
+  "phases": [
+    "batch",
+    "build",
+    "materialize",
+    "setup",
+    "single_updates",
+    "teardown"
+  ],
+  "scenarios": [
+    "projection_region",
+    "rekey_between_joins",
+    "repeated_relation_four_join",
+    "two_join_region"
+  ],
+  "rows_values": [
+    1,
+    10,
+    100,
+    1000,
+    10000
+  ],
+  "batch_values": [
+    1,
+    10,
+    100,
+    1000,
+    10000
+  ],
+  "v3_teardown_entry_mismatches": 0,
+  "candidate_teardown_entry_mismatches": 0
+}

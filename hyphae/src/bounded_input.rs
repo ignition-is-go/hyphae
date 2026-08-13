@@ -1,7 +1,7 @@
 //! Bounded input channel for backpressure at system boundaries.
 //!
 //! Use `BoundedInput` at ingestion points where external producers may outpace consumers.
-//! Supports configurable overflow policies: Block, DropOldest, DropNewest, Error.
+//! Supports configurable overflow policies: Block, `DropOldest`, `DropNewest`, Error.
 
 use std::sync::{
     Arc,
@@ -18,7 +18,7 @@ use crate::{
     traits::{CellValue, DepNode, Gettable, Mutable, Watchable},
 };
 
-/// Policy for handling buffer overflow in BoundedInput.
+/// Policy for handling buffer overflow in `BoundedInput`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverflowPolicy {
     /// Block the producer until space is available.
@@ -83,7 +83,7 @@ impl BoundedInputMetrics {
     }
 }
 
-/// Inner state shared between BoundedInput clones.
+/// Inner state shared between `BoundedInput` clones.
 struct BoundedInputInner<T> {
     /// Lock-free bounded buffer
     buffer: ArrayQueue<T>,
@@ -137,7 +137,7 @@ pub struct BoundedInput<T> {
 
 impl<T> Clone for BoundedInput<T> {
     fn clone(&self) -> Self {
-        BoundedInput {
+        Self {
             inner: Arc::clone(&self.inner),
         }
     }
@@ -153,7 +153,7 @@ impl<T: CellValue> BoundedInput<T> {
     pub fn new(initial_value: T, capacity: usize, policy: OverflowPolicy) -> Self {
         assert!(capacity > 0, "capacity must be positive");
 
-        BoundedInput {
+        Self {
             inner: Arc::new(BoundedInputInner {
                 buffer: ArrayQueue::new(capacity),
                 cell: Cell::new(initial_value),
@@ -177,6 +177,11 @@ impl<T: CellValue> BoundedInput<T> {
     /// - `Error`: Completes the cell with an error
     ///
     /// Returns `Ok(())` on success, `Err(value)` if the value was rejected.
+    ///
+    /// # Errors
+    ///
+    /// Returns the unaccepted value when the input is closed or the configured
+    /// overflow policy rejects it.
     pub fn push(&self, value: T) -> Result<(), T> {
         if self.inner.closed.load(Ordering::SeqCst) {
             return Err(value);
@@ -198,6 +203,10 @@ impl<T: CellValue> BoundedInput<T> {
     /// Push a value and immediately flush to subscribers.
     ///
     /// This is a convenience method equivalent to `push()` followed by `flush()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the unaccepted value under the same conditions as [`Self::push`].
     pub fn push_flush(&self, value: T) -> Result<(), T> {
         let result = self.push(value);
         self.flush();
@@ -276,16 +285,19 @@ impl<T: CellValue> BoundedInput<T> {
     }
 
     /// Get metrics for this bounded input.
+    #[must_use]
     pub fn metrics(&self) -> &BoundedInputMetrics {
         &self.inner.metrics
     }
 
     /// Get the buffer capacity.
+    #[must_use]
     pub fn capacity(&self) -> usize {
         self.inner.capacity
     }
 
     /// Check if the input has been closed.
+    #[must_use]
     pub fn is_closed(&self) -> bool {
         self.inner.closed.load(Ordering::SeqCst)
     }
@@ -294,6 +306,7 @@ impl<T: CellValue> BoundedInput<T> {
     ///
     /// The returned cell can be used with operators but the original
     /// `BoundedInput` can still receive values via `push()`.
+    #[must_use]
     pub fn to_cell(&self) -> Cell<T, CellImmutable> {
         self.inner.cell.clone().lock()
     }
@@ -322,9 +335,8 @@ impl<T: CellValue> DepNode for BoundedInput<T> {
             .inner
             .name
             .lock()
-            .expect("cell name poisoned")
             .as_ref()
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
     }
 
     fn deps(&self) -> Vec<Arc<dyn DepNode>> {
@@ -341,7 +353,7 @@ impl<T: CellValue> Watchable<T> for BoundedInput<T> {
     }
 
     fn unsubscribe(&self, id: Uuid) {
-        self.inner.cell.unsubscribe(id)
+        self.inner.cell.unsubscribe(id);
     }
 
     fn is_complete(&self) -> bool {

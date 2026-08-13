@@ -4,10 +4,7 @@ use std::{marker::PhantomData, sync::Arc};
 
 use super::CellValue;
 use crate::{
-    pipeline::{
-        Definite, Empty, MaterializeDefinite, MaterializeEmpty, Pipeline, PipelineInstall,
-        PipelineSeed, Seedness,
-    },
+    pipeline::{Pipeline, PipelineInstall, PipelineSeed, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -44,22 +41,22 @@ where
 
 impl<S, T, U, E, F> PipelineSeed<Result<U, E>> for TryMapPipeline<S, T, U, E, F>
 where
-    S: PipelineSeed<T>,
+    S: Pipeline<T, crate::pipeline::Definite>,
     T: CellValue,
     U: CellValue,
     E: CellValue,
     F: Fn(&T) -> Result<U, E> + Send + Sync + 'static,
 {
     fn seed(&self) -> Result<U, E> {
-        (self.f)(&self.source.seed())
+        (self.f)(&self.source.pipeline_seed())
     }
 }
 
 #[allow(private_bounds)]
-impl<S, T, U, E, F, Sd> Pipeline<Result<U, E>, Sd> for TryMapPipeline<S, T, U, E, F>
+impl<S, T, U, E, F> Pipeline<Result<U, E>, crate::pipeline::Definite>
+    for TryMapPipeline<S, T, U, E, F>
 where
-    S: Pipeline<T, Sd>,
-    Sd: Seedness,
+    S: Pipeline<T, crate::pipeline::Definite>,
     T: CellValue,
     U: CellValue,
     E: CellValue,
@@ -67,19 +64,9 @@ where
 {
 }
 
-impl<S, T, U, E, F> MaterializeDefinite<Result<U, E>> for TryMapPipeline<S, T, U, E, F>
+impl<S, T, U, E, F> Pipeline<Result<U, E>, crate::pipeline::Empty> for TryMapPipeline<S, T, U, E, F>
 where
-    S: Pipeline<T, Definite> + PipelineSeed<T>,
-    T: CellValue,
-    U: CellValue,
-    E: CellValue,
-    F: Fn(&T) -> Result<U, E> + Send + Sync + 'static,
-{
-}
-
-impl<S, T, U, E, F> MaterializeEmpty<Result<U, E>> for TryMapPipeline<S, T, U, E, F>
-where
-    S: Pipeline<T, Empty>,
+    S: Pipeline<T, crate::pipeline::Empty>,
     T: CellValue,
     U: CellValue,
     E: CellValue,
@@ -92,11 +79,24 @@ where
 pub trait TryMapExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// Transform values with a fallible function.
     ///
-    /// Returns a [`TryMapPipeline`] node that yields `Ok(value)` when the
+    /// Returns an opaque lazy pipeline that yields `Ok(value)` when the
     /// transform succeeds, or `Err(error)` when it fails. Materialize to
     /// observe.
     #[track_caller]
-    fn try_map<U, E, F>(self, f: F) -> TryMapPipeline<Self, T, U, E, F>
+    fn try_map<U, E, F>(self, f: F) -> impl crate::Materialize<Result<U, E>, S>
+    where
+        U: CellValue,
+        E: CellValue,
+        F: Fn(&T) -> Result<U, E> + Send + Sync + 'static;
+}
+
+impl<T: CellValue, P: Pipeline<T, crate::pipeline::Definite>>
+    TryMapExt<T, crate::pipeline::Definite> for P
+{
+    fn try_map<U, E, F>(
+        self,
+        f: F,
+    ) -> impl crate::Materialize<Result<U, E>, crate::pipeline::Definite>
     where
         U: CellValue,
         E: CellValue,
@@ -110,4 +110,19 @@ pub trait TryMapExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     }
 }
 
-impl<T: CellValue, S: Seedness, P: Pipeline<T, S>> TryMapExt<T, S> for P {}
+impl<T: CellValue, P: Pipeline<T, crate::pipeline::Empty>> TryMapExt<T, crate::pipeline::Empty>
+    for P
+{
+    fn try_map<U, E, F>(self, f: F) -> impl crate::Materialize<Result<U, E>, crate::pipeline::Empty>
+    where
+        U: CellValue,
+        E: CellValue,
+        F: Fn(&T) -> Result<U, E> + Send + Sync + 'static,
+    {
+        TryMapPipeline {
+            source: self,
+            f: Arc::new(f),
+            _types: PhantomData,
+        }
+    }
+}

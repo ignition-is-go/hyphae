@@ -61,8 +61,10 @@ pub trait DepNode: Send + Sync {
     }
 
     fn display_name(&self) -> String {
-        self.name()
-            .unwrap_or_else(|| format!("Cell({})", &self.id().to_string()[..8]))
+        self.name().unwrap_or_else(|| {
+            let short_id: String = self.id().to_string().chars().take(8).collect();
+            format!("Cell({short_id})")
+        })
     }
 
     fn dependency_count(&self) -> usize {
@@ -87,22 +89,22 @@ pub trait DepNode: Send + Sync {
             let _ = writeln!(out, "{}", node.display_name());
 
             if visited.contains(&node.id()) {
-                let _ = writeln!(out, "{}(cycle)", prefix);
+                let _ = writeln!(out, "{prefix}(cycle)");
                 return;
             }
             visited.insert(node.id());
 
             let deps = node.deps();
             for (i, dep) in deps.iter().enumerate() {
-                let is_last = i == deps.len() - 1;
+                let is_last = i == deps.len().saturating_sub(1);
                 let connector = if is_last { "└─ " } else { "├─ " };
                 let child_prefix = if is_last {
-                    format!("{}   ", prefix)
+                    format!("{prefix}   ")
                 } else {
-                    format!("{}│  ", prefix)
+                    format!("{prefix}│  ")
                 };
 
-                let _ = write!(out, "{}{}", prefix, connector);
+                let _ = write!(out, "{prefix}{connector}");
                 write_tree(dep.as_ref(), out, &child_prefix, visited);
             }
         }

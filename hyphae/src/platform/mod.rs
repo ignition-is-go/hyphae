@@ -21,7 +21,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use native::{Instant, par_for_each, spawn_delayed, spawn_interval};
+pub use native::{Instant, par_for_each, spawn_delayed, spawn_interval};
 
 #[cfg(target_arch = "wasm32")]
 mod wasm;
@@ -34,8 +34,8 @@ pub(crate) use wasm::{Instant, par_for_each, spawn_delayed, spawn_interval};
 /// (e.g. PTP-disciplined) clock. Monotonic and non-decreasing; the absolute
 /// value is meaningless — only differences are.
 #[cfg(feature = "scheduler")]
-pub(crate) fn now_nanos() -> u64 {
+pub fn now_nanos() -> u64 {
     use std::sync::OnceLock;
     static BASE: OnceLock<Instant> = OnceLock::new();
-    BASE.get_or_init(Instant::now).elapsed().as_nanos() as u64
+    u64::try_from(BASE.get_or_init(Instant::now).elapsed().as_nanos()).unwrap_or(u64::MAX)
 }

@@ -1,0 +1,68 @@
+   Compiling hyphae v2.0.1 (/home/trevor/Code/hyphae/hyphae)
+    Finished `bench` profile [optimized] target(s) in 6.13s
+     Running benches/compiled_map_queries.rs (target/release/deps/compiled_map_queries-3dd9fd0577ebe7c4)
+Gnuplot not found, using plotters backend
+Benchmarking compiled_query/two_join_region/single
+Benchmarking compiled_query/two_join_region/single: Warming up for 3.0000 s
+Benchmarking compiled_query/two_join_region/single: Collecting 100 samples in estimated 5.0087 s (1.4M iterations)
+Benchmarking compiled_query/two_join_region/single: Analyzing
+compiled_query/two_join_region/single
+                        time:   [3.5294 µs 3.5406 µs 3.5531 µs]
+                        change: [+11.467% +11.891% +12.332%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+
+Benchmarking compiled_query/two_join_region/batch/1
+Benchmarking compiled_query/two_join_region/batch/1: Warming up for 3.0000 s
+Benchmarking compiled_query/two_join_region/batch/1: Collecting 100 samples in estimated 5.0092 s (1.4M iterations)
+Benchmarking compiled_query/two_join_region/batch/1: Analyzing
+compiled_query/two_join_region/batch/1
+                        time:   [3.5526 µs 3.5611 µs 3.5696 µs]
+                        change: [-5.3437% -4.9233% -4.5146%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 4 outliers among 100 measurements (4.00%)
+  3 (3.00%) high mild
+  1 (1.00%) high severe
+Benchmarking compiled_query/two_join_region/batch/10
+Benchmarking compiled_query/two_join_region/batch/10: Warming up for 3.0000 s
+Benchmarking compiled_query/two_join_region/batch/10: Collecting 100 samples in estimated 5.0020 s (646k iterations)
+Benchmarking compiled_query/two_join_region/batch/10: Analyzing
+compiled_query/two_join_region/batch/10
+                        time:   [7.6662 µs 7.6919 µs 7.7183 µs]
+                        change: [-21.584% -21.138% -20.709%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 4 outliers among 100 measurements (4.00%)
+  3 (3.00%) high mild
+  1 (1.00%) high severe
+Benchmarking compiled_query/two_join_region/batch/100
+Benchmarking compiled_query/two_join_region/batch/100: Warming up for 3.0000 s
+Benchmarking compiled_query/two_join_region/batch/100: Collecting 100 samples in estimated 5.1954 s (101k iterations)
+Benchmarking compiled_query/two_join_region/batch/100: Analyzing
+compiled_query/two_join_region/batch/100
+                        time:   [51.448 µs 51.741 µs 52.055 µs]
+                        change: [-32.460% -31.728% -30.988%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 6 outliers among 100 measurements (6.00%)
+  5 (5.00%) high mild
+  1 (1.00%) high severe
+Benchmarking compiled_query/two_join_region/batch/1000
+Benchmarking compiled_query/two_join_region/batch/1000: Warming up for 3.0000 s
+Benchmarking compiled_query/two_join_region/batch/1000: Collecting 100 samples in estimated 7.3712 s (15k iterations)
+Benchmarking compiled_query/two_join_region/batch/1000: Analyzing
+compiled_query/two_join_region/batch/1000
+                        time:   [482.43 µs 486.31 µs 490.43 µs]
+                        change: [-36.065% -35.418% -34.736%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 100 measurements (1.00%)
+  1 (1.00%) high mild
+Benchmarking compiled_query/two_join_region/batch/10000
+Benchmarking compiled_query/two_join_region/batch/10000: Warming up for 3.0000 s
+Benchmarking compiled_query/two_join_region/batch/10000: Collecting 100 samples in estimated 5.5496 s (1000 iterations)
+Benchmarking compiled_query/two_join_region/batch/10000: Analyzing
+compiled_query/two_join_region/batch/10000
+                        time:   [5.3020 ms 5.3786 ms 5.4655 ms]
+                        change: [-39.203% -37.390% -35.567%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 10 outliers among 100 measurements (10.00%)
+  4 (4.00%) high mild
+  6 (6.00%) high severe
+

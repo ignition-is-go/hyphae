@@ -16,7 +16,7 @@
 //! No mutex on the subscriber list during fanout, no per-emission allocation
 //! beyond what the in-place state mutation already needs. Compared to
 //! materialize-then-clone-cell — where each shared consumer would walk the
-//! full per-key cell + diffs_cell pipeline — this saves the per-share-point
+//! full per-key cell + `diffs_cell` pipeline — this saves the per-share-point
 //! `CellMap` allocation and most of its wiring.
 //!
 //! # Lifecycle
@@ -28,28 +28,32 @@
 //! `SharedMapQuery` does not reactivate — hold the handle (or one
 //! materialized leaf) for as long as you want the shared work to run.
 
-use std::{
-    collections::HashMap,
-    hash::Hash,
-    sync::{Arc, Mutex},
-};
+use parking_lot::Mutex;
+use std::{collections::HashMap, hash::Hash, sync::Arc};
 
 use uuid::Uuid;
 
+use super::properties::{ByMapKey, ExactlyOne, PlanProperties};
 use crate::{
     cell_map::MapDiff,
-    map_query::{MapDiffSink, MapQuery, MapQueryInstall},
+    map_query::{BoxedMapDiffSink, BuildQueryRuntime, MapQuery},
     subscription::SubscriptionGuard,
     traits::CellValue,
 };
 
 type DiffSubscriber<K, V> = Arc<dyn Fn(&MapDiff<K, V>) + Send + Sync>;
 
-/// Type-erased one-shot installer for the wrapped upstream plan. `MapQuery`'s
-/// `install` consumes `self`, so we wrap a one-shot `FnOnce` in a slot and
+/// Type-erased one-shot compiler for the wrapped upstream plan. Compilation
+/// consumes the plan, so we wrap a one-shot `FnOnce` in a slot and
 /// take it on the first downstream install.
-type UpstreamInstall<K, V> =
-    Box<dyn FnOnce(MapDiffSink<K, V>) -> Vec<SubscriptionGuard> + Send + Sync>;
+type UpstreamInstall<K, V> = Box<
+    dyn FnOnce(
+            &mut super::compiler::CompileContext,
+            BoxedMapDiffSink<K, V>,
+        ) -> Vec<SubscriptionGuard>
+        + Send
+        + Sync,
+>;
 
 pub(crate) struct SharedMapQueryInner<K, V>
 where
@@ -109,7 +113,7 @@ where
     /// before downstream callbacks fire so that any concurrent late-binding
     /// install sees a consistent state.
     fn apply_diff(&self, diff: &MapDiff<K, V>) {
-        let mut state = self.state.lock().expect("share state poisoned");
+        let mut state = self.state.lock();
         Self::apply_diff_into(&mut state, diff);
     }
 
@@ -140,8 +144,10 @@ where
     }
 
     fn snapshot_initial(&self) -> MapDiff<K, V> {
-        let state = self.state.lock().expect("share state poisoned");
-        let entries: Vec<(K, V)> = state.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let entries: Vec<(K, V)> = {
+            let state = self.state.lock();
+            state.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        };
         MapDiff::Initial { entries }
     }
 }
@@ -159,6 +165,16 @@ where
     V: CellValue,
 {
     inner: Arc<SharedMapQueryInner<K, V>>,
+}
+
+impl<K, V> PlanProperties for SharedMapQuery<K, V>
+where
+    K: Hash + Eq + CellValue,
+    V: CellValue,
+{
+    type Cardinality = ExactlyOne;
+    type InputPartition = ByMapKey<K>;
+    type OutputPartition = ByMapKey<K>;
 }
 
 impl<K, V> Clone for SharedMapQuery<K, V>
@@ -182,8 +198,9 @@ where
     ///
     /// Prefer the [`MapQueryShareExt::share`] extension method — it reads as
     /// `query.share()` at the call site.
-    pub fn new<Q: MapQuery<K, V>>(q: Q) -> Self {
-        let upstream: UpstreamInstall<K, V> = Box::new(move |sink| q.install(sink));
+    pub fn new<Q: MapQuery<Key = K, Value = V>>(q: Q) -> Self {
+        let upstream: UpstreamInstall<K, V> =
+            Box::new(move |cx, sink| crate::map_query::compile_runtime_into(q, cx, sink));
         Self {
             inner: Arc::new(SharedMapQueryInner {
                 upstream: Mutex::new(Some(upstream)),
@@ -195,13 +212,18 @@ where
     }
 }
 
-impl<K, V> MapQueryInstall<K, V> for SharedMapQuery<K, V>
+impl<K, V> BuildQueryRuntime<K, V> for SharedMapQuery<K, V>
 where
     K: CellValue + Hash + Eq,
     V: CellValue,
 {
-    fn install(self, sink: MapDiffSink<K, V>) -> Vec<SubscriptionGuard> {
+    fn build_into(
+        self,
+        cx: &mut super::compiler::CompileContext,
+        sink: crate::map_query::BoxedMapDiffSink<K, V>,
+    ) -> Vec<SubscriptionGuard> {
         let id = Uuid::new_v4();
+        let sink: DiffSubscriber<K, V> = sink;
 
         // Decide whether this is the first install. If the upstream slot is
         // still populated, we will:
@@ -216,14 +238,14 @@ where
         //   2. Synthesize an Initial from our state snapshot and deliver it
         //      to the new `sink` so it sees a coherent starting state.
         let upstream_take = {
-            let mut slot = self.inner.upstream.lock().expect("share upstream poisoned");
+            let mut slot = self.inner.upstream.lock();
             slot.take()
         };
 
         if let Some(install_fn) = upstream_take {
             self.inner.add_subscriber(id, sink);
             let weak = Arc::downgrade(&self.inner);
-            let fanout: MapDiffSink<K, V> = Arc::new(move |diff: &MapDiff<K, V>| {
+            let fanout: BoxedMapDiffSink<K, V> = Arc::new(move |diff: &MapDiff<K, V>| {
                 let Some(inner) = weak.upgrade() else {
                     return;
                 };
@@ -235,13 +257,31 @@ where
                     cb(diff);
                 }
             });
-            let guards = install_fn(fanout);
-            let mut slot = self
-                .inner
-                .upstream_guards
-                .lock()
-                .expect("share upstream_guards poisoned");
+            let activation_start = cx.activation_count();
+            let guards = install_fn(cx, fanout);
+            let mut slot = self.inner.upstream_guards.lock();
             slot.extend(guards);
+            drop(slot);
+
+            // Root activation is deliberately deferred until the entire outer
+            // plan has compiled. Preserve share ownership by wrapping the
+            // upstream activations: their guards belong to the share point,
+            // not whichever downstream materialization happened to compile it
+            // first.
+            let upstream_activations = cx.take_activations_since(activation_start);
+            if !upstream_activations.is_empty() {
+                let weak = Arc::downgrade(&self.inner);
+                cx.push_activation(Box::new(move || {
+                    let guards: Vec<SubscriptionGuard> = upstream_activations
+                        .into_iter()
+                        .flat_map(|activate| activate())
+                        .collect();
+                    if let Some(inner) = weak.upgrade() {
+                        inner.upstream_guards.lock().extend(guards);
+                    }
+                    Vec::new()
+                }));
+            }
         } else {
             // Replay current state to the late-binding subscriber, then
             // register so it picks up subsequent diffs. Order matters: if we
@@ -258,20 +298,14 @@ where
 
         // Guard whose Drop removes this subscriber and, if last, releases all
         // upstream guards.
-        let weak = Arc::downgrade(&self.inner);
+        let inner = Arc::clone(&self.inner);
         vec![SubscriptionGuard::from_callback(move || {
-            let Some(inner) = weak.upgrade() else {
-                return;
-            };
             let remaining = inner.remove_subscriber(id);
             if remaining == 0 {
                 // Drain upstream guards outside any other lock: dropping a
                 // guard may itself acquire locks.
                 let drained: Vec<SubscriptionGuard> = {
-                    let mut slot = inner
-                        .upstream_guards
-                        .lock()
-                        .expect("share upstream_guards poisoned");
+                    let mut slot = inner.upstream_guards.lock();
                     std::mem::take(&mut *slot)
                 };
                 drop(drained);
@@ -281,11 +315,14 @@ where
 }
 
 #[allow(private_bounds)]
-impl<K, V> MapQuery<K, V> for SharedMapQuery<K, V>
+impl<K, V> MapQuery for SharedMapQuery<K, V>
 where
     K: CellValue + Hash + Eq,
     V: CellValue,
 {
+    type Key = K;
+    type Value = V;
+
     // Default `materialize` is correct: it allocates a CellMap that subscribes
     // through `install()` above. Each materialized leaf adds one fan-out
     // subscriber; the share point's upstream plan installs exactly once.
@@ -298,7 +335,7 @@ where
 /// handle. Each clone of the handle, when materialized (or otherwise
 /// installed), adds one fan-out subscriber but does NOT add another upstream
 /// subscription — the share point installs upstream exactly once.
-pub trait MapQueryShareExt<K, V>: MapQuery<K, V>
+pub trait MapQueryShareExt<K, V>: MapQuery<Key = K, Value = V>
 where
     K: CellValue + Hash + Eq,
     V: CellValue,
@@ -313,6 +350,6 @@ impl<K, V, Q> MapQueryShareExt<K, V> for Q
 where
     K: CellValue + Hash + Eq,
     V: CellValue,
-    Q: MapQuery<K, V>,
+    Q: MapQuery<Key = K, Value = V>,
 {
 }

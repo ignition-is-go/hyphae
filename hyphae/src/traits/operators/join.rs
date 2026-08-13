@@ -1,131 +1,157 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicU8, Ordering},
+use std::{
+    marker::PhantomData,
+    sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+    },
 };
 
 use parking_lot::Mutex;
 
-use super::{CellValue, Gettable, Watchable};
+use super::{CellValue, Watchable};
 use crate::{
-    cell::{Cell, CellImmutable, CellMutable},
+    cell::{Cell, CellMutable},
+    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed, prepare_install},
     signal::Signal,
+    subscription::SubscriptionGuard,
 };
 
-// Completion state flags for join (both must complete)
-const SELF_COMPLETE: u8 = 0b01;
-const OTHER_COMPLETE: u8 = 0b10;
+const LEFT_COMPLETE: u8 = 0b01;
+const RIGHT_COMPLETE: u8 = 0b10;
 
-pub trait JoinExt<T>: Watchable<T> {
-    #[track_caller]
-    fn join<U, M>(&self, other: &Cell<U, M>) -> Cell<(T, U), CellImmutable>
-    where
-        T: CellValue,
-        U: CellValue,
-        M: Send + Sync + 'static,
-        Self: Clone + Send + Sync + 'static,
-    {
-        let initial = (self.get(), other.get());
-        // Shared "last known values" for both sides, held through the ENTIRE
-        // update-then-notify sequence below (not just the read that builds
-        // the combined tuple). This matters only under the `scheduler`
-        // feature's wave-parallel draining, where two same-height cells can
-        // now notify at the literal same instant on different threads: each
-        // side used to read the other's `.get()` independently, so whichever
-        // notify's *push* into the scheduler's coalescing slot happened to
-        // land last could carry a stale peek at a sibling that hadn't
-        // updated yet, leaving a torn combined value as the survivor
-        // (confirmed by repro: ~16% of concurrent same-height joins). Holding
-        // this lock across the notify call, not just the read, guarantees
-        // whichever side's push actually lands last also reflects the
-        // freshest state of both sides — the other side can't sneak an
-        // update in between "I read the combined pair" and "I pushed it".
-        let latest: Arc<Mutex<(T, U)>> = Arc::new(Mutex::new(initial.clone()));
+/// Pipeline node that emits the latest pair whenever either source changes.
+pub struct JoinPipeline<L, R, T, U> {
+    left: L,
+    right: R,
+    _types: PhantomData<fn() -> (T, U)>,
+}
+
+impl<L, R, T, U> PipelineInstall<(T, U)> for JoinPipeline<L, R, T, U>
+where
+    L: PipelineInstall<T> + PipelineSeed<T>,
+    R: PipelineInstall<U> + PipelineSeed<U>,
+    T: CellValue,
+    U: CellValue,
+{
+    fn install(&self, callback: Arc<dyn Fn(&Signal<(T, U)>) + Send + Sync>) -> SubscriptionGuard {
+        let left_prepared = prepare_install(&self.left);
+        let right_prepared = prepare_install(&self.right);
+        let initial = (
+            left_prepared.initial().clone(),
+            right_prepared.initial().clone(),
+        );
+        let latest = Arc::new(Mutex::new(initial.clone()));
         let derived = Cell::<(T, U), CellMutable>::new(initial);
-        let derived = if let Some(name) = self.name() {
-            derived.with_name(format!("{}::join", name))
-        } else {
-            derived
-        };
+        let completed = Arc::new(AtomicU8::new(0));
 
-        let complete_state = Arc::new(AtomicU8::new(0));
-
-        // Subscribe to self
-        let weak1 = derived.downgrade();
-        let first1 = Arc::new(AtomicBool::new(true));
-        let cs1 = complete_state.clone();
-        let latest1 = latest.clone();
-        let guard1 = self.subscribe(move |signal| {
-            if let Some(d) = weak1.upgrade() {
-                match signal {
-                    Signal::Value(a) => {
-                        if first1.swap(false, Ordering::SeqCst) {
-                            return;
-                        }
-                        let mut guard = latest1.lock();
-                        guard.0 = a.as_ref().clone();
-                        d.notify(Signal::value(guard.clone()));
+        let left_latest = latest.clone();
+        let left_completed = completed.clone();
+        let left_weak = derived.downgrade();
+        let left_callback: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
+            Arc::new(move |signal| match signal {
+                Signal::Value(value) => {
+                    let mut latest = left_latest.lock();
+                    latest.0 = value.as_ref().clone();
+                    if let Some(derived) = left_weak.upgrade() {
+                        derived.notify(Signal::value(latest.clone()));
                     }
-                    Signal::Complete => {
-                        let prev = cs1.fetch_or(SELF_COMPLETE, Ordering::SeqCst);
-                        if prev == OTHER_COMPLETE {
-                            d.notify(Signal::Complete);
-                        }
-                    }
-                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
                 }
-            }
-        });
-        derived.own(guard1);
-
-        // Subscribe to other
-        let weak2 = derived.downgrade();
-        let first2 = Arc::new(AtomicBool::new(true));
-        let latest2 = latest;
-        let guard2 = other.subscribe(move |signal| {
-            if let Some(d) = weak2.upgrade() {
-                match signal {
-                    Signal::Value(b) => {
-                        if first2.swap(false, Ordering::SeqCst) {
-                            return;
-                        }
-                        let mut guard = latest2.lock();
-                        guard.1 = b.as_ref().clone();
-                        d.notify(Signal::value(guard.clone()));
+                Signal::Complete => {
+                    if left_completed.fetch_or(LEFT_COMPLETE, Ordering::SeqCst) == RIGHT_COMPLETE
+                        && let Some(derived) = left_weak.upgrade()
+                    {
+                        derived.notify(Signal::Complete);
                     }
-                    Signal::Complete => {
-                        let prev = complete_state.fetch_or(OTHER_COMPLETE, Ordering::SeqCst);
-                        if prev == SELF_COMPLETE {
-                            d.notify(Signal::Complete);
-                        }
-                    }
-                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
                 }
-            }
-        });
-        derived.own(guard2);
+                Signal::Error(error) => {
+                    if let Some(derived) = left_weak.upgrade() {
+                        derived.notify(Signal::Error(error.clone()));
+                    }
+                }
+            });
+        let left_guard = left_prepared.activate(&left_callback);
+        derived.own(left_guard);
 
-        derived.lock()
+        let right_weak = derived.downgrade();
+        let right_callback: Arc<dyn Fn(&Signal<U>) + Send + Sync> =
+            Arc::new(move |signal| match signal {
+                Signal::Value(value) => {
+                    let mut latest = latest.lock();
+                    latest.1 = value.as_ref().clone();
+                    if let Some(derived) = right_weak.upgrade() {
+                        derived.notify(Signal::value(latest.clone()));
+                    }
+                }
+                Signal::Complete => {
+                    if completed.fetch_or(RIGHT_COMPLETE, Ordering::SeqCst) == LEFT_COMPLETE
+                        && let Some(derived) = right_weak.upgrade()
+                    {
+                        derived.notify(Signal::Complete);
+                    }
+                }
+                Signal::Error(error) => {
+                    if let Some(derived) = right_weak.upgrade() {
+                        derived.notify(Signal::Error(error.clone()));
+                    }
+                }
+            });
+        let right_guard = right_prepared.activate(&right_callback);
+        derived.own(right_guard);
+
+        derived.subscribe(move |signal| callback(signal))
     }
 }
 
-impl<T, W: Watchable<T>> JoinExt<T> for W {}
+impl<L, R, T, U> PipelineSeed<(T, U)> for JoinPipeline<L, R, T, U>
+where
+    L: PipelineSeed<T>,
+    R: PipelineSeed<U>,
+    T: CellValue,
+    U: CellValue,
+{
+    fn seed(&self) -> (T, U) {
+        (self.left.seed(), self.right.seed())
+    }
+}
+
+impl<L, R, T, U> Pipeline<(T, U), Definite> for JoinPipeline<L, R, T, U>
+where
+    L: Pipeline<T, Definite> + PipelineSeed<T>,
+    R: Pipeline<U, Definite> + PipelineSeed<U>,
+    T: CellValue,
+    U: CellValue,
+{
+}
+
+pub trait JoinExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
+    fn join<U, R>(self, other: R) -> impl crate::Materialize<(T, U), Definite>
+    where
+        U: CellValue,
+        R: Pipeline<U, Definite> + PipelineSeed<U>,
+    {
+        JoinPipeline {
+            left: self,
+            right: other,
+            _types: PhantomData,
+        }
+    }
+}
+
+impl<T: CellValue, P> JoinExt<T> for P where P: Pipeline<T, Definite> + PipelineSeed<T> {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Gettable, MapExt, MaterializeDefinite, Mutable};
+    use crate::{Cell, Gettable, MapExt, Materialize, Mutable};
 
     #[test]
     fn test_join_combines_cells() {
         let a = Cell::new(1);
         let b = Cell::new("hello");
-
-        let joined = a.join(&b);
+        let joined = a.clone().join(b.clone()).materialize();
         assert_eq!(joined.get(), (1, "hello"));
-
         a.set(2);
         assert_eq!(joined.get(), (2, "hello"));
-
         b.set("world");
         assert_eq!(joined.get(), (2, "world"));
     }
@@ -136,15 +162,14 @@ mod tests {
         let b = Cell::new(2);
         let c = Cell::new(3);
         let d = Cell::new(4);
-
-        // flat!(|a, b, c, d| ...) expands to |(((a, b), c), d)| ...
         let sum = a
-            .join(&b)
-            .join(&c)
-            .join(&d)
+            .join(b)
+            .materialize()
+            .join(c)
+            .materialize()
+            .join(d)
             .map(flat!(|a, b, c, d| a + b + c + d))
             .materialize();
-
         assert_eq!(sum.get(), 10);
     }
 }

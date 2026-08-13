@@ -7,13 +7,29 @@
 use std::{hash::Hash, marker::PhantomData, sync::Arc};
 
 use crate::{
-    map_query::{MapDiffSink, MapQuery, MapQueryInstall},
+    map_query::{
+        BuildQueryRuntime, MapQuery,
+        properties::{Many, PlanProperties, Repartition},
+    },
     subscription::SubscriptionGuard,
     traits::{
         CellValue,
         collections::internal::diff_runtime::{GroupedOps, install_grouped_runtime_via_query},
     },
 };
+
+impl<S, K, V, GK, F> PlanProperties for CountByPlan<S, K, V, GK, F>
+where
+    S: MapQuery<Key = K, Value = V>,
+    K: Hash + Eq + CellValue,
+    V: CellValue,
+    GK: Hash + Eq + CellValue,
+    F: Fn(&K, &V) -> GK + Send + Sync + 'static,
+{
+    type Cardinality = Many;
+    type InputPartition = S::OutputPartition;
+    type OutputPartition = Repartition<GK>;
+}
 
 /// Plan node for [`CountByExt::count_by`].
 ///
@@ -24,7 +40,7 @@ use crate::{
 /// share by materializing once.
 pub struct CountByPlan<S, K, V, GK, F>
 where
-    S: MapQuery<K, V>,
+    S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
     V: CellValue,
     GK: Hash + Eq + CellValue,
@@ -35,22 +51,27 @@ where
     pub(crate) _types: PhantomData<fn() -> (K, V, GK)>,
 }
 
-impl<S, K, V, GK, F> MapQueryInstall<GK, usize> for CountByPlan<S, K, V, GK, F>
+impl<S, K, V, GK, F> BuildQueryRuntime<GK, usize> for CountByPlan<S, K, V, GK, F>
 where
-    S: MapQuery<K, V>,
+    S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
     V: CellValue,
     GK: Hash + Eq + CellValue,
     F: Fn(&K, &V) -> GK + Send + Sync + 'static,
 {
-    fn install(self, sink: MapDiffSink<GK, usize>) -> Vec<SubscriptionGuard> {
+    fn build_into(
+        self,
+        cx: &mut crate::map_query::compiler::CompileContext,
+        sink: crate::map_query::BoxedMapDiffSink<GK, usize>,
+    ) -> Vec<SubscriptionGuard> {
         let group_key = self.group_key;
         install_grouped_runtime_via_query::<K, V, GK, usize, usize, S, _, _, _, _, _, _>(
+            cx,
             self.source,
             GroupedOps {
                 make_group_key: move |k, v| group_key(k, v),
                 on_insert: |group_count: &mut usize, _: &K, _: &V| {
-                    *group_count += 1;
+                    *group_count = group_count.saturating_add(1);
                 },
                 on_update: |_: &mut usize, _: &K, _: &V, _: &V| {},
                 on_remove: |group_count: &mut usize, _: &K, _: &V| {
@@ -67,14 +88,16 @@ where
 }
 
 #[allow(private_bounds)]
-impl<S, K, V, GK, F> MapQuery<GK, usize> for CountByPlan<S, K, V, GK, F>
+impl<S, K, V, GK, F> MapQuery for CountByPlan<S, K, V, GK, F>
 where
-    S: MapQuery<K, V>,
+    S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
     V: CellValue,
     GK: Hash + Eq + CellValue,
     F: Fn(&K, &V) -> GK + Send + Sync + 'static,
 {
+    type Key = GK;
+    type Value = usize;
 }
 
 /// Count-by operator returning a [`MapQuery`] plan node.
@@ -82,7 +105,7 @@ where
 /// `count_by` consumes `self` and returns an uncompiled plan node; call
 /// [`MapQuery::materialize`] on the result to obtain a subscribable
 /// [`CellMap`](crate::CellMap).
-pub trait CountByExt<K, V>: MapQuery<K, V>
+pub trait CountByExt<K, V>: MapQuery<Key = K, Value = V>
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
@@ -93,7 +116,7 @@ where
     /// `group_key` is called for every source row and its return value
     /// becomes the output map key.
     #[track_caller]
-    fn count_by<GK, F>(self, group_key: F) -> CountByPlan<Self, K, V, GK, F>
+    fn count_by<GK, F>(self, group_key: F) -> impl MapQuery<Key = GK, Value = usize>
     where
         GK: Hash + Eq + CellValue,
         F: Fn(&K, &V) -> GK + Send + Sync + 'static,
@@ -110,7 +133,7 @@ impl<K, V, M> CountByExt<K, V> for M
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
-    M: MapQuery<K, V>,
+    M: MapQuery<Key = K, Value = V>,
 {
 }
 
@@ -134,9 +157,9 @@ mod tests {
         source.insert_many(vec![("a".to_string(), 1), ("b".to_string(), 2)]);
         let seen: Vec<_> = rx.try_iter().collect();
         assert_eq!(seen.len(), 2);
-        match seen.last().unwrap() {
-            MapDiff::Batch { changes } => assert_eq!(changes.len(), 2),
-            _ => panic!("expected batch diff from count_by"),
-        }
+        assert!(matches!(
+            seen.last(),
+            Some(MapDiff::Batch { changes }) if changes.len() == 2
+        ));
     }
 }

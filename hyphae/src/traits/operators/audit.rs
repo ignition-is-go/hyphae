@@ -1,110 +1,124 @@
+use parking_lot::Mutex;
 use std::{
+    marker::PhantomData,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
 
-use super::{CellValue, Watchable};
+use super::CellValue;
 use crate::{
-    cell::{Cell, CellImmutable, CellMutable},
+    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed},
     platform,
     signal::Signal,
+    subscription::SubscriptionGuard,
 };
 
-pub trait AuditExt<T>: Watchable<T> {
-    /// Like throttle but emits the LAST value in the window.
-    ///
-    /// Silences during the window, then emits the most recent value
-    /// when the window expires.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use hyphae::{Cell, Mutable, AuditExt, Watchable};
-    /// use std::time::Duration;
-    ///
-    /// let source = Cell::new(0);
-    /// let audited = source.audit(Duration::from_millis(100));
-    ///
-    /// source.set(1);
-    /// source.set(2);
-    /// source.set(3);
-    /// // After 100ms, emits 3 (the last value)
-    /// ```
-    #[track_caller]
-    fn audit(&self, duration: Duration) -> Cell<T, CellImmutable>
-    where
-        T: CellValue,
-        Self: Clone + Send + Sync + 'static,
-    {
-        let derived = Cell::<T, CellMutable>::new(self.get());
+pub struct AuditPipeline<S, T> {
+    source: S,
+    duration: Duration,
+    _t: PhantomData<fn(T)>,
+}
 
-        let weak = derived.downgrade();
-        let first = Arc::new(AtomicBool::new(true));
+impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for AuditPipeline<S, T> {
+    fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
+        let first = AtomicBool::new(true);
         let latest: Arc<Mutex<Option<T>>> = Arc::new(Mutex::new(None));
         let generation = Arc::new(AtomicU64::new(0));
         let in_window = Arc::new(AtomicBool::new(false));
+        let terminated = Arc::new(AtomicBool::new(false));
+        let duration = self.duration;
 
-        let guard = self.subscribe(move |signal| {
-            if let Some(d) = weak.upgrade() {
-                match signal {
-                    Signal::Value(value) => {
-                        if first.swap(false, Ordering::SeqCst) {
-                            return;
+        self.source.install(Arc::new(move |signal| match signal {
+            Signal::Value(value) => {
+                if first.swap(false, Ordering::SeqCst) || terminated.load(Ordering::SeqCst) {
+                    return;
+                }
+                *latest.lock() = Some(value.as_ref().clone());
+                if !in_window.swap(true, Ordering::SeqCst) {
+                    let current_generation =
+                        generation.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+                    let latest = latest.clone();
+                    let generation = generation.clone();
+                    let in_window = in_window.clone();
+                    let terminated = terminated.clone();
+                    let callback = callback.clone();
+                    platform::spawn_delayed(duration, move || {
+                        if !terminated.load(Ordering::SeqCst)
+                            && generation.load(Ordering::SeqCst) == current_generation
+                        {
+                            let value = latest.lock().clone();
+                            if let Some(value) = value {
+                                callback(&Signal::value(value));
+                            }
+                            in_window.store(false, Ordering::SeqCst);
                         }
-
-                        // Store latest value
-                        *latest.lock().expect("audit poisoned") = Some((**value).clone());
-
-                        // If not in a window, start one
-                        if !in_window.swap(true, Ordering::SeqCst) {
-                            let current_gen = generation.fetch_add(1, Ordering::SeqCst) + 1;
-                            let latest2 = latest.clone();
-                            let weak2 = d.downgrade();
-                            let gen_ref = generation.clone();
-                            let in_win = in_window.clone();
-
-                            platform::spawn_delayed(duration, move || {
-                                // Only emit if this is still the current window
-                                if gen_ref.load(Ordering::SeqCst) == current_gen {
-                                    if let Some(d2) = weak2.upgrade() {
-                                        let val = latest2.lock().expect("audit poisoned").clone();
-                                        if let Some(v) = val {
-                                            d2.notify(Signal::value(v));
-                                        }
-                                    }
-                                    in_win.store(false, Ordering::SeqCst);
-                                }
-                            });
-                        }
-                    }
-                    Signal::Complete => d.notify(Signal::Complete),
-                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
+                    });
                 }
             }
-        });
-        derived.own(guard);
-
-        derived.lock()
+            Signal::Complete => {
+                if !terminated.swap(true, Ordering::SeqCst) {
+                    generation.fetch_add(1, Ordering::SeqCst);
+                    let value = latest.lock().take();
+                    if let Some(value) = value {
+                        callback(&Signal::value(value));
+                    }
+                    callback(&Signal::Complete);
+                }
+            }
+            Signal::Error(error) => {
+                if !terminated.swap(true, Ordering::SeqCst) {
+                    generation.fetch_add(1, Ordering::SeqCst);
+                    latest.lock().take();
+                    callback(&Signal::Error(error.clone()));
+                }
+            }
+        }))
     }
 }
 
-impl<T, W: Watchable<T>> AuditExt<T> for W {}
+impl<S: PipelineSeed<T>, T: CellValue> PipelineSeed<T> for AuditPipeline<S, T> {
+    fn seed(&self) -> T {
+        self.source.seed()
+    }
+}
+
+#[allow(private_bounds)]
+impl<S: Pipeline<T, Definite> + PipelineSeed<T>, T: CellValue> Pipeline<T, Definite>
+    for AuditPipeline<S, T>
+{
+}
+
+#[allow(private_bounds)]
+pub trait AuditExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
+    #[track_caller]
+    fn audit(self, duration: Duration) -> impl crate::Materialize<T, Definite> {
+        AuditPipeline {
+            source: self,
+            duration,
+            _t: PhantomData,
+        }
+    }
+}
+
+impl<T: CellValue, P: Pipeline<T, Definite> + PipelineSeed<T>> AuditExt<T> for P {}
 
 #[cfg(test)]
 mod tests {
     use std::{sync::atomic::AtomicU32, thread};
 
     use super::*;
-    use crate::{Gettable, Mutable};
+    use crate::{Cell, Gettable, Materialize, Mutable, traits::Watchable};
 
     #[test]
     fn test_audit_emits_last() {
         let source = Cell::new(0);
-        let audited = source.audit(Duration::from_millis(50));
-
+        let audited = source
+            .clone()
+            .audit(Duration::from_millis(50))
+            .materialize();
         let emissions = Arc::new(AtomicU32::new(0));
         let e = emissions.clone();
         let _guard = audited.subscribe(move |signal| {
@@ -113,21 +127,34 @@ mod tests {
             }
         });
 
-        assert_eq!(emissions.load(Ordering::SeqCst), 1); // Initial
-
-        // Rapid emissions
+        assert_eq!(emissions.load(Ordering::SeqCst), 1);
         source.set(1);
         source.set(2);
         source.set(3);
-
-        // Should not emit immediately
         assert_eq!(emissions.load(Ordering::SeqCst), 1);
-
-        // Wait for audit window
         thread::sleep(Duration::from_millis(70));
-
-        // Should have emitted once (the last value)
         assert_eq!(emissions.load(Ordering::SeqCst), 2);
         assert_eq!(audited.get(), 3);
+    }
+
+    #[test]
+    fn audit_flushes_before_complete_and_never_emits_after_terminal() {
+        let source = Cell::new(0);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let pipeline = source.clone().audit(Duration::from_millis(20));
+        let _guard = pipeline.install(Arc::new(move |signal| {
+            captured.lock().push(match signal {
+                Signal::Value(value) => format!("value:{}", **value),
+                Signal::Complete => "complete".into(),
+                Signal::Error(_) => "error".into(),
+            });
+        }));
+
+        source.set(7);
+        source.complete();
+        thread::sleep(Duration::from_millis(60));
+
+        assert_eq!(&*events.lock(), &["value:7", "complete"]);
     }
 }

@@ -15,6 +15,7 @@ pub struct ParallelCell<T> {
 }
 
 impl<T: CellValue> ParallelCell<T> {
+    #[must_use]
     pub fn get(&self) -> T {
         self.inner.get()
     }
@@ -39,8 +40,9 @@ impl<T: CellValue> ParallelCell<T> {
     /// Notify all subscribers in parallel using Rayon.
     pub fn notify(&self, value: T) {
         let signal = Signal::value(value);
-        *self.inner.inner.value.lock().expect("cell value poisoned") =
-            signal.arc().unwrap().clone();
+        if let Some(value) = signal.arc() {
+            *self.inner.inner.value.lock() = value.clone();
+        }
 
         // Brief mutex acquire to grab the notify snapshot, then drop the lock
         // and fan out in parallel — callbacks run lock-free. The displaced old
@@ -71,7 +73,7 @@ pub trait ParallelExt<T>: Watchable<T> {
             if let Some(inner) = weak.upgrade() {
                 match signal {
                     Signal::Value(value) => {
-                        *inner.inner.value.lock().expect("cell value poisoned") = value.clone();
+                        *inner.inner.value.lock() = value.clone();
 
                         // Brief mutex acquire to grab the notify snapshot; the
                         // displaced old snapshot drops outside the lock.

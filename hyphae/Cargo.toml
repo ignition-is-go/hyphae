@@ -21,6 +21,9 @@ async = ["flume", "futures-core"]
 # boundary, plus the `clock`/`TickSource` seam for frame-locked ticking. Off by
 # default: the synchronous eager-push path is unchanged when this is disabled.
 scheduler = []
+# Opt-in calibration-only branch counters for join-region benchmarks. Every
+# counter call is cfg-elided unless explicitly enabled.
+region-calibration = []
 # The one observability feature: `#[inline(never)]` propagation boundaries so
 # sampling profilers stop folding `notify`/`write_value`/`fanout` into one
 # symbol, per-fanout `tracing` spans tagged with cell id/name, and the
@@ -28,6 +31,10 @@ scheduler = []
 # global census — consumers attach their own `tracing` subscriber (Tracy,
 # `tracing-flame`, …), and use a heap profiler for memory attribution.
 profiling = ["dep:tracing"]
+# Compile the isolated 64-stage benchmark target. Kept out of the default
+# benchmark set because its deeply nested static type has a multi-gigabyte
+# compiler memory footprint.
+deep-bench = []
 
 [dependencies]
 anyhow = "1"
@@ -79,8 +86,21 @@ name = "cell_map_chains"
 harness = false
 
 [[bench]]
+name = "compiled_map_queries"
+harness = false
+
+[[bench]]
 name = "view_chains"
 harness = false
+
+[[bench]]
+name = "reactive_graphs"
+harness = false
+
+[[bench]]
+name = "reactive_graphs_64"
+harness = false
+required-features = ["deep-bench"]
 
 [[bench]]
 name = "subscriber_registry"
@@ -95,3 +115,12 @@ required-features = ["scheduler"]
 name = "scheduler_contention"
 harness = false
 required-features = ["scheduler"]
+
+[[bench]]
+name = "region_threshold_calibration"
+harness = false
+required-features = ["scheduler", "region-calibration"]
+
+[[test]]
+name = "region_threshold_truth_table"
+required-features = ["scheduler", "region-calibration"]

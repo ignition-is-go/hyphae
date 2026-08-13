@@ -1,0 +1,50 @@
+name: Quality Gates
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      # `fmt` is intentionally not a CI gate: it is auto-fixable, would only fail
+      # after a merge if run on main-push, and requires a nightly toolchain just
+      # for rustfmt.toml's nightly-only import grouping. Run it locally with
+      # `cargo flux run fmt`. Everything below runs on stable.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check for cargo-binstall
+        id: cargo-binstall
+        shell: bash
+        run: |
+          if command -v cargo-binstall >/dev/null 2>&1; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install cargo-binstall
+        if: steps.cargo-binstall.outputs.available != 'true'
+        uses: cargo-bins/cargo-binstall@e00d2c94cc0067b77737821097a62d91c0301baa # v1.21.1
+        with:
+          version: "1.21.1"
+      - name: Install or update cargo-flux
+        run: cargo binstall cargo-flux --no-confirm --force
+      - run: cargo flux run check
+      - run: cargo flux run check-wasm
+      - run: cargo flux run check-wasm-features
+      - run: cargo flux run lint
+      - run: cargo flux run test

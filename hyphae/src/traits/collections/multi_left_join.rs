@@ -7,10 +7,14 @@
 use std::{hash::Hash, marker::PhantomData};
 
 use crate::{
-    map_query::{MapDiffSink, MapQuery, MapQueryInstall},
+    map_query::{
+        BuildQueryRuntime, MapQuery,
+        properties::{ByMapKey, ExactlyOne, PlanProperties},
+    },
     subscription::SubscriptionGuard,
     traits::{
-        CellValue, collections::internal::multi_join_runtime::install_multi_join_runtime_via_query,
+        CellValue,
+        collections::internal::multi_join_runtime::install_keyed_multi_join_runtime_via_query,
     },
 };
 
@@ -26,8 +30,8 @@ use crate::{
 /// materializing once.
 pub struct MultiLeftJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
 where
-    L: MapQuery<LK, LV>,
-    R: MapQuery<RK, RV>,
+    L: MapQuery<Key = LK, Value = LV>,
+    R: MapQuery<Key = RK, Value = RV>,
     LK: Hash + Eq + CellValue,
     LV: CellValue,
     RK: Hash + Eq + CellValue,
@@ -44,11 +48,11 @@ where
     pub(crate) _types: PhantomData<fn() -> (LK, LV, RK, RV, JK)>,
 }
 
-impl<L, R, LK, LV, RK, RV, JK, FL, FR> MapQueryInstall<LK, (LV, Vec<RV>)>
+impl<L, R, LK, LV, RK, RV, JK, FL, FR> PlanProperties
     for MultiLeftJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
 where
-    L: MapQuery<LK, LV>,
-    R: MapQuery<RK, RV>,
+    L: MapQuery<Key = LK, Value = LV>,
+    R: MapQuery<Key = RK, Value = RV>,
     LK: Hash + Eq + CellValue,
     LV: CellValue,
     RK: Hash + Eq + CellValue,
@@ -57,15 +61,38 @@ where
     FL: Fn(&LK, &LV) -> Vec<JK> + Send + Sync + 'static,
     FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
 {
-    fn install(self, sink: MapDiffSink<LK, (LV, Vec<RV>)>) -> Vec<SubscriptionGuard> {
-        install_multi_join_runtime_via_query::<LK, LV, RK, RV, JK, LK, (LV, Vec<RV>), _, _, _, _, _>(
+    type Cardinality = ExactlyOne;
+    type InputPartition = L::OutputPartition;
+    type OutputPartition = ByMapKey<LK>;
+}
+
+impl<L, R, LK, LV, RK, RV, JK, FL, FR> BuildQueryRuntime<LK, (LV, Vec<RV>)>
+    for MultiLeftJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
+where
+    L: MapQuery<Key = LK, Value = LV>,
+    R: MapQuery<Key = RK, Value = RV>,
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    FL: Fn(&LK, &LV) -> Vec<JK> + Send + Sync + 'static,
+    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+{
+    fn build_into(
+        self,
+        cx: &mut crate::map_query::compiler::CompileContext,
+        sink: crate::map_query::BoxedMapDiffSink<LK, (LV, Vec<RV>)>,
+    ) -> Vec<SubscriptionGuard> {
+        install_keyed_multi_join_runtime_via_query::<LK, LV, RK, RV, JK, (LV, Vec<RV>), _, _, _, _, _>(
+            cx,
             self.left,
             self.right,
             self.left_keys,
             self.right_key,
-            |left_k: &LK, left_v: &LV, rights: &[(RK, RV)]| {
+            |_left_k: &LK, left_v: &LV, rights: &[(RK, RV)]| {
                 let right_values: Vec<RV> = rights.iter().map(|(_, rv)| rv.clone()).collect();
-                vec![(left_k.clone(), (left_v.clone(), right_values))]
+                (left_v.clone(), right_values)
             },
             sink,
         )
@@ -73,11 +100,11 @@ where
 }
 
 #[allow(private_bounds)]
-impl<L, R, LK, LV, RK, RV, JK, FL, FR> MapQuery<LK, (LV, Vec<RV>)>
+impl<L, R, LK, LV, RK, RV, JK, FL, FR> MapQuery
     for MultiLeftJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
 where
-    L: MapQuery<LK, LV>,
-    R: MapQuery<RK, RV>,
+    L: MapQuery<Key = LK, Value = LV>,
+    R: MapQuery<Key = RK, Value = RV>,
     LK: Hash + Eq + CellValue,
     LV: CellValue,
     RK: Hash + Eq + CellValue,
@@ -86,6 +113,8 @@ where
     FL: Fn(&LK, &LV) -> Vec<JK> + Send + Sync + 'static,
     FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
 {
+    type Key = LK;
+    type Value = (LV, Vec<RV>);
 }
 
 /// Multi-left-join operator returning a [`MapQuery`] plan node.
@@ -93,7 +122,7 @@ where
 /// Consumes `self` and returns an uncompiled plan node; call
 /// [`MapQuery::materialize`] on the result to obtain a subscribable
 /// [`CellMap`](crate::CellMap).
-pub trait MultiLeftJoinExt<K, V>: MapQuery<K, V>
+pub trait MultiLeftJoinExt<K, V>: MapQuery<Key = K, Value = V>
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
@@ -110,9 +139,9 @@ where
         right: R,
         left_keys: FL,
         right_key: FR,
-    ) -> MultiLeftJoinPlan<Self, R, K, V, RK, RV, JK, FL, FR>
+    ) -> impl MapQuery<Key = K, Value = (V, Vec<RV>)>
     where
-        R: MapQuery<RK, RV>,
+        R: MapQuery<Key = RK, Value = RV>,
         RK: Hash + Eq + CellValue,
         RV: CellValue,
         JK: Hash + Eq + CellValue,
@@ -133,14 +162,14 @@ impl<K, V, M> MultiLeftJoinExt<K, V> for M
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
-    M: MapQuery<K, V>,
+    M: MapQuery<Key = K, Value = V>,
 {
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CellMap, traits::Gettable};
+    use crate::{CellMap, Materialize, traits::Gettable};
 
     #[test]
     fn multi_join_empty_keys_produces_empty_right_vec() {
@@ -148,11 +177,7 @@ mod tests {
         let right = CellMap::<String, i32>::new();
         let joined = left
             .clone()
-            .multi_left_join_by(
-                right.clone(),
-                |_k, _v| Vec::<String>::new(),
-                |k, _v| k.clone(),
-            )
+            .multi_left_join_by(right, |_k, _v| Vec::<String>::new(), |k, _v| k.clone())
             .materialize();
 
         left.insert("l1".to_string(), 1);
@@ -172,10 +197,13 @@ mod tests {
         left.insert("l1".to_string(), "g1".to_string());
         right.insert("r1".to_string(), ("g1".to_string(), 10));
 
-        let (left_val, right_vals) = joined.get_value(&"l1".to_string()).unwrap();
-        assert_eq!(left_val, "g1");
-        assert_eq!(right_vals.len(), 1);
-        assert_eq!(right_vals[0].0, "g1");
+        assert!(matches!(
+            joined.get_value(&"l1".to_string()),
+            Some((left_val, right_vals))
+                if left_val == "g1"
+                    && right_vals.len() == 1
+                    && right_vals.first().is_some_and(|right| right.0 == "g1")
+        ));
     }
 
     #[test]
@@ -192,8 +220,10 @@ mod tests {
         right.insert("r2".to_string(), ("g2".to_string(), 20));
         right.insert("r3".to_string(), ("g3".to_string(), 30));
 
-        let (_, right_vals) = joined.get_value(&"l1".to_string()).unwrap();
-        assert_eq!(right_vals.len(), 2);
+        assert!(matches!(
+            joined.get_value(&"l1".to_string()),
+            Some((_, right_vals)) if right_vals.len() == 2
+        ));
     }
 
     #[test]
@@ -208,8 +238,10 @@ mod tests {
         left.insert("l1".to_string(), vec!["g1".to_string(), "g1".to_string()]);
         right.insert("r1".to_string(), ("g1".to_string(), 10));
 
-        let (_, right_vals) = joined.get_value(&"l1".to_string()).unwrap();
-        assert_eq!(right_vals.len(), 1);
+        assert!(matches!(
+            joined.get_value(&"l1".to_string()),
+            Some((_, right_vals)) if right_vals.len() == 1
+        ));
     }
 
     #[test]
@@ -222,13 +254,22 @@ mod tests {
             .materialize();
 
         left.insert("l1".to_string(), vec!["g1".to_string(), "g2".to_string()]);
-        assert_eq!(joined.get_value(&"l1".to_string()).unwrap().1.len(), 0);
+        assert!(matches!(
+            joined.get_value(&"l1".to_string()),
+            Some((_, rights)) if rights.is_empty()
+        ));
 
         right.insert("r1".to_string(), ("g1".to_string(), 10));
-        assert_eq!(joined.get_value(&"l1".to_string()).unwrap().1.len(), 1);
+        assert!(matches!(
+            joined.get_value(&"l1".to_string()),
+            Some((_, rights)) if rights.len() == 1
+        ));
 
         right.insert("r2".to_string(), ("g2".to_string(), 20));
-        assert_eq!(joined.get_value(&"l1".to_string()).unwrap().1.len(), 2);
+        assert!(matches!(
+            joined.get_value(&"l1".to_string()),
+            Some((_, rights)) if rights.len() == 2
+        ));
     }
 
     #[test]
@@ -242,10 +283,16 @@ mod tests {
 
         left.insert("l1".to_string(), vec!["g1".to_string()]);
         right.insert("r1".to_string(), ("g1".to_string(), 10));
-        assert_eq!(joined.get_value(&"l1".to_string()).unwrap().1.len(), 1);
+        assert!(matches!(
+            joined.get_value(&"l1".to_string()),
+            Some((_, rights)) if rights.len() == 1
+        ));
 
         right.remove(&"r1".to_string());
-        assert_eq!(joined.get_value(&"l1".to_string()).unwrap().1.len(), 0);
+        assert!(matches!(
+            joined.get_value(&"l1".to_string()),
+            Some((_, rights)) if rights.is_empty()
+        ));
     }
 
     #[test]
@@ -261,12 +308,18 @@ mod tests {
         right.insert("r2".to_string(), ("g2".to_string(), 20));
 
         left.insert("l1".to_string(), vec!["g1".to_string()]);
-        assert_eq!(joined.get_value(&"l1".to_string()).unwrap().1.len(), 1);
+        assert!(matches!(
+            joined.get_value(&"l1".to_string()),
+            Some((_, rights)) if rights.len() == 1
+        ));
 
         left.insert("l1".to_string(), vec!["g2".to_string()]);
-        let (_, rights) = joined.get_value(&"l1".to_string()).unwrap();
-        assert_eq!(rights.len(), 1);
-        assert_eq!(rights[0].0, "g2");
+        assert!(matches!(
+            joined.get_value(&"l1".to_string()),
+            Some((_, rights))
+                if rights.len() == 1
+                    && rights.first().is_some_and(|right| right.0 == "g2")
+        ));
     }
 
     #[test]
@@ -280,9 +333,9 @@ mod tests {
 
         left.insert("l1".to_string(), vec!["g1".to_string()]);
         right.insert("r1".to_string(), ("g1".to_string(), 10));
-        assert_eq!(joined.entries().get().len(), 1);
+        assert_eq!(joined.entries().materialize().get().len(), 1);
 
         left.remove(&"l1".to_string());
-        assert_eq!(joined.entries().get().len(), 0);
+        assert_eq!(joined.entries().materialize().get().len(), 0);
     }
 }

@@ -40,41 +40,45 @@
 //! These are the regression sentinels: they go green when the parallel wave is
 //! made event-order-safe for `no_coalesce` subgraphs.
 #![cfg(feature = "scheduler")]
-#![allow(clippy::needless_range_loop)] // deliberate parallel-vec indexing
-
 use std::sync::{
-    Arc, Mutex,
+    Arc,
     atomic::{AtomicI64, AtomicUsize, Ordering},
 };
 
+use parking_lot::Mutex;
+
 use hyphae::{
     Cell, CellImmutable, CellMutable, DedupedExt, DistinctExt, DistinctUntilChangedByExt,
-    FilterExt, Gettable, MapErrExt, MapExt, MapOkExt, MaterializeDefinite, MaterializeEmpty,
-    Mutable, ScanExt, Signal, StateTransitionExt, TapExt, TryMapExt, Watchable, batch,
-    scheduler::no_coalesce,
+    FilterExt, Gettable, MapErrExt, MapExt, MapOkExt, Materialize, Mutable, ScanExt, Signal,
+    StateTransitionExt, TapExt, TryMapExt, Watchable, batch, scheduler::no_coalesce,
 };
 
 /// The scheduler's tick queue is a single process-wide structure, so tests
 /// that exercise `batch()` would interfere when `cargo test` runs this file's
 /// `#[test]` fns as concurrent threads. Serialize them. (Copied from
 /// `scheduler_completeness.rs`.)
-fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
+static SCHEDULER_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn scheduler_test_serial() -> parking_lot::MutexGuard<'static, ()> {
     // Force the wave-parallel drain path at test width: production defaults
     // the group threshold high (waves stay sequential at rest), so parallelism
     // tests must lower it to actually exercise concurrent same-height groups.
     hyphae::scheduler::set_wave_threshold_for_test(4);
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    SCHEDULER_TEST_LOCK.lock()
 }
 
-/// Template-B wave width: 16 > PARALLEL_WAVE_THRESHOLD (8), so every batch
+fn index_value(index: usize) -> i64 {
+    i64::try_from(index).unwrap_or(i64::MAX)
+}
+
+/// Template-B wave width: 16 > `PARALLEL_WAVE_THRESHOLD` (8), so every batch
 /// forces a genuinely parallel wave rather than the small-wave sequential
 /// fallback.
 const N_B: usize = 16;
 /// Template-B iteration count — enough to shake out wave nondeterminism.
 const ITERS_B: i64 = 2_000;
 
-/// Template-C burst width: 32 no_coalesce events per batch, well over the
+/// Template-C burst width: 32 `no_coalesce` events per batch, well over the
 /// parallel-wave threshold.
 const N_C: i64 = 32;
 /// Template-C iteration count.
@@ -92,7 +96,7 @@ fn map_wide_wave_settles_each_instance_correctly() {
         let mut sources = Vec::with_capacity(N_B);
         let mut derived = Vec::with_capacity(N_B);
         for k in 0..N_B {
-            let kk = k as i64;
+            let kk = index_value(k);
             let s = Cell::new(0i64);
             let d = s.clone().map(move |x| x * (kk + 1) + 7).materialize();
             sources.push(s);
@@ -100,14 +104,14 @@ fn map_wide_wave_settles_each_instance_correctly() {
         }
         batch(|| {
             for (k, s) in sources.iter().enumerate() {
-                s.set(base + k as i64 + 1);
+                s.set(base + index_value(k) + 1);
             }
         });
-        for k in 0..N_B {
-            let x = base + k as i64 + 1;
+        for (k, value) in derived.iter().enumerate() {
+            let x = base + index_value(k) + 1;
             assert_eq!(
-                derived[k].get(),
-                x * (k as i64 + 1) + 7,
+                value.get(),
+                x * (index_value(k) + 1) + 7,
                 "map instance {k} settled wrong at iter {iter}"
             );
         }
@@ -132,14 +136,14 @@ fn filter_wide_wave_settles_each_instance_correctly() {
         }
         batch(|| {
             for (k, s) in sources.iter().enumerate() {
-                s.set(base + k as i64 + 1);
+                s.set(base + index_value(k) + 1);
             }
         });
-        for k in 0..N_B {
-            let v = base + k as i64 + 1;
+        for (k, value) in derived.iter().enumerate() {
+            let v = base + index_value(k) + 1;
             let expected = if v % 2 == 0 { Some(v) } else { Some(0) };
             assert_eq!(
-                derived[k].get(),
+                value.get(),
                 expected,
                 "filter instance {k} settled wrong at iter {iter}"
             );
@@ -173,18 +177,18 @@ fn try_map_wide_wave_settles_each_instance_correctly() {
         }
         batch(|| {
             for (k, s) in sources.iter().enumerate() {
-                s.set(base + k as i64 + 1);
+                s.set(base + index_value(k) + 1);
             }
         });
-        for k in 0..N_B {
-            let v = base + k as i64 + 1;
+        for (k, value) in derived.iter().enumerate() {
+            let v = base + index_value(k) + 1;
             let expected: Result<i64, String> = if v % 2 == 0 {
                 Ok(v * 2)
             } else {
                 Err(format!("odd:{v}"))
             };
             assert_eq!(
-                derived[k].get(),
+                value.get(),
                 expected,
                 "try_map instance {k} settled wrong at iter {iter}"
             );
@@ -203,9 +207,9 @@ fn tap_wide_wave_settles_each_instance_correctly() {
         let mut sources = Vec::with_capacity(N_B);
         let mut derived = Vec::with_capacity(N_B);
         let side: Vec<Arc<AtomicI64>> = (0..N_B).map(|_| Arc::new(AtomicI64::new(-1))).collect();
-        for k in 0..N_B {
+        for sc in &side {
             let s = Cell::new(0i64);
-            let sc = side[k].clone();
+            let sc = sc.clone();
             let d = s
                 .clone()
                 .tap(move |v| sc.store(*v, Ordering::SeqCst))
@@ -215,14 +219,14 @@ fn tap_wide_wave_settles_each_instance_correctly() {
         }
         batch(|| {
             for (k, s) in sources.iter().enumerate() {
-                s.set(base + k as i64 + 1);
+                s.set(base + index_value(k) + 1);
             }
         });
-        for k in 0..N_B {
-            let v = base + k as i64 + 1;
-            assert_eq!(derived[k].get(), v, "tap value {k} wrong at iter {iter}");
+        for (k, (value, side_effect)) in derived.iter().zip(&side).enumerate() {
+            let v = base + index_value(k) + 1;
+            assert_eq!(value.get(), v, "tap value {k} wrong at iter {iter}");
             assert_eq!(
-                side[k].load(Ordering::SeqCst),
+                side_effect.load(Ordering::SeqCst),
                 v,
                 "tap side effect {k} wrong at iter {iter}"
             );
@@ -247,13 +251,13 @@ fn scan_wide_wave_settles_each_instance_correctly() {
         }
         batch(|| {
             for (k, s) in sources.iter().enumerate() {
-                s.set(base + k as i64 + 1);
+                s.set(base + index_value(k) + 1);
             }
         });
-        for k in 0..N_B {
-            let v = base + k as i64 + 1;
+        for (k, value) in derived.iter().enumerate() {
+            let v = base + index_value(k) + 1;
             assert_eq!(
-                derived[k].get(),
+                value.get(),
                 100 + v,
                 "scan instance {k} settled wrong at iter {iter}"
             );
@@ -278,13 +282,13 @@ fn distinct_wide_wave_settles_each_instance_correctly() {
         }
         batch(|| {
             for (k, s) in sources.iter().enumerate() {
-                s.set(base + k as i64 + 1);
+                s.set(base + index_value(k) + 1);
             }
         });
-        for k in 0..N_B {
-            let v = base + k as i64 + 1;
+        for (k, value) in derived.iter().enumerate() {
+            let v = base + index_value(k) + 1;
             assert_eq!(
-                derived[k].get(),
+                value.get(),
                 v,
                 "distinct instance {k} settled wrong at iter {iter}"
             );
@@ -312,13 +316,13 @@ fn distinct_until_changed_by_wide_wave_settles_each_instance_correctly() {
         }
         batch(|| {
             for (k, s) in sources.iter().enumerate() {
-                s.set(base + k as i64 + 1);
+                s.set(base + index_value(k) + 1);
             }
         });
-        for k in 0..N_B {
-            let v = base + k as i64 + 1;
+        for (k, value) in derived.iter().enumerate() {
+            let v = base + index_value(k) + 1;
             assert_eq!(
-                derived[k].get(),
+                value.get(),
                 v,
                 "distinct_until_changed_by instance {k} settled wrong at iter {iter}"
             );
@@ -341,13 +345,13 @@ fn deduped_wide_wave_settles_each_instance_correctly() {
         }
         batch(|| {
             for (k, s) in sources.iter().enumerate() {
-                s.set(base + k as i64 + 1);
+                s.set(base + index_value(k) + 1);
             }
         });
-        for k in 0..N_B {
-            let v = base + k as i64 + 1;
+        for (k, value) in derived.iter().enumerate() {
+            let v = base + index_value(k) + 1;
             assert_eq!(
-                derived[k].get(),
+                value.get(),
                 v,
                 "deduped instance {k} settled wrong at iter {iter}"
             );
@@ -365,11 +369,14 @@ fn state_transition_wide_wave_settles_each_instance_correctly() {
         let mut sources = Vec::with_capacity(N_B);
         let mut machines = Vec::with_capacity(N_B);
         for k in 0..N_B {
-            let kk = k as i64;
+            let kk = index_value(k);
             let s = Cell::new(0i64);
-            let sm: Cell<i64, CellImmutable> = s.state_transition(move |sm| {
-                sm.on(0i64, 1i64, move |_, _| (kk + 1) * 10);
-            });
+            let sm: Cell<i64, CellImmutable> = s
+                .clone()
+                .state_transition(move |sm| {
+                    sm.on(0i64, 1i64, move |_, _| (kk + 1) * 10);
+                })
+                .materialize();
             sources.push(s);
             machines.push(sm);
         }
@@ -378,10 +385,10 @@ fn state_transition_wide_wave_settles_each_instance_correctly() {
                 s.set(1);
             }
         });
-        for k in 0..N_B {
+        for (k, machine) in machines.iter().enumerate() {
             assert_eq!(
-                machines[k].get(),
-                (k as i64 + 1) * 10,
+                machine.get(),
+                (index_value(k) + 1) * 10,
                 "state_transition instance {k} emitted wrong at iter {iter}"
             );
         }
@@ -398,7 +405,7 @@ fn map_ok_wide_wave_settles_each_instance_correctly() {
         let mut sources = Vec::with_capacity(N_B);
         let mut derived = Vec::with_capacity(N_B);
         for k in 0..N_B {
-            let kk = k as i64;
+            let kk = index_value(k);
             let s = Cell::new(Ok::<i64, String>(0));
             let d = s.clone().map_ok(move |v| v * (kk + 1)).materialize();
             sources.push(s);
@@ -407,20 +414,20 @@ fn map_ok_wide_wave_settles_each_instance_correctly() {
         batch(|| {
             for (k, s) in sources.iter().enumerate() {
                 if k % 2 == 0 {
-                    s.set(Ok(base + k as i64 + 1));
+                    s.set(Ok(base + index_value(k) + 1));
                 } else {
                     s.set(Err(format!("e{k}")));
                 }
             }
         });
-        for k in 0..N_B {
+        for (k, value) in derived.iter().enumerate() {
             let expected: Result<i64, String> = if k % 2 == 0 {
-                Ok((base + k as i64 + 1) * (k as i64 + 1))
+                Ok((base + index_value(k) + 1) * (index_value(k) + 1))
             } else {
                 Err(format!("e{k}"))
             };
             assert_eq!(
-                derived[k].get(),
+                value.get(),
                 expected,
                 "map_ok instance {k} settled wrong at iter {iter}"
             );
@@ -438,7 +445,7 @@ fn map_err_wide_wave_settles_each_instance_correctly() {
         let mut sources = Vec::with_capacity(N_B);
         let mut derived = Vec::with_capacity(N_B);
         for k in 0..N_B {
-            let kk = k as i64;
+            let kk = index_value(k);
             let s = Cell::new(Err::<i64, String>("init".into()));
             let d = s
                 .clone()
@@ -450,20 +457,20 @@ fn map_err_wide_wave_settles_each_instance_correctly() {
         batch(|| {
             for (k, s) in sources.iter().enumerate() {
                 if k % 2 == 0 {
-                    s.set(Ok(base + k as i64 + 1));
+                    s.set(Ok(base + index_value(k) + 1));
                 } else {
                     s.set(Err(format!("e{k}")));
                 }
             }
         });
-        for k in 0..N_B {
+        for (k, value) in derived.iter().enumerate() {
             let expected: Result<i64, String> = if k % 2 == 0 {
-                Ok(base + k as i64 + 1)
+                Ok(base + index_value(k) + 1)
             } else {
                 Err(format!("e{k}!{k}"))
             };
             assert_eq!(
-                derived[k].get(),
+                value.get(),
                 expected,
                 "map_err instance {k} settled wrong at iter {iter}"
             );
@@ -475,7 +482,7 @@ fn map_err_wide_wave_settles_each_instance_correctly() {
 // Template C — event order under no_coalesce parallel wave (expect FAIL)
 // ---------------------------------------------------------------------------
 
-/// Drive `src` with the in-order burst 1,2,...,N_C in one batch, `ITERS_C`
+/// Drive `src` with the in-order burst `1,2,...,N_C` in one batch, `ITERS_C`
 /// times, and assert `derived` delivered those events one-at-a-time and in
 /// arrival order. `src` and `derived` must both have been built inside a
 /// `no_coalesce` scope so neither the source events nor the operator's
@@ -485,46 +492,46 @@ fn map_err_wide_wave_settles_each_instance_correctly() {
 /// wave threshold, the wave dispatches the events across rayon, so both the
 /// order assert and the "never concurrent with itself" assert are expected to
 /// fail until the scheduler makes `no_coalesce` waves order-preserving.
-/// (in_flight / order detector copied from `scheduler_no_coalesce_wave_order.rs`.)
+/// (`in_flight` / order detector copied from `scheduler_no_coalesce_wave_order.rs`.)
 fn assert_ordered_event_delivery(
     label: &str,
-    src: Cell<i64, CellMutable>,
-    derived: Cell<i64, CellImmutable>,
+    src: &Cell<i64, CellMutable>,
+    derived: &Cell<i64, CellImmutable>,
 ) {
     let received: Arc<Mutex<Vec<i64>>> = Arc::new(Mutex::new(Vec::new()));
     let in_flight = Arc::new(AtomicUsize::new(0));
     let max_in_flight = Arc::new(AtomicUsize::new(0));
 
     let r = received.clone();
-    let inf = in_flight.clone();
+    let inf = in_flight;
     let maxf = max_in_flight.clone();
     let guard = derived.subscribe(move |sig| {
         if let Signal::Value(v) = sig {
             // If the same subscriber runs concurrently with itself, in_flight
             // climbs above 1.
-            let cur = inf.fetch_add(1, Ordering::SeqCst) + 1;
+            let cur = inf.fetch_add(1, Ordering::SeqCst).saturating_add(1);
             maxf.fetch_max(cur, Ordering::SeqCst);
             // Widen the window so a genuine overlap is actually observed.
             for _ in 0..64 {
                 std::hint::spin_loop();
             }
-            r.lock().unwrap().push(**v);
+            r.lock().push(**v);
             inf.fetch_sub(1, Ordering::SeqCst);
         }
     });
 
     let expected: Vec<i64> = (1..=N_C).collect();
     for it in 0..ITERS_C {
-        received.lock().unwrap().clear();
+        received.lock().clear();
         batch(|| {
             for i in 1..=N_C {
                 src.set(i);
             }
         });
-        let got = received.lock().unwrap().clone();
+        let got = received.lock().clone();
         assert_eq!(
             got.len(),
-            N_C as usize,
+            usize::try_from(N_C).unwrap_or(usize::MAX),
             "{label} iter {it}: a no_coalesce event was dropped/coalesced"
         );
         assert_eq!(
@@ -551,7 +558,7 @@ fn scan_event_order_under_parallel_wave_regression() {
         let derived = src.clone().scan(0i64, |_acc, x| *x).materialize();
         (src, derived)
     });
-    assert_ordered_event_delivery("scan", src, derived);
+    assert_ordered_event_delivery("scan", &src, &derived);
 }
 
 #[test]
@@ -567,7 +574,7 @@ fn distinct_until_changed_by_event_order_under_parallel_wave_regression() {
             .materialize();
         (src, derived)
     });
-    assert_ordered_event_delivery("distinct_until_changed_by", src, derived);
+    assert_ordered_event_delivery("distinct_until_changed_by", &src, &derived);
 }
 
 #[test]
@@ -580,7 +587,7 @@ fn deduped_event_order_under_parallel_wave_regression() {
         let derived = src.clone().deduped().materialize();
         (src, derived)
     });
-    assert_ordered_event_delivery("deduped", src, derived);
+    assert_ordered_event_delivery("deduped", &src, &derived);
 }
 
 #[test]
@@ -592,13 +599,16 @@ fn state_transition_event_order_under_parallel_wave_regression() {
         // defined and emitting its target value. Driven in order 1,2,...,N_C
         // each batch, it emits exactly 1,2,...,N_C; the cycle edge (N_C->1)
         // keeps that true across batches even though the state persists.
-        let derived: Cell<i64, CellImmutable> = src.state_transition(|sm| {
-            for k in 0..N_C {
-                sm.on(k, k + 1, move |_, to| *to);
-            }
-            sm.on(N_C, 1i64, move |_, to| *to);
-        });
+        let derived: Cell<i64, CellImmutable> = src
+            .clone()
+            .state_transition(|sm| {
+                for k in 0..N_C {
+                    sm.on(k, k + 1, move |_, to| *to);
+                }
+                sm.on(N_C, 1i64, move |_, to| *to);
+            })
+            .materialize();
         (src, derived)
     });
-    assert_ordered_event_delivery("state_transition", src, derived);
+    assert_ordered_event_delivery("state_transition", &src, &derived);
 }

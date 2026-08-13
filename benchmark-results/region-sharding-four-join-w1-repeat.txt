@@ -1,0 +1,14 @@
+    Finished `bench` profile [optimized] target(s) in 1.77s
+     Running benches/compiled_map_queries.rs (target/release/deps/compiled_map_queries-3dd9fd0577ebe7c4)
+Gnuplot not found, using plotters backend
+Benchmarking compiled_query/four_join_application/steady_batch/10000
+Benchmarking compiled_query/four_join_application/steady_batch/10000: Warming up for 3.0000 s
+Benchmarking compiled_query/four_join_application/steady_batch/10000: Collecting 100 samples in estimated 5.5058 s (300 iterations)
+Benchmarking compiled_query/four_join_application/steady_batch/10000: Analyzing
+compiled_query/four_join_application/steady_batch/10000
+                        time:   [16.751 ms 17.308 ms 17.888 ms]
+                        change: [-37.060% -33.583% -29.800%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 4 outliers among 100 measurements (4.00%)
+  4 (4.00%) high mild
+

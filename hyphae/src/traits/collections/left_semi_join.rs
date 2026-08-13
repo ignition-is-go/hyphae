@@ -7,12 +7,17 @@
 
 use std::{hash::Hash, marker::PhantomData};
 
+use super::left_join::RelationPlan;
+
 use crate::{
-    map_query::{MapDiffSink, MapQuery, MapQueryInstall},
+    map_query::{
+        BuildQueryRuntime, MapQuery,
+        properties::{ByMapKey, PlanProperties, ZeroOrOne},
+    },
     subscription::SubscriptionGuard,
     traits::{
-        CellValue, HasForeignKey, IdFor,
-        collections::internal::join_runtime::install_join_runtime_via_query,
+        CellValue, ForeignKeyRelation, IdFor, OptionalRightKey, RequiredRightKey, RightJoinKey,
+        collections::internal::join_runtime::install_keyed_join_runtime_via_query,
     },
 };
 
@@ -28,15 +33,15 @@ use crate::{
 /// materializing once.
 pub struct LeftSemiJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
 where
-    L: MapQuery<LK, LV>,
-    R: MapQuery<RK, RV>,
+    L: MapQuery<Key = LK, Value = LV>,
+    R: MapQuery<Key = RK, Value = RV>,
     LK: Hash + Eq + CellValue,
     LV: CellValue,
     RK: Hash + Eq + CellValue,
     RV: CellValue,
     JK: Hash + Eq + CellValue,
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
-    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    FR: RightJoinKey<RK, RV, JK>,
 {
     pub(crate) left: L,
     pub(crate) right: R,
@@ -46,30 +51,53 @@ where
     pub(crate) _types: PhantomData<fn() -> (LK, LV, RK, RV, JK)>,
 }
 
-impl<L, R, LK, LV, RK, RV, JK, FL, FR> MapQueryInstall<LK, LV>
+impl<L, R, LK, LV, RK, RV, JK, FL, FR> PlanProperties
     for LeftSemiJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
 where
-    L: MapQuery<LK, LV>,
-    R: MapQuery<RK, RV>,
+    L: MapQuery<Key = LK, Value = LV>,
+    R: MapQuery<Key = RK, Value = RV>,
     LK: Hash + Eq + CellValue,
     LV: CellValue,
     RK: Hash + Eq + CellValue,
     RV: CellValue,
     JK: Hash + Eq + CellValue,
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
-    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    FR: RightJoinKey<RK, RV, JK>,
 {
-    fn install(self, sink: MapDiffSink<LK, LV>) -> Vec<SubscriptionGuard> {
-        install_join_runtime_via_query::<LK, LV, RK, RV, JK, LK, LV, _, _, _, _, _>(
+    type Cardinality = ZeroOrOne;
+    type InputPartition = L::OutputPartition;
+    type OutputPartition = ByMapKey<LK>;
+}
+
+impl<L, R, LK, LV, RK, RV, JK, FL, FR> BuildQueryRuntime<LK, LV>
+    for LeftSemiJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
+where
+    L: MapQuery<Key = LK, Value = LV>,
+    R: MapQuery<Key = RK, Value = RV>,
+    LK: Hash + Eq + CellValue,
+    LV: CellValue,
+    RK: Hash + Eq + CellValue,
+    RV: CellValue,
+    JK: Hash + Eq + CellValue,
+    FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
+    FR: RightJoinKey<RK, RV, JK>,
+{
+    fn build_into(
+        self,
+        cx: &mut crate::map_query::compiler::CompileContext,
+        sink: crate::map_query::BoxedMapDiffSink<LK, LV>,
+    ) -> Vec<SubscriptionGuard> {
+        install_keyed_join_runtime_via_query::<LK, LV, RK, RV, JK, LV, _, _, _, _, _>(
+            cx,
             self.left,
             self.right,
             self.left_key,
             self.right_key,
-            |left_k: &LK, left_v: &LV, rights: &[(RK, RV)]| {
+            |_left_k: &LK, left_v: &LV, rights: &[(RK, RV)]| {
                 if rights.is_empty() {
-                    Vec::new()
+                    None
                 } else {
-                    vec![(left_k.clone(), left_v.clone())]
+                    Some(left_v.clone())
                 }
             },
             sink,
@@ -78,19 +106,21 @@ where
 }
 
 #[allow(private_bounds)]
-impl<L, R, LK, LV, RK, RV, JK, FL, FR> MapQuery<LK, LV>
+impl<L, R, LK, LV, RK, RV, JK, FL, FR> MapQuery
     for LeftSemiJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
 where
-    L: MapQuery<LK, LV>,
-    R: MapQuery<RK, RV>,
+    L: MapQuery<Key = LK, Value = LV>,
+    R: MapQuery<Key = RK, Value = RV>,
     LK: Hash + Eq + CellValue,
     LV: CellValue,
     RK: Hash + Eq + CellValue,
     RV: CellValue,
     JK: Hash + Eq + CellValue,
     FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
-    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
+    FR: RightJoinKey<RK, RV, JK>,
 {
+    type Key = LK;
+    type Value = LV;
 }
 
 /// Left semi-join operators returning [`MapQuery`] plan nodes.
@@ -98,7 +128,7 @@ where
 /// All three methods consume `self` and return uncompiled plan nodes; call
 /// [`MapQuery::materialize`] on the result to obtain a subscribable
 /// [`CellMap`](crate::CellMap).
-pub trait LeftSemiJoinExt<K, V>: MapQuery<K, V>
+pub trait LeftSemiJoinExt<K, V>: MapQuery<Key = K, Value = V>
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
@@ -108,29 +138,16 @@ where
     /// Keeps left rows where a right row with the same key exists. Unmatched
     /// left rows are excluded. Output contains only left data.
     #[allow(clippy::type_complexity)]
-    fn left_semi_join<R, RV>(
-        self,
-        right: R,
-    ) -> LeftSemiJoinPlan<
-        Self,
-        R,
-        K,
-        V,
-        K,
-        RV,
-        K,
-        impl Fn(&K, &V) -> K + Send + Sync + 'static,
-        impl Fn(&K, &RV) -> K + Send + Sync + 'static,
-    >
+    fn left_semi_join<R, RV>(self, right: R) -> impl MapQuery<Key = K, Value = V>
     where
-        R: MapQuery<K, RV>,
+        R: MapQuery<Key = K, Value = RV>,
         RV: CellValue,
     {
         LeftSemiJoinPlan {
             left: self,
             right,
             left_key: |k: &K, _: &V| k.clone(),
-            right_key: |k: &K, _: &RV| k.clone(),
+            right_key: RequiredRightKey(|k: &K, _: &RV| k.clone()),
             _types: PhantomData,
         }
     }
@@ -140,39 +157,50 @@ where
     /// Joins on the left map key matching the right value's foreign key.
     /// Keeps left rows that have at least one matching right row. Unmatched
     /// left rows are excluded. Output contains only left data.
+    ///
+    /// `Rel` is the relationship's semantic, partition, and reusable-index
+    /// identity. `None` from its extractor denotes an absent optional right
+    /// relationship and is omitted from the index. The key is converted into
+    /// `IdFor<Rel::Parent>::MapKey`; it is independent of the left payload.
     #[allow(clippy::type_complexity)]
-    fn left_semi_join_fk<R, RK, RV>(
+    fn left_semi_join_fk<Rel, R>(
         self,
         right: R,
-    ) -> LeftSemiJoinPlan<
-        Self,
-        R,
-        K,
-        V,
-        RK,
-        RV,
-        K,
-        impl Fn(&K, &V) -> K + Send + Sync + 'static,
-        impl Fn(&RK, &RV) -> K + Send + Sync + 'static,
+    ) -> RelationPlan<
+        LeftSemiJoinPlan<
+            Self,
+            R,
+            K,
+            V,
+            R::Key,
+            Rel::Child,
+            K,
+            impl Fn(&K, &V) -> K + Send + Sync + 'static,
+            OptionalRightKey<impl Fn(&R::Key, &Rel::Child) -> Option<K> + Send + Sync + 'static>,
+        >,
+        Rel,
     >
     where
-        R: MapQuery<RK, RV>,
-        RK: Hash + Eq + CellValue,
-        RV: CellValue + HasForeignKey<V>,
-        <<RV as HasForeignKey<V>>::ForeignKey as IdFor<V>>::MapKey: Into<K>,
+        Rel: ForeignKeyRelation,
+        R: MapQuery<Value = Rel::Child>,
+        Rel::ForeignKey: IdFor<Rel::Parent, MapKey = K>,
     {
-        LeftSemiJoinPlan {
+        RelationPlan::<_, Rel>::new(LeftSemiJoinPlan {
             left: self,
             right,
             left_key: |k: &K, _: &V| k.clone(),
-            right_key: |_: &RK, rv: &RV| rv.fk().map_key().into(),
+            right_key: OptionalRightKey(|_: &R::Key, rv: &Rel::Child| {
+                Rel::foreign_key(rv).map(|foreign_key| foreign_key.map_key())
+            }),
             _types: PhantomData,
-        }
+        })
     }
 
     /// Left semi join using explicit key extractors.
     ///
     /// `left_key` and `right_key` extract the join key from each side.
+    /// This is an ad hoc escape hatch and carries no reusable typed relation
+    /// identity; prefer the typed FK form for schema-owned relationships.
     /// Keeps left rows that have at least one matching right row. Unmatched
     /// left rows are excluded. Output contains only left data.
     fn left_semi_join_by<R, RK, RV, JK, FL, FR>(
@@ -180,9 +208,9 @@ where
         right: R,
         left_key: FL,
         right_key: FR,
-    ) -> LeftSemiJoinPlan<Self, R, K, V, RK, RV, JK, FL, FR>
+    ) -> impl MapQuery<Key = K, Value = V>
     where
-        R: MapQuery<RK, RV>,
+        R: MapQuery<Key = RK, Value = RV>,
         RK: Hash + Eq + CellValue,
         RV: CellValue,
         JK: Hash + Eq + CellValue,
@@ -193,7 +221,7 @@ where
             left: self,
             right,
             left_key,
-            right_key,
+            right_key: RequiredRightKey(right_key),
             _types: PhantomData,
         }
     }
@@ -203,7 +231,7 @@ impl<K, V, M> LeftSemiJoinExt<K, V> for M
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
-    M: MapQuery<K, V>,
+    M: MapQuery<Key = K, Value = V>,
 {
 }
 
@@ -213,8 +241,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        CellMap, MapDiff,
-        traits::{Gettable, HasForeignKey, IdFor, IdType},
+        CellMap, MapDiff, Materialize,
+        traits::{ForeignKeyRelation, Gettable, IdFor, IdType},
     };
 
     #[test]
@@ -224,7 +252,7 @@ mod tests {
         let joined = left.clone().left_semi_join(right.clone()).materialize();
 
         left.insert("a".to_string(), 1);
-        assert_eq!(joined.entries().get().len(), 0);
+        assert_eq!(joined.entries().materialize().get().len(), 0);
 
         right.insert("a".to_string(), true);
         assert_eq!(joined.get_value(&"a".to_string()), Some(1));
@@ -240,7 +268,7 @@ mod tests {
         left.insert("b".to_string(), 2);
         right.insert("a".to_string(), true);
 
-        assert_eq!(joined.entries().get().len(), 1);
+        assert_eq!(joined.entries().materialize().get().len(), 1);
         assert_eq!(joined.get_value(&"a".to_string()), Some(1));
         assert_eq!(joined.get_value(&"b".to_string()), None);
     }
@@ -253,10 +281,10 @@ mod tests {
 
         left.insert("a".to_string(), 1);
         right.insert("a".to_string(), true);
-        assert_eq!(joined.entries().get().len(), 1);
+        assert_eq!(joined.entries().materialize().get().len(), 1);
 
         right.remove(&"a".to_string());
-        assert_eq!(joined.entries().get().len(), 0);
+        assert_eq!(joined.entries().materialize().get().len(), 0);
     }
 
     #[test]
@@ -283,7 +311,6 @@ mod tests {
 
         let right = CellMap::<String, bool>::new();
         let joined = left
-            .clone()
             .left_semi_join_by(right.clone(), |_, lv| lv.to_string(), |rk, _| rk.clone())
             .materialize();
 
@@ -296,10 +323,10 @@ mod tests {
 
         let seen: Vec<_> = rx.try_iter().collect();
         assert_eq!(seen.len(), 2);
-        match seen.last().expect("last diff") {
-            MapDiff::Batch { changes } => assert_eq!(changes.len(), 2),
-            _ => panic!("expected batch diff from left_semi_join_by"),
-        }
+        assert!(matches!(
+            seen.last(),
+            Some(MapDiff::Batch { changes }) if changes.len() == 2
+        ));
     }
 
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -327,10 +354,15 @@ mod tests {
         title: String,
     }
 
-    impl HasForeignKey<User> for Post {
+    struct UserPosts;
+
+    impl ForeignKeyRelation for UserPosts {
+        type Parent = User;
+        type Child = Post;
         type ForeignKey = UserId;
-        fn fk(&self) -> UserId {
-            self.user_id.clone()
+
+        fn foreign_key(post: &Post) -> Option<UserId> {
+            (!post.user_id.0.is_empty()).then(|| post.user_id.clone())
         }
     }
 
@@ -338,7 +370,10 @@ mod tests {
     fn left_semi_join_fk_keeps_matched_users() {
         let users = CellMap::<String, User>::new();
         let posts = CellMap::<String, Post>::new();
-        let joined = users.clone().left_semi_join_fk(posts.clone()).materialize();
+        let joined = users
+            .clone()
+            .left_semi_join_fk::<UserPosts, _>(posts.clone())
+            .materialize();
 
         users.insert(
             "u1".to_string(),
@@ -353,7 +388,7 @@ mod tests {
             },
         );
 
-        assert_eq!(joined.entries().get().len(), 0);
+        assert_eq!(joined.entries().materialize().get().len(), 0);
 
         posts.insert(
             "p1".to_string(),
@@ -363,7 +398,7 @@ mod tests {
             },
         );
 
-        assert_eq!(joined.entries().get().len(), 1);
+        assert_eq!(joined.entries().materialize().get().len(), 1);
         assert_eq!(
             joined.get_value(&"u1".to_string()),
             Some(User {
@@ -374,10 +409,53 @@ mod tests {
     }
 
     #[test]
+    fn left_semi_join_fk_ignores_absent_foreign_keys() {
+        let users = CellMap::<String, User>::new();
+        let posts = CellMap::<String, Post>::new();
+        let joined = users
+            .clone()
+            .left_semi_join_fk::<UserPosts, _>(posts.clone())
+            .materialize();
+        users.insert(
+            "u1".to_string(),
+            User {
+                name: "Alice".to_string(),
+            },
+        );
+        posts.insert(
+            "p1".to_string(),
+            Post {
+                user_id: UserId(String::new()),
+                title: "Orphan".to_string(),
+            },
+        );
+        assert_eq!(joined.get_value(&"u1".to_string()), None);
+        posts.insert(
+            "p1".to_string(),
+            Post {
+                user_id: UserId("u1".to_string()),
+                title: "Attached".to_string(),
+            },
+        );
+        assert!(joined.get_value(&"u1".to_string()).is_some());
+        posts.insert(
+            "p1".to_string(),
+            Post {
+                user_id: UserId(String::new()),
+                title: "Detached".to_string(),
+            },
+        );
+        assert_eq!(joined.get_value(&"u1".to_string()), None);
+    }
+
+    #[test]
     fn left_semi_join_fk_reacts_to_post_removal() {
         let users = CellMap::<String, User>::new();
         let posts = CellMap::<String, Post>::new();
-        let joined = users.clone().left_semi_join_fk(posts.clone()).materialize();
+        let joined = users
+            .clone()
+            .left_semi_join_fk::<UserPosts, _>(posts.clone())
+            .materialize();
 
         users.insert(
             "u1".to_string(),
@@ -392,9 +470,55 @@ mod tests {
                 title: "Hello".to_string(),
             },
         );
-        assert_eq!(joined.entries().get().len(), 1);
+        assert_eq!(joined.entries().materialize().get().len(), 1);
 
         posts.remove(&"p1".to_string());
-        assert_eq!(joined.entries().get().len(), 0);
+        assert_eq!(joined.entries().materialize().get().len(), 0);
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct OptionalPost {
+        user_id: Option<UserId>,
+    }
+
+    struct OptionalUserPosts;
+
+    impl ForeignKeyRelation for OptionalUserPosts {
+        type Parent = User;
+        type Child = OptionalPost;
+        type ForeignKey = UserId;
+
+        fn foreign_key(post: &OptionalPost) -> Option<UserId> {
+            post.user_id.clone()
+        }
+    }
+
+    #[test]
+    fn left_semi_join_fk_omits_absent_children_and_tracks_transitions() {
+        let users = CellMap::<String, User>::new();
+        let posts = CellMap::<String, OptionalPost>::new();
+        let joined = users
+            .clone()
+            .left_semi_join_fk::<OptionalUserPosts, _>(posts.clone())
+            .materialize();
+        users.insert(
+            "u1".into(),
+            User {
+                name: "Alice".into(),
+            },
+        );
+        posts.insert("p1".into(), OptionalPost { user_id: None });
+        assert!(joined.get_value(&"u1".to_string()).is_none());
+
+        posts.insert(
+            "p1".into(),
+            OptionalPost {
+                user_id: Some(UserId("u1".into())),
+            },
+        );
+        assert!(joined.get_value(&"u1".to_string()).is_some());
+
+        posts.insert("p1".into(), OptionalPost { user_id: None });
+        assert!(joined.get_value(&"u1".to_string()).is_none());
     }
 }

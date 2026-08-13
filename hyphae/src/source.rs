@@ -1,6 +1,6 @@
 //! [`Source<T>`] — a watchable event channel with no current value.
 //!
-//! `Source` is to [`Cell`](crate::Cell) as RxJS's `Subject` is to `BehaviorSubject`:
+//! `Source` is to [`Cell`](crate::Cell) as `RxJS`'s `Subject` is to `BehaviorSubject`:
 //! it has subscribers and an emit method, but does not store a "current value"
 //! and is not [`Gettable`](crate::traits::Gettable).
 //!
@@ -9,7 +9,7 @@
 //! Use `Source` for pure event/notification channels where:
 //! - Subscribers care only about *that* something happened, not the latest
 //!   stored value.
-//! - The producer fires at high rate and the per-emission ArcSwap drop on a
+//! - The producer fires at high rate and the per-emission `ArcSwap` drop on a
 //!   [`Cell`]'s value field is pure overhead.
 //!
 //! Concrete examples: interval ticks, clock pulses, lifecycle events.
@@ -38,8 +38,8 @@ use dashmap::DashMap;
 use uuid::Uuid;
 
 use crate::{
-    cell::{Cell, CellImmutable, CellMutable, Subscriber, SubscriberCallback},
-    pipeline::{Empty, MaterializeEmpty, Pipeline, PipelineInstall},
+    cell::{Cell, CellMutable, Subscriber, SubscriberCallback},
+    pipeline::{Definite, Empty, Materialize, Pipeline, PipelineInstall},
     signal::Signal,
     subscription::SubscriptionGuard,
     traits::{CellValue, DepNode, Gettable, Mutable, Watchable},
@@ -92,6 +92,7 @@ pub struct WeakSource<T> {
 impl<T> WeakSource<T> {
     /// Try to upgrade to a strong [`Source`] reference. Returns `None` if the
     /// underlying source has been dropped.
+    #[must_use]
     pub fn upgrade(&self) -> Option<Source<T>> {
         self.inner.upgrade().map(|inner| Source {
             inner,
@@ -102,7 +103,7 @@ impl<T> WeakSource<T> {
 
 impl<T> Clone for WeakSource<T> {
     fn clone(&self) -> Self {
-        WeakSource {
+        Self {
             inner: self.inner.clone(),
             _marker: PhantomData,
         }
@@ -111,7 +112,7 @@ impl<T> Clone for WeakSource<T> {
 
 impl<T> Clone for Source<T> {
     fn clone(&self) -> Self {
-        Source {
+        Self {
             inner: Arc::clone(&self.inner),
             _marker: PhantomData,
         }
@@ -121,6 +122,7 @@ impl<T> Clone for Source<T> {
 impl<T: CellValue> Source<T> {
     /// Create a new source with no subscribers.
     #[track_caller]
+    #[must_use]
     pub fn new() -> Self {
         let inner = Arc::new(SourceInner {
             id: Uuid::new_v4(),
@@ -138,6 +140,7 @@ impl<T: CellValue> Source<T> {
     }
 
     /// Create a weak reference to this source.
+    #[must_use]
     pub fn downgrade(&self) -> WeakSource<T> {
         WeakSource {
             inner: Arc::downgrade(&self.inner),
@@ -151,6 +154,7 @@ impl<T: CellValue> Source<T> {
     }
 
     /// Returns true if this source has completed.
+    #[must_use]
     pub fn is_complete(&self) -> bool {
         self.inner.completed.load(Ordering::SeqCst)
     }
@@ -158,8 +162,8 @@ impl<T: CellValue> Source<T> {
     /// Builder-style name attachment, kept for API compatibility with
     /// [`Cell::with_name`](crate::Cell::with_name). `Source` carries no name
     /// field, so this is a no-op.
-    #[allow(unused_variables)]
-    pub fn with_name(self, name: impl Into<std::sync::Arc<str>>) -> Self {
+    #[must_use]
+    pub fn with_name(self, _name: impl Into<std::sync::Arc<str>>) -> Self {
         self
     }
 
@@ -184,6 +188,7 @@ impl<T: CellValue> Source<T> {
     ///
     /// Requires the `scheduler` feature (batching is meaningless without it).
     #[cfg(feature = "scheduler")]
+    #[must_use]
     pub fn batched(self) -> Self {
         self.inner.batched.store(true, Ordering::Relaxed);
         self
@@ -202,19 +207,20 @@ impl<T: CellValue> Source<T> {
     ) -> SubscriptionGuard {
         let id = Uuid::new_v4();
         let cb: SubscriberCallback<T> = Arc::new(callback);
-        let sub = Arc::new(Subscriber { callback: cb });
+        let sub = Arc::new(Subscriber::new_live(cb));
         // Swap-and-defer: see Cell::subscribe.
-        let _old = {
+        let old_snapshot = {
             let mut guard = self.inner.subscribers.lock();
             let mut next: Vec<(Uuid, Arc<Subscriber<T>>)> = (**guard).clone();
             next.push((id, sub));
             std::mem::replace(&mut *guard, Arc::new(next))
         };
+        drop(old_snapshot);
 
         let source: Arc<dyn DepNode> = Arc::new(self.clone());
         let inner = self.inner.clone();
         SubscriptionGuard::new(id, source, move || {
-            let _old = {
+            let old_snapshot = {
                 let mut guard = inner.subscribers.lock();
                 let prev_len = guard.len();
                 let next: Vec<(Uuid, Arc<Subscriber<T>>)> = (**guard)
@@ -222,13 +228,13 @@ impl<T: CellValue> Source<T> {
                     .filter(|(i, _)| *i != id)
                     .cloned()
                     .collect();
-                if next.len() != prev_len {
-                    Some(std::mem::replace(&mut *guard, Arc::new(next)))
-                } else {
+                if next.len() == prev_len {
                     None
+                } else {
+                    Some(std::mem::replace(&mut *guard, Arc::new(next)))
                 }
             };
-            let _ = _old;
+            drop(old_snapshot);
         })
     }
 
@@ -300,11 +306,10 @@ impl<T: CellValue> Default for Source<T> {
 //
 // `Source<T>` is a `Pipeline<T, Empty>`: operators that don't require a
 // definite initial value (`map`, `filter`, `tap`, ...) compose with it.
-// `PipelineSeed` is intentionally NOT implemented — operators like `.sample`
-// (with Source as the value side), `.join`, `.combine_latest` require a
-// current value, and the type system rejects them at compile time.
+// A source has no seed: Empty materialization installs it directly and starts
+// the resulting cell at `None`.
 //
-// Materialization goes through `MaterializeEmpty`, producing a
+// Materialization uses `Materialize<T, Empty>`, producing a
 // `Cell<Option<T>, CellImmutable>` that starts as `None` and transitions to
 // `Some(value)` on the first `emit`.
 
@@ -317,34 +322,25 @@ impl<T: CellValue> PipelineInstall<T> for Source<T> {
 #[allow(private_bounds)]
 impl<T: CellValue> Pipeline<T, Empty> for Source<T> {}
 
-impl<T: CellValue> MaterializeEmpty<T> for Source<T> {}
-
 /// Extension trait: sample a [`Watchable`] cell using a [`Source`] as the
 /// notifier.
 ///
-/// Mirrors `Watchable::sample(&pipeline_notifier)` but accepts a `Source<U>`,
-/// which doesn't impl `Pipeline`/`PipelineSeed`. The result is materialized
-/// directly into a `Cell<T, CellImmutable>` seeded from the source's current
-/// value.
+/// Mirrors `Watchable::sample(&pipeline_notifier)` but accepts a `Source<U>`.
+/// The returned pipeline surface keeps the materialization boundary explicit
+/// even though the current implementation uses a cell internally.
 pub trait SampleOnSourceExt<T: CellValue>: Watchable<T> + Gettable<T> {
-    /// Build a cell that re-emits the current value of `self` whenever
-    /// `notifier` emits. Equivalent to `notifier.subscribe(|_| cell.set(self.get()))`
-    /// but with subscription lifecycle owned by the resulting cell.
+    /// Build a pipeline that re-emits the current value of `self` whenever
+    /// `notifier` emits, with lifecycle owned by the resulting cell.
     #[track_caller]
-    fn sample_on<U>(&self, notifier: &Source<U>) -> Cell<T, CellImmutable>
+    fn sample_on<U>(&self, notifier: &Source<U>) -> impl Materialize<T, Definite> + use<Self, T, U>
     where
         U: CellValue,
     {
         let source = self.clone();
         let cell = Cell::<T, CellMutable>::new(source.get());
         // Weak, not a strong clone: `cell.own(guard)` below hands the cell
-        // ownership of the subscription, and a `SubscriptionGuard` holds a
-        // *strong* `Arc<dyn DepNode>` to whatever it subscribed to
-        // (`subscription.rs`). A strong capture here would close the loop
-        // cell -> owned guard -> notifier -> subscribers -> closure -> cell, so
-        // the cell could never reach zero: it would never drop, never
-        // unsubscribe, never deregister, and would keep sampling `source`
-        // forever — a CPU leak as well as a memory one (rship lv-df48).
+        // ownership of the subscription. Capturing the cell strongly here
+        // would create an unbreakable cell -> guard -> callback -> cell cycle.
         let weak_cell = cell.downgrade();
         let guard = notifier.subscribe(move |signal| {
             if let Signal::Value(_) = signal
@@ -391,6 +387,7 @@ mod tests {
     use std::sync::{Arc, atomic::Ordering};
 
     use super::*;
+    use crate::Materialize;
 
     /// `sample_on` used to capture a strong clone of its own output cell in the
     /// notifier's subscriber closure while also owning the guard, forming an
@@ -400,7 +397,7 @@ mod tests {
         let value = Cell::new(7i32);
         let notifier: Source<()> = Source::new();
 
-        let sampled = value.sample_on(&notifier);
+        let sampled = value.sample_on(&notifier).materialize();
         let weak = sampled.downgrade();
 
         value.set(8);
@@ -421,7 +418,7 @@ mod tests {
         let value = Cell::new(0i32);
         let notifier: Source<()> = Source::new();
 
-        let sampled = value.sample_on(&notifier);
+        let sampled = value.sample_on(&notifier).materialize();
         assert_eq!(notifier.subscriber_count(), 1);
 
         drop(sampled);
@@ -503,7 +500,7 @@ mod tests {
             Signal::Complete => {
                 counter_clone.fetch_add(1000, Ordering::SeqCst);
             }
-            _ => {}
+            Signal::Error(_) => {}
         });
 
         src.emit(1);

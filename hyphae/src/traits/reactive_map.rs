@@ -5,9 +5,9 @@
 //! implements `ReactiveMap` can appear on either side of an `inner_join`,
 //! `left_join`, `left_semi_join`, etc.
 //!
-//! Today only [`CellMap`] implements this.  When [`NestedMap`] lands, it will
-//! implement the same trait, and the existing join logic will work with it
-//! unchanged.
+//! [`CellMap`](crate::CellMap) and [`NestedMap`](crate::NestedMap) both implement this interface. Unmaterialized
+//! derived operations are [`MapQuery`](crate::MapQuery) plans rather than
+//! `ReactiveMap` values; materialization produces the observable `CellMap`.
 
 use super::reactive_keys::ReactiveKeys;
 use crate::{cell_map::MapDiff, subscription::SubscriptionGuard, traits::CellValue};

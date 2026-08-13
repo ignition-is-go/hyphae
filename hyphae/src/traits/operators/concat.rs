@@ -1,130 +1,162 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    marker::PhantomData,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
+
+use parking_lot::Mutex;
 
 use super::{CellValue, Watchable};
 use crate::{
-    cell::{Cell, CellImmutable, CellMutable},
+    cell::{Cell, CellMutable},
+    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed},
     signal::Signal,
+    subscription::SubscriptionGuard,
 };
+use uuid::Uuid;
 
-pub trait ConcatExt<T>: Watchable<T> {
-    /// Sequential stream composition - subscribe to second source after first completes.
-    ///
-    /// Values from the first source are emitted until it completes, then values
-    /// from the second source are emitted.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use hyphae::{Cell, Mutable, Gettable, ConcatExt};
-    ///
-    /// let first = Cell::new(1);
-    /// let second = Cell::new(100);
-    /// let combined = first.concat(&second);
-    ///
-    /// first.set(2);   // Emits 2
-    /// first.set(3);   // Emits 3
-    /// first.complete(); // Switches to second
-    /// second.set(200); // Emits 200
-    /// ```
-    #[track_caller]
-    fn concat<W2>(&self, other: &W2) -> Cell<T, CellImmutable>
-    where
-        T: CellValue,
-        W2: Watchable<T> + Clone + Send + Sync + 'static,
-        Self: Clone + Send + Sync + 'static,
-    {
-        let derived = Cell::<T, CellMutable>::new(self.get());
+pub struct ConcatPipeline<A, B, T> {
+    first: A,
+    second: Arc<B>,
+    _type: PhantomData<fn() -> T>,
+}
 
-        let weak = derived.downgrade();
-        let first_done = Arc::new(AtomicBool::new(false));
-        let first_skip = Arc::new(AtomicBool::new(true));
-        let other = other.clone();
-
-        // Subscribe to second source when first completes
-        let first_done2 = first_done.clone();
-        let guard1 = self.subscribe(move |signal| {
-            if let Some(d) = weak.upgrade() {
+impl<A, B, T> PipelineInstall<T> for ConcatPipeline<A, B, T>
+where
+    A: PipelineInstall<T> + PipelineSeed<T>,
+    B: PipelineInstall<T>,
+    T: CellValue,
+{
+    fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
+        // The output cell is the dynamic subscription slot: on completion it
+        // atomically takes ownership of the second root and updates scheduler
+        // dependency height through `Cell::own_keyed`.
+        let output = Cell::<T, CellMutable>::new(self.first.seed());
+        let root_key = Uuid::new_v4();
+        let weak = output.downgrade();
+        let first_skip = AtomicBool::new(true);
+        let second = self.second.clone();
+        // Installing a pipeline may synchronously replay Complete. Serialize
+        // the completion switch with ownership of the returned first guard so
+        // the latter can never overwrite an already-installed second guard.
+        let switched = Arc::new(Mutex::new(false));
+        let switched_on_complete = switched.clone();
+        let first_guard = self.first.install(Arc::new(move |signal| {
+            if let Some(output) = weak.upgrade() {
                 match signal {
-                    Signal::Value(value) => {
-                        if first_skip.swap(false, Ordering::SeqCst) {
+                    Signal::Value(_) if first_skip.swap(false, Ordering::SeqCst) => {}
+                    Signal::Value(_) | Signal::Error(_) => output.notify(signal.clone()),
+                    Signal::Complete => {
+                        let mut switched = switched_on_complete.lock();
+                        if *switched {
                             return;
                         }
-                        d.notify(Signal::Value(value.clone()));
-                    }
-                    Signal::Complete => {
-                        first_done2.store(true, Ordering::SeqCst);
-                        // Now subscribe to second source
-                        let weak2 = d.downgrade();
-                        let second_skip = Arc::new(AtomicBool::new(true));
-                        let guard2 = other.subscribe(move |signal| {
-                            if let Some(d2) = weak2.upgrade() {
+                        *switched = true;
+                        drop(switched);
+                        let weak_second = output.downgrade();
+                        let second_skip = AtomicBool::new(true);
+                        let guard = second.install(Arc::new(move |signal| {
+                            if let Some(output) = weak_second.upgrade() {
                                 match signal {
-                                    Signal::Value(value) => {
-                                        if second_skip.swap(false, Ordering::SeqCst) {
-                                            return;
-                                        }
-                                        d2.notify(Signal::Value(value.clone()));
-                                    }
-                                    Signal::Complete => d2.notify(Signal::Complete),
-                                    Signal::Error(e) => d2.notify(Signal::Error(e.clone())),
+                                    Signal::Value(_)
+                                        if second_skip.swap(false, Ordering::SeqCst) => {}
+                                    _ => output.notify(signal.clone()),
                                 }
                             }
-                        });
-                        d.own(guard2);
+                        }));
+                        output.own_keyed(root_key, guard);
                     }
-                    Signal::Error(e) => d.notify(Signal::Error(e.clone())),
                 }
             }
-        });
-        derived.own(guard1);
-
-        derived.lock()
+        }));
+        let switched = switched.lock();
+        let did_switch = *switched;
+        drop(switched);
+        if did_switch {
+            drop(first_guard);
+        } else {
+            output.own_keyed(root_key, first_guard);
+        }
+        output.subscribe(move |signal| callback(signal))
     }
 }
 
-impl<T, W: Watchable<T>> ConcatExt<T> for W {}
+impl<A, B, T> PipelineSeed<T> for ConcatPipeline<A, B, T>
+where
+    A: PipelineSeed<T>,
+    B: PipelineInstall<T>,
+    T: CellValue,
+{
+    fn seed(&self) -> T {
+        self.first.seed()
+    }
+}
+impl<A, B, T> Pipeline<T, Definite> for ConcatPipeline<A, B, T>
+where
+    A: Pipeline<T, Definite> + PipelineSeed<T>,
+    B: Pipeline<T, Definite>,
+    T: CellValue,
+{
+}
+
+pub trait ConcatExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
+    fn concat<B>(self, second: B) -> impl crate::Materialize<T, Definite>
+    where
+        B: Pipeline<T, Definite>,
+    {
+        ConcatPipeline {
+            first: self,
+            second: Arc::new(second),
+            _type: PhantomData,
+        }
+    }
+}
+impl<T: CellValue, P> ConcatExt<T> for P where P: Pipeline<T, Definite> + PipelineSeed<T> {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Mutable;
+    use crate::{Cell, DepNode, Gettable, Materialize, Mutable};
 
+    #[test]
+    fn concat_is_lazy_until_materialized() {
+        let first = Cell::new(1);
+        let second = Cell::new(2);
+        let pipeline = first.clone().concat(second.clone());
+        assert_eq!(first.subscriber_count(), 0);
+        assert_eq!(second.subscriber_count(), 0);
+        let _combined = pipeline.materialize();
+        assert_eq!(first.subscriber_count(), 1);
+        assert_eq!(second.subscriber_count(), 0);
+        first.complete();
+        assert_eq!(first.subscriber_count(), 0);
+        assert_eq!(second.subscriber_count(), 1);
+    }
     #[test]
     fn test_concat() {
         let first = Cell::new(1);
         let second = Cell::new(100);
-        let combined = first.concat(&second);
-
-        let (tx, rx) = std::sync::mpsc::channel::<i32>();
-        let _guard = combined.subscribe(move |signal| {
-            if let Signal::Value(v) = signal {
-                let _ = tx.send(**v);
-            }
-        });
-
-        // Initial value from first
-        assert_eq!(rx.recv().ok(), Some(1));
-
-        // Values from first
+        let combined = first.clone().concat(second.clone()).materialize();
         first.set(2);
-        first.set(3);
-        assert_eq!(rx.recv().ok(), Some(2));
-        assert_eq!(rx.recv().ok(), Some(3));
+        assert_eq!(combined.get(), 2);
+        first.complete();
+        second.set(200);
+        assert_eq!(combined.get(), 200);
+    }
 
-        // Complete first - switches to second
+    #[test]
+    fn concat_preserves_second_subscription_when_first_is_already_complete() {
+        let first = Cell::new(1);
+        let second = Cell::new(100);
         first.complete();
 
-        // Second's current value is emitted on subscribe
-        // (but we skip the first emission in the callback)
+        let combined = first.clone().concat(second.clone()).materialize();
+        assert_eq!(first.subscriber_count(), 0);
+        assert_eq!(second.subscriber_count(), 1);
 
-        // Values from second
         second.set(200);
-        assert_eq!(rx.recv().ok(), Some(200));
-
-        second.set(300);
-        assert_eq!(rx.recv().ok(), Some(300));
+        assert_eq!(combined.get(), 200);
     }
 }
