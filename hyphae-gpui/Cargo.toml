@@ -5,6 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "Event-driven adapters from hyphae cells and cell-maps to GPUI entities"
+publish = false
 repository = "https://github.com/ignition-is-go/hyphae"
 autoexamples = false
 
@@ -20,4 +21,4 @@ hyphae = { path = "../hyphae", version = "3.0.0" }
 gpui = { git = "https://github.com/zed-industries/zed.git", features = ["test-support"] }
 
 [package.metadata.flux]
-tasks = ["fmt", "check", "check-wasm", "build", "test", "lint", "publish"]
+tasks = ["fmt", "check", "check-wasm", "build", "test", "lint"]
