@@ -95,3 +95,7 @@ required-features = ["scheduler"]
 name = "scheduler_contention"
 harness = false
 required-features = ["scheduler"]
+
+[[bench]]
+name = "compiled_map_queries"
+harness = false
