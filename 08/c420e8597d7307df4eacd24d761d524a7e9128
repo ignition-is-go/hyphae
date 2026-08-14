@@ -1,0 +1,8 @@
+¦ditem©dbodyyžMigrate only the Git-distributed `hyphae-gpui` bridge and its browser example from Zed Git GPUI dependencies to an exact corrected crates.io `gpui-unofficial` family release.
+
+Scope and acceptance:
+- Leave non-GPUI Hyphae crates unchanged.
+- Update the bridge/web manifests and relevant locks while preserving `test-support` and platform features.
+- Resolve exactly one registry-backed GPUI identity and no Zed GPUI Git source.
+- Pass bridge native tests, strict Clippy, library WASM checking, Trunk build, and browser smoke validation.
+- Wait for the gpui-web packaging fix tracked by iamnbutler/gpui-unofficial#243; do not use a Git, path, or vendored GPUI workaround.gcreatedx2026-08-14T22:53:15.945238ZlcreatedByDevxtrevor.a.sargent@gmail.compcreatedByMachinegmalcolmbidx f1d836c6662844c2b5bea78a407299bcflabelsƒdgpuiimigrationdwasmhprioritybP1iprojectIdx b84f94e9884549c8a7503abf702905d2etitlex0Migrate hyphae-gpui to crates.io gpui-unofficialjchangeTypecSEThitemTypedTaskicreatedAtx2026-08-14T22:53:15.945241Zbtxx$0e2d80bf-412c-426d-a206-9371d4cae753hsourceIdgmalcolm
