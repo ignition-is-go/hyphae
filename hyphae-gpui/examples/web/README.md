@@ -10,5 +10,5 @@ env -u NO_COLOR trunk serve
 ```
 
 The Trunk configuration supplies the COOP/COEP headers and shared-memory Wasm
-flags required by GPUI. Open <http://127.0.0.1:8097> and check the title or
+flags required by GPUI. Open <http://127.0.0.1:8084> and check the title or
 browser console after startup.

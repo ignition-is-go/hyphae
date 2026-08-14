@@ -3,6 +3,6 @@ watch = ["../../src", "../../../hyphae/src", "main.rs", "Cargo.toml"]
 
 [serve]
 addresses = ["127.0.0.1"]
-port = 8097
+port = 8084
 open = false
 headers = { "Cross-Origin-Embedder-Policy" = "require-corp", "Cross-Origin-Opener-Policy" = "same-origin" }
