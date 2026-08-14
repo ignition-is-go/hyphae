@@ -2016,7 +2016,7 @@ dependencies = [
 
 [[package]]
 name = "hyphae"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -2041,7 +2041,7 @@ dependencies = [
 
 [[package]]
 name = "hyphae-gpui"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "flume 0.11.1",
  "gpui",
@@ -2050,7 +2050,7 @@ dependencies = [
 
 [[package]]
 name = "hyphae-leptos"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "hyphae",
  "leptos",
