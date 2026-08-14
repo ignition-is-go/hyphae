@@ -1,0 +1,50 @@
+    Checking hyphae v2.0.1 (/home/trevor/Code/hyphae/hyphae)
+error: unnecessary structure name repetition
+  --> hyphae/src/traits/collections/internal/join_region.rs:39:32
+   |
+39 |     type Output = JCons<Stage, JNil>;
+   |                                ^^^^ help: use the applicable keyword: `Self`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#use_self
+   = note: `-D clippy::use-self` implied by `-D clippy::nursery`
+   = help: to override `-D clippy::nursery` add `#[allow(clippy::use_self)]`
+
+error: unnecessary structure name repetition
+  --> hyphae/src/traits/collections/internal/join_region.rs:44:19
+   |
+44 |             tail: JNil,
+   |                   ^^^^ help: use the applicable keyword: `Self`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#use_self
+
+error: could not compile `hyphae` (lib) due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: adding items after statements is confusing, since items exist from the start of the scope
+   --> hyphae/src/traits/collections/internal/join_region.rs:358:9
+    |
+358 |         fn properties<P: PlanProperties<OutputPartition = ByMapKey<u32>>>() {}
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#items_after_statements
+    = note: `-D clippy::items-after-statements` implied by `-D clippy::pedantic`
+    = help: to override `-D clippy::pedantic` add `#[allow(clippy::items_after_statements)]`
+
+error: adding items after statements is confusing, since items exist from the start of the scope
+   --> hyphae/src/traits/collections/internal/join_region.rs:384:9
+    |
+384 |         fn properties<P: PlanProperties<OutputPartition = ByMapKey<u32>>>() {}
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#items_after_statements
+
+error: using a potentially dangerous silent `as` conversion
+   --> hyphae/src/traits/collections/internal/join_region.rs:403:44
+    |
+403 |                 |key: &u32, count: &usize| *key as usize + count,
+    |                                            ^^^^^^^^^^^^^
+    |
+    = help: consider using a safe wrapper for this conversion
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#as_conversions
+    = note: requested on the command line with `-D clippy::as-conversions`
+
+error: could not compile `hyphae` (lib test) due to 5 previous errors

@@ -1,0 +1,15 @@
+    Finished `bench` profile [optimized] target(s) in 0.05s
+     Running benches/compiled_map_queries.rs (target/release/deps/compiled_map_queries-59752f67fa496365)
+Gnuplot not found, using plotters backend
+Benchmarking compiled_query/two_join_region/single
+Benchmarking compiled_query/two_join_region/single: Warming up for 2.0000 s
+Benchmarking compiled_query/two_join_region/single: Collecting 50 samples in estimated 5.0030 s (1.4M iterations)
+Benchmarking compiled_query/two_join_region/single: Analyzing
+compiled_query/two_join_region/single
+                        time:   [3.5618 µs 3.5733 µs 3.5842 µs]
+                        change: [-3.4432% -1.9141% -0.8360%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 3 outliers among 50 measurements (6.00%)
+  1 (2.00%) low mild
+  2 (4.00%) high mild
+

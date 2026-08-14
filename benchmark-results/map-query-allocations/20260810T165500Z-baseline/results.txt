@@ -1,0 +1,16 @@
+MAP_QUERY_ALLOCATION_CSV revision,scenario,phase,alloc_calls,alloc_bytes,dealloc_calls,dealloc_bytes,net_bytes,elapsed_ns,operations,output_rows
+MAP_QUERY_ALLOCATION_CSV 8b516fa,projection_region,build,0,0,0,0,0,150,1,500
+MAP_QUERY_ALLOCATION_CSV 8b516fa,projection_region,materialize,1516,242956,870,115312,127644,192470,1,500
+MAP_QUERY_ALLOCATION_CSV 8b516fa,projection_region,single_updates,900,34400,899,42320,-7920,272669,100,500
+MAP_QUERY_ALLOCATION_CSV 8b516fa,projection_region,batch_100,347,42256,197,29360,12896,25190,1,500
+MAP_QUERY_ALLOCATION_CSV 8b516fa,projection_region,teardown,0,0,696,123856,-123856,13660,1,500
+MAP_QUERY_ALLOCATION_CSV 8b516fa,two_join_region,build,0,0,0,0,0,20,1,1000
+MAP_QUERY_ALLOCATION_CSV 8b516fa,two_join_region,materialize,6859,2017784,3409,1310056,707728,1240428,1,1000
+MAP_QUERY_ALLOCATION_CSV 8b516fa,two_join_region,single_updates,1400,68000,2398,139888,-71888,381240,100,1000
+MAP_QUERY_ALLOCATION_CSV 8b516fa,two_join_region,batch_100,343,49584,144,33936,15648,60510,1,1000
+MAP_QUERY_ALLOCATION_CSV 8b516fa,two_join_region,teardown,0,0,4826,930376,-930376,144980,1,1000
+MAP_QUERY_ALLOCATION_CSV 8b516fa,repeated_relation_four_join,build,0,0,0,0,0,50,1,1000
+MAP_QUERY_ALLOCATION_CSV 8b516fa,repeated_relation_four_join,materialize,16836,4140692,11104,2914032,1226660,2085578,1,1000
+MAP_QUERY_ALLOCATION_CSV 8b516fa,repeated_relation_four_join,single_updates,2000,108000,2998,179888,-71888,429540,100,1000
+MAP_QUERY_ALLOCATION_CSV 8b516fa,repeated_relation_four_join,batch_100,570,78880,371,62688,16192,95040,1,1000
+MAP_QUERY_ALLOCATION_CSV 8b516fa,repeated_relation_four_join,teardown,0,0,5970,1306332,-1306332,148479,1,1000
