@@ -57,4 +57,7 @@ workspace_batchable = true
 cargo = ["cargo", "clippy", "--tests", "--all-features", "--", "-D", "warnings"]
 
 [tasks.publish]
+cascade = "all"
+autoapply = "inherit"
+depends_on = ["build"]
 cargo = ["cargo", "publish"]
