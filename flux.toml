@@ -35,7 +35,7 @@ cargo = [
 workspace_batchable = true
 
 [tasks.build]
-cargo = ["cargo", "build"]
+cargo = ["cargo", "build", "--locked"]
 workspace_batchable = true
 
 # Formatting is the only task that needs nightly: `group_imports` /
@@ -60,4 +60,4 @@ cargo = ["cargo", "clippy", "--tests", "--all-features", "--", "-D", "warnings"]
 cascade = "all"
 autoapply = "inherit"
 depends_on = ["build"]
-cargo = ["cargo", "publish"]
+cargo = ["cargo", "publish", "--locked"]
