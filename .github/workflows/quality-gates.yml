@@ -48,3 +48,5 @@ jobs:
       - run: cargo flux run check-wasm-features
       - run: cargo flux run lint
       - run: cargo flux run test
+      - name: Verify hyphae-gpui is publishable
+        run: cargo publish --dry-run --locked --allow-dirty -p hyphae-gpui
