@@ -11,7 +11,7 @@ env:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: public-ci
     steps:
       - uses: actions/checkout@v4
         with:
