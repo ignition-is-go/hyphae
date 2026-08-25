@@ -17,7 +17,7 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
-      - run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config
+      - run: sudo sed -i 's|http://|https://|g' /etc/apt/sources.list.d/ubuntu.sources && sudo apt-get update && sudo apt-get install -y build-essential pkg-config
       # `fmt` is intentionally not a CI gate: it is auto-fixable, would only fail
       # after a merge if run on main-push, and requires a nightly toolchain just
       # for rustfmt.toml's nightly-only import grouping. Run it locally with
