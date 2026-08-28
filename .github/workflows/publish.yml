@@ -9,7 +9,7 @@ env:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: public-ci
     permissions:
       contents: read
       id-token: write
