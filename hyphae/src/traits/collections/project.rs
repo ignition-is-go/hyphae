@@ -157,8 +157,13 @@ where
 {
     /// Map every input row to exactly one output row with a unique output key.
     ///
-    /// Output keys must be globally unique across current source rows. A
-    /// collision is validated before output mutation and panics synchronously;
+    /// This is a one-to-one rekeying projection, not a many-to-one reduction.
+    /// The source-to-output key mapping must be injective: two current source
+    /// rows must never return the same output key, even when their output values
+    /// are equal. Use [`GroupByExt::group_by`](super::GroupByExt::group_by) when
+    /// several source rows intentionally share an output key.
+    ///
+    /// A collision is validated before output mutation and panics synchronously;
     /// it never overwrites a prior owner. This semantic rekey is a repartition
     /// boundary. The closure follows [`MapQuery`]'s purity/invocation contract.
     fn map_entries<K2, V2, F>(self, f: F) -> impl MapQuery<Key = K2, Value = V2>
@@ -176,9 +181,12 @@ where
 
     /// Map an input row to zero or one output row with a unique output key.
     ///
-    /// Included output keys obey the same global uniqueness, pre-mutation
-    /// validation, and synchronous-panic contract as [`Self::map_entries`].
-    /// The closure follows [`MapQuery`]'s purity/invocation contract.
+    /// This is a filtering rekeying projection, not a many-to-one reduction.
+    /// Included rows obey the same injective key mapping, pre-mutation
+    /// validation, and synchronous-panic contract as [`Self::map_entries`]. Use
+    /// [`GroupByExt::group_by`](super::GroupByExt::group_by) when several
+    /// included source rows intentionally share an output key. The closure
+    /// follows [`MapQuery`]'s purity/invocation contract.
     fn filter_map_entries<K2, V2, F>(self, f: F) -> impl MapQuery<Key = K2, Value = V2>
     where
         K2: Hash + Eq + CellValue,
