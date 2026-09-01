@@ -6,7 +6,7 @@ on:
 
 jobs:
   release:
-    runs-on: public-ci
+    runs-on: ci-public-linux-ephemeral
     permissions:
       contents: write
 
