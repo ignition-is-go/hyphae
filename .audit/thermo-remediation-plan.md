@@ -13,7 +13,7 @@ High. The change touches public reactive behavior, generic compile-time plans, c
 - [x] Read the pstack principles and the applicable leaf skills.
 - [x] Phase A: Frame the completion predicate, quantified scope, blockers, and rigor.
 - [x] Phase B: Design the workflow, capture baselines, ground the join architecture, and run the architecture arena.
-- [ ] Phase C: Run each unit as a hypothesis, minimal change, real check, and keep-or-revert decision.
+- [x] Phase C: Run each unit as a hypothesis, minimal change, real check, and keep-or-revert decision.
 - [x] Unit 1: Add a reusable API and behavior verification harness with the pre-change baseline.
 - [x] Unit 2: Correct `BoundedOutput` overflow and zero-capacity behavior without changing existing signatures.
 - [x] Unit 3: Replace `OnceCallback` unsafe synchronization with a safe once-only owner.
@@ -21,11 +21,11 @@ High. The change touches public reactive behavior, generic compile-time plans, c
 - [x] Unit 5: Add canonical, semantics-preserving `MapDiff` traversal operations and migrate duplicate helpers.
 - [x] Unit 6: Consolidate `CellMap` projection installation and make poison behavior explicit.
 - [x] Unit 7: Encode `RegionRouter` execution mode as an enum and simplify serial/sharded dispatch.
-- [ ] Unit 8: Put the specialized two-stage join behind the shared `JoinRegion` lifecycle while preserving public plan types and benchmark behavior.
-- [ ] Unit 9: Split remaining giant implementation files along ownership boundaries.
+- [x] Unit 8: Put the specialized two-stage join behind the shared `JoinRegion` lifecycle while preserving public plan types and benchmark behavior.
+- [x] Unit 9: Split remaining giant implementation files along ownership boundaries.
 - [x] Unit 10: Remove generated benchmark bulk from the main tree while retaining compact reports and reproducible inputs.
-- [ ] Phase D: Keep `.audit/thermo-remediation.tsv` current with one row per decision and verified unit.
-- [ ] Phase E: Run the completion audit, independent trail review, full gates, semver comparison, benchmark comparison, and handoff.
+- [x] Phase D: Keep `.audit/thermo-remediation.tsv` current with one row per decision and verified unit.
+- [x] Phase E: Run the completion audit, independent trail review, full gates, semver comparison, benchmark comparison, and handoff.
 
 ## Throughput checkpoint
 
