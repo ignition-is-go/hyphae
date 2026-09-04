@@ -8,7 +8,7 @@ use std::{
     marker::PhantomData,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 
@@ -616,11 +616,59 @@ where
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OutputReplay {
+    Apply,
+    Skip,
+}
+
 impl<K, V, M> CellMap<K, V, M>
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
 {
+    #[track_caller]
+    fn install_output<S, O>(
+        &self,
+        source: &Cell<S, CellMutable>,
+        initial: O,
+        name: &str,
+        replay: OutputReplay,
+        update: impl Fn(&S) -> Option<O> + Send + Sync + 'static,
+    ) -> Cell<O, CellImmutable>
+    where
+        S: CellValue,
+        O: CellValue,
+    {
+        let cell = Cell::new(initial);
+        if let Some(map_name) = self.inner.name.lock().as_ref() {
+            drop(cell.clone().with_name(format!("{map_name}::{name}")));
+        }
+
+        let weak_cell = cell.downgrade();
+        let map_keepalive = self.inner.clone();
+        let skip_replay = matches!(replay, OutputReplay::Skip).then(|| AtomicBool::new(true));
+        let guard = source.subscribe(move |signal| {
+            let _ = &map_keepalive;
+            if skip_replay
+                .as_ref()
+                .is_some_and(|first| first.swap(false, Ordering::SeqCst))
+            {
+                return;
+            }
+            let Some(cell) = weak_cell.upgrade() else {
+                return;
+            };
+            if let Signal::Value(value) = signal
+                && let Some(output) = update(value.as_ref())
+            {
+                cell.set(output);
+            }
+        });
+        cell.own(guard);
+        cell.lock()
+    }
+
     #[track_caller]
     fn install_projection<P, O>(
         &self,
@@ -634,30 +682,13 @@ where
         O: CellValue,
     {
         let projection = ProjectionOwner::new(projection);
-        let cell = Cell::new(initial);
-        if let Some(map_name) = self.inner.name.lock().as_ref() {
-            drop(cell.clone().with_name(format!("{map_name}::{name}")));
-        }
-
-        let weak_cell = cell.downgrade();
-        let map_keepalive = self.inner.clone();
-        let first = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let guard = self.inner.diffs_cell.subscribe(move |signal| {
-            let _ = &map_keepalive;
-            if first.swap(false, Ordering::SeqCst) {
-                return;
-            }
-            let Some(cell) = weak_cell.upgrade() else {
-                return;
-            };
-            if let Signal::Value(diff) = signal
-                && let Some(output) = projection.with(|state| update(state, diff.as_ref()))
-            {
-                cell.set(output);
-            }
-        });
-        cell.own(guard);
-        cell.lock()
+        self.install_output(
+            &self.inner.diffs_cell,
+            initial,
+            name,
+            OutputReplay::Skip,
+            move |diff| projection.with(|state| update(state, diff)),
+        )
     }
 
     /// Create a weak handle to this map.
@@ -724,7 +755,7 @@ where
             "entries",
             |projection, diff| {
                 projection.apply_diff(diff);
-                Some(projection.entries.clone())
+                Some(projection.entries())
             },
         )
     }
@@ -737,10 +768,10 @@ where
     #[must_use]
     pub fn items(&self) -> impl Materialize<Vec<V>, Definite> + use<K, V, M> {
         let projection = ValueProjection::from_entries(self.snapshot());
-        let initial = projection.items.clone();
+        let initial = projection.items();
         self.install_projection(projection, initial, "items", |projection, diff| {
             projection.apply_diff(diff);
-            Some(projection.items.clone())
+            Some(projection.items())
         })
     }
 
@@ -749,9 +780,9 @@ where
     #[must_use]
     pub fn keys(&self) -> impl Materialize<Vec<K>, Definite> + use<K, V, M> {
         let projection = KeyProjection::from_keys(self.keys_snapshot());
-        let initial = projection.keys.clone();
+        let initial = projection.keys();
         self.install_projection(projection, initial, "keys", |projection, diff| {
-            projection.apply_diff(diff).then(|| projection.keys.clone())
+            projection.apply_diff(diff).then(|| projection.keys())
         })
     }
 
@@ -761,30 +792,13 @@ where
     /// internally maintained length cell instead of materializing entries.
     #[must_use]
     pub fn size(&self) -> impl Materialize<usize, Definite> + use<K, V, M> {
-        // A derived size Cell that RETAINS its parent map, mirroring
-        // entries()/items()/subscribe_diffs. Returning a bare
-        // `len_cell.clone().lock()` captured no keepalive, so a `.size()` cloned
-        // out of a temporary CellMap (e.g. `query.materialize().size()`, or
-        // myko's `query_map_by_str(q).size()`) let the CellMapInner — and the
-        // source subscription that keeps len_cell updating — drop at the end of
-        // the statement, silently freezing the count. A fresh cell subscribing
-        // to len_cell (rather than owning a keepalive on len_cell itself, which
-        // would form a self-cycle through CellMapInner and leak) holds the map
-        // alive exactly as long as the returned size Cell is held.
-        let cell = Cell::new(self.inner.data.len());
-        let weak_cell = cell.downgrade();
-        let map_keepalive = self.inner.clone();
-        let guard = self.inner.len_cell.subscribe(move |signal| {
-            let _ = &map_keepalive; // hold the parent map alive while size Cell lives
-            let Some(cell) = weak_cell.upgrade() else {
-                return; // size Cell was dropped
-            };
-            if let Signal::Value(n) = signal {
-                cell.set(**n);
-            }
-        });
-        cell.own(guard);
-        cell.lock()
+        self.install_output(
+            &self.inner.len_cell,
+            self.inner.data.len(),
+            "size",
+            OutputReplay::Apply,
+            |len| Some(*len),
+        )
     }
 
     /// Get an observable Cell of the map length.

@@ -448,7 +448,7 @@ fn projection_owner_recovers_poisoned_state() {
             key: "b".to_string(),
             value: 2,
         });
-        projection.keys.clone()
+        projection.keys()
     });
     assert_eq!(output, vec!["a".to_string(), "b".to_string()]);
 }
