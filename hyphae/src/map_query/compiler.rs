@@ -1,20 +1,28 @@
 use std::{
     any::{Any, TypeId},
-    collections::{HashMap, VecDeque, hash_map::Entry},
+    collections::HashMap,
     hash::Hash,
-    sync::{
-        Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex},
 };
 
 use crate::{
-    cell_map::MapDiff,
     subscription::SubscriptionGuard,
     traits::{CellValue, reactive_map::ReactiveMap},
 };
 
 use super::BoxedMapDiffSink;
+
+mod dispatch;
+mod registry;
+
+use dispatch::{QueryDispatch, dispatch_query_root};
+use registry::{
+    PhysicalRelationshipBinding, RelationshipKey, RootKey, RootRequirement,
+    TypedRelationshipBinding,
+};
+
+pub use dispatch::{QUERY_POISONED_MESSAGE, QueryPoison};
+pub use registry::DeferredPhysical;
 
 /// Stable identity of a reactive root for the duration of query compilation.
 ///
@@ -29,228 +37,7 @@ impl SourceIdentity {
     }
 }
 
-type QueuedQueryEvent = Box<dyn FnOnce() + Send + 'static>;
-
-pub const QUERY_POISONED_MESSAGE: &str =
-    "hyphae join region is poisoned after a prior callback panic";
-
-/// Fail-stop cohort shared by every physical root compiled into one query.
-#[derive(Clone, Default)]
-pub struct QueryPoison(Arc<AtomicBool>);
-
-impl QueryPoison {
-    pub fn poison(&self) {
-        self.0.store(true, Ordering::Release);
-    }
-
-    fn is_poisoned(&self) -> bool {
-        self.0.load(Ordering::Acquire)
-    }
-}
-
-/// One publication transaction gate shared by every physical root in a query.
-///
-/// The first event remains borrowed and statically typed. Only an event that
-/// arrives behind active fanout is cloned and type-erased into the FIFO.
-#[derive(Default)]
-struct QueryDispatch {
-    active: bool,
-    queued: VecDeque<QueuedQueryEvent>,
-}
-
-struct ActiveQueryDispatch<'a> {
-    dispatch: &'a Mutex<QueryDispatch>,
-    armed: bool,
-}
-
-impl Drop for ActiveQueryDispatch<'_> {
-    fn drop(&mut self) {
-        if self.armed {
-            let mut state = self
-                .dispatch
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.active = false;
-            // A panicking transaction may have reached only some consumers.
-            // Events queued behind that partial commit cannot safely run.
-            state.queued.clear();
-        }
-    }
-}
-
-#[cold]
-#[allow(clippy::panic)]
-fn panic_query_poisoned() -> ! {
-    std::panic::panic_any(QUERY_POISONED_MESSAGE);
-}
-
-fn fanout_root_diff<K, V>(sinks: &[BoxedMapDiffSink<K, V>], diff: &MapDiff<K, V>) {
-    for sink in sinks {
-        sink(diff);
-    }
-}
-
-fn dispatch_query_root<K, V>(
-    dispatch: &Mutex<QueryDispatch>,
-    poison: &QueryPoison,
-    sinks: &Arc<Vec<BoxedMapDiffSink<K, V>>>,
-    diff: &MapDiff<K, V>,
-) where
-    K: Clone + Send + Sync + 'static,
-    V: Clone + Send + Sync + 'static,
-{
-    {
-        let mut state = dispatch
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if poison.is_poisoned() {
-            drop(state);
-            panic_query_poisoned();
-        }
-        if state.active {
-            let sinks = Arc::clone(sinks);
-            let diff = diff.clone();
-            state
-                .queued
-                .push_back(Box::new(move || fanout_root_diff(&sinks, &diff)));
-            return;
-        }
-        state.active = true;
-    }
-
-    let mut active = ActiveQueryDispatch {
-        dispatch,
-        armed: true,
-    };
-    fanout_root_diff(sinks, diff);
-
-    loop {
-        let mut state = dispatch
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(next) = state.queued.pop_front() else {
-            state.active = false;
-            active.armed = false;
-            drop(state);
-            return;
-        };
-        drop(state);
-        next();
-    }
-}
-
-struct RootRequirement {
-    ordinal: usize,
-    uses: usize,
-    typed_sinks: Box<dyn Any>,
-}
-
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
-struct RootKey {
-    source: SourceIdentity,
-    key: TypeId,
-    value: TypeId,
-}
-
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
-struct RelationshipKey {
-    source: SourceIdentity,
-    relation: TypeId,
-}
-
 type Activation = Box<dyn FnOnce() -> Vec<SubscriptionGuard>>;
-
-trait PhysicalRelationshipBinding {
-    fn bind(&self, key: RelationshipKey, indexes: &mut HashMap<RelationshipKey, Box<dyn Any>>);
-}
-
-struct TypedRelationshipBinding<T> {
-    slot: DeferredPhysical<T>,
-}
-
-impl<T> PhysicalRelationshipBinding for TypedRelationshipBinding<T>
-where
-    T: Default + Send + Sync + 'static,
-{
-    fn bind(&self, key: RelationshipKey, indexes: &mut HashMap<RelationshipKey, Box<dyn Any>>) {
-        match indexes.entry(key) {
-            Entry::Occupied(entry) => {
-                let index = entry.get().downcast_ref::<Arc<parking_lot::RwLock<T>>>();
-                assert!(
-                    index.is_some(),
-                    "compiler invariant violated: relationship index type mismatch"
-                );
-                let Some(index) = index else {
-                    return;
-                };
-                let binding = self.slot.inner.set(Arc::clone(index));
-                assert!(
-                    binding.is_ok(),
-                    "compiler invariant violated: physical index slot already bound"
-                );
-                self.slot.maintains_index.store(false, Ordering::Release);
-            }
-            Entry::Vacant(entry) => {
-                let index = Arc::new(parking_lot::RwLock::new(T::default()));
-                let binding = self.slot.inner.set(Arc::clone(&index));
-                assert!(
-                    binding.is_ok(),
-                    "compiler invariant violated: physical index slot already bound"
-                );
-                entry.insert(Box::new(index));
-                self.slot.maintains_index.store(true, Ordering::Release);
-            }
-        }
-    }
-}
-
-/// A typed direct handle populated when the owning right subtree resolves to
-/// its physical source during compilation.
-pub struct DeferredPhysical<T> {
-    inner: Arc<OnceLock<Arc<parking_lot::RwLock<T>>>>,
-    maintains_index: Arc<AtomicBool>,
-}
-
-impl<T> Clone for DeferredPhysical<T> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: Arc::clone(&self.inner),
-            maintains_index: Arc::clone(&self.maintains_index),
-        }
-    }
-}
-
-impl<T> Default for DeferredPhysical<T> {
-    fn default() -> Self {
-        Self {
-            inner: Arc::new(OnceLock::new()),
-            maintains_index: Arc::new(AtomicBool::new(false)),
-        }
-    }
-}
-
-impl<T> DeferredPhysical<T>
-where
-    T: Default,
-{
-    pub(crate) fn acquire_read(&self) -> parking_lot::RwLockReadGuard<'_, T> {
-        self.inner
-            .get_or_init(|| Arc::new(parking_lot::RwLock::new(T::default())))
-            .read()
-    }
-
-    pub(crate) fn write<R>(&self, write: impl FnOnce(&mut T) -> R) -> R {
-        let index = self
-            .inner
-            .get_or_init(|| Arc::new(parking_lot::RwLock::new(T::default())));
-        let mut index = index.write();
-        write(&mut index)
-    }
-
-    pub(crate) fn maintains_index(&self) -> bool {
-        self.maintains_index.load(Ordering::Acquire)
-    }
-}
 
 /// Setup-time state shared by every node in one materialization.
 #[derive(Default)]
@@ -446,9 +233,11 @@ mod tests {
     use super::*;
     use crate::{
         CellMap,
+        cell_map::MapDiff,
         map_query::compile_runtime_into,
         traits::{ForeignKeyRelation, IdFor, LeftJoinExt, MapValuesExt},
     };
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[derive(Clone, Debug, Eq, PartialEq)]
     struct Parent;
