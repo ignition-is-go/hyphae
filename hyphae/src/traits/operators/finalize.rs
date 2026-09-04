@@ -3,14 +3,9 @@
 //! Forwards every value untransformed and runs `callback` exactly once when
 //! the stream emits a `Complete` or `Error` signal.
 
-use std::{
-    cell::UnsafeCell,
-    marker::PhantomData,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-};
+use std::{marker::PhantomData, sync::Arc};
+
+use parking_lot::Mutex;
 
 use super::CellValue;
 use crate::{
@@ -19,32 +14,21 @@ use crate::{
     subscription::SubscriptionGuard,
 };
 
-/// A callback that can only be called once, implemented lock-free.
 struct OnceCallback<F> {
-    called: AtomicBool,
-    callback: UnsafeCell<Option<F>>,
+    callback: Mutex<Option<F>>,
 }
-
-// Safety: the atomic bool ensures only one thread can access the callback.
-unsafe impl<F: Send> Send for OnceCallback<F> {}
-unsafe impl<F: Send> Sync for OnceCallback<F> {}
 
 impl<F: FnOnce()> OnceCallback<F> {
     const fn new(f: F) -> Self {
         Self {
-            called: AtomicBool::new(false),
-            callback: UnsafeCell::new(Some(f)),
+            callback: Mutex::new(Some(f)),
         }
     }
 
     fn call(&self) {
-        if !self.called.swap(true, Ordering::SeqCst) {
-            // Safety: called is now true, so no other thread enters this block.
-            unsafe {
-                if let Some(cb) = (*self.callback.get()).take() {
-                    cb();
-                }
-            }
+        let callback = self.callback.lock().take();
+        if let Some(callback) = callback {
+            callback();
         }
     }
 }
@@ -174,7 +158,10 @@ impl<T: CellValue, P: Pipeline<T, crate::pipeline::Empty>> FinalizeExt<T, crate:
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
+    use std::sync::{
+        Barrier,
+        atomic::{AtomicBool, AtomicU32, Ordering},
+    };
 
     use super::*;
     use crate::{Cell, Gettable, Materialize, Mutable};
@@ -226,13 +213,38 @@ mod tests {
         let _finalized_cell = source
             .clone()
             .finalize(move || {
-                c.fetch_add(1, AtomicOrdering::SeqCst);
+                c.fetch_add(1, Ordering::SeqCst);
             })
             .materialize();
 
         source.complete();
         source.complete(); // second complete
-        assert_eq!(count.load(AtomicOrdering::SeqCst), 1); // only called once
+        assert_eq!(count.load(Ordering::SeqCst), 1); // only called once
+    }
+
+    #[test]
+    fn once_callback_runs_once_under_concurrent_calls() {
+        const CALLERS: usize = 16;
+
+        let count = Arc::new(AtomicU32::new(0));
+        let callback_count = Arc::clone(&count);
+        let callback = Arc::new(OnceCallback::new(move || {
+            callback_count.fetch_add(1, Ordering::SeqCst);
+        }));
+        let barrier = Arc::new(Barrier::new(CALLERS));
+
+        std::thread::scope(|scope| {
+            for _ in 0..CALLERS {
+                let callback = Arc::clone(&callback);
+                let barrier = Arc::clone(&barrier);
+                scope.spawn(move || {
+                    barrier.wait();
+                    callback.call();
+                });
+            }
+        });
+
+        assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 
     #[test]
