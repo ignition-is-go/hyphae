@@ -31,9 +31,14 @@ jobs:
           components: rustfmt
       - uses: Swatinem/rust-cache@v2
 
+      - name: Install GitHub CLI
+        run: sudo apt-get update && sudo apt-get install -y gh
+
       - name: Get GitHub App User ID
         id: get-user-id
-        run: echo "user-id=$(gh api "/users/${{ steps.app-token.outputs.app-slug }}[bot]" --jq .id)" >> "$GITHUB_OUTPUT"
+        run: |
+          user_id=$(gh api "/users/${{ steps.app-token.outputs.app-slug }}[bot]" --jq .id)
+          echo "user-id=$user_id" >> "$GITHUB_OUTPUT"
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
 
