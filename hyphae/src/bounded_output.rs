@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use crossbeam::channel::{self, Receiver, TryRecvError};
+use crossbeam::channel::{self, Receiver, TryRecvError, TrySendError};
 
 use crate::{
     signal::Signal,
@@ -46,7 +46,12 @@ impl<T: CellValue> BoundedOutput<T> {
     /// `capacity` determines the channel buffer size. If the buffer fills up,
     /// newer values will block the sender (and thus the notify call) until
     /// the consumer catches up.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `capacity` is zero.
     pub fn new<W: Watchable<T>>(source: &W, capacity: usize) -> Self {
+        assert!(capacity > 0, "capacity must be greater than zero");
         let (sender, receiver) = channel::bounded(capacity);
 
         let guard = source.subscribe(move |signal| {
@@ -66,16 +71,23 @@ impl<T: CellValue> BoundedOutput<T> {
     ///
     /// Unlike `new()`, this won't block when the buffer is full - instead
     /// it will drop the oldest value to make room.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `capacity` is zero.
     pub fn dropping<W: Watchable<T>>(source: &W, capacity: usize) -> Self {
+        assert!(capacity > 0, "capacity must be greater than zero");
         let (sender, receiver) = channel::bounded(capacity);
+        let eviction_receiver = receiver.clone();
 
         let guard = source.subscribe(move |signal| {
             if let Signal::Value(value) = signal {
-                // Try to send, if full drop oldest and retry
-                if sender.try_send((**value).clone()).is_err() {
-                    // Channel full - would need to implement ring buffer behavior
-                    // For now, just try_send which drops on full
-                    let _ = sender.try_send((**value).clone());
+                match sender.try_send((**value).clone()) {
+                    Ok(()) | Err(TrySendError::Disconnected(_)) => {}
+                    Err(TrySendError::Full(value)) => {
+                        let _ = eviction_receiver.try_recv();
+                        let _ = sender.try_send(value);
+                    }
                 }
             }
         });
@@ -208,5 +220,30 @@ mod tests {
         let values: Vec<_> = output.try_iter().collect();
         assert_eq!(values, vec![0, 1, 2]);
         assert!(output.is_empty());
+    }
+
+    #[test]
+    fn dropping_evicts_the_oldest_value() {
+        let cell = Cell::new(0);
+        let output = BoundedOutput::dropping(&cell, 2);
+
+        cell.set(1);
+        cell.set(2);
+
+        assert_eq!(output.try_iter().collect::<Vec<_>>(), vec![1, 2]);
+    }
+
+    #[test]
+    #[should_panic(expected = "capacity must be greater than zero")]
+    fn dropping_rejects_zero_capacity() {
+        let cell = Cell::new(0);
+        let _ = BoundedOutput::dropping(&cell, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "capacity must be greater than zero")]
+    fn blocking_output_rejects_zero_capacity() {
+        let cell = Cell::new(0);
+        let _ = BoundedOutput::new(&cell, 0);
     }
 }
