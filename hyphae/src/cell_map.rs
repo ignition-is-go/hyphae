@@ -632,7 +632,7 @@ where
         &self,
         source: &Cell<S, CellMutable>,
         initial: O,
-        name: &str,
+        name: Option<&str>,
         replay: OutputReplay,
         update: impl Fn(&S) -> Option<O> + Send + Sync + 'static,
     ) -> Cell<O, CellImmutable>
@@ -641,7 +641,7 @@ where
         O: CellValue,
     {
         let cell = Cell::new(initial);
-        if let Some(map_name) = self.inner.name.lock().as_ref() {
+        if let (Some(name), Some(map_name)) = (name, self.inner.name.lock().as_ref()) {
             drop(cell.clone().with_name(format!("{map_name}::{name}")));
         }
 
@@ -685,7 +685,7 @@ where
         self.install_output(
             &self.inner.diffs_cell,
             initial,
-            name,
+            Some(name),
             OutputReplay::Skip,
             move |diff| projection.with(|state| update(state, diff)),
         )
@@ -795,7 +795,7 @@ where
         self.install_output(
             &self.inner.len_cell,
             self.inner.data.len(),
-            "size",
+            None,
             OutputReplay::Apply,
             |len| Some(*len),
         )

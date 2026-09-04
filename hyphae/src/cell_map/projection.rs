@@ -88,7 +88,7 @@ where
     K: Hash + Eq + CellValue,
     V: CellValue,
 {
-    store: OrderedProjection<K, (K, V)>,
+    store: OrderedProjection<K, V>,
 }
 
 impl<K, V> EntryProjection<K, V>
@@ -97,35 +97,31 @@ where
     V: CellValue,
 {
     pub(super) fn from_entries(entries: Vec<(K, V)>) -> Self {
-        let pairs = entries
-            .into_iter()
-            .map(|(key, value)| (key.clone(), (key, value)))
-            .collect();
-
         Self {
-            store: OrderedProjection::from_pairs(pairs),
+            store: OrderedProjection::from_pairs(entries),
         }
     }
 
     pub(super) fn entries(&self) -> Vec<(K, V)> {
-        self.store.items().to_vec()
+        self.store
+            .keys()
+            .iter()
+            .cloned()
+            .zip(self.store.items().iter().cloned())
+            .collect()
     }
 
     pub(super) fn apply_diff(&mut self, diff: &MapDiff<K, V>) {
         match diff {
             MapDiff::Initial { entries } => *self = Self::from_entries(entries.clone()),
             MapDiff::Insert { key, value } => {
-                if let Some((_, existing)) = self.store.item_mut(key) {
-                    *existing = value.clone();
-                } else {
-                    self.store.upsert(key.clone(), (key.clone(), value.clone()));
-                }
+                self.store.upsert(key.clone(), value.clone());
             }
             MapDiff::Remove { key, .. } => {
                 self.store.swap_remove(key);
             }
             MapDiff::Update { key, new_value, .. } => {
-                if let Some((_, existing)) = self.store.item_mut(key) {
+                if let Some(existing) = self.store.item_mut(key) {
                     *existing = new_value.clone();
                 }
             }
@@ -223,11 +219,7 @@ where
         match diff {
             MapDiff::Initial { entries } => *self = Self::from_entries(entries.clone()),
             MapDiff::Insert { key, value } => {
-                if let Some(existing) = self.store.item_mut(key) {
-                    *existing = value.clone();
-                } else {
-                    self.store.upsert(key.clone(), value.clone());
-                }
+                self.store.upsert(key.clone(), value.clone());
             }
             MapDiff::Remove { key, .. } => {
                 self.store.swap_remove(key);
