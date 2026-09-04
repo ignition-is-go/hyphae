@@ -1,4 +1,5 @@
 pub mod diff_runtime;
+mod join_lifecycle;
 pub mod join_region;
 pub mod join_runtime;
 pub mod map_runtime;

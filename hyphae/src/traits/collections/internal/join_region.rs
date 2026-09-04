@@ -17,7 +17,7 @@ use std::{
     collections::hash_map::Entry,
     hash::{Hash, Hasher},
     marker::PhantomData,
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 
 use rustc_hash::{FxHashMap, FxHasher};
@@ -26,7 +26,7 @@ use crate::{
     cell_map::MapDiff,
     map_query::{
         BuildQueryRuntime, MapQuery, compile_runtime_into,
-        compiler::{CompileContext, DeferredPhysical, QUERY_POISONED_MESSAGE, QueryPoison},
+        compiler::{CompileContext, DeferredPhysical},
         properties::{ByMapKey, Partition, PlanProperties, ZeroOrOne},
     },
     subscription::SubscriptionGuard,
@@ -36,6 +36,10 @@ use crate::{
 };
 
 use super::{
+    join_lifecycle::{
+        FailStopTransaction, InstallRegionRights, RegionHost, RootRegistrationOrder,
+        RuntimeStorage, TransactionPolicy, install_region_runtime,
+    },
     join_runtime::{RelationIndex, RelationIndexStorage},
     ordered_set::OrderedSet,
 };
@@ -1261,52 +1265,15 @@ where
     }
 }
 
-enum RuntimeStorage<Runtime> {
-    Serial(Runtime),
-    Sharded {
-        runtimes: Vec<Runtime>,
-        parallel_active: bool,
-    },
-}
-
-#[allow(clippy::panic)]
-impl<Runtime> RuntimeStorage<Runtime> {
-    fn serial_mut(&mut self) -> &mut Runtime {
-        match self {
-            Self::Serial(runtime) => runtime,
-            Self::Sharded { .. } => {
-                std::panic::panic_any("join region invariant violated: expected serial storage")
-            }
-        }
-    }
-
-    fn sharded_mut(&mut self) -> (&mut Vec<Runtime>, &mut bool) {
-        match self {
-            Self::Sharded {
-                runtimes,
-                parallel_active,
-            } => (runtimes, parallel_active),
-            Self::Serial(_) => {
-                std::panic::panic_any("join region invariant violated: expected sharded storage")
-            }
-        }
-    }
-}
-
 /// Dual-mode whole-region executor. Tiny events use the original single
 /// runtime without extra hashing. Promotion is one-way; afterwards every map
 /// key owns one persistent shard for the entire heterogeneous stage spine.
 struct RegionRouter<Runtime, K, Input> {
-    storage: RuntimeStorage<Runtime>,
+    storage: RuntimeStorage<Runtime, Vec<Runtime>>,
     key_sequence: FxHashMap<K, u64>,
     next_sequence: u64,
     shard_count: usize,
     promotion_work: usize,
-    /// Terminal fail-stop state. A projection/apply unwind can leave typed shard
-    /// runtimes or a maintained right index partially changed, so the region is
-    /// quarantined permanently rather than exposed for recovery.
-    poisoned: bool,
-    query_poison: QueryPoison,
     _input: PhantomData<fn() -> Input>,
 }
 
@@ -1353,16 +1320,8 @@ where
             next_sequence: 0,
             shard_count: configured_shards(),
             promotion_work: configured_promotion_work(),
-            poisoned: false,
-            query_poison: QueryPoison::default(),
             _input: PhantomData,
         }
-    }
-
-    fn with_query_poison(runtime: Runtime, query_poison: QueryPoison) -> Self {
-        let mut router = Self::new(runtime);
-        router.query_poison = query_poison;
-        router
     }
 
     fn shard_for(key: &K, count: usize) -> usize {
@@ -1471,27 +1430,24 @@ where
     }
 
     fn promote(&mut self) {
-        let RuntimeStorage::Serial(sequential) = &self.storage else {
-            return;
-        };
         let count = self.shard_count.max(1);
-        let mut shards: Vec<_> = (0..count).map(|_| sequential.empty_shard()).collect();
-        // Replay in stable source order. Outputs are intentionally discarded.
-        let mut keys: Vec<_> = self.key_sequence.iter().collect();
-        keys.sort_by_key(|(_, sequence)| **sequence);
-        for (key, _) in keys {
-            if let Some(value) = sequential.head_input(key) {
-                let shard = Self::shard_for(key, count);
-                let _ = shards[shard].apply_left_diff(&MapDiff::Insert {
-                    key: key.clone(),
-                    value,
-                });
+        let key_sequence = &self.key_sequence;
+        self.storage.promote_with(|sequential| {
+            let mut shards: Vec<_> = (0..count).map(|_| sequential.empty_shard()).collect();
+            // Replay in stable source order. Outputs are intentionally discarded.
+            let mut keys: Vec<_> = key_sequence.iter().collect();
+            keys.sort_by_key(|(_, sequence)| **sequence);
+            for (key, _) in keys {
+                if let Some(value) = sequential.head_input(key) {
+                    let shard = Self::shard_for(key, count);
+                    let _ = shards[shard].apply_left_diff(&MapDiff::Insert {
+                        key: key.clone(),
+                        value,
+                    });
+                }
             }
-        }
-        self.storage = RuntimeStorage::Sharded {
-            runtimes: shards,
-            parallel_active: false,
-        };
+            shards
+        });
     }
 
     fn order_changes<Output: CellValue>(
@@ -1653,7 +1609,7 @@ where
             _ => None,
         };
         let non_unique_batch = matches!(batch_is_unique, Some(false));
-        let is_serial = matches!(self.storage, RuntimeStorage::Serial(_));
+        let is_serial = self.storage.is_serial();
         if is_serial && self.shard_count <= 1 {
             return self.apply_serial_left(diff, non_unique_batch);
         }
@@ -1865,7 +1821,7 @@ where
         // Canonical router traces follow stable left-source order in every
         // execution mode. Raw stage-kernel bucket order is a hash/index
         // implementation detail and cannot be reconstructed across shards.
-        let is_serial = matches!(self.storage, RuntimeStorage::Serial(_));
+        let is_serial = self.storage.is_serial();
         if is_serial && self.shard_count <= 1 {
             return Self::apply_serial_right::<Location, RK, RV>(
                 self.storage.serial_mut(),
@@ -1879,7 +1835,7 @@ where
         }
         match &mut self.storage {
             RuntimeStorage::Sharded {
-                runtimes: shards, ..
+                runtime: shards, ..
             } => {
                 let order = &self.key_sequence;
                 let preserve_batch = matches!(diff, MapDiff::Batch { .. });
@@ -1912,46 +1868,6 @@ where
                 diff,
                 maintain,
             ),
-        }
-    }
-}
-
-/// Executes one complete left or right callback transaction while holding the
-/// region mutex. This provides fail-stop publication atomicity: output is
-/// returned to the callback only after the whole region apply succeeds. It is
-/// deliberately not recovery-and-continue, and cannot roll back independent
-/// sinks that an enclosing query already published before this callback began.
-#[allow(clippy::panic)]
-fn region_transaction<Runtime, K, Input, Output>(
-    state: &Arc<Mutex<RegionRouter<Runtime, K, Input>>>,
-    apply: impl FnOnce(&mut RegionRouter<Runtime, K, Input>) -> Output,
-) -> Output {
-    let mut router = state
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if router.poisoned {
-        drop(router);
-        std::panic::panic_any(QUERY_POISONED_MESSAGE);
-    }
-
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| apply(&mut router))) {
-        Ok(output) => {
-            drop(router);
-            output
-        }
-        Err(payload) => {
-            // Rayon propagates only after its scope has joined every worker, so
-            // no shard can remain active by the time this catch arm executes.
-            router.query_poison.poison();
-            router.poisoned = true;
-            if let RuntimeStorage::Sharded {
-                parallel_active, ..
-            } = &mut router.storage
-            {
-                *parallel_active = false;
-            }
-            drop(router);
-            std::panic::resume_unwind(payload);
         }
     }
 }
@@ -2319,51 +2235,33 @@ where
 /// Installs right roots in stage order. Each callback enters the shared state
 /// at its own `Here`/`There` location and emits only changes at the end of the
 /// complete runtime spine.
-trait InstallRights<Runtime, K, Input, Output>
+impl<State, K, Output, Tx> InstallRegionRights<State, K, Output, Tx> for JNil
 where
     K: Hash + Eq + CellValue,
-    Input: CellValue,
     Output: CellValue,
-    Runtime: RuntimeStages<K, Input, Output = Output>,
-{
-    fn install(
-        self,
-        cx: &mut CompileContext,
-        state: &Arc<Mutex<RegionRouter<Runtime, K, Input>>>,
-        sink: &crate::map_query::BoxedMapDiffSink<K, Output>,
-    ) -> Vec<SubscriptionGuard>;
-}
-
-impl<Runtime, K, Input, Output> InstallRights<Runtime, K, Input, Output> for JNil
-where
-    K: Hash + Eq + CellValue,
-    Input: CellValue,
-    Output: CellValue,
-    Runtime: RuntimeStages<K, Input, Output = Output>,
+    Tx: TransactionPolicy<State>,
 {
     fn install(
         self,
         _cx: &mut CompileContext,
-        _state: &Arc<Mutex<RegionRouter<Runtime, K, Input>>>,
-        _sink: &crate::map_query::BoxedMapDiffSink<K, Output>,
+        _host: &Arc<RegionHost<State, K, Output, Tx>>,
     ) -> Vec<SubscriptionGuard> {
         Vec::new()
     }
 }
 
-impl<Runtime, K, Input, Output, Right, Tail, Location, RK, RV, JK, Policy, Binding>
-    InstallRights<Runtime, K, Input, Output>
+impl<Runtime, K, Input, Right, Tail, Location, RK, RV, JK, Policy, Binding, Tx>
+    InstallRegionRights<RegionRouter<Runtime, K, Input>, K, Runtime::Output, Tx>
     for RightPlan<Right, Tail, Location, RK, RV, JK, Policy, Binding>
 where
     K: Hash + Eq + CellValue,
     Input: CellValue,
-    Output: CellValue,
     RK: Hash + Eq + CellValue,
     RV: CellValue,
     JK: Hash + Eq + CellValue,
     Policy: IndexPolicy<RK, RV, JK, Binding = Binding>,
     Binding: Clone + Send + Sync + 'static,
-    Runtime: RuntimeStages<K, Input, Output = Output>
+    Runtime: RuntimeStages<K, Input>
         + RightRoot<Location, K, Input, RK, RV>
         + EmptyShardRuntime
         + HeadInputSnapshot<K, Input>
@@ -2371,28 +2269,22 @@ where
         + Send
         + 'static,
     Right: MapQuery<Key = RK, Value = RV>,
-    Tail: InstallRights<Runtime, K, Input, Output>,
+    Tail: InstallRegionRights<RegionRouter<Runtime, K, Input>, K, Runtime::Output, Tx>,
+    Tx: TransactionPolicy<RegionRouter<Runtime, K, Input>>,
 {
     fn install(
         self,
         cx: &mut CompileContext,
-        state: &Arc<Mutex<RegionRouter<Runtime, K, Input>>>,
-        sink: &crate::map_query::BoxedMapDiffSink<K, Output>,
+        host: &Arc<RegionHost<RegionRouter<Runtime, K, Input>, K, Runtime::Output, Tx>>,
     ) -> Vec<SubscriptionGuard> {
         let callback_binding = self.binding.clone();
-        let right_state = Arc::clone(state);
-        let right_sink = Arc::clone(sink);
+        let right_host = Arc::clone(host);
         let callback = move |diff: &MapDiff<RK, RV>| {
             let maintain = Policy::maintains(callback_binding.as_ref());
-            let changes = region_transaction(&right_state, |runtime| {
-                runtime.apply_right::<Location, RK, RV>(diff, maintain)
-            });
-            for change in &changes {
-                right_sink(change);
-            }
+            right_host.dispatch(|runtime| runtime.apply_right::<Location, RK, RV>(diff, maintain));
         };
         let mut guards = Policy::install(self.right, cx, self.binding, Arc::new(callback));
-        guards.extend(self.tail.install(cx, state, sink));
+        guards.extend(self.tail.install(cx, host));
         guards
     }
 }
@@ -2410,7 +2302,12 @@ where
         + HeadInputSnapshot<K, Input>
         + RuntimeStageCost
         + Send,
-    Stages::Rights: InstallRights<Stages::Runtime, K, Input, Stages::Output>,
+    Stages::Rights: InstallRegionRights<
+            RegionRouter<Stages::Runtime, K, Input>,
+            K,
+            Stages::Output,
+            FailStopTransaction,
+        >,
 {
     fn build_into(
         self,
@@ -2419,27 +2316,16 @@ where
     ) -> Vec<SubscriptionGuard> {
         let (runtime, rights) = self.stages.split(cx);
         let query_poison = cx.query_poison();
-        let router = RegionRouter::with_query_poison(runtime, query_poison);
-        let state = Arc::new(Mutex::new(router));
-        let sink = sink;
-
-        // Register every right root before the left root. CompileContext then
-        // activates their initial snapshots in this same order, so the first
-        // left snapshot observes all right indexes fully populated.
-        let mut guards = rights.install(cx, &state, &sink);
-        let left_state = state;
-        let left_sink = sink;
-        guards.extend(compile_runtime_into(
-            self.left,
+        install_region_runtime(
             cx,
-            Arc::new(move |diff: &MapDiff<K, Input>| {
-                let changes = region_transaction(&left_state, |runtime| runtime.apply_left(diff));
-                for change in &changes {
-                    left_sink(change);
-                }
-            }),
-        ));
-        guards
+            self.left,
+            rights,
+            RegionRouter::new(runtime),
+            RootRegistrationOrder::RightsThenLeft,
+            FailStopTransaction::new(query_poison),
+            sink,
+            RegionRouter::apply_left,
+        )
     }
 }
 
@@ -2456,7 +2342,12 @@ where
         + HeadInputSnapshot<K, Input>
         + RuntimeStageCost
         + Send,
-    Stages::Rights: InstallRights<Stages::Runtime, K, Input, Stages::Output>,
+    Stages::Rights: InstallRegionRights<
+            RegionRouter<Stages::Runtime, K, Input>,
+            K,
+            Stages::Output,
+            FailStopTransaction,
+        >,
 {
     type Key = K;
     type Value = Stages::Output;
