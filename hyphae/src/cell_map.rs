@@ -271,6 +271,34 @@ where
     keys_by_index: Vec<K>,
 }
 
+struct ProjectionOwner<P> {
+    state: Arc<std::sync::Mutex<P>>,
+}
+
+impl<P> ProjectionOwner<P> {
+    fn new(projection: P) -> Self {
+        Self {
+            state: Arc::new(std::sync::Mutex::new(projection)),
+        }
+    }
+
+    fn with<R>(&self, apply: impl FnOnce(&mut P) -> R) -> R {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        apply(&mut state)
+    }
+}
+
+impl<P> Clone for ProjectionOwner<P> {
+    fn clone(&self) -> Self {
+        Self {
+            state: self.state.clone(),
+        }
+    }
+}
+
 impl<K, V> ValueProjection<K, V>
 where
     K: Hash + Eq + CellValue,
@@ -867,6 +895,45 @@ where
     K: Hash + Eq + CellValue,
     V: CellValue,
 {
+    #[track_caller]
+    fn install_projection<P, O>(
+        &self,
+        projection: P,
+        initial: O,
+        name: &str,
+        update: impl Fn(&mut P, &MapDiff<K, V>) -> Option<O> + Send + Sync + 'static,
+    ) -> Cell<O, CellImmutable>
+    where
+        P: Send + 'static,
+        O: CellValue,
+    {
+        let projection = ProjectionOwner::new(projection);
+        let cell = Cell::new(initial);
+        if let Some(map_name) = self.inner.name.lock().as_ref() {
+            drop(cell.clone().with_name(format!("{map_name}::{name}")));
+        }
+
+        let weak_cell = cell.downgrade();
+        let map_keepalive = self.inner.clone();
+        let first = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let guard = self.inner.diffs_cell.subscribe(move |signal| {
+            let _ = &map_keepalive;
+            if first.swap(false, Ordering::SeqCst) {
+                return;
+            }
+            let Some(cell) = weak_cell.upgrade() else {
+                return;
+            };
+            if let Signal::Value(diff) = signal
+                && let Some(output) = projection.with(|state| update(state, diff.as_ref()))
+            {
+                cell.set(output);
+            }
+        });
+        cell.own(guard);
+        cell.lock()
+    }
+
     /// Create a weak handle to this map.
     #[must_use]
     pub fn downgrade(&self) -> WeakCellMap<K, V> {
@@ -924,51 +991,16 @@ where
     #[track_caller]
     #[must_use]
     pub fn entries(&self) -> impl Materialize<Vec<(K, V)>, Definite> + use<K, V, M> {
-        let initial: Vec<(K, V)> = self
-            .inner
-            .data
-            .iter()
-            .map(|r| (r.key().clone(), r.value().clone()))
-            .collect();
-        let state = Arc::new(std::sync::Mutex::new(EntryProjection::from_entries(
-            initial.clone(),
-        )));
-
-        let cell = Cell::new(initial);
-        if let Some(map_name) = self.inner.name.lock().as_ref() {
-            drop(cell.clone().with_name(format!("{map_name}::entries")));
-        }
-        let weak_cell = cell.downgrade();
-
-        // Keep CellMapInner alive as long as this subscription exists.
-        // When select() uses a weak ref in its closure, the CellMapInner would otherwise
-        // be dropped once the temporary CellMap from select() goes out of scope.
-        // This keepalive ensures the filtered CellMap (and its source subscription) survive
-        // as long as the entries Cell is alive.
-        let map_keepalive = self.inner.clone();
-
-        let first = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let guard = self.inner.diffs_cell.subscribe(move |signal| {
-            let _ = &map_keepalive; // prevent drop until closure is dropped
-            if first.swap(false, std::sync::atomic::Ordering::SeqCst) {
-                return;
-            }
-            let Some(cell) = weak_cell.upgrade() else {
-                return; // Entries cell was dropped
-            };
-            if let Signal::Value(diff) = signal {
-                let Ok(mut projection) = state.lock() else {
-                    return;
-                };
-                projection.apply_diff(diff.as_ref());
-                cell.set(projection.entries.clone());
-            }
-        });
-
-        // Own the subscription guard — this also marks diffs_cell as owned by entries cell
-        cell.own(guard);
-
-        cell.lock()
+        let initial = self.snapshot();
+        self.install_projection(
+            EntryProjection::from_entries(initial.clone()),
+            initial,
+            "entries",
+            |projection, diff| {
+                projection.apply_diff(diff);
+                Some(projection.entries.clone())
+            },
+        )
     }
 
     /// Build an observable pipeline of all values.
@@ -978,84 +1010,23 @@ where
     #[track_caller]
     #[must_use]
     pub fn items(&self) -> impl Materialize<Vec<V>, Definite> + use<K, V, M> {
-        let initial: Vec<(K, V)> = self
-            .inner
-            .data
-            .iter()
-            .map(|r| (r.key().clone(), r.value().clone()))
-            .collect();
-        let state = Arc::new(std::sync::Mutex::new(ValueProjection::from_entries(
-            initial.clone(),
-        )));
-
-        let cell = Cell::new(initial.into_iter().map(|(_, value)| value).collect());
-        if let Some(map_name) = self.inner.name.lock().as_ref() {
-            drop(cell.clone().with_name(format!("{map_name}::items")));
-        }
-        let weak_cell = cell.downgrade();
-        let map_keepalive = self.inner.clone();
-
-        let first = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let guard = self.inner.diffs_cell.subscribe(move |signal| {
-            let _ = &map_keepalive;
-            if first.swap(false, std::sync::atomic::Ordering::SeqCst) {
-                return;
-            }
-            let Some(cell) = weak_cell.upgrade() else {
-                return;
-            };
-            if let Signal::Value(diff) = signal {
-                let Ok(mut projection) = state.lock() else {
-                    return;
-                };
-                projection.apply_diff(diff.as_ref());
-                cell.set(projection.items.clone());
-            }
-        });
-
-        cell.own(guard);
-        cell.lock()
+        let projection = ValueProjection::from_entries(self.snapshot());
+        let initial = projection.items.clone();
+        self.install_projection(projection, initial, "items", |projection, diff| {
+            projection.apply_diff(diff);
+            Some(projection.items.clone())
+        })
     }
 
     /// Build an observable pipeline of all keys.
     #[track_caller]
     #[must_use]
     pub fn keys(&self) -> impl Materialize<Vec<K>, Definite> + use<K, V, M> {
-        let initial: Vec<K> = self
-            .inner
-            .data
-            .iter()
-            .map(|entry| entry.key().clone())
-            .collect();
-        let state = Arc::new(std::sync::Mutex::new(KeyProjection::from_keys(
-            initial.clone(),
-        )));
-        let cell = Cell::new(initial);
-        if let Some(map_name) = self.inner.name.lock().as_ref() {
-            drop(cell.clone().with_name(format!("{map_name}::keys")));
-        }
-        let weak_cell = cell.downgrade();
-        let map_keepalive = self.inner.clone();
-        let first = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let guard = self.inner.diffs_cell.subscribe(move |signal| {
-            let _ = &map_keepalive;
-            if first.swap(false, Ordering::SeqCst) {
-                return;
-            }
-            let Some(cell) = weak_cell.upgrade() else {
-                return;
-            };
-            if let Signal::Value(diff) = signal {
-                let Ok(mut projection) = state.lock() else {
-                    return;
-                };
-                if projection.apply_diff(diff.as_ref()) {
-                    cell.set(projection.keys.clone());
-                }
-            }
-        });
-        cell.own(guard);
-        cell.lock()
+        let projection = KeyProjection::from_keys(self.keys_snapshot());
+        let initial = projection.keys.clone();
+        self.install_projection(projection, initial, "keys", |projection, diff| {
+            projection.apply_diff(diff).then(|| projection.keys.clone())
+        })
     }
 
     /// Get an observable Cell of the map size.
@@ -1701,6 +1672,30 @@ mod tests {
         let mut projected = keys.get();
         projected.sort();
         assert_eq!(projected, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn projection_owner_recovers_poisoned_state() {
+        let owner = ProjectionOwner::new(KeyProjection::from_keys(vec!["a".to_string()]));
+        let poisoned = owner.clone();
+        let panic = std::thread::spawn(move || {
+            let _state = poisoned
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::panic::resume_unwind(Box::new("poison projection state"));
+        })
+        .join();
+        assert!(panic.is_err());
+
+        let output = owner.with(|projection| {
+            projection.apply_diff(&MapDiff::<String, i32>::Insert {
+                key: "b".to_string(),
+                value: 2,
+            });
+            projection.keys.clone()
+        });
+        assert_eq!(output, vec!["a".to_string(), "b".to_string()]);
     }
 
     #[test]
