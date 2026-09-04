@@ -9,8 +9,8 @@ use crate::{
 };
 
 use super::super::join_lifecycle::{
-    BatchedChanges, InstallRegionRights, LegacyTransaction, RegionHost, RootRegistrationOrder,
-    RuntimeStorage, install_region_runtime,
+    BatchedChanges, InstallRegionRights, LegacyTransaction, RegionHost, RegionRuntime,
+    RootRegistrationOrder, RuntimeStorage, install_region_runtime,
 };
 use super::{
     sharded::{
@@ -624,11 +624,13 @@ where
     install_region_runtime(
         cx,
         left,
-        right_roots,
-        kernel,
-        RootRegistrationOrder::LeftThenRights,
-        LegacyTransaction,
+        RegionRuntime::new(
+            right_roots,
+            kernel,
+            RootRegistrationOrder::LeftThenRights,
+            LegacyTransaction,
+            TwoStageKernel::apply_left_diff,
+        ),
         sink,
-        TwoStageKernel::apply_left_diff,
     )
 }

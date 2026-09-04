@@ -15,7 +15,7 @@ use crate::{
 
 use super::{
     super::join_lifecycle::{
-        FailStopTransaction, InstallRegionRights, RegionHost, RootRegistrationOrder,
+        FailStopTransaction, InstallRegionRights, RegionHost, RegionRuntime, RootRegistrationOrder,
         TransactionPolicy, install_region_runtime,
     },
     declaration::{
@@ -400,12 +400,14 @@ where
         install_region_runtime(
             cx,
             self.left,
-            rights,
-            RegionRouter::new(runtime),
-            RootRegistrationOrder::RightsThenLeft,
-            FailStopTransaction::new(query_poison),
+            RegionRuntime::new(
+                rights,
+                RegionRouter::new(runtime),
+                RootRegistrationOrder::RightsThenLeft,
+                FailStopTransaction::new(query_poison),
+                RegionRouter::apply_left,
+            ),
             sink,
-            RegionRouter::apply_left,
         )
     }
 }

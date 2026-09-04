@@ -214,7 +214,32 @@ where
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+pub(super) struct RegionRuntime<Rights, State, Policy, Apply> {
+    rights: Rights,
+    state: State,
+    root_order: RootRegistrationOrder,
+    policy: Policy,
+    apply_left: Apply,
+}
+
+impl<Rights, State, Policy, Apply> RegionRuntime<Rights, State, Policy, Apply> {
+    pub(super) const fn new(
+        rights: Rights,
+        state: State,
+        root_order: RootRegistrationOrder,
+        policy: Policy,
+        apply_left: Apply,
+    ) -> Self {
+        Self {
+            rights,
+            state,
+            root_order,
+            policy,
+            apply_left,
+        }
+    }
+}
+
 pub(super) fn install_region_runtime<
     Left,
     Rights,
@@ -228,12 +253,8 @@ pub(super) fn install_region_runtime<
 >(
     cx: &mut CompileContext,
     left: Left,
-    rights: Rights,
-    state: State,
-    root_order: RootRegistrationOrder,
-    policy: Policy,
+    runtime: RegionRuntime<Rights, State, Policy, Apply>,
     sink: BoxedMapDiffSink<K, Output>,
-    apply_left: Apply,
 ) -> Vec<SubscriptionGuard>
 where
     K: Hash + Eq + CellValue,
@@ -246,6 +267,13 @@ where
     Policy: TransactionPolicy<State>,
     Rights: InstallRegionRights<State, K, Output, Policy>,
 {
+    let RegionRuntime {
+        rights,
+        state,
+        root_order,
+        policy,
+        apply_left,
+    } = runtime;
     let host = Arc::new(RegionHost::new(state, policy, sink));
     match root_order {
         RootRegistrationOrder::LeftThenRights => {
