@@ -354,7 +354,9 @@ mod tests {
                 *value += 1;
             });
         }));
-        let payload = second.expect_err("poisoned region must reject later callbacks");
+        let Err(payload) = second else {
+            std::panic::panic_any("poisoned region accepted a later callback")
+        };
         assert_eq!(
             payload.downcast_ref::<&str>(),
             Some(&QUERY_POISONED_MESSAGE)
