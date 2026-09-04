@@ -1,6 +1,6 @@
 use std::{
     any::{Any, TypeId},
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, VecDeque, hash_map::Entry},
     hash::Hash,
     sync::{
         Arc, Mutex, OnceLock,
@@ -173,22 +173,34 @@ where
     T: Default + Send + Sync + 'static,
 {
     fn bind(&self, key: RelationshipKey, indexes: &mut HashMap<RelationshipKey, Box<dyn Any>>) {
-        let (index, maintains_index) = indexes
-            .get(&key)
-            .and_then(|index| index.downcast_ref::<Arc<parking_lot::RwLock<T>>>())
-            .cloned()
-            .map_or_else(
-                || {
-                    let index = Arc::new(parking_lot::RwLock::new(T::default()));
-                    indexes.insert(key, Box::new(Arc::clone(&index)));
-                    (index, true)
-                },
-                |index| (index, false),
-            );
-        let _already_bound = self.slot.inner.set(index).is_err();
-        self.slot
-            .maintains_index
-            .store(maintains_index, Ordering::Release);
+        match indexes.entry(key) {
+            Entry::Occupied(entry) => {
+                let index = entry.get().downcast_ref::<Arc<parking_lot::RwLock<T>>>();
+                assert!(
+                    index.is_some(),
+                    "compiler invariant violated: relationship index type mismatch"
+                );
+                let Some(index) = index else {
+                    return;
+                };
+                let binding = self.slot.inner.set(Arc::clone(index));
+                assert!(
+                    binding.is_ok(),
+                    "compiler invariant violated: physical index slot already bound"
+                );
+                self.slot.maintains_index.store(false, Ordering::Release);
+            }
+            Entry::Vacant(entry) => {
+                let index = Arc::new(parking_lot::RwLock::new(T::default()));
+                let binding = self.slot.inner.set(Arc::clone(&index));
+                assert!(
+                    binding.is_ok(),
+                    "compiler invariant violated: physical index slot already bound"
+                );
+                entry.insert(Box::new(index));
+                self.slot.maintains_index.store(true, Ordering::Release);
+            }
+        }
     }
 }
 
@@ -290,30 +302,22 @@ impl CompileContext {
             }
         }
         if let Some(requirement) = self.roots.get_mut(&root_key) {
+            let sinks = requirement
+                .typed_sinks
+                .downcast_ref::<Arc<Mutex<Vec<BoxedMapDiffSink<M::Key, M::Value>>>>>();
+            assert!(
+                sinks.is_some(),
+                "compiler invariant violated: root sink type mismatch"
+            );
+            let Some(sinks) = sinks else {
+                return requirement.ordinal;
+            };
             requirement.uses = requirement.uses.saturating_add(1);
             let ordinal = requirement.ordinal;
-            if let Some(sinks) = requirement
-                .typed_sinks
-                .downcast_ref::<Arc<Mutex<Vec<BoxedMapDiffSink<M::Key, M::Value>>>>>()
-            {
-                sinks
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push(sink);
-                return ordinal;
-            }
-
-            // Defensive correctness fallback if internal type erasure is ever
-            // corrupted: keep the entry point live as an independent root.
-            let source = source.clone();
-            let dispatch = Arc::clone(&self.query_dispatch);
-            let poison = self.query_poison.clone();
-            self.activations.push(Box::new(move || {
-                let sinks: Arc<Vec<BoxedMapDiffSink<M::Key, M::Value>>> = Arc::new(vec![sink]);
-                vec![source.subscribe_diffs_reactive(move |diff| {
-                    dispatch_query_root(&dispatch, &poison, &sinks, diff);
-                })]
-            }));
+            sinks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(sink);
             return ordinal;
         }
 
@@ -566,6 +570,63 @@ mod tests {
         assert_eq!(cx.register_root(&source, identity, Arc::new(|_| {})), 0);
         assert_eq!(cx.root_count(), 1);
         assert_eq!(cx.activate().len(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "compiler invariant violated: root sink type mismatch")]
+    fn register_root_rejects_a_corrupted_erased_sink_type() {
+        let source = CellMap::<u64, u64>::new();
+        let identity = SourceIdentity::from_ptr(Arc::as_ptr(&source.inner));
+        let root_key = RootKey {
+            source: identity,
+            key: TypeId::of::<u64>(),
+            value: TypeId::of::<u64>(),
+        };
+        let mut cx = CompileContext::default();
+        cx.roots.insert(
+            root_key,
+            RootRequirement {
+                ordinal: 0,
+                uses: 1,
+                typed_sinks: Box::new(()),
+            },
+        );
+
+        cx.register_root(&source, identity, Arc::new(|_| {}));
+    }
+
+    #[test]
+    #[should_panic(expected = "compiler invariant violated: relationship index type mismatch")]
+    fn relationship_binding_rejects_a_corrupted_erased_index_type() {
+        let key = RelationshipKey {
+            source: SourceIdentity::from_ptr(std::ptr::dangling::<u8>()),
+            relation: TypeId::of::<ParentChildren>(),
+        };
+        let binding = TypedRelationshipBinding::<Vec<u64>> {
+            slot: DeferredPhysical::default(),
+        };
+        let mut indexes: HashMap<RelationshipKey, Box<dyn Any>> = HashMap::new();
+        indexes.insert(
+            key,
+            Box::new(Arc::new(parking_lot::RwLock::new(Vec::<String>::new()))),
+        );
+
+        binding.bind(key, &mut indexes);
+    }
+
+    #[test]
+    #[should_panic(expected = "compiler invariant violated: physical index slot already bound")]
+    fn relationship_binding_rejects_an_already_bound_slot() {
+        let key = RelationshipKey {
+            source: SourceIdentity::from_ptr(std::ptr::dangling::<u8>()),
+            relation: TypeId::of::<ParentChildren>(),
+        };
+        let slot = DeferredPhysical::<Vec<u64>>::default();
+        slot.write(|index| index.push(1));
+        let binding = TypedRelationshipBinding { slot };
+        let mut indexes = HashMap::new();
+
+        binding.bind(key, &mut indexes);
     }
 
     #[test]
