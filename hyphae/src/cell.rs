@@ -138,13 +138,9 @@ impl<T, M> Clone for WeakCell<T, M> {
     }
 }
 
-pub(crate) mod subscriber;
+mod subscriber;
 
-#[allow(unused_imports)]
-pub(crate) use subscriber::{
-    ResultSubscriber, ResultSubscriberCallback, SubSnapshot, Subscriber, SubscriberCallback,
-    SubscriberRegistry,
-};
+pub(crate) use subscriber::{ResultSubscriber, Subscriber, SubscriberCallback, SubscriberRegistry};
 
 impl<T: CellValue> Cell<T, CellMutable> {
     #[track_caller]

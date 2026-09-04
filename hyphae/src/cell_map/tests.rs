@@ -42,10 +42,14 @@ fn map_diff_traversal_preserves_nested_event_order() {
 
     let mut flattened = Vec::new();
     diff.flatten_into(&mut flattened);
-    assert_eq!(flattened.len(), 3);
-    assert!(matches!(flattened[0], MapDiff::Insert { .. }));
-    assert!(matches!(flattened[1], MapDiff::Remove { .. }));
-    assert!(matches!(flattened[2], MapDiff::Initial { .. }));
+    assert!(matches!(
+        flattened.as_slice(),
+        [
+            MapDiff::Insert { .. },
+            MapDiff::Remove { .. },
+            MapDiff::Initial { .. }
+        ]
+    ));
 }
 
 #[test]
