@@ -22,31 +22,9 @@ pub(super) enum RuntimeStorage<Serial, Sharded> {
     },
 }
 
-#[allow(clippy::panic)]
 impl<Serial, Sharded> RuntimeStorage<Serial, Sharded> {
     pub(super) const fn is_serial(&self) -> bool {
         matches!(self, Self::Serial(_))
-    }
-
-    pub(super) fn serial_mut(&mut self) -> &mut Serial {
-        match self {
-            Self::Serial(runtime) => runtime,
-            Self::Sharded { .. } => {
-                std::panic::panic_any("join runtime invariant violated: expected serial storage")
-            }
-        }
-    }
-
-    pub(super) fn sharded_mut(&mut self) -> (&mut Sharded, &mut bool) {
-        match self {
-            Self::Sharded {
-                runtime,
-                parallel_active,
-            } => (runtime, parallel_active),
-            Self::Serial(_) => {
-                std::panic::panic_any("join runtime invariant violated: expected sharded storage")
-            }
-        }
     }
 
     pub(super) fn promote_with(&mut self, build: impl FnOnce(&Serial) -> Sharded) -> bool {
@@ -295,13 +273,20 @@ mod tests {
     fn runtime_storage_promotes_once() {
         let mut storage = RuntimeStorage::Serial(3_u8);
 
-        assert_eq!(*storage.serial_mut(), 3);
+        assert!(matches!(storage, RuntimeStorage::Serial(3)));
         assert!(storage.promote_with(|serial| usize::from(*serial) + 1));
-        let (runtime, parallel_active) = storage.sharded_mut();
-        assert_eq!(*runtime, 4);
-        assert!(!*parallel_active);
+        assert!(matches!(
+            storage,
+            RuntimeStorage::Sharded {
+                runtime: 4,
+                parallel_active: false
+            }
+        ));
         assert!(!storage.promote_with(|_| 99));
-        assert_eq!(*storage.sharded_mut().0, 4);
+        assert!(matches!(
+            storage,
+            RuntimeStorage::Sharded { runtime: 4, .. }
+        ));
     }
 
     #[test]
@@ -315,7 +300,7 @@ mod tests {
 
         assert!(result.is_err());
         assert!(storage.is_serial());
-        assert_eq!(*storage.serial_mut(), 7);
+        assert!(matches!(storage, RuntimeStorage::Serial(7)));
     }
 
     #[test]
