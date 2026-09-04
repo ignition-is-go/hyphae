@@ -4,7 +4,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use super::map_runtime::flatten_diff;
 use crate::{
     cell_map::MapDiff, map_query::MapQuery, subscription::SubscriptionGuard, traits::CellValue,
 };
@@ -161,7 +160,7 @@ where
     let upstream_sink = {
         move |diff: &MapDiff<SK, SV>| {
             let mut atomic_diffs: Vec<MapDiff<SK, SV>> = Vec::new();
-            flatten_diff(diff, &mut atomic_diffs);
+            diff.clone().flatten_into(&mut atomic_diffs);
             let mut emitted = Vec::<MapDiff<OK, OV>>::new();
             {
                 let mut state = state

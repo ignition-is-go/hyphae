@@ -193,21 +193,6 @@ where
     changes
 }
 
-pub fn flatten_diff<K, V>(diff: &MapDiff<K, V>, out: &mut Vec<MapDiff<K, V>>)
-where
-    K: Hash + Eq + CellValue,
-    V: CellValue,
-{
-    match diff {
-        MapDiff::Batch { changes } => {
-            for change in changes {
-                flatten_diff(change, out);
-            }
-        }
-        _ => out.push(diff.clone()),
-    }
-}
-
 /// Wrap a non-empty change vector in `MapDiff::Batch`, dropping empty groups.
 fn emit_changes<K, V>(changes: Vec<MapDiff<K, V>>, sink: &crate::map_query::BoxedMapDiffSink<K, V>)
 where

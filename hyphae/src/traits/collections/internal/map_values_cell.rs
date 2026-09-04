@@ -11,7 +11,7 @@ use crate::{
     cell_map::MapDiff,
     signal::Signal,
     subscription::SubscriptionGuard,
-    traits::{CellValue, Gettable, Watchable, collections::internal::map_runtime::flatten_diff},
+    traits::{CellValue, Gettable, Watchable},
 };
 
 struct MapValuesRuntime<K, V, U, W, F>
@@ -193,7 +193,7 @@ where
     let upstream_sink = move |diff: &MapDiff<K, V>| {
         if matches!(diff, MapDiff::Batch { .. }) {
             let mut atomic_changes = Vec::new();
-            flatten_diff(diff, &mut atomic_changes);
+            diff.clone().flatten_into(&mut atomic_changes);
             let mut downstream_changes = Vec::new();
             for change in &atomic_changes {
                 runtime.apply(change, Some(&mut downstream_changes));

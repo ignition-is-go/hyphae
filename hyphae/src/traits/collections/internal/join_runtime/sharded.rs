@@ -91,7 +91,7 @@ where
         FL: Fn(&LK, &LV) -> JK,
     {
         let mut flattened = Vec::new();
-        crate::traits::collections::internal::map_runtime::flatten_diff(diff, &mut flattened);
+        diff.clone().flatten_into(&mut flattened);
         self.route_left_owned(flattened, left_join_key)
     }
 
@@ -231,7 +231,7 @@ where
             .map(|_| Vec::new())
             .collect::<Vec<_>>();
         let mut flattened = Vec::new();
-        crate::traits::collections::internal::map_runtime::flatten_diff(diff, &mut flattened);
+        diff.clone().flatten_into(&mut flattened);
 
         for change in flattened {
             match change {
