@@ -27,6 +27,8 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
       - uses: Swatinem/rust-cache@v2
 
       - name: Get GitHub App User ID
