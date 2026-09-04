@@ -978,15 +978,6 @@ fn shard_for<T: Hash>(value: &T, shard_count: usize) -> usize {
     usize::try_from(index).unwrap_or(0)
 }
 
-const fn diff_key<K, V>(diff: &MapDiff<K, V>) -> Option<&K> {
-    match diff {
-        MapDiff::Insert { key, .. } | MapDiff::Update { key, .. } | MapDiff::Remove { key, .. } => {
-            Some(key)
-        }
-        MapDiff::Initial { .. } | MapDiff::Batch { .. } => None,
-    }
-}
-
 const fn diff_merge_phase<K, V>(diff: &MapDiff<K, V>) -> u8 {
     match diff {
         MapDiff::Initial { .. } => 0,
@@ -1316,7 +1307,8 @@ where
         let mut tagged = Vec::new();
         for changes in shard_changes {
             for (local_ordinal, change) in changes.into_iter().enumerate() {
-                let ordinal = diff_key(&change)
+                let ordinal = change
+                    .atomic_key()
                     .and_then(|key| {
                         event_ordinals
                             .get(key)
@@ -1436,16 +1428,6 @@ where
 
     let _ = work;
     shards.iter_mut().zip(routed).map(process).collect()
-}
-
-fn diff_work<K, V>(diff: &MapDiff<K, V>) -> usize {
-    match diff {
-        MapDiff::Initial { entries } => entries.len(),
-        MapDiff::Batch { changes } => changes.iter().fold(0_usize, |work, change| {
-            work.saturating_add(diff_work(change))
-        }),
-        MapDiff::Insert { .. } | MapDiff::Update { .. } | MapDiff::Remove { .. } => 1,
-    }
 }
 
 fn state_left_entries<LK, LV, RK, RV, JK, OK, OV>(
@@ -1975,7 +1957,7 @@ where
                 let mut state = state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if state.2.is_none() && shard_count > 1 && diff_work(diff) >= 8_192 {
+                if state.2.is_none() && shard_count > 1 && diff.work_items() >= 8_192 {
                     let shards = promote(&state.0, &state.1);
                     state.2 = Some(shards);
                 }
@@ -2032,7 +2014,7 @@ where
                 let mut state = state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if state.2.is_none() && shard_count > 1 && diff_work(diff) >= 8_192 {
+                if state.2.is_none() && shard_count > 1 && diff.work_items() >= 8_192 {
                     let shards = promote(&state.0, &state.1);
                     state.2 = Some(shards);
                 }
@@ -2076,7 +2058,7 @@ where
                 let mut state = state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if state.2.is_none() && shard_count > 1 && diff_work(diff) >= 8_192 {
+                if state.2.is_none() && shard_count > 1 && diff.work_items() >= 8_192 {
                     let shards = promote(&state.0, &state.1);
                     state.2 = Some(shards);
                 }

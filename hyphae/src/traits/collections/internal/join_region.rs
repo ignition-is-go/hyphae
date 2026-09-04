@@ -1329,23 +1329,6 @@ const fn configured_promotion_work() -> usize {
     DEFAULT_PROMOTION_WORK
 }
 
-fn diff_work<K, V>(diff: &MapDiff<K, V>) -> usize {
-    match diff {
-        MapDiff::Initial { entries } => entries.len(),
-        MapDiff::Batch { changes } => changes.iter().map(diff_work).sum(),
-        _ => 1,
-    }
-}
-
-const fn diff_key<K, V>(diff: &MapDiff<K, V>) -> Option<&K> {
-    match diff {
-        MapDiff::Insert { key, .. } | MapDiff::Update { key, .. } | MapDiff::Remove { key, .. } => {
-            Some(key)
-        }
-        MapDiff::Initial { .. } | MapDiff::Batch { .. } => None,
-    }
-}
-
 #[allow(
     clippy::arithmetic_side_effects,
     clippy::expect_used,
@@ -1516,7 +1499,8 @@ where
         changes: &mut [MapDiff<K, Output>],
     ) {
         changes.sort_by_key(|change| {
-            diff_key(change)
+            change
+                .atomic_key()
                 .and_then(|key| order.get(key))
                 .copied()
                 .unwrap_or(u64::MAX)
@@ -1550,20 +1534,8 @@ where
             other => {
                 let ordinal = *next_ordinal;
                 *next_ordinal = next_ordinal.saturating_add(1);
-                let key = diff_key(other).expect("non-container diff has a key");
+                let key = other.atomic_key().expect("non-container diff has a key");
                 routed[Self::shard_for(key, shard_count)].push((ordinal, other.clone()));
-            }
-        }
-    }
-
-    fn extend_flat<Output: CellValue>(
-        output: &mut Vec<MapDiff<K, Output>>,
-        changes: Vec<MapDiff<K, Output>>,
-    ) {
-        for change in changes {
-            match change {
-                MapDiff::Batch { changes } => Self::extend_flat(output, changes),
-                leaf => output.push(leaf),
             }
         }
     }
@@ -1644,7 +1616,9 @@ where
         let order = self.merge_order(diff);
         let changes = self.storage.serial_mut().apply_left_diff(diff);
         let mut flat = Vec::new();
-        Self::extend_flat(&mut flat, changes);
+        for change in changes {
+            change.flatten_into(&mut flat);
+        }
         Self::order_changes(&order, &mut flat);
         output.extend(flat);
         self.remember(diff);
@@ -1683,9 +1657,9 @@ where
         if is_serial && self.shard_count <= 1 {
             return self.apply_serial_left(diff, non_unique_batch);
         }
-        let estimated_work = diff_work(diff).saturating_mul(Runtime::COST_UNITS);
-        let promotion_warranted =
-            diff_work(diff) >= self.promotion_work || estimated_work >= PARALLEL_REGION_WORK_ENTER;
+        let estimated_work = diff.work_items().saturating_mul(Runtime::COST_UNITS);
+        let promotion_warranted = diff.work_items() >= self.promotion_work
+            || estimated_work >= PARALLEL_REGION_WORK_ENTER;
         if is_serial && ((self.shard_count <= 1) || !promotion_warranted) {
             return self.apply_serial_left(diff, non_unique_batch);
         }
@@ -1712,14 +1686,14 @@ where
             .iter()
             .map(|changes| {
                 changes.iter().fold(0_usize, |work, (_, change)| {
-                    work.saturating_add(diff_work(change))
+                    work.saturating_add(change.work_items())
                 })
             })
             .collect();
         let active_shards = shard_work.iter().filter(|work| **work != 0).count();
         let max_shard_work = shard_work.iter().copied().max().unwrap_or(0);
         let balanced = active_shards > 1
-            && max_shard_work.saturating_mul(4) <= diff_work(diff).saturating_mul(3);
+            && max_shard_work.saturating_mul(4) <= diff.work_items().saturating_mul(3);
         #[cfg(not(all(feature = "scheduler", not(target_arch = "wasm32"))))]
         let _ = (hysteresis_wants_parallel, balanced);
         #[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
@@ -1748,9 +1722,12 @@ where
                     changes: changes.into_iter().map(|(_, change)| change).collect(),
                 };
                 let mut flat = Vec::new();
-                Self::extend_flat(&mut flat, shard.apply_left_diff(&batch));
+                for change in shard.apply_left_diff(&batch) {
+                    change.flatten_into(&mut flat);
+                }
                 for (local, change) in flat.into_iter().enumerate() {
-                    let ordinal = diff_key(&change)
+                    let ordinal = change
+                        .atomic_key()
                         .and_then(|key| order.get(key))
                         .copied()
                         .unwrap_or(u64::MAX);
@@ -1759,7 +1736,9 @@ where
             } else {
                 for (ordinal, change) in changes {
                     let mut flat = Vec::new();
-                    Self::extend_flat(&mut flat, shard.apply_left_diff(&change));
+                    for change in shard.apply_left_diff(&change) {
+                        change.flatten_into(&mut flat);
+                    }
                     for (local, output) in flat.into_iter().enumerate() {
                         tagged.push((ordinal, local, shard_id, output));
                     }
@@ -1818,7 +1797,8 @@ where
         let mut tagged: Vec<_> = per_shard.into_iter().flatten().collect();
         tagged.sort_by_key(|(ordinal, local, shard, change)| {
             let key_order = if unique_batch || event_orders.is_none() {
-                diff_key(change)
+                change
+                    .atomic_key()
                     .and_then(|key| order.get(key))
                     .copied()
                     .unwrap_or(u64::MAX)
@@ -1826,7 +1806,7 @@ where
                 usize::try_from(*ordinal)
                     .ok()
                     .and_then(|index| event_orders.as_ref().and_then(|orders| orders.get(index)))
-                    .and_then(|event| diff_key(change).and_then(|key| event.get(key)))
+                    .and_then(|event| change.atomic_key().and_then(|key| event.get(key)))
                     .copied()
                     .unwrap_or(u64::MAX)
             };
@@ -1838,16 +1818,6 @@ where
             vec![MapDiff::Batch { changes: output }]
         } else {
             output
-        }
-    }
-
-    fn right_leaves<'a, RK, RV>(diff: &'a MapDiff<RK, RV>, leaves: &mut Vec<&'a MapDiff<RK, RV>>) {
-        if let MapDiff::Batch { changes } = diff {
-            for change in changes {
-                Self::right_leaves(change, leaves);
-            }
-        } else {
-            leaves.push(diff);
         }
     }
 
@@ -1869,14 +1839,13 @@ where
         }
 
         let mut leaves = Vec::new();
-        Self::right_leaves(diff, &mut leaves);
+        diff.visit_leaves(&mut |leaf| leaves.push(leaf));
         let mut output = Vec::new();
         for leaf in leaves {
             let mut phase = Vec::new();
-            Self::extend_flat(
-                &mut phase,
-                runtime.apply_right_root_diff_policy(leaf, maintain),
-            );
+            for change in runtime.apply_right_root_diff_policy(leaf, maintain) {
+                change.flatten_into(&mut phase);
+            }
             Self::order_changes(order, &mut phase);
             output.extend(phase);
         }
@@ -1905,7 +1874,7 @@ where
                 maintain,
             );
         }
-        if is_serial && self.shard_count > 1 && diff_work(diff) >= self.promotion_work {
+        if is_serial && self.shard_count > 1 && diff.work_items() >= self.promotion_work {
             self.promote();
         }
         match &mut self.storage {
@@ -1915,7 +1884,7 @@ where
                 let order = &self.key_sequence;
                 let preserve_batch = matches!(diff, MapDiff::Batch { .. });
                 let mut leaves = Vec::new();
-                Self::right_leaves(diff, &mut leaves);
+                diff.visit_leaves(&mut |leaf| leaves.push(leaf));
                 let mut output = Vec::new();
                 // Advance the shared physical index one source member at a time.
                 // Every observer shard therefore reads the same snapshot that the
@@ -1923,10 +1892,10 @@ where
                 for leaf in leaves {
                     let mut phase = Vec::new();
                     for (id, shard) in shards.iter_mut().enumerate() {
-                        Self::extend_flat(
-                            &mut phase,
-                            shard.apply_right_root_diff_policy(leaf, maintain && id == 0),
-                        );
+                        for change in shard.apply_right_root_diff_policy(leaf, maintain && id == 0)
+                        {
+                            change.flatten_into(&mut phase);
+                        }
                     }
                     Self::order_changes(order, &mut phase);
                     output.extend(phase);

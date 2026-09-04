@@ -40,6 +40,49 @@ pub enum MapDiff<K, V> {
     Batch { changes: Vec<Self> },
 }
 
+impl<K, V> MapDiff<K, V> {
+    pub(crate) const fn atomic_key(&self) -> Option<&K> {
+        match self {
+            Self::Insert { key, .. } | Self::Remove { key, .. } | Self::Update { key, .. } => {
+                Some(key)
+            }
+            Self::Initial { .. } | Self::Batch { .. } => None,
+        }
+    }
+
+    pub(crate) fn work_items(&self) -> usize {
+        match self {
+            Self::Initial { entries } => entries.len(),
+            Self::Batch { changes } => changes
+                .iter()
+                .fold(0, |total, change| total.saturating_add(change.work_items())),
+            Self::Insert { .. } | Self::Remove { .. } | Self::Update { .. } => 1,
+        }
+    }
+
+    pub(crate) fn visit_leaves<'a>(&'a self, visit: &mut impl FnMut(&'a Self)) {
+        match self {
+            Self::Batch { changes } => {
+                for change in changes {
+                    change.visit_leaves(visit);
+                }
+            }
+            change => visit(change),
+        }
+    }
+
+    pub(crate) fn flatten_into(self, output: &mut Vec<Self>) {
+        match self {
+            Self::Batch { changes } => {
+                for change in changes {
+                    change.flatten_into(output);
+                }
+            }
+            change => output.push(change),
+        }
+    }
+}
+
 pub(crate) struct CellMapInner<K, V>
 where
     K: Hash + Eq + CellValue,
@@ -1296,6 +1339,46 @@ mod tests {
     use crate::traits::{Gettable, Watchable};
 
     const KEY_CELL_CHURN: u64 = 2_000;
+
+    #[test]
+    fn map_diff_traversal_preserves_nested_event_order() {
+        let diff = MapDiff::Batch {
+            changes: vec![
+                MapDiff::Insert {
+                    key: "a".to_string(),
+                    value: 1,
+                },
+                MapDiff::Batch {
+                    changes: vec![
+                        MapDiff::Remove {
+                            key: "b".to_string(),
+                            old_value: 2,
+                        },
+                        MapDiff::Initial {
+                            entries: vec![("c".to_string(), 3), ("d".to_string(), 4)],
+                        },
+                    ],
+                },
+            ],
+        };
+
+        let mut keys = Vec::new();
+        diff.visit_leaves(&mut |change| {
+            keys.push(change.atomic_key().cloned());
+        });
+        assert_eq!(
+            keys,
+            vec![Some("a".to_string()), Some("b".to_string()), None]
+        );
+        assert_eq!(diff.work_items(), 4);
+
+        let mut flattened = Vec::new();
+        diff.flatten_into(&mut flattened);
+        assert_eq!(flattened.len(), 3);
+        assert!(matches!(flattened[0], MapDiff::Insert { .. }));
+        assert!(matches!(flattened[1], MapDiff::Remove { .. }));
+        assert!(matches!(flattened[2], MapDiff::Initial { .. }));
+    }
 
     #[test]
     fn test_cellmap_basic() {
