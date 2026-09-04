@@ -13,10 +13,15 @@ use super::super::join_lifecycle::{
     RuntimeStorage, install_region_runtime,
 };
 use super::{
-    JoinState, RelationIndexStorage, ShardedKeyedJoin, add_index_member, apply_left_diff,
-    apply_right_diff, commit_keyed_value, process_left_shards, process_right_shards,
-    query_shard_count, recompute_keyed_impacted, remove_index_member, remove_left,
-    state_left_entries, state_right_entries, upsert_left,
+    sharded::{
+        ShardedKeyedJoin, process_left_shards, process_right_shards, query_shard_count,
+        state_left_entries, state_right_entries,
+    },
+    state::{
+        JoinState, RelationIndexStorage, add_index_member, apply_left_diff, apply_right_diff,
+        commit_keyed_value, recompute_keyed_impacted, remove_index_member, remove_left,
+        upsert_left,
+    },
 };
 
 type TwoFirstState<LK, LV, RK, RV, JK, MV> = JoinState<LK, LV, RK, RV, JK, LK, MV>;
