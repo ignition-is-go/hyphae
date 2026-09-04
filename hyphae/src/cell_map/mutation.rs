@@ -1,5 +1,3 @@
-//! Mutable `CellMap` construction and mutation paths.
-
 use std::{
     hash::Hash,
     marker::PhantomData,

@@ -81,7 +81,6 @@ struct TwoStageRights<First, Second> {
     second: Second,
 }
 
-#[allow(clippy::too_many_lines, clippy::type_complexity)]
 impl<LK, LV, RK1, RV1, JK1, MV, RK2, RV2, JK2, OV, FL1, FR1, FM1, FL2, FR2, FM2>
     TwoStageKernel<LK, LV, RK1, RV1, JK1, MV, RK2, RV2, JK2, OV, FL1, FR1, FM1, FL2, FR2, FM2>
 where

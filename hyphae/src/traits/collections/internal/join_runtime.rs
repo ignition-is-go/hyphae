@@ -22,8 +22,6 @@ use state::{
 };
 pub(super) use state::{RelationIndex, RelationIndexStorage};
 
-// ── The public entry point ──────────────────────────────────────────────
-
 /// Emit a batch of output diffs through `sink`.
 ///
 /// Preserves the original `apply_batch` semantics observed by downstream
