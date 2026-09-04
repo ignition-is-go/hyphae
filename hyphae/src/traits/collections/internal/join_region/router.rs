@@ -183,7 +183,7 @@ where
     fn promote(&mut self) {
         let count = self.shard_count.max(1);
         let key_sequence = &self.key_sequence;
-        self.storage.promote_with(|sequential| {
+        let promoted = self.storage.promote_with(|sequential| {
             let mut shards: Vec<_> = (0..count).map(|_| sequential.empty_shard()).collect();
             // Replay in stable source order. Outputs are intentionally discarded.
             let mut keys: Vec<_> = key_sequence.iter().collect();
@@ -199,6 +199,7 @@ where
             }
             shards
         });
+        assert!(promoted, "only a serial runtime can be promoted");
     }
 
     fn order_changes<Output: CellValue>(
@@ -381,22 +382,15 @@ where
         };
         let non_unique_batch = matches!(batch_is_unique, Some(false));
         let is_serial = self.storage.is_serial();
-        if is_serial
-            && self.shard_count <= 1
-            && let Some(output) = self.apply_serial_left(diff, non_unique_batch)
-        {
-            return output;
-        }
         let estimated_work = diff.work_items().saturating_mul(Runtime::COST_UNITS);
         let promotion_warranted = diff.work_items() >= self.promotion_work
             || estimated_work >= PARALLEL_REGION_WORK_ENTER;
-        if is_serial
-            && ((self.shard_count <= 1) || !promotion_warranted)
-            && let Some(output) = self.apply_serial_left(diff, non_unique_batch)
-        {
-            return output;
-        }
         if is_serial {
+            if self.shard_count <= 1 || !promotion_warranted {
+                let output = self.apply_serial_left(diff, non_unique_batch);
+                assert!(output.is_some(), "runtime was checked as serial");
+                return output.unwrap_or_default();
+            }
             self.promote();
         }
 
@@ -405,14 +399,16 @@ where
         let preserve_batch = batch_is_unique.is_some();
         let unique_batch = batch_is_unique.unwrap_or(false);
 
+        assert!(
+            !self.storage.is_serial(),
+            "a promotable serial runtime must become sharded"
+        );
         let RuntimeStorage::Sharded {
             runtime: shards,
             parallel_active,
         } = &mut self.storage
         else {
-            return self
-                .apply_serial_left(diff, non_unique_batch)
-                .unwrap_or_default();
+            return Vec::new();
         };
         let mut routed = vec![Vec::new(); shards.len()];
         let mut next_ordinal = 0;
