@@ -1261,17 +1261,47 @@ where
     }
 }
 
+enum RuntimeStorage<Runtime> {
+    Serial(Runtime),
+    Sharded {
+        runtimes: Vec<Runtime>,
+        parallel_active: bool,
+    },
+}
+
+#[allow(clippy::panic)]
+impl<Runtime> RuntimeStorage<Runtime> {
+    fn serial_mut(&mut self) -> &mut Runtime {
+        match self {
+            Self::Serial(runtime) => runtime,
+            Self::Sharded { .. } => {
+                std::panic::panic_any("join region invariant violated: expected serial storage")
+            }
+        }
+    }
+
+    fn sharded_mut(&mut self) -> (&mut Vec<Runtime>, &mut bool) {
+        match self {
+            Self::Sharded {
+                runtimes,
+                parallel_active,
+            } => (runtimes, parallel_active),
+            Self::Serial(_) => {
+                std::panic::panic_any("join region invariant violated: expected sharded storage")
+            }
+        }
+    }
+}
+
 /// Dual-mode whole-region executor. Tiny events use the original single
 /// runtime without extra hashing. Promotion is one-way; afterwards every map
 /// key owns one persistent shard for the entire heterogeneous stage spine.
 struct RegionRouter<Runtime, K, Input> {
-    sequential: Option<Runtime>,
-    shards: Option<Vec<Runtime>>,
+    storage: RuntimeStorage<Runtime>,
     key_sequence: FxHashMap<K, u64>,
     next_sequence: u64,
     shard_count: usize,
     promotion_work: usize,
-    parallel_active: bool,
     /// Terminal fail-stop state. A projection/apply unwind can leave typed shard
     /// runtimes or a maintained right index partially changed, so the region is
     /// quarantined permanently rather than exposed for recovery.
@@ -1335,13 +1365,11 @@ where
 {
     fn new(runtime: Runtime) -> Self {
         Self {
-            sequential: Some(runtime),
-            shards: None,
+            storage: RuntimeStorage::Serial(runtime),
             key_sequence: FxHashMap::default(),
             next_sequence: 0,
             shard_count: configured_shards(),
             promotion_work: configured_promotion_work(),
-            parallel_active: false,
             poisoned: false,
             query_poison: QueryPoison::default(),
             _input: PhantomData,
@@ -1460,14 +1488,10 @@ where
     }
 
     fn promote(&mut self) {
-        if self.shards.is_some() {
+        let RuntimeStorage::Serial(sequential) = &self.storage else {
             return;
-        }
+        };
         let count = self.shard_count.max(1);
-        let sequential = self
-            .sequential
-            .take()
-            .expect("sequential runtime exists before promotion");
         let mut shards: Vec<_> = (0..count).map(|_| sequential.empty_shard()).collect();
         // Replay in stable source order. Outputs are intentionally discarded.
         let mut keys: Vec<_> = self.key_sequence.iter().collect();
@@ -1481,7 +1505,10 @@ where
                 });
             }
         }
-        self.shards = Some(shards);
+        self.storage = RuntimeStorage::Sharded {
+            runtimes: shards,
+            parallel_active: false,
+        };
     }
 
     fn order_changes<Output: CellValue>(
@@ -1615,16 +1642,35 @@ where
             return;
         }
         let order = self.merge_order(diff);
-        let changes = self
-            .sequential
-            .as_mut()
-            .expect("sequential mode")
-            .apply_left_diff(diff);
+        let changes = self.storage.serial_mut().apply_left_diff(diff);
         let mut flat = Vec::new();
         Self::extend_flat(&mut flat, changes);
         Self::order_changes(&order, &mut flat);
         output.extend(flat);
         self.remember(diff);
+    }
+
+    fn apply_serial_left(
+        &mut self,
+        diff: &MapDiff<K, Input>,
+        eventwise: bool,
+    ) -> Vec<MapDiff<K, Runtime::Output>> {
+        #[cfg(feature = "region-calibration")]
+        crate::region_calibration::left_serial_dispatch();
+        if eventwise {
+            let mut changes = Vec::new();
+            self.apply_left_eventwise(diff, &mut changes);
+            return vec![MapDiff::Batch { changes }];
+        }
+        if matches!(diff, MapDiff::Initial { .. }) {
+            let order = self.merge_order(diff);
+            let mut output = self.storage.serial_mut().apply_left_diff(diff);
+            Self::order_changes(&order, &mut output);
+            self.remember(diff);
+            return output;
+        }
+        self.remember(diff);
+        self.storage.serial_mut().apply_left_diff(diff)
     }
 
     fn apply_left(&mut self, diff: &MapDiff<K, Input>) -> Vec<MapDiff<K, Runtime::Output>> {
@@ -1633,62 +1679,17 @@ where
             _ => None,
         };
         let non_unique_batch = matches!(batch_is_unique, Some(false));
-        if self.shards.is_none() && self.shard_count <= 1 {
-            #[cfg(feature = "region-calibration")]
-            crate::region_calibration::left_serial_dispatch();
-            if non_unique_batch {
-                let mut changes = Vec::new();
-                self.apply_left_eventwise(diff, &mut changes);
-                return vec![MapDiff::Batch { changes }];
-            }
-            if matches!(diff, MapDiff::Initial { .. }) {
-                let order = self.merge_order(diff);
-                let mut output = self
-                    .sequential
-                    .as_mut()
-                    .expect("sequential mode")
-                    .apply_left_diff(diff);
-                Self::order_changes(&order, &mut output);
-                self.remember(diff);
-                return output;
-            }
-            self.remember(diff);
-            return self
-                .sequential
-                .as_mut()
-                .expect("sequential mode")
-                .apply_left_diff(diff);
+        let is_serial = matches!(self.storage, RuntimeStorage::Serial(_));
+        if is_serial && self.shard_count <= 1 {
+            return self.apply_serial_left(diff, non_unique_batch);
         }
         let estimated_work = diff_work(diff).saturating_mul(Runtime::COST_UNITS);
         let promotion_warranted =
             diff_work(diff) >= self.promotion_work || estimated_work >= PARALLEL_REGION_WORK_ENTER;
-        if self.shards.is_none() && ((self.shard_count <= 1) || !promotion_warranted) {
-            #[cfg(feature = "region-calibration")]
-            crate::region_calibration::left_serial_dispatch();
-            if non_unique_batch {
-                let mut changes = Vec::new();
-                self.apply_left_eventwise(diff, &mut changes);
-                return vec![MapDiff::Batch { changes }];
-            }
-            if matches!(diff, MapDiff::Initial { .. }) {
-                let order = self.merge_order(diff);
-                let mut output = self
-                    .sequential
-                    .as_mut()
-                    .expect("sequential mode")
-                    .apply_left_diff(diff);
-                Self::order_changes(&order, &mut output);
-                self.remember(diff);
-                return output;
-            }
-            self.remember(diff);
-            return self
-                .sequential
-                .as_mut()
-                .expect("sequential mode")
-                .apply_left_diff(diff);
+        if is_serial && ((self.shard_count <= 1) || !promotion_warranted) {
+            return self.apply_serial_left(diff, non_unique_batch);
         }
-        if self.shards.is_none() {
+        if is_serial {
             self.promote();
         }
 
@@ -1697,12 +1698,12 @@ where
         let preserve_batch = batch_is_unique.is_some();
         let unique_batch = batch_is_unique.unwrap_or(false);
 
-        let shards = self.shards.as_mut().expect("promoted");
+        let (shards, parallel_active) = self.storage.sharded_mut();
         let mut routed = vec![Vec::new(); shards.len()];
         let mut next_ordinal = 0;
         Self::route_diff(diff, shards.len(), &mut next_ordinal, &mut routed);
 
-        let hysteresis_wants_parallel = if self.parallel_active {
+        let hysteresis_wants_parallel = if *parallel_active {
             estimated_work >= PARALLEL_REGION_WORK_EXIT
         } else {
             estimated_work >= PARALLEL_REGION_WORK_ENTER
@@ -1727,15 +1728,15 @@ where
         #[cfg(not(all(feature = "scheduler", not(target_arch = "wasm32"))))]
         let resources_available = false;
         #[cfg(feature = "region-calibration")]
-        let was_parallel = self.parallel_active;
-        self.parallel_active = resources_available;
+        let was_parallel = *parallel_active;
+        *parallel_active = resources_available;
         #[cfg(feature = "region-calibration")]
-        match (was_parallel, self.parallel_active) {
+        match (was_parallel, *parallel_active) {
             (false, true) => crate::region_calibration::inactive_to_parallel(),
             (true, false) => crate::region_calibration::parallel_to_inactive(),
             _ => {}
         }
-        let run_parallel = self.parallel_active;
+        let run_parallel = *parallel_active;
 
         let process = |(shard_id, (shard, changes)): (
             usize,
@@ -1850,7 +1851,38 @@ where
         }
     }
 
-    #[allow(clippy::branches_sharing_code)]
+    fn apply_serial_right<Location, RK, RV>(
+        runtime: &mut Runtime,
+        order: &FxHashMap<K, u64>,
+        diff: &MapDiff<RK, RV>,
+        maintain: bool,
+    ) -> Vec<MapDiff<K, Runtime::Output>>
+    where
+        RK: Hash + Eq + CellValue,
+        RV: CellValue,
+        Runtime: RightRoot<Location, K, Input, RK, RV>,
+    {
+        if !matches!(diff, MapDiff::Batch { .. }) {
+            let mut output = runtime.apply_right_root_diff_policy(diff, maintain);
+            Self::order_changes(order, &mut output);
+            return output;
+        }
+
+        let mut leaves = Vec::new();
+        Self::right_leaves(diff, &mut leaves);
+        let mut output = Vec::new();
+        for leaf in leaves {
+            let mut phase = Vec::new();
+            Self::extend_flat(
+                &mut phase,
+                runtime.apply_right_root_diff_policy(leaf, maintain),
+            );
+            Self::order_changes(order, &mut phase);
+            output.extend(phase);
+        }
+        vec![MapDiff::Batch { changes: output }]
+    }
+
     fn apply_right<Location, RK, RV>(
         &mut self,
         diff: &MapDiff<RK, RV>,
@@ -1864,73 +1896,53 @@ where
         // Canonical router traces follow stable left-source order in every
         // execution mode. Raw stage-kernel bucket order is a hash/index
         // implementation detail and cannot be reconstructed across shards.
-        if self.shards.is_none() && self.shard_count <= 1 {
-            let mut output = self
-                .sequential
-                .as_mut()
-                .expect("sequential mode")
-                .apply_right_root_diff_policy(diff, maintain);
-            Self::order_changes(&self.key_sequence, &mut output);
-            return output;
+        let is_serial = matches!(self.storage, RuntimeStorage::Serial(_));
+        if is_serial && self.shard_count <= 1 {
+            return Self::apply_serial_right::<Location, RK, RV>(
+                self.storage.serial_mut(),
+                &self.key_sequence,
+                diff,
+                maintain,
+            );
         }
-        if self.shards.is_none() && self.shard_count > 1 && diff_work(diff) >= self.promotion_work {
+        if is_serial && self.shard_count > 1 && diff_work(diff) >= self.promotion_work {
             self.promote();
         }
-        if let Some(shards) = self.shards.as_mut() {
-            let order = &self.key_sequence;
-            let preserve_batch = matches!(diff, MapDiff::Batch { .. });
-            let mut leaves = Vec::new();
-            Self::right_leaves(diff, &mut leaves);
-            let mut output = Vec::new();
-            // Advance the shared physical index one source member at a time.
-            // Every observer shard therefore reads the same snapshot that the
-            // sequential runtime used for this phase before the next member.
-            for leaf in leaves {
-                let mut phase = Vec::new();
-                for (id, shard) in shards.iter_mut().enumerate() {
-                    Self::extend_flat(
-                        &mut phase,
-                        shard.apply_right_root_diff_policy(leaf, maintain && id == 0),
-                    );
+        match &mut self.storage {
+            RuntimeStorage::Sharded {
+                runtimes: shards, ..
+            } => {
+                let order = &self.key_sequence;
+                let preserve_batch = matches!(diff, MapDiff::Batch { .. });
+                let mut leaves = Vec::new();
+                Self::right_leaves(diff, &mut leaves);
+                let mut output = Vec::new();
+                // Advance the shared physical index one source member at a time.
+                // Every observer shard therefore reads the same snapshot that the
+                // sequential runtime used for this phase before the next member.
+                for leaf in leaves {
+                    let mut phase = Vec::new();
+                    for (id, shard) in shards.iter_mut().enumerate() {
+                        Self::extend_flat(
+                            &mut phase,
+                            shard.apply_right_root_diff_policy(leaf, maintain && id == 0),
+                        );
+                    }
+                    Self::order_changes(order, &mut phase);
+                    output.extend(phase);
                 }
-                Self::order_changes(order, &mut phase);
-                output.extend(phase);
+                if preserve_batch {
+                    vec![MapDiff::Batch { changes: output }]
+                } else {
+                    output
+                }
             }
-            if preserve_batch {
-                vec![MapDiff::Batch { changes: output }]
-            } else {
-                output
-            }
-        } else {
-            if !matches!(diff, MapDiff::Batch { .. }) {
-                let mut output = self
-                    .sequential
-                    .as_mut()
-                    .expect("sequential mode")
-                    .apply_right_root_diff_policy(diff, maintain);
-                Self::order_changes(&self.key_sequence, &mut output);
-                return output;
-            }
-            let order = &self.key_sequence;
-            let preserve_batch = true;
-            let mut leaves = Vec::new();
-            Self::right_leaves(diff, &mut leaves);
-            let runtime = self.sequential.as_mut().expect("sequential mode");
-            let mut output = Vec::new();
-            for leaf in leaves {
-                let mut phase = Vec::new();
-                Self::extend_flat(
-                    &mut phase,
-                    runtime.apply_right_root_diff_policy(leaf, maintain),
-                );
-                Self::order_changes(order, &mut phase);
-                output.extend(phase);
-            }
-            if preserve_batch {
-                vec![MapDiff::Batch { changes: output }]
-            } else {
-                output
-            }
+            RuntimeStorage::Serial(runtime) => Self::apply_serial_right::<Location, RK, RV>(
+                runtime,
+                &self.key_sequence,
+                diff,
+                maintain,
+            ),
         }
     }
 }
@@ -1963,7 +1975,12 @@ fn region_transaction<Runtime, K, Input, Output>(
             // no shard can remain active by the time this catch arm executes.
             router.query_poison.poison();
             router.poisoned = true;
-            router.parallel_active = false;
+            if let RuntimeStorage::Sharded {
+                parallel_active, ..
+            } = &mut router.storage
+            {
+                *parallel_active = false;
+            }
             drop(router);
             std::panic::resume_unwind(payload);
         }
