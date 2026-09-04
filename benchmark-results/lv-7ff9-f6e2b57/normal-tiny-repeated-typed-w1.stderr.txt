@@ -1,8 +1,0 @@
-   Compiling hyphae v2.0.1 (/home/trevor/Code/hyphae/hyphae)
-    Finished `bench` profile [optimized] target(s) in 6.89s
-     Running benches/compiled_map_queries.rs (target/release/deps/compiled_map_queries-4ca67d3da0a0be8b)
-Gnuplot not found, using plotters backend
-Benchmarking compiled_query/repeated_typed_relation_four_join/repeated_right_single
-Benchmarking compiled_query/repeated_typed_relation_four_join/repeated_right_single: Warming up for 2.0000 s
-Benchmarking compiled_query/repeated_typed_relation_four_join/repeated_right_single: Collecting 50 samples in estimated 5.0008 s (1.1M iterations)
-Benchmarking compiled_query/repeated_typed_relation_four_join/repeated_right_single: Analyzing

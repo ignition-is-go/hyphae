@@ -61,8 +61,9 @@ paying a parallel-dispatch cost.
 
 ## Allocation profile
 
-Raw results are archived in
-`benchmark-results/map-query-allocations/20260810T110203Z/`.
+Raw results remain available from repository history at commit
+`4465c6dbe364bfee9f97136d64420549af14d800`; current benchmark retention is
+documented in [`docs/benchmarks/README.md`](../../benchmarks/README.md).
 
 | Two-join phase | Phase 2 | Candidate | Change |
 | --- | ---: | ---: | ---: |

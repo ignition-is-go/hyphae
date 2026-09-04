@@ -1,6 +1,0 @@
-compiled_query/repeated_typed_relation_four_join/repeated_right_single
-                        time:   [4.4546 µs 4.4694 µs 4.4882 µs]
-                        change: [-3.7702% -3.2989% -2.7881%] (p = 0.00 < 0.05)
-                        Performance has improved.
-Found 1 outliers among 50 measurements (2.00%)
-  1 (2.00%) high mild

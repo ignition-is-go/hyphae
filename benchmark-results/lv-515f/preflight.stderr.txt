@@ -1,3 +1,0 @@
-   Compiling hyphae v2.0.1 (/home/trevor/Code/hyphae/hyphae)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.10s
-     Running tests/four_join_application_preflight.rs (target/debug/deps/four_join_application_preflight-6ce1ec73650b4443)

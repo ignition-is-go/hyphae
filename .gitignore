@@ -1,2 +1,4 @@
 /target
+/benchmark-results/*
+!/benchmark-results/README.md
 .claude/

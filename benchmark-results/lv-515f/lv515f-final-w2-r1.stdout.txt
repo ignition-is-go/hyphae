@@ -1,2 +1,0 @@
-region_threshold_calibration/inactive/2062
-                        time:   [2.3803 ms 2.4833 ms 2.5891 ms]

@@ -6,7 +6,7 @@
 
 **Documentation/conformance commit:** `a63c70ae41c298d16ebde60848e96f0906e480bb`
 
-**Authoritative final evidence:** `benchmark-results/lv-671e/`
+**Authoritative final evidence:** [`docs/benchmarks/historical/static-map-query-evidence.md`](../../benchmarks/historical/static-map-query-evidence.md)
 
 ## Why this record exists
 
@@ -39,10 +39,8 @@ performance gates.
 
 ## Consolidated release comparison
 
-The allocation manifests at
-`benchmark-results/lv-671e/allocations/{v3,candidate}/manifest.json`, together
-with `latency/provenance.json`, `compile/{v3,candidate}-{1,2,3}.json`, `environment.txt`, and
-the top-level report/checksums, freeze:
+The retained final report summarizes the allocation manifests, latency
+provenance, compile measurements, environment, and checksums that freeze:
 
 - historical v3 runtime `7fcb1421a36641e905cdcb0c30efa7867d03d6c0`;
 - semantically equivalent v3 harness `8a0cadf2d68e267667c0cee22cf66921da9e1768`;
@@ -54,7 +52,7 @@ counts, five batch sizes, six phases), with 600/600 paired keys, zero duplicate
 keys, zero output-cardinality/checksum mismatches, and zero teardown watermark
 mismatches. It also contains paired 200-sample four-join latency, isolated
 three-run serial compiler time/RSS/artifact results, scoped LLVM codegen, and a
-zero-lost-sample allocation profile. `validate.py` and `sha256sums.txt` validate
+zero-lost-sample allocation profile. The historical validator and checksums validate
 the archive.
 
 The final release claims are deliberately limited to what this evidence proves:

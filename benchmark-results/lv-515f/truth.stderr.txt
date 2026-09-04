@@ -1,2 +1,0 @@
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
-     Running tests/region_threshold_truth_table.rs (target/debug/deps/region_threshold_truth_table-366531c8fe12f001)

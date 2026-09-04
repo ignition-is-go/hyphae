@@ -68,15 +68,9 @@ Separate processes are mandatory because the Hyphae worker pool is a `LazyLock`.
 
 Primary steady-state midpoint speedup is only **1.003x** (`18.815 / 18.765`). The conservative interval ratio is **0.945x** (`18.285 / 19.358`), far below 1.5x. Even comparing the noisier pool-disabled midpoint to four workers gives only **1.141x**. The 10%-rekey midpoint speedup is **1.047x**. Therefore the current arbitrary-N sequential runtime correctly establishes a failing baseline before any Phase 5 sharding work.
 
-Raw outputs:
-
-- `benchmark-results/phase5-preflight-four-join-workers-0.txt`
-- `benchmark-results/phase5-preflight-four-join-workers-1.txt`
-- `benchmark-results/phase5-preflight-four-join-workers-4.txt`
-- `benchmark-results/phase5-preflight-four-join-rekey-workers-1.txt`
-- `benchmark-results/phase5-preflight-four-join-rekey-workers-4.txt`
-- `benchmark-results/phase5-preflight-full-lib-tests.txt`
-- `benchmark-results/phase5-preflight-strict-clippy.txt`
+The raw outputs remain available from repository history at commit
+`4465c6dbe364bfee9f97136d64420549af14d800`; current benchmark retention is
+documented in [`docs/benchmarks/README.md`](../../benchmarks/README.md).
 
 Validation passed:
 

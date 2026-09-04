@@ -858,6 +858,6 @@ design.
 | Panic safety | Conforms to narrow `JoinRegion` fail-stop | Siblings join, failed apply publishes none, cohort poisons; no source/subscriber/global rollback. |
 | Teardown | Conforms | Output owns root guards and final sink is weak; drop tears installation down. |
 | Phase-5 differential/order | Conforms by split coverage | Randomized forced sequential/shard/Rayon state and exact trace oracle at `3d4db44`; separately forced serial/parallel terminal panic proofs at `f6e2b57`. |
-| Enabled-threshold scaling | Conforms | Exact first-enabled-row W1/W2/W4 confidence-bound floors are at least 1.660x in `benchmark-results/lv-515f/`. |
-| Performance/resource gates | Conforms at release level; historical process deviation recorded | Final latency/scaling plus allocations/codegen/serial compile report in `benchmark-results/lv-671e/`; phase mapping and missing Phase-3/4 tuple cells in `docs/superpowers/plans/2026-08-11-static-map-query-phase-evidence-reconciliation.md`. |
+| Enabled-threshold scaling | Conforms | Exact first-enabled-row W1/W2/W4 confidence-bound floors are at least 1.660x in [`docs/benchmarks/historical/enabled-threshold.md`](../../benchmarks/historical/enabled-threshold.md). |
+| Performance/resource gates | Conforms at release level; historical process deviation recorded | Final latency/scaling plus allocations/codegen/serial compile report in [`docs/benchmarks/historical/static-map-query-evidence.md`](../../benchmarks/historical/static-map-query-evidence.md); phase mapping and missing Phase-3/4 tuple cells in `docs/superpowers/plans/2026-08-11-static-map-query-phase-evidence-reconciliation.md`. |
 | Advanced physical optimization | Deferred | Pushdown/reorder/stats/cross-materialization sharing/boxed plans remain Phase 6. |

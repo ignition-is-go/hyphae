@@ -61,8 +61,9 @@ work.
 
 ## Allocation and retention
 
-Raw output and the exact harness are archived under
-`benchmark-results/map-query-allocations/20260810T101525Z/`.
+Raw output and the exact harness remain available from repository history at
+commit `4465c6dbe364bfee9f97136d64420549af14d800`; current benchmark retention is
+documented in [`docs/benchmarks/README.md`](../../benchmarks/README.md).
 
 ### Four-stage projection region
 

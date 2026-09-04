@@ -55,8 +55,9 @@ state transaction today.
 
 ## Allocation profile
 
-Raw measurements are archived in
-`benchmark-results/map-query-allocations/20260810T111359Z/`.
+Raw measurements remain available from repository history at commit
+`4465c6dbe364bfee9f97136d64420549af14d800`; current benchmark retention is
+documented in [`docs/benchmarks/README.md`](../../benchmarks/README.md).
 
 | Scenario and phase | Coordinated baseline | Candidate | Change |
 | --- | ---: | ---: | ---: |

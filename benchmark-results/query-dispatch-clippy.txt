@@ -1,2 +1,0 @@
-    Checking hyphae v2.0.1 (/home/trevor/Code/hyphae/hyphae)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.64s

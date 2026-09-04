@@ -1,9 +1,0 @@
-   Compiling hyphae v2.0.1 (/home/trevor/Code/hyphae/hyphae)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.15s
-     Running tests/four_join_application_preflight.rs (target/debug/deps/four_join_application_preflight-c6ec598a861101ca)
-
-running 1 test
-test four_join_application_matches_reference_order_and_settles_immediately ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s
-

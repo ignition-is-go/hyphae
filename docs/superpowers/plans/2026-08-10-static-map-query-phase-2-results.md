@@ -48,8 +48,9 @@ stateful join work, not dispatch.
 
 ## Allocation profile
 
-Raw measurements are archived at
-`benchmark-results/map-query-allocations/20260810T103115Z/`.
+Raw measurements remain available from repository history at commit
+`4465c6dbe364bfee9f97136d64420549af14d800`; current benchmark retention is
+documented in [`docs/benchmarks/README.md`](../../benchmarks/README.md).
 
 Allocation counts and retained bytes are effectively unchanged from Phase 1,
 as expected: this phase removes virtual calls and boxed closure allocations,

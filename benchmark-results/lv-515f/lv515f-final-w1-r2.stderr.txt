@@ -1,7 +1,0 @@
-    Finished `bench` profile [optimized] target(s) in 0.05s
-     Running benches/region_threshold_calibration.rs (target/release/deps/region_threshold_calibration-fcc1e54becfd1351)
-Gnuplot not found, using plotters backend
-Benchmarking region_threshold_calibration/inactive/2062
-Benchmarking region_threshold_calibration/inactive/2062: Warming up for 2.0000 s
-Benchmarking region_threshold_calibration/inactive/2062: Collecting 50 samples in estimated 5.7097 s (350 iterations)
-Benchmarking region_threshold_calibration/inactive/2062: Analyzing

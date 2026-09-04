@@ -100,8 +100,9 @@ output graph and update work from being optimized away.
 
 ## Allocation and retention baseline
 
-The full raw output and environment live under
-`benchmark-results/map-query-allocations/20260810T095124Z/`.
+The full raw output and environment remain available from repository history at
+commit `4465c6dbe364bfee9f97136d64420549af14d800`; current benchmark retention is
+documented in [`docs/benchmarks/README.md`](../../benchmarks/README.md).
 
 ### Four-stage projection region
 
