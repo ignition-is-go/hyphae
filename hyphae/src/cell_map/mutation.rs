@@ -8,7 +8,7 @@ use std::{
 };
 
 use dashmap::DashMap;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, ReentrantMutex};
 use uuid::Uuid;
 
 use crate::{
@@ -48,6 +48,7 @@ where
         Self {
             inner: Arc::new(CellMapInner {
                 data: DashMap::new(),
+                subscription_gate: ReentrantMutex::new(()),
                 key_cells: DashMap::new(),
                 prune_ops: AtomicUsize::new(0),
                 diffs_cell,
@@ -120,6 +121,7 @@ where
     /// Insert a key-value pair, returning the old value if present.
     pub fn insert(&self, key: K, value: V) -> Option<V> {
         self.maybe_prune_key_cells();
+        let _subscription_gate = self.inner.subscription_gate.lock();
         let old = self.inner.data.insert(key.clone(), value.clone());
 
         // No-op update: same key/value should not emit a diff or notify observers.
@@ -156,6 +158,7 @@ where
             return;
         }
         self.maybe_prune_key_cells();
+        let _subscription_gate = self.inner.subscription_gate.lock();
         let previous_len = self.inner.data.len();
 
         let mut changes = Vec::with_capacity(entries.len());
@@ -195,6 +198,7 @@ where
     /// Remove a key, returning the old value if present.
     pub fn remove(&self, key: &K) -> Option<V> {
         self.maybe_prune_key_cells();
+        let _subscription_gate = self.inner.subscription_gate.lock();
         let removed = self.inner.data.remove(key);
 
         if let Some((k, old_value)) = removed {
@@ -226,6 +230,7 @@ where
             return;
         }
         self.maybe_prune_key_cells();
+        let _subscription_gate = self.inner.subscription_gate.lock();
 
         let original_len = self.inner.data.len();
         let mut changes = Vec::new();
@@ -267,6 +272,7 @@ where
     /// subscribers see one atomic replacement instead of N individual diffs.
     pub fn replace_all(&self, entries: Vec<(K, V)>) {
         self.maybe_prune_key_cells();
+        let _subscription_gate = self.inner.subscription_gate.lock();
         let previous_len = self.inner.data.len();
         let new_keys: std::collections::HashSet<&K> = entries.iter().map(|(k, _)| k).collect();
         let mut changes = Vec::new();
@@ -339,6 +345,7 @@ where
             return;
         }
         self.maybe_prune_key_cells();
+        let _subscription_gate = self.inner.subscription_gate.lock();
         let previous_len = self.inner.data.len();
         match &diff {
             MapDiff::Initial { entries } => {
@@ -480,6 +487,7 @@ where
             return;
         }
         self.maybe_prune_key_cells();
+        let _subscription_gate = self.inner.subscription_gate.lock();
         let previous_len = self.inner.data.len();
         let applied_changes: Vec<_> = changes
             .into_iter()

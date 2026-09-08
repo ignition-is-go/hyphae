@@ -225,6 +225,93 @@ fn test_cellmap_subscribe_diffs() {
 }
 
 #[test]
+fn subscribe_diffs_delivers_mutation_from_initial_callback() {
+    use std::sync::Arc;
+
+    use parking_lot::Mutex;
+
+    let map = CellMap::<String, i32>::new();
+    map.insert("before".to_string(), 1);
+
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let callback_map = map.clone();
+    let callback_seen = seen.clone();
+    let _guard = map.subscribe_diffs(move |diff| {
+        callback_seen.lock().push(diff.clone());
+        if matches!(diff, MapDiff::Initial { .. }) {
+            callback_map.insert("during-initial".to_string(), 2);
+        }
+    });
+
+    assert!(matches!(
+        seen.lock().as_slice(),
+        [MapDiff::Initial { .. }, MapDiff::Insert { key, value }]
+            if key == "during-initial" && *value == 2
+    ));
+}
+
+#[test]
+fn subscribe_diffs_allows_reentrant_mutation() {
+    use std::sync::Arc;
+
+    use parking_lot::Mutex;
+
+    let map = CellMap::<String, i32>::new();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let callback_map = map.clone();
+    let callback_seen = seen.clone();
+    let _guard = map.subscribe_diffs(move |diff| {
+        callback_seen.lock().push(diff.clone());
+        if matches!(diff, MapDiff::Insert { key, .. } if key == "outer") {
+            callback_map.insert("inner".to_string(), 2);
+        }
+    });
+
+    map.insert("outer".to_string(), 1);
+
+    assert!(matches!(
+        seen.lock().as_slice(),
+        [MapDiff::Initial { .. }, MapDiff::Insert { key: outer, .. }, MapDiff::Insert { key: inner, .. }]
+            if outer == "outer" && inner == "inner"
+    ));
+}
+
+#[test]
+fn subscribe_diffs_recovers_delivery_after_callback_panic() {
+    use std::{
+        panic::{AssertUnwindSafe, catch_unwind},
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+    };
+
+    use parking_lot::Mutex;
+
+    let map = CellMap::<String, i32>::new();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let callback_seen = seen.clone();
+    let panic_once = Arc::new(AtomicBool::new(true));
+    let callback_panic_once = panic_once;
+    let _guard = map.subscribe_diffs(move |diff| {
+        callback_seen.lock().push(diff.clone());
+        if matches!(diff, MapDiff::Insert { key, .. } if key == "panic")
+            && callback_panic_once.swap(false, Ordering::SeqCst)
+        {
+            std::panic::resume_unwind(Box::new("subscriber panic"));
+        }
+    });
+
+    assert!(catch_unwind(AssertUnwindSafe(|| map.insert("panic".to_string(), 1))).is_err());
+    map.insert("after-panic".to_string(), 2);
+
+    assert!(matches!(
+        seen.lock().last(),
+        Some(MapDiff::Insert { key, value }) if key == "after-panic" && *value == 2
+    ));
+}
+
+#[test]
 fn test_apply_batch_emits_single_batch_diff() {
     let map = CellMap::<String, i32>::new();
     let (tx, rx) = std::sync::mpsc::channel::<MapDiff<String, i32>>();
