@@ -4,6 +4,7 @@
 //! Changes to keys trigger reactive updates to observers.
 
 use std::{
+    collections::VecDeque,
     hash::Hash,
     marker::PhantomData,
     sync::{
@@ -13,7 +14,7 @@ use std::{
 };
 
 use dashmap::{DashMap, mapref::entry::Entry};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, ReentrantMutex};
 use uuid::Uuid;
 
 use crate::{
@@ -38,6 +39,9 @@ where
 {
     /// The actual data storage.
     pub(crate) data: DashMap<K, V>,
+    /// Linearizes map mutations with diff subscription setup so an initial
+    /// snapshot and subsequent diffs form one gap-free stream.
+    subscription_gate: ReentrantMutex<()>,
     /// Cached per-key observation cells.
     ///
     /// Entries are `WeakCell`s: once every strong handle a caller holds from
@@ -106,6 +110,68 @@ where
 enum OutputReplay {
     Apply,
     Skip,
+}
+
+struct PendingDiffs<K, V> {
+    ready: bool,
+    delivering: bool,
+    diffs: VecDeque<MapDiff<K, V>>,
+}
+
+impl<K, V> PendingDiffs<K, V> {
+    const fn new() -> Self {
+        Self {
+            ready: false,
+            delivering: false,
+            diffs: VecDeque::new(),
+        }
+    }
+
+    /// Queue a diff and report whether this caller must start delivery.
+    fn push(&mut self, diff: MapDiff<K, V>) -> bool {
+        self.diffs.push_back(diff);
+        if self.ready && !self.delivering {
+            self.delivering = true;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Clears the in-progress bit if a user callback panics. The next map mutation
+/// can then resume draining queued diffs instead of leaving this subscription
+/// permanently stalled.
+struct DeliveryReset<K, V> {
+    state: Arc<Mutex<PendingDiffs<K, V>>>,
+}
+
+impl<K, V> Drop for DeliveryReset<K, V> {
+    fn drop(&mut self) {
+        self.state.lock().delivering = false;
+    }
+}
+
+fn drain_pending_diffs<K, V>(
+    state: &Arc<Mutex<PendingDiffs<K, V>>>,
+    callback: &impl Fn(&MapDiff<K, V>),
+) {
+    let _reset = DeliveryReset {
+        state: state.clone(),
+    };
+    loop {
+        let next = {
+            let mut state = state.lock();
+            if let Some(diff) = state.diffs.pop_front() {
+                diff
+            } else {
+                state.delivering = false;
+                drop(state);
+                return;
+            }
+        };
+        callback(&next);
+    }
 }
 
 impl<K, V, M> CellMap<K, V, M>
@@ -379,16 +445,12 @@ where
     where
         F: Fn(&MapDiff<K, V>) + Send + Sync + 'static,
     {
-        // Emit initial snapshot
-        let entries: Vec<(K, V)> = self
-            .inner
-            .data
-            .iter()
-            .map(|r| (r.key().clone(), r.value().clone()))
-            .collect();
-        callback(&MapDiff::Initial { entries });
+        let callback = Arc::new(callback);
+        let pending = Arc::new(Mutex::new(PendingDiffs::new()));
 
-        // Subscribe to subsequent diffs.
+        // Register first, then take the snapshot while mutation is gated. This
+        // leaves no interval in which a diff can fall between the snapshot and
+        // listener. The callback remains blocked until after Initial returns.
         // Capture a strong ref to CellMapInner so the map (and its owned subscription guards)
         // stays alive as long as this subscription exists. Without this, if the CellMap is
         // dropped (e.g., passed by value to subscribe_diffs then goes out of scope), the
@@ -396,16 +458,50 @@ where
         let map_keepalive = self.inner.clone();
         let diffs = self.diffs().materialize();
         let first = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        diffs.subscribe(move |signal| {
-            let _ = &map_keepalive;
-            // Skip the first signal (the current value from Cell subscription)
-            if first.swap(false, std::sync::atomic::Ordering::SeqCst) {
-                return;
+        let pending_for_subscription = pending.clone();
+        let callback_for_subscription = callback.clone();
+        let guard = {
+            let _subscription_gate = self.inner.subscription_gate.lock();
+            let guard = diffs.subscribe(move |signal| {
+                let _ = &map_keepalive;
+                // The Cell seed is already represented by the snapshot below.
+                if first.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    return;
+                }
+                if let crate::Signal::Value(diff) = signal {
+                    let should_drain = pending_for_subscription.lock().push(diff.as_ref().clone());
+                    if should_drain {
+                        drain_pending_diffs(
+                            &pending_for_subscription,
+                            callback_for_subscription.as_ref(),
+                        );
+                    }
+                }
+            });
+            let entries = self
+                .inner
+                .data
+                .iter()
+                .map(|r| (r.key().clone(), r.value().clone()))
+                .collect();
+            (guard, entries)
+        };
+
+        callback(&MapDiff::Initial { entries: guard.1 });
+        let should_drain = {
+            let mut pending = pending.lock();
+            pending.ready = true;
+            if pending.diffs.is_empty() || pending.delivering {
+                false
+            } else {
+                pending.delivering = true;
+                true
             }
-            if let crate::Signal::Value(diff) = signal {
-                callback(diff.as_ref());
-            }
-        })
+        };
+        if should_drain {
+            drain_pending_diffs(&pending, callback.as_ref());
+        }
+        guard.0
     }
 }
 
