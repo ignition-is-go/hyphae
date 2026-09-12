@@ -271,6 +271,65 @@ fn test_insert_same_value_is_noop_update() {
 }
 
 #[test]
+fn subscribe_diffs_does_not_lose_an_update_during_initial_snapshot() -> Result<(), String> {
+    for iteration in 0..10_000 {
+        let source = CellMap::<String, usize>::new();
+        source.insert("key".to_owned(), 0);
+        let replica = CellMap::<String, usize>::new();
+        let replica_for_callback = replica.clone();
+        let barrier = Arc::new(Barrier::new(2));
+        let source_for_thread = source.clone();
+        let barrier_for_thread = barrier.clone();
+        let subscriber = std::thread::spawn(move || {
+            barrier_for_thread.wait();
+            source_for_thread.subscribe_diffs(move |diff| {
+                replica_for_callback.apply_diff_owned(diff.clone());
+            })
+        });
+
+        barrier.wait();
+        source.insert("key".to_owned(), 1);
+        let guard = subscriber
+            .join()
+            .map_err(|_| format!("subscriber thread panicked at iteration {iteration}"))?;
+        if replica.get_value(&"key".to_owned()) != Some(1) {
+            return Err(format!(
+                "subscriber stranded the initial value at iteration {iteration}"
+            ));
+        }
+        drop(guard);
+    }
+    Ok(())
+}
+
+#[test]
+fn subscribe_diffs_reentrant_update_follows_initial_snapshot() {
+    let source = CellMap::<String, usize>::new();
+    source.insert("key".to_owned(), 0);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let seen_for_callback = seen.clone();
+    let source_for_callback = source.clone();
+
+    let _guard = source.subscribe_diffs(move |diff| {
+        seen_for_callback.lock().push(diff.clone());
+        if matches!(diff, MapDiff::Initial { .. }) {
+            source_for_callback.insert("key".to_owned(), 1);
+        }
+    });
+
+    {
+        let seen = seen.lock();
+        assert!(
+            matches!(seen.first(), Some(MapDiff::Initial { entries }) if entries == &[("key".to_owned(), 0)])
+        );
+        assert!(
+            matches!(seen.get(1), Some(MapDiff::Update { key, old_value: 0, new_value: 1 }) if key == "key")
+        );
+        drop(seen);
+    }
+}
+
+#[test]
 fn test_apply_batch_filters_noop_updates() {
     let map = CellMap::<String, i32>::new();
     let (tx, rx) = std::sync::mpsc::channel::<MapDiff<String, i32>>();

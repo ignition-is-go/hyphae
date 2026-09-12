@@ -379,7 +379,36 @@ where
     where
         F: Fn(&MapDiff<K, V>) + Send + Sync + 'static,
     {
-        // Emit initial snapshot
+        let callback = Arc::new(callback);
+        let initializing = Arc::new(AtomicBool::new(true));
+        let pending = Arc::new(Mutex::new(Vec::new()));
+
+        // Subscribe before reading the snapshot. Mutations racing construction
+        // are buffered until the snapshot has been delivered, then replayed in
+        // notification order.
+        let map_keepalive = self.inner.clone();
+        let diffs = self.diffs().materialize();
+        let first = Arc::new(AtomicBool::new(true));
+        let callback_for_diffs = callback.clone();
+        let initializing_for_diffs = initializing.clone();
+        let pending_for_diffs = pending.clone();
+        let guard = diffs.subscribe(move |signal| {
+            let _ = &map_keepalive;
+            if first.swap(false, Ordering::SeqCst) {
+                return;
+            }
+            let Signal::Value(diff) = signal else { return };
+            if initializing_for_diffs.load(Ordering::Acquire) {
+                let mut queued = pending_for_diffs.lock();
+                if initializing_for_diffs.load(Ordering::Relaxed) {
+                    queued.push(diff.as_ref().clone());
+                    return;
+                }
+                drop(queued);
+            }
+            callback_for_diffs(diff.as_ref());
+        });
+
         let entries: Vec<(K, V)> = self
             .inner
             .data
@@ -387,25 +416,20 @@ where
             .map(|r| (r.key().clone(), r.value().clone()))
             .collect();
         callback(&MapDiff::Initial { entries });
-
-        // Subscribe to subsequent diffs.
-        // Capture a strong ref to CellMapInner so the map (and its owned subscription guards)
-        // stays alive as long as this subscription exists. Without this, if the CellMap is
-        // dropped (e.g., passed by value to subscribe_diffs then goes out of scope), the
-        // CellMapInner and its owned guards would be dropped, breaking upstream subscriptions.
-        let map_keepalive = self.inner.clone();
-        let diffs = self.diffs().materialize();
-        let first = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        diffs.subscribe(move |signal| {
-            let _ = &map_keepalive;
-            // Skip the first signal (the current value from Cell subscription)
-            if first.swap(false, std::sync::atomic::Ordering::SeqCst) {
-                return;
+        loop {
+            let queued = {
+                let mut queued = pending.lock();
+                if queued.is_empty() {
+                    initializing.store(false, Ordering::Release);
+                    break;
+                }
+                std::mem::take(&mut *queued)
+            };
+            for diff in queued {
+                callback(&diff);
             }
-            if let crate::Signal::Value(diff) = signal {
-                callback(diff.as_ref());
-            }
-        })
+        }
+        guard
     }
 }
 
