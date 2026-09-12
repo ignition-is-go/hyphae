@@ -303,6 +303,46 @@ fn subscribe_diffs_does_not_lose_an_update_during_initial_snapshot() -> Result<(
 }
 
 #[test]
+fn subscribe_diffs_concurrent_insert_and_remove_converge() -> Result<(), String> {
+    for iteration in 0..10_000 {
+        let source = CellMap::<String, usize>::new();
+        if iteration % 2 == 0 {
+            source.insert("key".to_owned(), 0);
+        }
+        let replica = CellMap::<String, usize>::new();
+        let replica_for_callback = replica.clone();
+        let barrier = Arc::new(Barrier::new(2));
+        let source_for_thread = source.clone();
+        let barrier_for_thread = barrier.clone();
+        let subscriber = std::thread::spawn(move || {
+            barrier_for_thread.wait();
+            source_for_thread.subscribe_diffs(move |diff| {
+                replica_for_callback.apply_diff_owned(diff.clone());
+            })
+        });
+
+        barrier.wait();
+        let expected = if iteration % 2 == 0 {
+            source.remove(&"key".to_owned());
+            None
+        } else {
+            source.insert("key".to_owned(), 1);
+            Some(1)
+        };
+        let guard = subscriber
+            .join()
+            .map_err(|_| format!("subscriber thread panicked at iteration {iteration}"))?;
+        if replica.get_value(&"key".to_owned()) != expected {
+            return Err(format!(
+                "subscriber did not converge after insert/remove at iteration {iteration}"
+            ));
+        }
+        drop(guard);
+    }
+    Ok(())
+}
+
+#[test]
 fn subscribe_diffs_reentrant_update_follows_initial_snapshot() {
     let source = CellMap::<String, usize>::new();
     source.insert("key".to_owned(), 0);
