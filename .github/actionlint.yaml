@@ -1,3 +1,4 @@
 self-hosted-runner:
   labels:
-    - ci-public-linux-ephemeral
+    - disk-ge-100g
+    - ram-ge-16g
