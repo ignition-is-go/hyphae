@@ -19,4 +19,4 @@ jobs:
   validate:
     uses: ignition-is-go/pulse-actions/.github/workflows/validate-workflows.yml@2c94ebf4fedd47f0c36d491e0dee5ad446a071b5 # v1.0.0
     with:
-      runner-json: '"ci-public-linux-ephemeral"'
+      runner-json: '{"group":"ci-untrusted","labels":["self-hosted","Linux","X64","ram-ge-16g","disk-ge-100g"]}'

@@ -6,7 +6,9 @@ on:
 
 jobs:
   release:
-    runs-on: ci-public-linux-ephemeral
+    runs-on:
+      group: ci-untrusted
+      labels: [self-hosted, Linux, X64, ram-ge-16g, disk-ge-100g]
     permissions:
       contents: write
 
