@@ -51,10 +51,9 @@ futures-core = { workspace = true, optional = true }
 tracing = { version = "0.1", optional = true }
 uuid.workspace = true
 
-# Native-only deps (thread pool, precise sleep).
+# Native-only deps (thread pool).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rayon = "1.10"
-spin_sleep = "1"
 
 # WASM deps: uuid/getrandom need js RNG; gloo-timers (futures) + the
 # wasm-bindgen-futures executor drive leak-free setTimeout-backed timers;

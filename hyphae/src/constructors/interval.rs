@@ -60,9 +60,8 @@ pub fn interval_source(duration: Duration) -> Source<u64> {
 
 /// Creates a high-precision interval cell that emits 0, 1, 2, ... at the given frequency.
 ///
-/// On native targets this uses spin-sleeping for sub-millisecond precision,
-/// suitable for high-frequency applications like 240Hz sync clocks. On wasm
-/// there is no sub-millisecond timer, so this behaves like [`interval`].
+/// On native targets this uses monotonic deadlines suitable for high-frequency
+/// applications like 240Hz sync clocks. On wasm this behaves like [`interval`].
 ///
 /// **Performance note:** prefer [`interval_precise_source`] when consumers
 /// only need notification.

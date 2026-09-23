@@ -9,12 +9,6 @@ use std::{
 
 use rayon::prelude::*;
 
-/// Below this remaining wait, busy-spin for accuracy instead of parking on
-/// the condvar. `Condvar::wait_timeout` (backed by the OS scheduler) has
-/// millisecond-ish granularity; `spin_sleep` gets sub-millisecond precision
-/// for the final approach to a deadline.
-const SPIN_THRESHOLD: Duration = Duration::from_millis(2);
-
 /// A single scheduled timer, owned by the shared [`Reactor`].
 struct TimerEntry {
     next_fire: Instant,
@@ -154,30 +148,18 @@ fn wait_for_due(reactor: &'static Reactor) -> Vec<TimerEntry> {
             return drain_due(&mut guard, now);
         }
 
+        // A timed condition-variable wait uses the operating system's
+        // monotonic high-resolution timer without occupying a CPU. A newly
+        // registered earlier deadline wakes this wait so it can be recomputed.
+        // Busy-spinning the final part of every staggered interval compounds:
+        // with enough timers, their spin windows overlap and keep this single
+        // reactor thread runnable continuously.
         let wait_for = next_deadline.saturating_duration_since(now);
-        if wait_for > SPIN_THRESHOLD {
-            // Park for most of the wait; `notify_all` on a new, earlier
-            // registration (or the timeout itself) wakes us to re-check.
-            let Some(park_for) = wait_for.checked_sub(SPIN_THRESHOLD) else {
-                continue;
-            };
-            let (g, _timed_out) = reactor
-                .wake
-                .wait_timeout(guard, park_for)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            guard = g;
-            continue;
-        }
-
-        // Final approach: busy-spin for sub-millisecond accuracy. Drop the
-        // lock first so a concurrent registration isn't blocked on it for
-        // the (short) spin.
-        drop(guard);
-        spin_sleep::sleep(wait_for);
-        guard = reactor
-            .entries
-            .lock()
+        let (g, _timed_out) = reactor
+            .wake
+            .wait_timeout(guard, wait_for)
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard = g;
     }
 }
 
@@ -236,10 +218,8 @@ pub fn spawn_delayed(delay: Duration, f: impl FnOnce() + Send + 'static) {
 /// returns `false`.
 ///
 /// `precise` is accepted for API compatibility but no longer changes the
-/// wait strategy: the shared reactor always resolves its next wake with a
-/// hybrid park-then-spin wait (see [`wait_for_due`]), so every registered
-/// timer gets the same sub-millisecond accuracy on the final approach
-/// regardless of which other timers are also registered.
+/// wait strategy: the shared reactor schedules every timer against a monotonic
+/// deadline and parks between deadlines (see [`wait_for_due`]).
 pub fn spawn_interval(
     period: Duration,
     _precise: bool,
