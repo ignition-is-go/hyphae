@@ -1,0 +1,70 @@
+Runtime arena baseline
+
+The reference starts after PR37's compact owned guards and PR38's map-update fix. Its production revision is a02b5d340f2838999c2f37e79891d4b2f41f0e9d. This branch is stacked on hyphae-map-hotpath; subsequent CI-only ancestry changes do not change the measured production code. No arena speedup is claimed here.
+
+Two complementary measurements
+
+The existing Criterion suites cover 32 benchmark cases: scalar updates, batched and unbatched diamonds, subscriber churn, concurrent independent/shared graphs, and compiled map joins. Each case runs twice with a requested 30 samples, one-second warmup, two-second measurement target, and four Hyphae workers. Criterion can extend its measurement time to obtain the requested sample count. Its estimates describe amortized operation or workload cost; they are not event latency percentiles. Contention results time a whole multi-thread workload, not one batch call.
+
+runtime_baseline.rs uses existing public APIs to exercise lifecycle construction/clone/drop, a materialized deep chain, wide diamond, non-coalesced reducer inputs, Source fanout, and reactive keyed projection updates. It records setup, operation, and teardown separately with raw samples and empirical p50/p95/p99. These are repeatedly constructed synthetic graphs, not production end-to-end tails. The capture uses sizes 16 and 128, 50 excluded warmup iterations, 1000 measured iterations, and two fresh-process repetitions per size. Assertions check derived values, every projected row, fanout payloads/counts, reducer event counts, and diamond settlement count.
+
+Preparation
+
+These capture scripts target Linux because they use /proc, wait4, and CPU affinity metadata. From this repository, build and freeze all benchmark executables before starting timings:
+
+    CARGO_BUILD_JOBS=4 python3 scripts/runtime_baseline.py prepare \
+      --output benchmark-results/my-build \
+      --benches scheduler,subscriber_registry,scheduler_contention,compiled_map_queries,runtime_baseline
+
+The directory must not already exist. The tool records source digests before and after compilation, Cargo.lock, build arguments, toolchain, and binary hashes, and retains executable copies. Source-state changes during compilation fail preparation. A later measurement checks the frozen binary hashes and toolchain. Preserve these directories outside version control; new builds should use new directories.
+
+Measurements
+
+Stop competing builds/server jobs and coordinate the window with other sessions. Execute prebuilt benchmarks, not cargo bench, during timings:
+
+    python3 scripts/runtime_baseline.py measure \
+      --prepared benchmark-results/my-build/manifest.json \
+      --output benchmark-results/my-reference --label my-revision \
+      --workers 4 --repeats 2
+
+    python3 scripts/runtime_workloads.py \
+      --prepared benchmark-results/my-build/manifest.json \
+      --output benchmark-results/my-workloads \
+      --sizes 16,128 --iterations 1000 --warmup 50 --repeats 2
+
+Both commands refuse to overwrite result directories. The workload runner verifies all expected phases, metadata, sample counts, and quantiles recomputed from raw samples. A failed assertion or timeout fails the capture. CPU, memory, pressure, affinity, governor, and process snapshots accompany each run; periodic pressure samples help identify interference. Memory from wait4 is peak process RSS, not exact live Cell bytes. No CPU affinity or governor changes were imposed for this reference; their observed values are recorded.
+
+Comparison
+
+Build candidate executables separately with the unchanged benchmark sources and protocol. Keep the reference executables. For a final performance claim, alternate reference/candidate runs on the same quiet machine so time-dependent host load is not confused with a code change. Two archived repetitions characterize a starting point; they do not establish a regression threshold or production latency guarantee.
+
+    python3 scripts/runtime_baseline.py compare \
+      benchmark-results/my-reference/manifest.json \
+      benchmark-results/my-candidate/manifest.json
+
+The comparison rejects protocol, host, toolchain, build-argument/environment, and benchmark-source mismatches. It retains each process estimate and confidence interval, and reports a descriptive change in the median of run means. It does not issue a statistical significance or pass/fail verdict. Inspect raw samples, repeat spread, and host activity before accepting a win. Same-binary control comparisons are allowed and should produce zero changes when given the same capture.
+
+Artifacts
+
+The full local capture is under benchmark-results/runtime-arena-baseline. The checked-in reference summary and raw-data archive live beside this document. The archive excludes executable binaries and contains prepared manifests, measurement metadata, Criterion raw data, phase samples, and validation results. Rebuilds are reproducible from the recorded commit/benchmark sources; the local frozen executables remain available for direct comparisons.
+
+The first unbound Criterion capture and initial workload capture remain local as exploratory evidence. They are not the authoritative reference. The published workload capture is rebuilt after review strengthened row/payload assertions. Earlier and rebuilt Criterion executables matched byte-for-byte, but the final reference also uses the reviewed build/measurement protocol.
+
+Compatibility
+
+This checkpoint changes benchmark tooling and documents the migration boundary. Production Rust sources and public API signatures are unchanged. See runtime-arena-compatibility.txt for the private arena candidate and runtime-arena-plan.txt for implementation gates. Existing consumers do not need a Runtime argument, a different set return type, or a pending subscription API.
+
+CI correctness check
+
+Quality Gates runs the public-API workload with size 16 and two iterations. This checks outputs and delivery counts on every PR in the stack; its timings are discarded. The focused target avoids compiling the unrelated deep benchmark suite.
+
+Allocation reference
+
+The existing owned_guard_allocations example from PR37 was built in release mode with scheduler enabled and exercised twice for Cells/Sources with 0, 1, and 4 owned guards, 10,000 owners per run. Its allocator asserts exact guard cleanup and restoration of live bytes. Retained bytes per owner were Cell 392/708/1088 and Source 144/460/840 respectively. These include the measured ownership structure and guards, not just the size of a Cell handle. The build command, example and executable hashes, and all raw results are in the archive.
+
+Reproduce that allocation probe with:
+
+    cargo build -p hyphae --release --features scheduler --example owned_guard_allocations
+    <target>/release/examples/owned_guard_allocations cell 10000 0
+
+Use the target directory recorded in Cargo's build output, then repeat for cell/source and 0/1/4 guards. Compile before timing.

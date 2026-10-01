@@ -1,0 +1,44 @@
+API-compatible runtime arena work
+
+User constraints
+
+Preserve the public API. Existing source code must continue to compile with the same constructors, methods, trait bounds, and feature choices. Slight behavior changes may be acceptable, but are recorded and tested individually. There is no permission to lose updates, weaken memory safety, or remove synchronous Cell replay silently.
+
+The earlier design handoff explored public Runtime arguments, fallible writes, pending subscriptions, and explicit runtime bridges. Those are no longer the migration plan. Internal ownership must sit behind the existing Cell, Source, batch, subscription, and DepNode APIs. Optional additions may supplement those APIs; none may become required for existing callers.
+
+Workspace and base
+
+Pulse workspace hyphae-runtime-arena, branch feat/runtime-arena. The initial clean checkout was 3c7afbf, then fast-forwarded before timed measurement to a02b5d340f2838999c2f37e79891d4b2f41f0e9d at the user's direction. This contains PR38's map shard-scan fix and PR37's compact owned-guard storage. The wave-buffer candidate is excluded. Structural speedups must be measured beyond those fixes, not credited with their gains.
+
+Workflow
+
+1. Read the poteto-mode principles and ground the current implementation. Completed for the baseline and compatibility scope.
+2. Frame a falsifiable checkpoint. A repeatable pre-change suite records exact source/build identity, observable output assertions, raw measurements, and host state before any runtime mutation.
+3. Design independently verifiable units. Separate measurement tooling, API compatibility constraints, and the first private arena replacement. Do not implement the previous breaking design.
+4. Run the experiment loop. Capture baseline, replace one existing structure, verify behavior, rerun unchanged workload/protocol, retain only a justified improvement or an explicitly necessary structural prerequisite.
+5. Keep decisions in runtime-arena-decisions.tsv. Measurements live under benchmark-results/runtime-arena-baseline; a compact checked-in result and archive digest make the baseline reviewable.
+6. Verify the checkpoint and push the branch. Major runtime migration remains tracked separately until its own behavior/performance gates pass.
+
+Throughput checkpoint
+
+Preparation and compilation happen outside timing windows. Prebuilt benchmarks run serially. Agent review and source reads may proceed, but all local builds/tests and other benchmark processes are paused during timings. Reuse existing Criterion workloads for scalar propagation, diamonds, subscriber churn, contention, and compiled map queries. Add one small deterministic public-API benchmark for lifecycle, deep materialized chains, wide diamonds, ordered events, fanout, and keyed projection churn. Do not reproduce production deployments to measure these library workloads.
+
+Data shape
+
+Keep public handles and Arc/Weak lifetimes. Explore private typed/generational slots for state that currently allocates separately or is repeatedly indexed by UUID. Compact arena metadata and execution edges must replace existing work; a mandatory global census that merely adds a mutex/slot/Arc to every cell is not accepted as a performance improvement. Public UUID identity remains stable. Arbitrary external DepNode implementations and the parallel adapter must continue to work.
+
+First runtime acceptance gate
+
+Before changing storage, choose a concrete existing allocation or hot lookup to remove and record the expected workload benefit. Prove stale-slot protection, final-drop behavior, guard cleanup outside locks, Cell initial replay, Source no-replay, terminal ordering, event multiplicity, and concurrent access. Preserve default/scheduler/async/profiling builds and wasm support. Do not infer an execution graph from ownership-only DepNode links. If a first experiment only adds tracking overhead, reject it or keep it out of production rather than calling it an optimization.
+
+Compatibility verification
+
+Compile the unchanged public-API workload and existing consumers' API patterns against both base and candidate. Compare method/trait signatures, generic bounds and feature availability. Runtime tests establish synchronous get/subscribe/Weak/drop behavior separately from compile checks. Concurrency and replay tests require real scheduler execution, not mocked metadata. Use a serial library test run for a known baseline because upbeat-barracuda reported unresolved parallel-suite failures on the base lineage; do not attribute inherited failures to arena work without before/after reproduction.
+
+Audit correction
+
+Hyphae CellMap's internal diffs_cell is explicitly no_coalesce under scheduler in cell_map/mutation.rs. Earlier discussion repeated Myko's comment about a coalescible diff cell without establishing the complete resolved carrier path. Treat that as a source-comment claim requiring verification, not an established CellMap loss bug. Ordered-delta conformance remains necessary; a new runtime must preserve the current protection.
+
+Definition of done for this initial checkpoint
+
+An isolated branch based on both focused fixes; runnable committed benchmark tooling; successful pre-change workload assertions; persisted raw results with provenance and repeat information; a reviewed API-compatible implementation boundary; no uncommitted runtime mutation that invalidates the baseline. The full arena migration is not declared complete by this checkpoint.

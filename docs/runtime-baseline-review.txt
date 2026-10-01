@@ -1,0 +1,57 @@
+Runtime baseline review
+=======================
+
+Status: initial source-only review, followed by the corrections recorded below. Historical line references refer to the first runner. The reviewer did not run benchmarks; parent-run evidence is recorded in the baseline artifacts.
+
+1. The manifest does not prove that a measured binary came from the recorded revision and source tree.
+
+`measure()` records the repository's current `HEAD`, status, and tracked-source hashes after reading arbitrary executable paths from a caller-supplied Cargo build log (`scripts/runtime_baseline.py:66-87`). Cargo's compiler-artifact message identifies an output path, but the script never verifies the build occurred at the recorded revision or with the recorded source manifest. A stale build log and still-present executable can therefore be labeled as a later checkout. The source manifest also uses `git ls-files`, so it omits the contents of untracked Rust inputs; the current worktree contains an untracked benchmark file and scripts (`source_manifest`, lines 35-37).
+
+Required fix: have the build step write a provenance document next to each executable at build time, containing revision, dirty diff or a complete digest of tracked and untracked build inputs, Cargo package/target/profile/features, rustc, Cargo.lock, and executable hash. `measure` should reject a binary unless that document's executable hash matches and should copy the document into the result. At minimum, reject dirty source trees for the official baseline. Recording a dirty status without binding its contents to the binary is insufficient.
+
+2. `compare()` accepts materially incomparable runs.
+
+The only enforced configuration equality is `worker_threads`, followed by equality of discovered benchmark IDs (`scripts/runtime_baseline.py:122-141`). It will compare different CPUs, affinity masks, governors, kernels, rustc versions, Cargo profiles/features, environment variables, filters, sample parameters, or even two manifests pointing to the same binary. The output's `change_percent` can therefore look authoritative while provenance or execution conditions differ.
+
+Required fix: store a normalized measurement protocol and build configuration in each manifest, then reject mismatches for host identity, affinity, governor, rustc, profile/features, invocation/filter, Criterion parameters, selected targets, and relevant environment. Require distinct source revisions or explicitly label a same-binary control comparison. Keep a narrow override flag that prints every waived mismatch in the comparison output.
+
+3. Averaging Criterion point estimates across two process runs is not a sound uncertainty calculation.
+
+`collect()` keeps each run's Criterion mean point estimate, and `compare()` takes the arithmetic mean of those means (`scripts/runtime_baseline.py:128-142`). This discards within-run sample counts and uncertainty, does not calculate between-run variance, and cannot use the recorded confidence intervals to decide whether an apparent difference is noise. Two repeats are especially weak for host-to-host or revision-to-revision inference.
+
+Required fix: retain Criterion raw sample files or at least each run's estimate, standard error, and confidence interval. Report every process-level estimate, the median process estimate, range, and paired change when runs are interleaved. Do not publish one aggregate percentage as a regression verdict. Set a minimum repeat count based on a same-binary control experiment and fail the comparison when control noise exceeds the proposed regression threshold.
+
+4. These Criterion estimates are throughput distributions, not operation-latency p95 or p99.
+
+`summarize()` records Criterion mean and median estimates only (`scripts/runtime_baseline.py:51-63`), and the comparison note correctly says they are not event tail latencies. The separate `runtime_baseline.rs` prints p95/p99 from one `Instant` sample per freshly constructed graph, but this script neither builds nor runs that harness. Even if wired in, its default 100 samples, nearest-index percentile, repeated setup/teardown, and scheduler/OS noise would not support a production-tail claim.
+
+Required fix: name the Criterion output "steady-state benchmark estimate" and prohibit p95/p99 wording in conclusions. If transaction latency tails are an acceptance criterion, add a separate prebuilt harness with warmup, many operations on a retained graph, raw per-operation samples, explicit outlier policy, and enough observations for the requested quantile. Report that separately from Criterion throughput.
+
+5. Host snapshots cannot establish that the short runs experienced comparable interference.
+
+`host_snapshot()` captures cumulative `/proc` text and one `ps` listing before and after each benchmark (`scripts/runtime_baseline.py:26-32,106-111`). A two-second Criterion measurement can be disturbed by a short competing task, CPU migration, frequency or thermal changes that disappear before `ps`, or background work elsewhere in the allowed affinity set. The current sequential "all baseline, then all candidate" protocol also confounds revision with time-dependent host state.
+
+Required fix: pin each benchmark to a fixed CPU set, record per-run deltas for CPU time and pressure counters, sample effective frequency/temperature during the run when available, and reject runs with declared interference thresholds. For the final comparison, alternate randomized before/after binaries on the same host after both are prebuilt. Baseline-first capture may proceed for archival evidence, but it should be labeled non-causal until an interleaved same-host comparison is available.
+
+Acceptance wording
+==================
+
+Until these fixes land, the artifacts can document what executable was invoked and what Criterion reported. They cannot support a claim that a source revision improved mean performance, and they provide no p99 latency evidence. Correctness assertions inside the benchmarks remain useful independently of the timing comparison.
+
+Posthoc evidence limitation
+===========================
+
+The existing `combined-4workers-v2` results and `combined-build.jsonl` predate
+the prepare manifest. The build log and the checkout observed afterward cannot
+cryptographically bind those executables to source `a02b5d3`; retain them as
+descriptive archival evidence, but do not use them as provenance-bound inputs
+to the new comparison command.
+
+Resolution before the baseline PR
+=================================
+
+The runner now compiles and freezes executable copies in prepare, verifies pre/post source digests and binary hashes, rejects incompatible protocol/host/toolchain/build/benchmark inputs, retains every repeat and confidence interval, and records periodic host pressure plus timeout failures. The parent ran the complete schema-2 reference after these changes. Comparator checks accept a same-capture control and reject changed worker count, toolchain, benchmark source, and build arguments.
+
+The separate assertion workload records raw phase samples with excluded warmup. Final review strengthened every-row projection checks, Source payload checks, and runner metadata/quantile validation; the final workload capture is rebuilt after those edits. These samples remain synthetic graph phase latencies. No production p99 or statistically significant improvement is claimed. Automatic thermal/interference thresholds and interleaved before/after trials remain requirements for later performance acceptance, not claims about this archival baseline.
+
+The initial four Criterion executable hashes were later verified equal to the frozen prepared copies. This corroborates that early archive, but only the schema-2 reference is selected for automated comparison.
