@@ -49,6 +49,7 @@ where
             inner: Arc::new(CellMapInner {
                 data: DashMap::new(),
                 key_cells: DashMap::new(),
+                key_cell_slots: AtomicUsize::new(0),
                 prune_ops: AtomicUsize::new(0),
                 diffs_cell,
                 len_cell,
@@ -90,7 +91,7 @@ where
     /// `retain` locks every shard, so holding a `Ref` across it would deadlock.
     fn maybe_prune_key_cells(&self) {
         let key_cells = &self.inner.key_cells;
-        let len = key_cells.len();
+        let len = self.inner.key_cell_slots.load(Ordering::Relaxed);
         if len == 0 {
             return;
         }
@@ -107,7 +108,14 @@ where
             return;
         }
         self.inner.prune_ops.store(0, Ordering::Relaxed);
-        key_cells.retain(|_, weak| weak.is_alive());
+        key_cells.retain(|_, weak| {
+            if weak.is_alive() {
+                true
+            } else {
+                self.inner.key_cell_slots.fetch_sub(1, Ordering::Relaxed);
+                false
+            }
+        });
     }
 
     fn notify_len_if_changed(&self, previous_len: usize) {
@@ -339,9 +347,9 @@ where
             return;
         }
         self.maybe_prune_key_cells();
-        let previous_len = self.inner.data.len();
-        match &diff {
+        let membership_changed = match &diff {
             MapDiff::Initial { entries } => {
+                let previous_len = self.inner.data.len();
                 let stale_keys: Vec<K> = self.inner.data.iter().map(|r| r.key().clone()).collect();
                 for key in stale_keys {
                     self.inner.data.remove(&key);
@@ -359,22 +367,26 @@ where
                         cell.set(Some(value.clone()));
                     }
                 }
+                self.notify_len_if_changed(previous_len);
+                false
             }
             MapDiff::Insert { key, value } => {
-                self.inner.data.insert(key.clone(), value.clone());
+                let inserted = self.inner.data.insert(key.clone(), value.clone()).is_none();
                 if let Some(weak) = self.inner.key_cells.get(key)
                     && let Some(cell) = weak.upgrade()
                 {
                     cell.set(Some(value.clone()));
                 }
+                inserted
             }
             MapDiff::Remove { key, .. } => {
-                self.inner.data.remove(key);
+                let removed = self.inner.data.remove(key).is_some();
                 if let Some(weak) = self.inner.key_cells.get(key)
                     && let Some(cell) = weak.upgrade()
                 {
                     cell.set(None);
                 }
+                removed
             }
             MapDiff::Update { key, new_value, .. } => {
                 if self
@@ -385,20 +397,27 @@ where
                 {
                     return;
                 }
-                self.inner.data.insert(key.clone(), new_value.clone());
+                let inserted = self
+                    .inner
+                    .data
+                    .insert(key.clone(), new_value.clone())
+                    .is_none();
                 if let Some(weak) = self.inner.key_cells.get(key)
                     && let Some(cell) = weak.upgrade()
                 {
                     cell.set(Some(new_value.clone()));
                 }
+                inserted
             }
             MapDiff::Batch { changes } => {
                 self.apply_batch(changes.clone());
                 return;
             }
-        }
+        };
 
-        self.notify_len_if_changed(previous_len);
+        if membership_changed {
+            self.inner.len_cell.set(self.inner.data.len());
+        }
         self.inner.diffs_cell.set(diff);
     }
 
