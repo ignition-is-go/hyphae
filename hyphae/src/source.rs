@@ -34,7 +34,8 @@ use std::{
     },
 };
 
-use dashmap::DashMap;
+use parking_lot::Mutex;
+use rustc_hash::FxHashMap;
 use uuid::Uuid;
 
 use crate::{
@@ -57,7 +58,7 @@ pub(crate) struct SourceInner<T> {
     /// (avoids arc-swap's per-mutation `Debt::pay_all` slot-walk).
     pub(crate) subscribers: parking_lot::Mutex<Arc<Vec<(Uuid, Arc<Subscriber<T>>)>>>,
     /// Owned subscription guards (e.g. upstream timers feeding this source).
-    pub(crate) owned: DashMap<Uuid, SubscriptionGuard>,
+    pub(crate) owned: Mutex<FxHashMap<Uuid, SubscriptionGuard>>,
     /// Whether this source has completed (no more values will be emitted).
     pub(crate) completed: AtomicBool,
     /// Whether [`emit`](Source::emit)/[`complete`](Source::complete) wrap their
@@ -127,7 +128,7 @@ impl<T: CellValue> Source<T> {
         let inner = Arc::new(SourceInner {
             id: Uuid::new_v4(),
             subscribers: parking_lot::Mutex::new(Arc::new(Vec::new())),
-            owned: DashMap::new(),
+            owned: Mutex::new(FxHashMap::default()),
             completed: AtomicBool::new(false),
             #[cfg(feature = "scheduler")]
             batched: AtomicBool::new(false),
@@ -150,7 +151,8 @@ impl<T: CellValue> Source<T> {
 
     /// Take ownership of a subscription guard, dropping it when this source is dropped.
     pub fn own(&self, guard: SubscriptionGuard) {
-        self.inner.owned.insert(Uuid::new_v4(), guard);
+        let previous = self.inner.owned.lock().insert(Uuid::new_v4(), guard);
+        drop(previous);
     }
 
     /// Returns true if this source has completed.
@@ -374,7 +376,7 @@ impl<T: Send + Sync> DepNode for Source<T> {
     }
 
     fn owned_count(&self) -> usize {
-        self.inner.owned.len()
+        self.inner.owned.lock().len()
     }
 }
 
@@ -388,6 +390,20 @@ mod tests {
 
     use super::*;
     use crate::Materialize;
+
+    #[test]
+    fn owned_guards_are_released_when_source_drops() {
+        use crate::{Watchable, traits::DepNode};
+        let upstream = Cell::new(0u64);
+        let source = Source::<u64>::new();
+        let weak = source.downgrade();
+        source.own(upstream.subscribe(|_| {}));
+        assert_eq!(source.owned_count(), 1);
+        assert_eq!(upstream.subscriber_count(), 1);
+        drop(source);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(upstream.subscriber_count(), 0);
+    }
 
     /// `sample_on` used to capture a strong clone of its own output cell in the
     /// notifier's subscriber closure while also owning the guard, forming an
