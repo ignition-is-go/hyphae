@@ -1,5 +1,11 @@
 Runtime arena compatibility boundary
 
+Implementation decision after measurement
+
+The scheduler-metadata page design below was prototyped and rejected. The 256-slot candidate increased retained allocation for connected chains by 7.65%; the earlier 32-slot latency comparison used mismatched workload harnesses and is excluded from acceptance evidence. Cell storage is restored. The historical candidate remains here to explain the measured design choice.
+
+The implementation instead replaces pending-operation queue storage with a private arena and one frontier group per height and cell. Existing Cell, Source, subscription, height-cache and batching APIs retain their signatures. See docs/runtime-scheduler-arena.txt for the implemented boundary and measured results.
+
 Status and evidence
 
 This note audits commit a02b5d340f2838999c2f37e79891d4b2f41f0e9d. It is a compatibility constraint and a recommendation for the first private implementation slice, not a public API proposal.
@@ -38,7 +44,7 @@ Compatibility exploration rejected as the first implementation
 
 An earlier version of this note recommended a metadata-only generational slab with one lease per Cell and Source. That shape remains API-compatible, but it is not an accepted performance implementation. It adds an Arc clone, slot allocation, central mutex acquisition, resident slot metadata, and release work to every node create/drop without replacing any current field or hot-path operation. It also conflicts with the profiling feature's stated zero-per-cell-resident-overhead and no-global-census posture (`hyphae/Cargo.toml:24-30`). A global census should be an optional diagnostic experiment, measured separately, rather than the foundation merged first.
 
-First useful private arena slice: scheduler metadata pages
+Rejected private arena candidate: scheduler metadata pages
 
 Under `cfg(feature = "scheduler")` only, add a private `hyphae/src/scheduler/arena.rs` (or an equivalent private module inside `scheduler.rs`) that owns stable paged slots for the scheduler state already resident in every Cell:
 
@@ -65,6 +71,6 @@ The scheduler arena observes only scheduler metadata. It cannot identify externa
 
 Do not move committed values, subscribers, or guards in this slice. Moving heterogeneous values requires typed pools and changes to the direct-field parallel adapter. Moving subscriptions requires cancellation generations and a replay-preserving install protocol. Either can preserve public signatures while intentionally changing some allowed scheduling or storage behavior, but loss, replay, terminal order, Weak lifetime, and synchronous guard cleanup remain explicit migration gates rather than incidental implementation details.
 
-Concrete first recommendation
+Historical recommendation, superseded by measurement
 
 Implement the scheduler-only paged arena and use it to replace all four existing per-Cell scheduler fields. Preserve Arc/Weak storage, UUID identity, public trait/method signatures, queue semantics, and replay/drop behavior. Expose no Runtime, scheduler key, Result, or constructor change. Keep metrics crate-private and compiled only with scheduler or profiling. This earns the arena indirection by removing existing resident state, gives later runtime-owned execution a generational scheduler handle, and keeps the first change bounded enough to measure and revert.

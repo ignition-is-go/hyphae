@@ -1,0 +1,65 @@
+Scheduler pending-work arena
+
+Implemented boundary
+
+The scheduler keeps one ordered frontier entry per height and cell UUID. Ordinary single operations stay inline. A group with several ordered operations moves into shared generational arena storage. Same-height coalescing writes replace the pending operation in place when it is the group's last arrival. Events and terminal signals retain arrival order within each height and cell group.
+
+This is an arena for queued work. Cell values, subscriptions and height metadata retain their existing storage. Cell construction, Arc and Weak identity, synchronous replay, Source behavior and public signatures retain their existing implementation. The process-wide batch queue, drainer handoff and wave worker policy remain in place.
+
+Storage and ordering
+
+The frontier maps (height, UUID) to Group::One(PendingRun) or Group::Many(Box<ManyHandle>). Up to 32 entries use a sorted reusable buffer; wider frontiers use a tree until it empties. On this 64-bit host, Group occupies 16 bytes and ReadyQueue occupies 72 bytes. The scheduled map stores UUID to height, replacing the former UUID to (height, sequence) record. Ordinary coalescing writes use one hash-map insertion and one frontier lookup. Multi-operation storage is allocated only when a group acquires its second operation.
+
+ManyArena owns slots with generations and optional ManyGroup values. A boxed handle contains an index and generation. Boxing keeps the rare handle out of the ordinary frontier record. Taking a group advances its generation before the index can be reused. Generation exhaustion retires the slot. Each ManyGroup owns an arrival-ordered vector of optional closures, a live count and the coalescing operation's position.
+
+Appending an event or terminal after a coalescing operation preserves both. Once promoted, ordered operations append directly to the arena group through one frontier lookup. A later coalescing write removes the earlier value and appends its replacement after those ordered operations. Compaction removes tombstones and remaps the coalescing position; the vector length stays bounded by twice the live count plus eight before compaction. Height moves remove only the previous coalescing operation and preserve event survivors at the old height.
+
+The existing wave executor receives the same groups of callbacks, ordered within each height and cell group and independent between cells at one height. Height changes move coalescing work between groups. The queue's minimum-height selection and UUID order match the former tree algorithm.
+
+Enqueue returns a superseded closure to its caller. The caller releases TICK before dropping it. A captured value's destructor can therefore reenter batch or construct and mutate cells. A public regression test hangs on the PR39 implementation and completes on this implementation.
+
+After draining, slots contain no closures or captured cells. The arena retains empty slot and free-index buffers at the largest simultaneous multi-operation group count it has seen. Per-group closure vectors are released when groups drain. The small sorted frontier retains its empty buffer; the wide tree is released on becoming empty. This trades retained buffer capacity for reuse. It does not bound queue memory, remove height barriers, replace the worker policy, or solve all production stalls.
+
+Rejected metadata arena
+
+A separate candidate moved height cache, height epoch, coalescing flags and dependent adjacency out of CellInner into stable metadata pages. It preserved public atomic references, but added global allocation and release coordination to every scheduler Cell.
+
+With 256-slot pages, 10,000 isolated cells saved only 0.22% retained allocation. A connected chain used 7.65% more, while a single cell retained 8,176 bytes instead of 392. An earlier comparison with 32-slot pages used mismatched workload harnesses and is excluded from acceptance evidence. Its latency percentages cannot establish a regression. That candidate was removed from production source.
+
+These experiments applied Foundational Thinking to the state being centralized and Prove It Works to the acceptance decision. The allocation measurements changed the implementation boundary from per-cell registration to existing queued work. The invalid phase comparison led to a stricter workload comparator.
+
+Rejected per-operation arena
+
+A second candidate put every pending closure into a generational slot. It widened hot-path records and added slot indirection. Its earlier event-phase comparison also used mismatched harnesses and is excluded. A full alternating 32-case capture measured the batched diamond 13.8% slower, two-join batch size 10,000 18.2% slower, and independent contention at one and two threads 18.4% and 27.2% slower. That candidate was rejected. The adaptive layout keeps ordinary closures inline and uses the arena only for multi-operation groups.
+
+Verification
+
+Queue tests cover layout, direct coalescing replacement, event-to-coalescing promotion, terminal interleaving, height moves, compaction, generation reuse, promotion past 32 entries and deterministic operation traces against the former BTree queue. Test-only invariant checks validate map, frontier and live arena ownership after transitions. Six public integration tests cover stable height references, precise Weak lifetimes, rewiring, reentrant cleanup, ordered no_coalesce delivery, and superseded-value destruction outside the scheduler lock.
+
+The integration cases serialize through a test mutex because they assert settlement against one process-wide scheduler. Concurrent scheduler behavior remains covered by the existing concurrency and parallelism suites.
+
+Final verification passed 516 tests with no failures and two existing ignored doctests. Strict Clippy passed for the library, tests and both diagnostic examples. Default-feature tests compile, default and all-feature Wasm builds check, formatting passes, and the public contention example delivers all 40,000 ordered values. Commands, logs and measured source identities are recorded in docs/runtime-scheduler-arena-results.json. After rebasing onto the 3.1.7 release, the same production source passed the full 516-test suite, strict Clippy, default-feature compilation and all-feature Wasm checks again. Timing identities retain the pre-release manifests used to build the frozen executables. Each full verification log identifies the source it checked; earlier prototype checks are not final acceptance evidence.
+
+Measurement protocol
+
+Criterion capture uses frozen PR39 baseline executables and frozen candidate executables on the same host and toolchain. scripts/runtime_paired.py runs before, after, after, before. It preserves raw capture paths and verifies protocol, host, toolchain, build arguments, environment and benchmark-source hashes before comparison. The measurement environment records the wave threshold as well as worker settings.
+
+The six public workloads are also captured in alternating order at sizes 16 and 128, with 1,000 measured iterations after 50 warmups. Every workload checks its delivered values and counts. Earlier phase captures accidentally used the initial prepared harness before its assertions were strengthened. Those captures are excluded. The accepted phase comparison requires the same strengthened source hash, 638f3c280437c1bc8670f9cc295ab8c131347076c241b7e6ca191b9a5088516a, on both sides. Reported phase quantiles describe repeatedly constructed synthetic graphs, not production end-to-end latency.
+
+The original concurrent contention benchmark fixes batch-call counts but allows a variable number of notifications through global coalescing. A separate control constructs source and derived cells in no_coalesce, emits 20,000 distinct values from each of two threads, and asserts every payload in order, exactly 40,000 deliveries and both final values. The runnable form is hyphae/examples/scheduler_arena_contention.rs. The archived fixed-provenance sidecar binds each timed binary hash to prebuild source and Cargo inventories, fixture hash, build commands and toolchain. Raw contention timings alone do not establish cost per delivered update. In the final 24-trial fixed-work capture, pinned to CPUs 12 and 13 with host-pressure samples, the reference median was 17.607 ms and the candidate median was 11.176 ms, a 36.52% reduction. Every trial delivered exactly 40,000 ordered updates. This establishes the synthetic ordered control result, not the cause of the original coalescing benchmark difference or a production latency improvement.
+
+The 32 Criterion comparisons are mixed. The four-join application improved 12.4% on rekeys and 14.3% on steady batches; the unloaded batched diamond improved 21.3%. Shared-sink contention at eight producers was 22.1% slower in the original coalescing benchmark, whose delivered work is variable. The matched synthetic event workload improved 15.9% at size 16 and 32.8% at size 128. Source fanout at size 128 moved from 470 ns to 475 ns, about 1.1%; its implementation is unchanged. No aggregate production speedup is inferred.
+
+A second 24-trial control uses eight producers feeding a joined materialized sum. Every run asserts 160,000 ordered sink updates and all final values. Its median changed from 260.906 ms to 98.496 ms, a 62.25% reduction. The archived fixture, prebuild inventories, binary identities and host snapshots bind this result to the same accepted production source. Unrelated ui-leptos jobs were active, so this capture is not described as machine-quiet. It changes coalescing mode and cannot explain the original shared-sink regression causally.
+
+Final results and the evidence archive are recorded in docs/runtime-scheduler-arena-results.json. Compilation and tests run outside timing windows. Other application jobs had resumed after the original quiet baseline, so the comparison uses freshly interleaved reference runs and includes host-pressure samples.
+
+Rerun
+
+For Criterion, build both revisions with scripts/runtime_baseline.py prepare, selecting scheduler,subscriber_registry,scheduler_contention,compiled_map_queries,runtime_baseline in that order. For synthetic phases, prepare both revisions selecting runtime_baseline alone. Preserve manifests and frozen executables. Compare only identical benchmark-source hashes and build arguments. The archived original Criterion preparation predates the strengthened synthetic harness, so its runtime_baseline binary must not be used for phase comparisons.
+
+Run scripts/runtime_paired.py --before <baseline-manifest> --after <candidate-manifest> --output <new-directory>. Compare the synthesized before.json and after.json with scripts/runtime_baseline.py compare. Use scripts/runtime_workloads_paired.py with matching prepared manifests for the assertion-backed phase comparison. Its comparator rejects mismatched harnesses, protocols, hosts, settings and artifacts between repetitions.
+
+Remaining structural work
+
+levi lv-80be tracks dependency-ready execution, topology-generation boundaries and automatic worker policy. levi lv-2068 tracks explicit publication boundaries across concurrent batches. The inherited global coalescing policy can merge updates across separate batch calls, contrary to the stricter boundary considered in this design. This queue arena is an independently measured scheduling unit; it does not fulfill that wider runtime redesign.

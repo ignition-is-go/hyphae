@@ -221,7 +221,10 @@ def measure(args):
         "host": host_identity(),
         "environment": {
             key: os.environ.get(key)
-            for key in ("RAYON_NUM_THREADS", "HYPHAE_WORKER_THREADS", "HYPHAE_WAVE_THREADS")
+            for key in (
+                "RAYON_NUM_THREADS", "HYPHAE_WORKER_THREADS",
+                "HYPHAE_WAVE_THREADS", "HYPHAE_WAVE_THRESHOLD",
+            )
         },
         "before": host_snapshot(),
         "runs": [],

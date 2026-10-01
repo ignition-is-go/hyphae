@@ -1,0 +1,2453 @@
+{
+  "archive": {
+    "binaries_omitted": true,
+    "bytes": 8584354,
+    "path": "docs/runtime-scheduler-arena-data.tar.gz",
+    "sha256": "6a2d9321ad88db5e5a877bb862e9d79ac7b2b2b2c3811dc4f9f0ca6474950832",
+    "verified_files": 3605
+  },
+  "base_main_revision": "1964efe4c9f46d6b4c99e1a0d0879c7c30bc9174",
+  "baseline_and_base_tree": "3af69b96d26179a3bceee97bd4aab78fae05c2b7",
+  "baseline_revision": "8d013bbd106f7472023ddd8a507bb0a17ea4923b",
+  "criterion": {
+    "descriptive_only": true,
+    "results": [
+      {
+        "after_median_run_mean_ns": 15762736.224999998,
+        "before_median_run_mean_ns": 17990959.637500003,
+        "benchmark": "compiled_query/four_join_application/rekey_10pct/10000",
+        "descriptive_change_percent": -12.385239350187527
+      },
+      {
+        "after_median_run_mean_ns": 16087591.673333332,
+        "before_median_run_mean_ns": 18782425.64305556,
+        "benchmark": "compiled_query/four_join_application/steady_batch/10000",
+        "descriptive_change_percent": -14.347635502119449
+      },
+      {
+        "after_median_run_mean_ns": 228.90492570159688,
+        "before_median_run_mean_ns": 252.7569435435094,
+        "benchmark": "compiled_query/projection_region/single",
+        "descriptive_change_percent": -9.43674088929891
+      },
+      {
+        "after_median_run_mean_ns": 2079.1758956867775,
+        "before_median_run_mean_ns": 2123.460799168256,
+        "benchmark": "compiled_query/rekey_between_joins/single",
+        "descriptive_change_percent": -2.085506052140196
+      },
+      {
+        "after_median_run_mean_ns": 41684.58306309079,
+        "before_median_run_mean_ns": 42105.65190929781,
+        "benchmark": "compiled_query/repeated_relation_four_join/repeated_right_single",
+        "descriptive_change_percent": -1.000029276625558
+      },
+      {
+        "after_median_run_mean_ns": 1258.785003237698,
+        "before_median_run_mean_ns": 1335.011299184656,
+        "benchmark": "compiled_query/repeated_relation_four_join/single",
+        "descriptive_change_percent": -5.709786575852394
+      },
+      {
+        "after_median_run_mean_ns": 2054.2945193698424,
+        "before_median_run_mean_ns": 2106.0152595420186,
+        "benchmark": "compiled_query/repeated_typed_relation_four_join/repeated_right_single",
+        "descriptive_change_percent": -2.4558578071947834
+      },
+      {
+        "after_median_run_mean_ns": 2569.36622738651,
+        "before_median_run_mean_ns": 2606.1479992348113,
+        "benchmark": "compiled_query/two_join_region/batch/1",
+        "descriptive_change_percent": -1.4113462420054623
+      },
+      {
+        "after_median_run_mean_ns": 4753.3475441369055,
+        "before_median_run_mean_ns": 4858.556203526483,
+        "benchmark": "compiled_query/two_join_region/batch/10",
+        "descriptive_change_percent": -2.1654305308481114
+      },
+      {
+        "after_median_run_mean_ns": 27459.776416645764,
+        "before_median_run_mean_ns": 28796.030759172332,
+        "benchmark": "compiled_query/two_join_region/batch/100",
+        "descriptive_change_percent": -4.640411568184389
+      },
+      {
+        "after_median_run_mean_ns": 263226.0844265538,
+        "before_median_run_mean_ns": 270467.60506603285,
+        "benchmark": "compiled_query/two_join_region/batch/1000",
+        "descriptive_change_percent": -2.6774077574691746
+      },
+      {
+        "after_median_run_mean_ns": 7965147.818076177,
+        "before_median_run_mean_ns": 8460720.202553608,
+        "benchmark": "compiled_query/two_join_region/batch/10000",
+        "descriptive_change_percent": -5.857330967260421
+      },
+      {
+        "after_median_run_mean_ns": 1218.3402148063274,
+        "before_median_run_mean_ns": 1377.1290559989443,
+        "benchmark": "compiled_query/two_join_region/single",
+        "descriptive_change_percent": -11.53042559816112
+      },
+      {
+        "after_median_run_mean_ns": 6022597.871849621,
+        "before_median_run_mean_ns": 7445093.942022857,
+        "benchmark": "contention/independent/threads=1",
+        "descriptive_change_percent": -19.106489202831188
+      },
+      {
+        "after_median_run_mean_ns": 6582477.83914122,
+        "before_median_run_mean_ns": 7051408.268106958,
+        "benchmark": "contention/independent/threads=2",
+        "descriptive_change_percent": -6.650167046583855
+      },
+      {
+        "after_median_run_mean_ns": 16004744.563333333,
+        "before_median_run_mean_ns": 16917319.058333334,
+        "benchmark": "contention/independent/threads=4",
+        "descriptive_change_percent": -5.3943210023604475
+      },
+      {
+        "after_median_run_mean_ns": 77773853.53333333,
+        "before_median_run_mean_ns": 87954774.35,
+        "benchmark": "contention/independent/threads=8",
+        "descriptive_change_percent": -11.57517700648466
+      },
+      {
+        "after_median_run_mean_ns": 11945136.524999999,
+        "before_median_run_mean_ns": 13223713.041666666,
+        "benchmark": "contention/shared_sink/threads=1",
+        "descriptive_change_percent": -9.668816259381874
+      },
+      {
+        "after_median_run_mean_ns": 8587659.668311512,
+        "before_median_run_mean_ns": 9555171.404166667,
+        "benchmark": "contention/shared_sink/threads=2",
+        "descriptive_change_percent": -10.125529882522644
+      },
+      {
+        "after_median_run_mean_ns": 17132488.291666664,
+        "before_median_run_mean_ns": 18930089.77916667,
+        "benchmark": "contention/shared_sink/threads=4",
+        "descriptive_change_percent": -9.496000856151976
+      },
+      {
+        "after_median_run_mean_ns": 78187897.01666667,
+        "before_median_run_mean_ns": 64011570.60000001,
+        "benchmark": "contention/shared_sink/threads=8",
+        "descriptive_change_percent": 22.146506145354074
+      },
+      {
+        "after_median_run_mean_ns": 763.7647446730784,
+        "before_median_run_mean_ns": 970.7598589232402,
+        "benchmark": "diamond/batched/work=0",
+        "descriptive_change_percent": -21.32299892166527
+      },
+      {
+        "after_median_run_mean_ns": 3307.903785497779,
+        "before_median_run_mean_ns": 3373.914577425019,
+        "benchmark": "diamond/batched/work=4096",
+        "descriptive_change_percent": -1.956504541309978
+      },
+      {
+        "after_median_run_mean_ns": 401.23870972308055,
+        "before_median_run_mean_ns": 466.5221017566264,
+        "benchmark": "diamond/synchronous/work=0",
+        "descriptive_change_percent": -13.993633267905203
+      },
+      {
+        "after_median_run_mean_ns": 5501.98084246245,
+        "before_median_run_mean_ns": 5453.312655866166,
+        "benchmark": "diamond/synchronous/work=4096",
+        "descriptive_change_percent": 0.8924517933871057
+      },
+      {
+        "after_median_run_mean_ns": 245.39046742150182,
+        "before_median_run_mean_ns": 268.44280767581614,
+        "benchmark": "resubscribe per fire/16",
+        "descriptive_change_percent": -8.587430765570513
+      },
+      {
+        "after_median_run_mean_ns": 2227.4046001802417,
+        "before_median_run_mean_ns": 2453.4568919992344,
+        "benchmark": "resubscribe per fire/256",
+        "descriptive_change_percent": -9.213623950604276
+      },
+      {
+        "after_median_run_mean_ns": 34078.74376278836,
+        "before_median_run_mean_ns": 36802.4578760024,
+        "benchmark": "resubscribe per fire/4096",
+        "descriptive_change_percent": -7.400902739678372
+      },
+      {
+        "after_median_run_mean_ns": 45.04966732371089,
+        "before_median_run_mean_ns": 57.35808927659766,
+        "benchmark": "single_cell/synchronous",
+        "descriptive_change_percent": -21.45891208741616
+      },
+      {
+        "after_median_run_mean_ns": 108.41447625789716,
+        "before_median_run_mean_ns": 106.80083410248814,
+        "benchmark": "subscribe+unsubscribe churn/16",
+        "descriptive_change_percent": 1.510889094611878
+      },
+      {
+        "after_median_run_mean_ns": 109.90612696207174,
+        "before_median_run_mean_ns": 107.78533008006355,
+        "benchmark": "subscribe+unsubscribe churn/256",
+        "descriptive_change_percent": 1.9676118080566685
+      },
+      {
+        "after_median_run_mean_ns": 112.86138282808523,
+        "before_median_run_mean_ns": 112.45034915250389,
+        "benchmark": "subscribe+unsubscribe churn/4096",
+        "descriptive_change_percent": 0.3655245881219127
+      }
+    ]
+  },
+  "delivered_base_revision": "c7f5752",
+  "fixed_control_provenance": {
+    "hyphae-independent-delivery-probe": {
+      "archive_path": "diagnostics/hyphae-independent-delivery-probe/results/fixed-provenance.json",
+      "sha256": "fc9458c0350738fecf6d4eea499d1c42ecabf84b9f0d000330bc283fe6f4ffe3",
+      "toolchain": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+      "verified_all_artifact_and_prebuild_inventory_hashes": true
+    },
+    "hyphae-shared-sink-delivery-probe": {
+      "archive_path": "diagnostics/hyphae-shared-sink-delivery-probe/results/provenance.json",
+      "sha256": "10a462bda189635797ff045bddb0c9412a076a2221d46da211af958dc62ee2cf",
+      "toolchain": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+      "verified_all_artifact_and_prebuild_inventory_hashes": true
+    }
+  },
+  "fixed_ordered_eight_producer_shared_sink": {
+    "candidate_median_change_percent": -62.24853537358555,
+    "provenance_sha256": "10a462bda189635797ff045bddb0c9412a076a2221d46da211af958dc62ee2cf",
+    "stats": {
+      "baseline": {
+        "all_exact_160000": true,
+        "all_final_sum_160000": true,
+        "all_ordered": true,
+        "max_ns": 396846915,
+        "median_ns": 260905782.0,
+        "min_ns": 233276242,
+        "n": 12
+      },
+      "candidate": {
+        "all_exact_160000": true,
+        "all_final_sum_160000": true,
+        "all_ordered": true,
+        "max_ns": 123601425,
+        "median_ns": 98495754.0,
+        "min_ns": 92862140,
+        "n": 12
+      }
+    }
+  },
+  "fixed_ordered_two_producer": {
+    "binaries": {
+      "after": {
+        "path": "/home/trevor/.cache/codex/hyphae-independent-delivery-probe/target-fixed-candidate/release/hyphae-independent-delivery-probe",
+        "sha256": "c1ba640c19fd28123fa60e721e953f6c41f74336916c7d1c63f226bf22153030"
+      },
+      "before": {
+        "path": "/home/trevor/.cache/codex/hyphae-independent-delivery-probe/target-fixed-baseline/release/hyphae-independent-delivery-probe",
+        "sha256": "d74df03c4957c2fcb4c1437574b9bb8ad19654d6e8cf86ba7ca78843e02bf15a"
+      }
+    },
+    "descriptive_change_percent": -36.52302488167567,
+    "descriptive_only": true,
+    "interpretation": "Ordered no_coalesce synthetic control; no causal claim about coalescing-mode timings or production latency.",
+    "median_ns": {
+      "after": 11176195.5,
+      "before": 17606692.0
+    },
+    "protocol": {
+      "affinity": [
+        12,
+        13
+      ],
+      "order": "ABBA",
+      "rounds": 6,
+      "threads": 2,
+      "updates_per_thread": 20000
+    }
+  },
+  "limitations": [
+    "Descriptive synthetic comparisons only; no statistical significance or production end-to-end/tail-latency claim.",
+    "Other application jobs resumed; host/process/pressure evidence retained. No quiet-machine claim.",
+    "Original coalescing contention fixes input calls but delivers variable work. Ordered no_coalesce controls use a different mode and do not causally explain its timing variation.",
+    "Earlier synthetic phase comparisons with unequal 41cb/638f harnesses are invalidated and excluded. Accepted phases match strengthened 638f3c280437c1bc8670f9cc295ab8c131347076c241b7e6ca191b9a5088516a.",
+    "Metadata256 allocation diagnostic retains counters and hashes but exact rejected production/fixture bodies were not retained.",
+    "Global batch/drainer, height barriers and worker policy remain. Wider readiness/topology redesign is lv-80be; concurrent explicit-batch publication boundaries are lv-2068."
+  ],
+  "measured_candidate_source_sha256": {
+    "Cargo.lock": "e9ebf6307b23a384b26d3c84f2600cde3ea9e425994d639304911098f547815b",
+    "Cargo.toml": "0612eb4c126ebbf40a509b856f664223cd1cf39b8d45efa49e532dc778236bd0",
+    "hyphae/Cargo.toml": "1c39c68c03dba720608044671b6519c91e5ce88c7300feb5b9bf82a2d6580b55",
+    "hyphae/README.md": "a775f3767caf27840e097102c32e7732243006ba80e86cfce38fe1fba48bf3f4",
+    "hyphae/benches/cell_map_chains.rs": "8dc0c2d710daf1ba2e7962c9e2f37a3dbf6605e1e24c827dff95a284316964cb",
+    "hyphae/benches/compiled_map_queries.rs": "c2ebfc14812606d0b9421410b8d0fd0bd80b1ebe11a6f55668bed065af2d0038",
+    "hyphae/benches/latency.rs": "2f444abaf0701f19e155fed538d341df0b749c6747cf6caa6ef9af5e92ace175",
+    "hyphae/benches/pipeline_chains.rs": "545dfb0f02a7a02d2083d3b21512cb591b6213e713211732e90ba0e10026e677",
+    "hyphae/benches/reactive_graphs.rs": "cf433353506e87bf4bf22b7839e5aa34a9cee5cca623cfb8e1efcb047f07b019",
+    "hyphae/benches/reactive_graphs_64.rs": "f0af6c435e008dfbd883646b835c14289a8d79a845b454c4c8d8f62dde9d1e28",
+    "hyphae/benches/region_threshold_calibration.rs": "caab3c066c82ead604bd1c8793ae53cb0ce3d0b0a672060fcd4ba73081cfa481",
+    "hyphae/benches/runtime_baseline.rs": "638f3c280437c1bc8670f9cc295ab8c131347076c241b7e6ca191b9a5088516a",
+    "hyphae/benches/scheduler.rs": "546099906a75bbc1675841a944b5f1904f511176d98abdb00d39a6e1c49ef10b",
+    "hyphae/benches/scheduler_contention.rs": "ff94cec852455f17d99bae6e1f551059943b7faeadc09d073b00d9d99db6cc73",
+    "hyphae/benches/subscriber_registry.rs": "4b41b607f6f448295f78938014ca30b5a092e0ea1241bfa28f5cee11541d4f84",
+    "hyphae/benches/support/four_join_application_workload.rs": "9492f55cb775495a70aa4ea70c3a68b6c88c1ac470483cfa4d0ca8de6c5c5051",
+    "hyphae/benches/view_chains.rs": "0fab02e794482b1363ef5e7936eb282cdf01e252ff87b7d5464795091f116ab3",
+    "hyphae/docs/profiling.md": "76bd90d3833bc325155ba24b9d059f1bbeca9f73c53e78bf78e9ab2bb3722b3a",
+    "hyphae/docs/reactive-hot-path-redesign.md": "6dba0127c0c71202b6c5fc4a2b5b84e53977dcbc4feef472bf3a006642db8b39",
+    "hyphae/docs/superpowers/plans/2026-04-23-pipeline-type-bench-results.md": "7bd822c88378988c1ad130adad739bc07efb2ed874e58080c1edc7c1a4791b18",
+    "hyphae/examples/map_update_cost.rs": "7c4b8c915887298d6e316b37b70e8c7a94b2e89c2fd3d3ecc65316928f77a6ce",
+    "hyphae/examples/owned_guard_allocations.rs": "9e2350ded61f2555b53eb1ae8040acf1436d9c7a03951b7f13f5e89f3b1753c2",
+    "hyphae/examples/scheduler_arena_allocations.rs": "2b90dd81ab41130180ef31fa53097e7370c3c43781b94a1de9c604e82544628a",
+    "hyphae/examples/scheduler_arena_contention.rs": "c91509288c367495a01bf1b50a90748eb87c3152afef507ce0dcaca99af3b547",
+    "hyphae/examples/timer_accuracy.rs": "ab0d404c07abc053f37b54ed7ee837344d160c071e8b9aa9eefd171a292d85ee",
+    "hyphae/examples/timer_reactor_load.rs": "5bfa1fb90ffd22fac59c38acb38d1ac5ca8fe6be5b6b7ff023165e233aec00c8",
+    "hyphae/src/async_support.rs": "a6163be60c84672aea308147bed70964e33dad778e6f111d955b95881380c2a3",
+    "hyphae/src/bounded_input.rs": "de07ca7f4abbc415a7ea870d5bd9e6c6f2add99d83ad457043b7693470f2946a",
+    "hyphae/src/bounded_output.rs": "38be693b7640d89192cd4fc782aad14324cedc01b180c7e548d415bd4af4aeb1",
+    "hyphae/src/cell.rs": "ef2e5cbef3e7d352e2bc83231d5e9a8c1e7d756ab8cb4800136d888b8587b256",
+    "hyphae/src/cell/subscriber.rs": "4f4f639ad97086615f2f5fccc6e561091e6d5b978325524da25983f0360679ce",
+    "hyphae/src/cell_map.rs": "e67f1f821c6a396e36495801fa7c39003b4cf0ed6a7624a7883c7d53ed69e1ac",
+    "hyphae/src/cell_map/diff.rs": "46f1389973021cf3ebfa958da7b2a26f85735f005ff81e18f4a7393c4a6912a1",
+    "hyphae/src/cell_map/mutation.rs": "a98b82bb5693e2ae86e0ea93b9f6bf10d416641cdcd2ba49b785e44bc12397e6",
+    "hyphae/src/cell_map/projection.rs": "5c717d45eed1dffd05b86cdc64e5e76d9a9ea23989c969831036552bfe17c8c6",
+    "hyphae/src/cell_map/tests.rs": "3d49665e36cce4e2132895d8327b2b0e323c0333bb220704f3e46a9b6cf4b4f6",
+    "hyphae/src/cell_set.rs": "28815cfa49f0f3836d6044d89e77855b457bbfdd08236039519ef1d2ba0dd424",
+    "hyphae/src/clock.rs": "cc5508a0dfa7dce24fbc685f084e1dc36ebf379091ce1d21ff2885aff524a579",
+    "hyphae/src/constructors/from_iter.rs": "ea6f90eb89d3e15fa9d049cd8768a180bc3d702dccb0c3116c805193460d4d7b",
+    "hyphae/src/constructors/interval.rs": "339a6f93bb85518a947b3314116be31dbd578a74e2f7f20e2eed563ed83d4ba5",
+    "hyphae/src/constructors/mod.rs": "606eaf7f7b2aaf94926b1a1c714c9e7cf109d7dc46bef7ed7b17fcfb3982a048",
+    "hyphae/src/executor.rs": "2d7aeab82c28bada2fed62897eaa70d51a1e2c7e80ae03bffb3b2db99428632b",
+    "hyphae/src/flat.rs": "11ca2830f0f2b00d8761dffead95b0304bb0ffe6bfe1c31f3fe8a454244b3d04",
+    "hyphae/src/lib.rs": "3901c1f1a25a473b8346bcc807f7717ccc9e8410f3fd854515004c4c8f5c9511",
+    "hyphae/src/map_query/compiler.rs": "8410df742a7a3c71263f3f2b2e2418857ab852f2469b3f51f80d1ba596f70c39",
+    "hyphae/src/map_query/compiler/dispatch.rs": "86bac522578901b4fd32c58f05397652eb766fd659f34a208368ee61824b609d",
+    "hyphae/src/map_query/compiler/registry.rs": "dcd8899d8678dca4d5d4dc59ebcbf23ce2656470eb0dc8243dc8d2eec0dc02b4",
+    "hyphae/src/map_query/compiler/tests.rs": "f472dfb61b061bf1648134e711ada67ddfaa0fe917686339ee199d17c708bb5d",
+    "hyphae/src/map_query/mod.rs": "bffb7898a660bd80b28666cfb9065c634f43451d3e1e12355b13f6b94cb2cb6a",
+    "hyphae/src/map_query/properties.rs": "ba32cb5fe74835c0ef0a7e3faab4bd214812da0b0e1142e269a5e5dc72b6802d",
+    "hyphae/src/map_query/reactive_map_impl.rs": "416ec48b34f955a4e62c3b0dc2420d3e7dd25955a170e91e20c9dbe2b28965f8",
+    "hyphae/src/map_query/share.rs": "9d6810c836c15c7a5eb5aad62214e7a8ba33e4680611f9ed9d0fe216829d3c8b",
+    "hyphae/src/nested_map.rs": "1627fd98944d50b902cbadc137fc881deb14cd9e500fd3f4639badad588e4962",
+    "hyphae/src/pipeline/cell_impl.rs": "40785d1525bcadaf7beaaa1ce0faf480dfa7b8c28ab8f8bfb699e685816dfe50",
+    "hyphae/src/pipeline/mod.rs": "ffcaf029a4427ebec6860adbd1f134307d7c166029a5018307ec5870aded0838",
+    "hyphae/src/pipeline/share.rs": "7a1a2ba2781583a22ebb65ff5ea1c81716fd2cc9b8f51fa7de75e1885affb6ee",
+    "hyphae/src/platform/mod.rs": "3138eb0c01b1ae5f97c7ae5ff2426972b283f73aa33cf3f232e7b4740804cb19",
+    "hyphae/src/platform/native.rs": "2b4cd2a09d8131bc1352d243f9b889d57a66803b6685b5aada84c0a0b9a57b7f",
+    "hyphae/src/platform/wasm.rs": "cc40077fe1bdbd1de23b105b5163619f6a277d261a15dc493b96109ff2068e6c",
+    "hyphae/src/profiling.rs": "641c056e32f7df93f9f121535a672b707c119297f2255c468261b4d64ba147bf",
+    "hyphae/src/region_calibration.rs": "b0a967bfd49f6f2232f8c27b5f3e6894fa10aa7675a2457203b669aee7a4600b",
+    "hyphae/src/scheduler.rs": "a56f7882abf2c23e2c125f9989420dd7a4869caf95bc330835cf7dd1c029b4ea",
+    "hyphae/src/scheduler/frontier.rs": "3246fa70b6cb390b12f8b0d0278a3c384d0a034e1acc52448ccc64433cdafcd2",
+    "hyphae/src/scheduler/ready.rs": "5bd449916a7b08f8c28940942d8ae53c6277427f297b52f4f119f5046b7f1a09",
+    "hyphae/src/signal.rs": "ece09f6153bc90116ad93c3a379a3f80aa3cf1e59442da3a963383c876c9cb43",
+    "hyphae/src/source.rs": "b953487b8051911d889804194a97051538f5e57d7e03d64a544819da7ff4ca1e",
+    "hyphae/src/subscription.rs": "1fd82c7aede7506268546e54240fab91c4137ec9315b6779441e852a6cf853df",
+    "hyphae/src/tests/bounded_input.rs": "9077d98a9a666daae76cd1142a201d76fc8389467dced7e43481d6325a78a67e",
+    "hyphae/src/tests/cell.rs": "d2fff867c761294f54f96cd06cbcc7c697b2fbc9d5428b9d633fbf7249bed80b",
+    "hyphae/src/tests/concurrency.rs": "ce173f44494a60b36c5ff78991b5cf79c5eeabbece6174ff060636fe8a18d198",
+    "hyphae/src/tests/constructors.rs": "f94d16e6a6df37bda0fb967f1ec0fe827c7efa0315a6648c80e76e083e7e4b73",
+    "hyphae/src/tests/disposal.rs": "16b7b38f6fcd17e48392017dbc24cca3a30c9bc48bc407e3299bfd60dd096ea9",
+    "hyphae/src/tests/error_handling.rs": "cbc33df453cb30c7a9fcea6828a1276398a631ca4a08aab4432615a6421126d6",
+    "hyphae/src/tests/map_query_integration.rs": "be2d400e4206e574049186cb925dc4e33c5b878345ad9e11ae765e22b7eca14d",
+    "hyphae/src/tests/mod.rs": "6c1eb97015e9c4e36ffee72a7d9c09d41650feda9df79253d3ff4ac8e8c6fabf",
+    "hyphae/src/tests/pipeline_integration.rs": "7cad52fcde597fd0d3373d2735ad2ae295acbc46e6c0d568128f16902aaf5fe3",
+    "hyphae/src/tests/subscription.rs": "779d0b2cf961cdafb38a66d7c3fd92b483a18fdaba1da92d2e7861751e6c23e0",
+    "hyphae/src/traits/cell_value.rs": "6f8d71abf9eb3ee8fba98cc7bd680909674e5642f94cee800de7b49b287a612c",
+    "hyphae/src/traits/collections/count_by.rs": "99d4235c038ed8ba8a3cb22c8eca5ac9e8eb1b3daeee66d4baa88ca56ff375c7",
+    "hyphae/src/traits/collections/group_by.rs": "f37d812e076f3dec2a4d5477b4bb89001703d469ca72cf05662ca73f7eddddb2",
+    "hyphae/src/traits/collections/inner_join.rs": "fa83624e6eeb55a9c0300d69355932ed1067f95214d8b25de143921e8fe41b19",
+    "hyphae/src/traits/collections/internal/diff_runtime.rs": "dc189f0bfa10698771f4bd3b631e820c06e50b4fb3252c9c76592bf0139e7c55",
+    "hyphae/src/traits/collections/internal/join_lifecycle.rs": "b4bb52b8f8d5d86707f1eae79b07414aa0092e9ef284427090ca125f33e35aeb",
+    "hyphae/src/traits/collections/internal/join_region.rs": "c01d2436b37dfc2a8d239e667f12f938fddbbcbf3fbe42aa9d6b68e15f169a58",
+    "hyphae/src/traits/collections/internal/join_region/declaration.rs": "1464bda32ec2f6f518f188c1447bacb6750167af6dd1b14aed7895690d48bd52",
+    "hyphae/src/traits/collections/internal/join_region/plan.rs": "f52bdcdc5f6b9bb4f9454078e4fe29877d89c8e8d92c974c31e82517faf261dc",
+    "hyphae/src/traits/collections/internal/join_region/router.rs": "5efd33f05165bb00082b721aac2535e5178552b880c19e05ce5fca1d69dc7162",
+    "hyphae/src/traits/collections/internal/join_region/stage_runtime.rs": "316c6a07b8831a906df77b543c614b222b166428576cf35f0beef83a3d603d35",
+    "hyphae/src/traits/collections/internal/join_runtime.rs": "f98f5843e0378dacb8a19c66de2ea5d03ee0b9cfa28b9ccd2146f128c72cc871",
+    "hyphae/src/traits/collections/internal/join_runtime/sharded.rs": "9aafde8f593e6898bea7860fb56649e1b03000110774607489efe6017afe7646",
+    "hyphae/src/traits/collections/internal/join_runtime/state.rs": "347daa1de77c2f43aa7095f8946b76e7e2fdaf2cac25435576f422351d829229",
+    "hyphae/src/traits/collections/internal/join_runtime/two_stage.rs": "529f753824f4421682f516e11021f3b7c63bfa7b121baa55e651c9b0333d812b",
+    "hyphae/src/traits/collections/internal/map_runtime.rs": "b07f52201d72e1a4d1c77634b353a5e64b442ca27837c831bb81269c40a41ce8",
+    "hyphae/src/traits/collections/internal/map_values_cell.rs": "d4eafea6c97fb9766ae3c17146061c462bdd74d9b8b4e3a90f896b2228e12f2b",
+    "hyphae/src/traits/collections/internal/mod.rs": "71d93bd555b3fbad95f6d0e4cfd7cc1a12f56692f5a342c94c3d69a2607fc9bd",
+    "hyphae/src/traits/collections/internal/multi_join_runtime.rs": "9e700ffa27d0c3524d7f44f35a4db2cac64b2209ca292f8744aa6f036899d6e8",
+    "hyphae/src/traits/collections/internal/ordered_set.rs": "256a9e7d52978bff3d484da94c33ec86bca0042dd5e29d92c60211d8b87cfd78",
+    "hyphae/src/traits/collections/internal/stateless_runtime.rs": "a4825aff3bca9426bdb76823eefa4355ca9725503e7c5a2d5920feac3a136f7f",
+    "hyphae/src/traits/collections/left_join.rs": "258ab023fd3c24b8c3aa19ed23565348517daaa9d8b2f0b64f80ce53d28b7729",
+    "hyphae/src/traits/collections/left_join/one_stage.rs": "ca2241cc9d31a046f7c27bf56124f2edc2cd0bfc2307d49b65def6be8848d6cb",
+    "hyphae/src/traits/collections/left_join/tests.rs": "ae9cf9da04528c87083a12883c3372d40af1b70fbd68247c38f2c6c33b1c6a71",
+    "hyphae/src/traits/collections/left_join/two_stage.rs": "a0b3f6626530daea9cb431ed97b459827755a8950dc4a7b6f58acaf4a27e8f1c",
+    "hyphae/src/traits/collections/left_semi_join.rs": "2a20aa0676676d6086d9fdd18571cd36b9ddcc81095402792d73ba7f5d88988b",
+    "hyphae/src/traits/collections/map_values.rs": "87557bbd8152aa3ae7ea54f59b978bd45d3645e1abc0e3bb7da61f56e3db7060",
+    "hyphae/src/traits/collections/mod.rs": "260994afbed3a892b2b6c6f08da50c44d3b0129ca046837bd5fa75c777b93fa8",
+    "hyphae/src/traits/collections/multi_left_join.rs": "d00138b7b0305ad8d18ffe7de2e10c177790a8eecf3f1a3aec62e5c9d044b698",
+    "hyphae/src/traits/collections/project.rs": "a0c111d851868ee695264782384099cd28188d8f0c2b22f695c3e6f8148dc3f6",
+    "hyphae/src/traits/collections/project_cell.rs": "28c3f89a8d7c8c07e2524481f3fdf7d59bb1bd6fa9d9652d08648bbaacff4f61",
+    "hyphae/src/traits/collections/project_many.rs": "a3c8ca9f602a98dccae3d85aa5813f43cf5bbc0027f120084650d06378cb4928",
+    "hyphae/src/traits/collections/select.rs": "68b19de4b25cf50ffd70755cad96ace0fea46419badd70b5e6ad6b42391d9abd",
+    "hyphae/src/traits/collections/select_cell.rs": "da0d0609d5f80b85472d356efb2bbcc83b7194252586271c5088c80e807f78e1",
+    "hyphae/src/traits/dep_node.rs": "5946be178a6fc315ce709c224a3fa6ef8ace48995d93e5a343662896a9fd129c",
+    "hyphae/src/traits/foreign_key.rs": "5f12f89627434b79abc33051ce7ea018625374bcf00e5bde1f9f1e71dd876c44",
+    "hyphae/src/traits/mod.rs": "e8d22fd408e25ff81174bfa22c59300e537e6add757ad9ca27f8a216f88697fd",
+    "hyphae/src/traits/mutable.rs": "9780a5dc46f0218ca1986dc92ed7ae1f38d571dd66dba891cc5a9be403069602",
+    "hyphae/src/traits/operators/audit.rs": "53e21e3ccd2c342b44d968e14b513e8c0d4a5fb43a78a997ad50ab68a52a5ba6",
+    "hyphae/src/traits/operators/backpressure.rs": "9a83dc2a104580ead555e0fbb08d81762d43ed13319e425ac0865aa984e2a641",
+    "hyphae/src/traits/operators/buffer_count.rs": "731770e40c35e71dfd251fa179daa22b7487072ca73afe622f1ac6b2410e18e9",
+    "hyphae/src/traits/operators/buffer_time.rs": "7d4389c6948d1da19feb9d554798a48283c993a5e143c547c677d9fe067fb4bf",
+    "hyphae/src/traits/operators/cold.rs": "0ece85896e179c33c03b905b530628752fde152628706341a8bad81a2a1b8ae0",
+    "hyphae/src/traits/operators/concat.rs": "1abb0858f4758f78c5bfee9eb9aa33517ece0cd9c4ff119748aba5c58826cfb9",
+    "hyphae/src/traits/operators/debounce.rs": "bdbe53a955b6d078d4793e13bb98662851322a80906357c18444a52101c1d681",
+    "hyphae/src/traits/operators/deduped.rs": "a181a08a0dd70f8dd2b9e4dab8d3fe773206876599ec5df9608d4b127de6c2a9",
+    "hyphae/src/traits/operators/delay.rs": "0659918c360ded7905f28df583fb20feaea9824487c45238d50630666ecfd92b",
+    "hyphae/src/traits/operators/distinct.rs": "ca285439df8e50c98abf5db46c5935ca3557e110f09ad59c58187f34076988a5",
+    "hyphae/src/traits/operators/distinct_until_changed_by.rs": "d56feb2596d1e8e2d1f0529eabe577711163fcdc750d4eb5300122b1b5c9fe8d",
+    "hyphae/src/traits/operators/filter.rs": "f7a22776b6e361de33c3fafc18ff99c89e4aa3b118e937d0aa9d3fdc87323b14",
+    "hyphae/src/traits/operators/finalize.rs": "bf664f8236b71622a16339ad9085428e248de32201d7b2ca97b39115567a69f9",
+    "hyphae/src/traits/operators/first.rs": "2c3af03f3bbfe1858f53545f60752c9f1d85de0c6ca3f665c4a7b4c350bf4275",
+    "hyphae/src/traits/operators/join.rs": "22fc8fbec3be152ae1a67ac59132013d90b93185bd891e8d0c08e90d58f43c27",
+    "hyphae/src/traits/operators/join_vec.rs": "f638b1832bbe8be9846f2fb4e2e4cecac110c04a1d2744edb12c5a1ddd349025",
+    "hyphae/src/traits/operators/last.rs": "ccb301c6f05dc0ab8c67ef4a4f36257040c1659070946468547a12b53eeac358",
+    "hyphae/src/traits/operators/map.rs": "f5154d59c8981d65bea1375b88f764a39c8106b52bbf5356c98b4783aecf8815",
+    "hyphae/src/traits/operators/merge.rs": "31b143d40acec16a3011651a21a8b84de4498d7eec92f6282d83780f4a870d06",
+    "hyphae/src/traits/operators/merge_map.rs": "ae68ad90d20dfb5bbccd5760996c4561ca583934f3a0d0578778ee660a79bee1",
+    "hyphae/src/traits/operators/mod.rs": "3063bab63bde3b65ec502e2de5ee1b9c458f2dea7554461bdfac07545d54507b",
+    "hyphae/src/traits/operators/pairwise.rs": "88a0ca11e86f9c6ea58e4adae9d8b65ba4ba9c9e871ba5aca55f100dd73a517b",
+    "hyphae/src/traits/operators/parallel.rs": "b48c4f41a4b5fd2982252fdeda9d158605bf9817a8a1c007f9b329859b7a1614",
+    "hyphae/src/traits/operators/result_ext.rs": "abe999fe51817e7f45c0e8137c46bec83760552d6655011fae77015b2a3f2465",
+    "hyphae/src/traits/operators/retry.rs": "26b7709c248d93345fcdbe0654b3e62fd881042dc3dccc1eb5619eb187019b87",
+    "hyphae/src/traits/operators/sample.rs": "e863877d6d55846f0677483395a5d34cdb75a85b0b3a334cee3c95b675fbc8fe",
+    "hyphae/src/traits/operators/scan.rs": "10d2dc4ce6ef8dee739c7d3b3c92bed0fa0eda77224ce64a3dea9fe41b7eb6d7",
+    "hyphae/src/traits/operators/skip.rs": "a8b68c327ca4f21683322fe6bb6771a89268a52193f5d3324a526c2db8ed006f",
+    "hyphae/src/traits/operators/skip_while.rs": "9b58b6b7c1d0bb5862644e2bbc014c8965c5eb8a797d372e4397e30d4fc7c909",
+    "hyphae/src/traits/operators/state_transition.rs": "19ca26cb7d4af5b0ac45bdc092941c841917f978cabff684d4e9f4e1fcd3f161",
+    "hyphae/src/traits/operators/switch_map.rs": "51441246b9a6c8adb3515d44eed1fa1196d52fa8c328d00f5e6969b316fedbe2",
+    "hyphae/src/traits/operators/take.rs": "8fb55ae83546b1053acdca0ccd6dd1f57098959853a059d292476e9d47a89466",
+    "hyphae/src/traits/operators/take_until.rs": "08a337f29bbbfb680521e760c05f5d3d260a32c8d067aa5163d0ad2f69892f7a",
+    "hyphae/src/traits/operators/take_while.rs": "8752c9c234a358eaf7a712efe39d9d5f3b57efadeeb0960398df0ff94c81eb8d",
+    "hyphae/src/traits/operators/tap.rs": "717d8d9bb9fc7ed5ca13ae961d3edf9a36a0bbc8b3f9a170e1f24e78cd35ea40",
+    "hyphae/src/traits/operators/throttle.rs": "1aa8791a355731ea0b6f42af8a117df01449469ca9813928b080d7765eac7542",
+    "hyphae/src/traits/operators/timeout.rs": "fd00da9357625ac3fdee923a84be3714cbc584e8dcf9c208af5383a31ddae271",
+    "hyphae/src/traits/operators/try_map.rs": "fae6e847a29ee6a1bfae258a73ead9d1c6e5246de0797c630189d558188d8c79",
+    "hyphae/src/traits/operators/window.rs": "c55404d1c37ccbed80e545dfb77dbdae1202de5eed36335bb53c30a79f5126de",
+    "hyphae/src/traits/operators/with_latest_from.rs": "80941fda79468caf2c516dedf296c9f5689f7fa7dd520a329b637d77bb726472",
+    "hyphae/src/traits/operators/zip.rs": "cbf85b27307fd9008b4ac786679c98ae81f4bc49675b6a69035b7cfb69ca41d7",
+    "hyphae/src/traits/reactive_keys.rs": "5a5a448019ed4c6bcfa0666dec096c7059c0190ed25e626baefc9a296154cc35",
+    "hyphae/src/traits/reactive_map.rs": "26e6d61530031b34c05be86dd3133e2ab226d2e0e38f847a1943e2bb5cff0245",
+    "hyphae/src/traits/watchable.rs": "908e058e2240c11ceced77446870cb82073b9f780e327752151591b1963309cd",
+    "hyphae/tests/arbitrary_n_public_join_region.rs": "322b40c8d5417dc41a1af89e073f56c02ae8661a2a71c61118d30d85e3b57373",
+    "hyphae/tests/cell_map_batched_diff_length.rs": "ece8dee2ee7496b15a4ddd5a51aa4bcb35e8d76adecfb4ce2e7d93145077a827",
+    "hyphae/tests/countall_size_retention.rs": "a19e2ca99cab6af82638bd6d7c593fb04fe39aac3fe2b7fb51ad540115b5a980",
+    "hyphae/tests/four_join_application_preflight.rs": "34d3c5bca4bf7707a2101cbfb37bbf6e37f84ab01f086f6da54babb07b37d081",
+    "hyphae/tests/parallelism_cellmap_joins.rs": "7e3d81c8d639f3e23765931c0fd1d0258dd106e71d2cd9653cf800e0a71efa37",
+    "hyphae/tests/parallelism_combiners.rs": "4d49ba8eff238e71ebd87742d36791e49b0e3687457d38712d6c7c5786ea2e42",
+    "hyphae/tests/parallelism_slicing.rs": "23f7ee498ac048b5f3a8fe181040d96b0f26389a6dd533926e941c7fb32f280d",
+    "hyphae/tests/parallelism_time_structural.rs": "ca78336cc075f615290d4e9f8b48ce880caf971d27822905018785a28305ed4b",
+    "hyphae/tests/parallelism_transforms.rs": "019cfd6febe23586039662c3b842dd6d2eb1f3e7d3d6c1789a18aa17b45698ff",
+    "hyphae/tests/pipeline_construction_laziness.rs": "909518dade1766d916412cba82eaa847bd2b23a88927829ee5262f9818adb459",
+    "hyphae/tests/profiling_pass.rs": "a1e863f5b291003513ec9b287e0f5352d2baf74bae263a665bf00f63e9056016",
+    "hyphae/tests/region_threshold_truth_table.rs": "ec9315562c915eeaeefc8066298a3262bfe086c820110f8b892208b7c4c9b246",
+    "hyphae/tests/scheduler_arena_lifecycle.rs": "28247dee93a072d8ea55d86be925264999a600166e398e7e0b3ea3bed8367cd9",
+    "hyphae/tests/scheduler_completeness.rs": "0b1eb63f7fb429dd5cd27ed40d067ef45d20f52e7a36ebe96e044d77b9905460",
+    "hyphae/tests/scheduler_correctness_stress.rs": "5418170f1b6f95982ebad3a321e1773fcfcaa47b0d3766520b2321a5312713a4",
+    "hyphae/tests/scheduler_map_join_torn.rs": "73eb256f8eea93a7dc6509b35aa9046710b248320c35b372101a825624139cea",
+    "hyphae/tests/scheduler_no_coalesce.rs": "e61f38df1694e6f3403b1cc8f8115911cc85b0f9b14f039578a433d83dda5a2b",
+    "hyphae/tests/scheduler_no_coalesce_wave_order.rs": "f86a425020eb33b1fbc8de7913c36d18ca8a536b572c5f8550e699883fec770e",
+    "hyphae/tests/scheduler_phase0.rs": "373d1b58f536cddddf63219f67c1a286681b447fb093bc914453d939cb069e57",
+    "hyphae/tests/scheduler_reentrant_wave.rs": "6b7498aef2823b388c9fcde5d9fb7a18cf938fc6893563a9bb241e3564b0f2df",
+    "hyphae/tests/scheduler_switch_map_leak.rs": "5bbcb7cecdd8251d14e3e550bf383084f45b5db9af4abb40311657042f0efd47",
+    "hyphae/tests/scheduler_switch_map_stress.rs": "64f2ebcbe267d84e5cede1f99ee7aafa3281c2f300b8853cb66d74d2a7509df6",
+    "hyphae/tests/scheduler_zip_mispair.rs": "057b48f7eb9de88cb6c1f68ac18dd2968a47730b881a5275eea7ae8d647f7cf2",
+    "hyphae/tests/timer_reactor.rs": "2e906c0e79dec012e3850fc58f231a06255fb0e41d80dcceeb3a66c632d7730f"
+  },
+  "measurement_vs_delivery": "Production source identical after rebase onto v3.1.7 release; original timing manifests and lock identities remain preserved separately.",
+  "native_tests": {
+    "failed": 0,
+    "ignored": 2,
+    "passed": 516
+  },
+  "post_rebase_verification": {
+    "checks": [
+      {
+        "command": [
+          "cargo",
+          "test",
+          "-p",
+          "hyphae",
+          "--all-features",
+          "-j4"
+        ],
+        "log": "post-rebase-tests.log",
+        "returncode": 0,
+        "sha256": "70314c6a465e5c8ede054eaaf16229751bfe133d82de8093ea569a3cbb32372e"
+      },
+      {
+        "command": [
+          "cargo",
+          "clippy",
+          "-p",
+          "hyphae",
+          "--all-features",
+          "--lib",
+          "--tests",
+          "--example",
+          "scheduler_arena_allocations",
+          "--example",
+          "scheduler_arena_contention",
+          "-j4",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        "log": "post-rebase-clippy.log",
+        "returncode": 0,
+        "sha256": "ac96069a6b8495011fde4c35e71edbd7a9d3c251a527626dc1aa41e27d90d470"
+      },
+      {
+        "command": [
+          "cargo",
+          "check",
+          "-p",
+          "hyphae",
+          "--no-default-features",
+          "--tests",
+          "-j4"
+        ],
+        "log": "post-rebase-default.log",
+        "returncode": 0,
+        "sha256": "d2ad264f584b8846b38ca0bc46003e0dfe9f2ee858bda69db848c92b959bdaaa"
+      },
+      {
+        "command": [
+          "cargo",
+          "check",
+          "-p",
+          "hyphae",
+          "--target",
+          "wasm32-unknown-unknown",
+          "--all-features",
+          "-j4"
+        ],
+        "log": "post-rebase-wasm.log",
+        "returncode": 0,
+        "sha256": "5dd8b591e56e3756f9b7df0d4882530c5646bf5b1096f3a8aaa19f7a1cc2cd84"
+      }
+    ],
+    "complete": true,
+    "note": "Rebased onto3.1.7 release. Production source identical; only upstream release manifests/lock changed. Original timing identity remains recorded separately.",
+    "production_source_matches_measured_candidate": true,
+    "revision": "351eff047ba3d29a2d5e4a83caeb3d71dc4634bd"
+  },
+  "schema": 1,
+  "scope": "Pending-work arena and compact height/cell frontier; public APIs and Cell storage unchanged",
+  "synthetic_phases": {
+    "descriptive_only": true,
+    "note": "Synthetic phase quantiles, not production tails or significance tests.",
+    "results": [
+      {
+        "after_runs": [
+          {
+            "p50": 1320,
+            "p95": 1730,
+            "p99": 1940
+          },
+          {
+            "p50": 1250,
+            "p95": 1440,
+            "p99": 1690
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 1280,
+            "p95": 1880,
+            "p99": 2170
+          },
+          {
+            "p50": 1350,
+            "p95": 1740,
+            "p99": 2120
+          }
+        ],
+        "p50": {
+          "after_ns": 1285.0,
+          "before_ns": 1315.0,
+          "descriptive_change_percent": -2.281368821292773
+        },
+        "p95": {
+          "after_ns": 1585.0,
+          "before_ns": 1810.0,
+          "descriptive_change_percent": -12.430939226519333
+        },
+        "p99": {
+          "after_ns": 1815.0,
+          "before_ns": 2145.0,
+          "descriptive_change_percent": -15.384615384615385
+        },
+        "phase": "operation",
+        "size": 16,
+        "workload": "deep_chain"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 5560,
+            "p95": 8050,
+            "p99": 9410
+          },
+          {
+            "p50": 5410,
+            "p95": 6730,
+            "p99": 8240
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 5630,
+            "p95": 9970,
+            "p99": 16910
+          },
+          {
+            "p50": 5400,
+            "p95": 8420,
+            "p99": 22490
+          }
+        ],
+        "p50": {
+          "after_ns": 5485.0,
+          "before_ns": 5515.0,
+          "descriptive_change_percent": -0.5439709882139598
+        },
+        "p95": {
+          "after_ns": 7390.0,
+          "before_ns": 9195.0,
+          "descriptive_change_percent": -19.63023382272975
+        },
+        "p99": {
+          "after_ns": 8825.0,
+          "before_ns": 19700.0,
+          "descriptive_change_percent": -55.203045685279186
+        },
+        "phase": "setup",
+        "size": 16,
+        "workload": "deep_chain"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 2300,
+            "p95": 3340,
+            "p99": 3690
+          },
+          {
+            "p50": 2200,
+            "p95": 2501,
+            "p99": 3430
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 2220,
+            "p95": 3410,
+            "p99": 4300
+          },
+          {
+            "p50": 2200,
+            "p95": 3480,
+            "p99": 4230
+          }
+        ],
+        "p50": {
+          "after_ns": 2250.0,
+          "before_ns": 2210.0,
+          "descriptive_change_percent": 1.8099547511312153
+        },
+        "p95": {
+          "after_ns": 2920.5,
+          "before_ns": 3445.0,
+          "descriptive_change_percent": -15.22496371552975
+        },
+        "p99": {
+          "after_ns": 3560.0,
+          "before_ns": 4265.0,
+          "descriptive_change_percent": -16.52989449003517
+        },
+        "phase": "teardown",
+        "size": 16,
+        "workload": "deep_chain"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 10710,
+            "p95": 12110,
+            "p99": 17150
+          },
+          {
+            "p50": 10700,
+            "p95": 12740,
+            "p99": 17860
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 10720,
+            "p95": 13890,
+            "p99": 23170
+          },
+          {
+            "p50": 10870,
+            "p95": 12160,
+            "p99": 16370
+          }
+        ],
+        "p50": {
+          "after_ns": 10705.0,
+          "before_ns": 10795.0,
+          "descriptive_change_percent": -0.8337193144974497
+        },
+        "p95": {
+          "after_ns": 12425.0,
+          "before_ns": 13025.0,
+          "descriptive_change_percent": -4.606525911708248
+        },
+        "p99": {
+          "after_ns": 17505.0,
+          "before_ns": 19770.0,
+          "descriptive_change_percent": -11.456752655538693
+        },
+        "phase": "operation",
+        "size": 128,
+        "workload": "deep_chain"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 42160,
+            "p95": 57020,
+            "p99": 70260
+          },
+          {
+            "p50": 41110,
+            "p95": 64730,
+            "p99": 74590
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 41590,
+            "p95": 64580,
+            "p99": 85481
+          },
+          {
+            "p50": 41910,
+            "p95": 54810,
+            "p99": 73500
+          }
+        ],
+        "p50": {
+          "after_ns": 41635.0,
+          "before_ns": 41750.0,
+          "descriptive_change_percent": -0.27544910179641
+        },
+        "p95": {
+          "after_ns": 60875.0,
+          "before_ns": 59695.0,
+          "descriptive_change_percent": 1.9767149677527351
+        },
+        "p99": {
+          "after_ns": 72425.0,
+          "before_ns": 79490.5,
+          "descriptive_change_percent": -8.888483529478364
+        },
+        "phase": "setup",
+        "size": 128,
+        "workload": "deep_chain"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 19790,
+            "p95": 27540,
+            "p99": 33880
+          },
+          {
+            "p50": 19950,
+            "p95": 29640,
+            "p99": 34390
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 19760,
+            "p95": 29980,
+            "p99": 39970
+          },
+          {
+            "p50": 20290,
+            "p95": 27540,
+            "p99": 33250
+          }
+        ],
+        "p50": {
+          "after_ns": 19870.0,
+          "before_ns": 20025.0,
+          "descriptive_change_percent": -0.774032459425722
+        },
+        "p95": {
+          "after_ns": 28590.0,
+          "before_ns": 28760.0,
+          "descriptive_change_percent": -0.591098748261476
+        },
+        "p99": {
+          "after_ns": 34135.0,
+          "before_ns": 36610.0,
+          "descriptive_change_percent": -6.760447965036875
+        },
+        "phase": "teardown",
+        "size": 128,
+        "workload": "deep_chain"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 3270,
+            "p95": 3960,
+            "p99": 4700
+          },
+          {
+            "p50": 3100,
+            "p95": 5480,
+            "p99": 5870
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 3770,
+            "p95": 5620,
+            "p99": 6100
+          },
+          {
+            "p50": 3800,
+            "p95": 5060,
+            "p99": 7380
+          }
+        ],
+        "p50": {
+          "after_ns": 3185.0,
+          "before_ns": 3785.0,
+          "descriptive_change_percent": -15.852047556142669
+        },
+        "p95": {
+          "after_ns": 4720.0,
+          "before_ns": 5340.0,
+          "descriptive_change_percent": -11.610486891385763
+        },
+        "p99": {
+          "after_ns": 5285.0,
+          "before_ns": 6740.0,
+          "descriptive_change_percent": -21.58753709198813
+        },
+        "phase": "operation",
+        "size": 16,
+        "workload": "event_no_coalesce"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 470,
+            "p95": 530,
+            "p99": 760
+          },
+          {
+            "p50": 490,
+            "p95": 860,
+            "p99": 930
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 470,
+            "p95": 690,
+            "p99": 770
+          },
+          {
+            "p50": 460,
+            "p95": 580,
+            "p99": 740
+          }
+        ],
+        "p50": {
+          "after_ns": 480.0,
+          "before_ns": 465.0,
+          "descriptive_change_percent": 3.2258064516129004
+        },
+        "p95": {
+          "after_ns": 695.0,
+          "before_ns": 635.0,
+          "descriptive_change_percent": 9.4488188976378
+        },
+        "p99": {
+          "after_ns": 845.0,
+          "before_ns": 755.0,
+          "descriptive_change_percent": 11.920529801324498
+        },
+        "phase": "setup",
+        "size": 16,
+        "workload": "event_no_coalesce"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 230,
+            "p95": 280,
+            "p99": 370
+          },
+          {
+            "p50": 220,
+            "p95": 370,
+            "p99": 430
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 220,
+            "p95": 370,
+            "p99": 440
+          },
+          {
+            "p50": 210,
+            "p95": 320,
+            "p99": 460
+          }
+        ],
+        "p50": {
+          "after_ns": 225.0,
+          "before_ns": 215.0,
+          "descriptive_change_percent": 4.651162790697683
+        },
+        "p95": {
+          "after_ns": 325.0,
+          "before_ns": 345.0,
+          "descriptive_change_percent": -5.797101449275366
+        },
+        "p99": {
+          "after_ns": 400.0,
+          "before_ns": 450.0,
+          "descriptive_change_percent": -11.111111111111116
+        },
+        "phase": "teardown",
+        "size": 16,
+        "workload": "event_no_coalesce"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 22360,
+            "p95": 30200,
+            "p99": 32020
+          },
+          {
+            "p50": 22480,
+            "p95": 25850,
+            "p99": 29060
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 34530,
+            "p95": 41290,
+            "p99": 47120
+          },
+          {
+            "p50": 32210,
+            "p95": 43620,
+            "p99": 49400
+          }
+        ],
+        "p50": {
+          "after_ns": 22420.0,
+          "before_ns": 33370.0,
+          "descriptive_change_percent": -32.813904704824694
+        },
+        "p95": {
+          "after_ns": 28025.0,
+          "before_ns": 42455.0,
+          "descriptive_change_percent": -33.988929454716754
+        },
+        "p99": {
+          "after_ns": 30540.0,
+          "before_ns": 48260.0,
+          "descriptive_change_percent": -36.7177786987153
+        },
+        "phase": "operation",
+        "size": 128,
+        "workload": "event_no_coalesce"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 490,
+            "p95": 780,
+            "p99": 870
+          },
+          {
+            "p50": 490,
+            "p95": 530,
+            "p99": 730
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 490,
+            "p95": 540,
+            "p99": 760
+          },
+          {
+            "p50": 480,
+            "p95": 680,
+            "p99": 830
+          }
+        ],
+        "p50": {
+          "after_ns": 490.0,
+          "before_ns": 485.0,
+          "descriptive_change_percent": 1.0309278350515427
+        },
+        "p95": {
+          "after_ns": 655.0,
+          "before_ns": 610.0,
+          "descriptive_change_percent": 7.377049180327866
+        },
+        "p99": {
+          "after_ns": 800.0,
+          "before_ns": 795.0,
+          "descriptive_change_percent": 0.6289308176100628
+        },
+        "phase": "setup",
+        "size": 128,
+        "workload": "event_no_coalesce"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 230,
+            "p95": 400,
+            "p99": 450
+          },
+          {
+            "p50": 240,
+            "p95": 310,
+            "p99": 400
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 250,
+            "p95": 340,
+            "p99": 440
+          },
+          {
+            "p50": 250,
+            "p95": 380,
+            "p99": 520
+          }
+        ],
+        "p50": {
+          "after_ns": 235.0,
+          "before_ns": 250.0,
+          "descriptive_change_percent": -6.000000000000005
+        },
+        "p95": {
+          "after_ns": 355.0,
+          "before_ns": 360.0,
+          "descriptive_change_percent": -1.388888888888884
+        },
+        "p99": {
+          "after_ns": 425.0,
+          "before_ns": 480.0,
+          "descriptive_change_percent": -11.458333333333337
+        },
+        "phase": "teardown",
+        "size": 128,
+        "workload": "event_no_coalesce"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 70,
+            "p95": 80,
+            "p99": 90
+          },
+          {
+            "p50": 70,
+            "p95": 150,
+            "p99": 170
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 80,
+            "p95": 120,
+            "p99": 150
+          },
+          {
+            "p50": 70,
+            "p95": 100,
+            "p99": 120
+          }
+        ],
+        "p50": {
+          "after_ns": 70.0,
+          "before_ns": 75.0,
+          "descriptive_change_percent": -6.666666666666665
+        },
+        "p95": {
+          "after_ns": 115.0,
+          "before_ns": 110.0,
+          "descriptive_change_percent": 4.545454545454541
+        },
+        "p99": {
+          "after_ns": 130.0,
+          "before_ns": 135.0,
+          "descriptive_change_percent": -3.703703703703709
+        },
+        "phase": "operation",
+        "size": 16,
+        "workload": "lifecycle"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 1480,
+            "p95": 1620,
+            "p99": 1710
+          },
+          {
+            "p50": 1470,
+            "p95": 1980,
+            "p99": 2900
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 1610,
+            "p95": 2200,
+            "p99": 3130
+          },
+          {
+            "p50": 1500,
+            "p95": 2010,
+            "p99": 2170
+          }
+        ],
+        "p50": {
+          "after_ns": 1475.0,
+          "before_ns": 1555.0,
+          "descriptive_change_percent": -5.1446945337620615
+        },
+        "p95": {
+          "after_ns": 1800.0,
+          "before_ns": 2105.0,
+          "descriptive_change_percent": -14.48931116389549
+        },
+        "p99": {
+          "after_ns": 2305.0,
+          "before_ns": 2650.0,
+          "descriptive_change_percent": -13.0188679245283
+        },
+        "phase": "setup",
+        "size": 16,
+        "workload": "lifecycle"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 340,
+            "p95": 370,
+            "p99": 410
+          },
+          {
+            "p50": 360,
+            "p95": 590,
+            "p99": 680
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 360,
+            "p95": 620,
+            "p99": 740
+          },
+          {
+            "p50": 330,
+            "p95": 510,
+            "p99": 570
+          }
+        ],
+        "p50": {
+          "after_ns": 350.0,
+          "before_ns": 345.0,
+          "descriptive_change_percent": 1.449275362318847
+        },
+        "p95": {
+          "after_ns": 480.0,
+          "before_ns": 565.0,
+          "descriptive_change_percent": -15.04424778761062
+        },
+        "p99": {
+          "after_ns": 545.0,
+          "before_ns": 655.0,
+          "descriptive_change_percent": -16.793893129770986
+        },
+        "phase": "teardown",
+        "size": 16,
+        "workload": "lifecycle"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 600,
+            "p95": 740,
+            "p99": 870
+          },
+          {
+            "p50": 590,
+            "p95": 670,
+            "p99": 790
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 600,
+            "p95": 780,
+            "p99": 980
+          },
+          {
+            "p50": 580,
+            "p95": 720,
+            "p99": 830
+          }
+        ],
+        "p50": {
+          "after_ns": 595.0,
+          "before_ns": 590.0,
+          "descriptive_change_percent": 0.8474576271186418
+        },
+        "p95": {
+          "after_ns": 705.0,
+          "before_ns": 750.0,
+          "descriptive_change_percent": -6.000000000000005
+        },
+        "p99": {
+          "after_ns": 830.0,
+          "before_ns": 905.0,
+          "descriptive_change_percent": -8.287292817679559
+        },
+        "phase": "operation",
+        "size": 128,
+        "workload": "lifecycle"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 12670,
+            "p95": 18470,
+            "p99": 26890
+          },
+          {
+            "p50": 12930,
+            "p95": 13180,
+            "p99": 17210
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 12840,
+            "p95": 18220,
+            "p99": 25460
+          },
+          {
+            "p50": 12390,
+            "p95": 16410,
+            "p99": 19680
+          }
+        ],
+        "p50": {
+          "after_ns": 12800.0,
+          "before_ns": 12615.0,
+          "descriptive_change_percent": 1.466508125247712
+        },
+        "p95": {
+          "after_ns": 15825.0,
+          "before_ns": 17315.0,
+          "descriptive_change_percent": -8.60525555876408
+        },
+        "p99": {
+          "after_ns": 22050.0,
+          "before_ns": 22570.0,
+          "descriptive_change_percent": -2.303943287549848
+        },
+        "phase": "setup",
+        "size": 128,
+        "workload": "lifecycle"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 4680,
+            "p95": 7900,
+            "p99": 9610
+          },
+          {
+            "p50": 4940,
+            "p95": 5070,
+            "p99": 8090
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 4800,
+            "p95": 8110,
+            "p99": 9830
+          },
+          {
+            "p50": 4620,
+            "p95": 6930,
+            "p99": 8370
+          }
+        ],
+        "p50": {
+          "after_ns": 4810.0,
+          "before_ns": 4710.0,
+          "descriptive_change_percent": 2.123142250530785
+        },
+        "p95": {
+          "after_ns": 6485.0,
+          "before_ns": 7520.0,
+          "descriptive_change_percent": -13.76329787234043
+        },
+        "p99": {
+          "after_ns": 8850.0,
+          "before_ns": 9100.0,
+          "descriptive_change_percent": -2.7472527472527486
+        },
+        "phase": "teardown",
+        "size": 128,
+        "workload": "lifecycle"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 14570,
+            "p95": 22210,
+            "p99": 24980
+          },
+          {
+            "p50": 14910,
+            "p95": 19110,
+            "p99": 23980
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 14620,
+            "p95": 20970,
+            "p99": 28770
+          },
+          {
+            "p50": 14400,
+            "p95": 19600,
+            "p99": 22940
+          }
+        ],
+        "p50": {
+          "after_ns": 14740.0,
+          "before_ns": 14510.0,
+          "descriptive_change_percent": 1.5851137146795313
+        },
+        "p95": {
+          "after_ns": 20660.0,
+          "before_ns": 20285.0,
+          "descriptive_change_percent": 1.8486566428395301
+        },
+        "p99": {
+          "after_ns": 24480.0,
+          "before_ns": 25855.0,
+          "descriptive_change_percent": -5.3181202862115695
+        },
+        "phase": "operation",
+        "size": 16,
+        "workload": "project_cell_churn"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 54640,
+            "p95": 74330,
+            "p99": 87010
+          },
+          {
+            "p50": 58880,
+            "p95": 71940,
+            "p99": 85800
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 53690,
+            "p95": 71100,
+            "p99": 87160
+          },
+          {
+            "p50": 53470,
+            "p95": 66630,
+            "p99": 82300
+          }
+        ],
+        "p50": {
+          "after_ns": 56760.0,
+          "before_ns": 53580.0,
+          "descriptive_change_percent": 5.935050391937291
+        },
+        "p95": {
+          "after_ns": 73135.0,
+          "before_ns": 68865.0,
+          "descriptive_change_percent": 6.200537283090113
+        },
+        "p99": {
+          "after_ns": 86405.0,
+          "before_ns": 84730.0,
+          "descriptive_change_percent": 1.9768676973917154
+        },
+        "phase": "setup",
+        "size": 16,
+        "workload": "project_cell_churn"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 6750,
+            "p95": 18850,
+            "p99": 34740
+          },
+          {
+            "p50": 9820,
+            "p95": 28120,
+            "p99": 36080
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 6540,
+            "p95": 9330,
+            "p99": 25110
+          },
+          {
+            "p50": 6430,
+            "p95": 18060,
+            "p99": 31331
+          }
+        ],
+        "p50": {
+          "after_ns": 8285.0,
+          "before_ns": 6485.0,
+          "descriptive_change_percent": 27.756360832690817
+        },
+        "p95": {
+          "after_ns": 23485.0,
+          "before_ns": 13695.0,
+          "descriptive_change_percent": 71.4859437751004
+        },
+        "p99": {
+          "after_ns": 35410.0,
+          "before_ns": 28220.5,
+          "descriptive_change_percent": 25.47616094682943
+        },
+        "phase": "teardown",
+        "size": 16,
+        "workload": "project_cell_churn"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 118830,
+            "p95": 134810,
+            "p99": 158381
+          },
+          {
+            "p50": 122280,
+            "p95": 147960,
+            "p99": 189300
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 119390,
+            "p95": 147200,
+            "p99": 184090
+          },
+          {
+            "p50": 116540,
+            "p95": 131731,
+            "p99": 167470
+          }
+        ],
+        "p50": {
+          "after_ns": 120555.0,
+          "before_ns": 117965.0,
+          "descriptive_change_percent": 2.195566481583522
+        },
+        "p95": {
+          "after_ns": 141385.0,
+          "before_ns": 139465.5,
+          "descriptive_change_percent": 1.3763260447924308
+        },
+        "p99": {
+          "after_ns": 173840.5,
+          "before_ns": 175780.0,
+          "descriptive_change_percent": -1.1033678461713547
+        },
+        "phase": "operation",
+        "size": 128,
+        "workload": "project_cell_churn"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 359651,
+            "p95": 382330,
+            "p99": 412360
+          },
+          {
+            "p50": 363571,
+            "p95": 405211,
+            "p99": 461181
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 362190,
+            "p95": 404811,
+            "p99": 472301
+          },
+          {
+            "p50": 359170,
+            "p95": 381870,
+            "p99": 439830
+          }
+        ],
+        "p50": {
+          "after_ns": 361611.0,
+          "before_ns": 360680.0,
+          "descriptive_change_percent": 0.2581235444161001
+        },
+        "p95": {
+          "after_ns": 393770.5,
+          "before_ns": 393340.5,
+          "descriptive_change_percent": 0.10932004205008727
+        },
+        "p99": {
+          "after_ns": 436770.5,
+          "before_ns": 456065.5,
+          "descriptive_change_percent": -4.230751942429323
+        },
+        "phase": "setup",
+        "size": 128,
+        "workload": "project_cell_churn"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 49390,
+            "p95": 57840,
+            "p99": 65980
+          },
+          {
+            "p50": 49290,
+            "p95": 61620,
+            "p99": 73660
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 49630,
+            "p95": 67420,
+            "p99": 82750
+          },
+          {
+            "p50": 49010,
+            "p95": 57630,
+            "p99": 68490
+          }
+        ],
+        "p50": {
+          "after_ns": 49340.0,
+          "before_ns": 49320.0,
+          "descriptive_change_percent": 0.040551500405516805
+        },
+        "p95": {
+          "after_ns": 59730.0,
+          "before_ns": 62525.0,
+          "descriptive_change_percent": -4.470211915233902
+        },
+        "p99": {
+          "after_ns": 69820.0,
+          "before_ns": 75620.0,
+          "descriptive_change_percent": -7.669928590320019
+        },
+        "phase": "teardown",
+        "size": 128,
+        "workload": "project_cell_churn"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 80,
+            "p95": 120,
+            "p99": 180
+          },
+          {
+            "p50": 70,
+            "p95": 100,
+            "p99": 130
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 70,
+            "p95": 110,
+            "p99": 150
+          },
+          {
+            "p50": 70,
+            "p95": 90,
+            "p99": 120
+          }
+        ],
+        "p50": {
+          "after_ns": 75.0,
+          "before_ns": 70.0,
+          "descriptive_change_percent": 7.14285714285714
+        },
+        "p95": {
+          "after_ns": 110.0,
+          "before_ns": 100.0,
+          "descriptive_change_percent": 10.000000000000009
+        },
+        "p99": {
+          "after_ns": 155.0,
+          "before_ns": 135.0,
+          "descriptive_change_percent": 14.814814814814813
+        },
+        "phase": "operation",
+        "size": 16,
+        "workload": "source_fanout"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 2140,
+            "p95": 3040,
+            "p99": 3710
+          },
+          {
+            "p50": 2100,
+            "p95": 2320,
+            "p99": 3060
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 2090,
+            "p95": 3030,
+            "p99": 3300
+          },
+          {
+            "p50": 2050,
+            "p95": 2220,
+            "p99": 2990
+          }
+        ],
+        "p50": {
+          "after_ns": 2120.0,
+          "before_ns": 2070.0,
+          "descriptive_change_percent": 2.4154589371980784
+        },
+        "p95": {
+          "after_ns": 2680.0,
+          "before_ns": 2625.0,
+          "descriptive_change_percent": 2.0952380952381056
+        },
+        "p99": {
+          "after_ns": 3385.0,
+          "before_ns": 3145.0,
+          "descriptive_change_percent": 7.631160572337037
+        },
+        "phase": "setup",
+        "size": 16,
+        "workload": "source_fanout"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 1640,
+            "p95": 2510,
+            "p99": 2970
+          },
+          {
+            "p50": 1580,
+            "p95": 1720,
+            "p99": 2490
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 1620,
+            "p95": 2460,
+            "p99": 2910
+          },
+          {
+            "p50": 1510,
+            "p95": 1660,
+            "p99": 2460
+          }
+        ],
+        "p50": {
+          "after_ns": 1610.0,
+          "before_ns": 1565.0,
+          "descriptive_change_percent": 2.8753993610223683
+        },
+        "p95": {
+          "after_ns": 2115.0,
+          "before_ns": 2060.0,
+          "descriptive_change_percent": 2.669902912621369
+        },
+        "p99": {
+          "after_ns": 2730.0,
+          "before_ns": 2685.0,
+          "descriptive_change_percent": 1.6759776536312776
+        },
+        "phase": "teardown",
+        "size": 16,
+        "workload": "source_fanout"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 480,
+            "p95": 550,
+            "p99": 690
+          },
+          {
+            "p50": 470,
+            "p95": 570,
+            "p99": 760
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 470,
+            "p95": 690,
+            "p99": 1030
+          },
+          {
+            "p50": 470,
+            "p95": 600,
+            "p99": 850
+          }
+        ],
+        "p50": {
+          "after_ns": 475.0,
+          "before_ns": 470.0,
+          "descriptive_change_percent": 1.0638297872340496
+        },
+        "p95": {
+          "after_ns": 560.0,
+          "before_ns": 645.0,
+          "descriptive_change_percent": -13.178294573643413
+        },
+        "p99": {
+          "after_ns": 725.0,
+          "before_ns": 940.0,
+          "descriptive_change_percent": -22.872340425531913
+        },
+        "phase": "operation",
+        "size": 128,
+        "workload": "source_fanout"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 55330,
+            "p95": 62470,
+            "p99": 71110
+          },
+          {
+            "p50": 54190,
+            "p95": 62780,
+            "p99": 71380
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 54950,
+            "p95": 71280,
+            "p99": 85750
+          },
+          {
+            "p50": 55300,
+            "p95": 64440,
+            "p99": 77620
+          }
+        ],
+        "p50": {
+          "after_ns": 54760.0,
+          "before_ns": 55125.0,
+          "descriptive_change_percent": -0.6621315192743782
+        },
+        "p95": {
+          "after_ns": 62625.0,
+          "before_ns": 67860.0,
+          "descriptive_change_percent": -7.7144120247568555
+        },
+        "p99": {
+          "after_ns": 71245.0,
+          "before_ns": 81685.0,
+          "descriptive_change_percent": -12.780804309236704
+        },
+        "phase": "setup",
+        "size": 128,
+        "workload": "source_fanout"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 56340,
+            "p95": 65980,
+            "p99": 73890
+          },
+          {
+            "p50": 55810,
+            "p95": 66880,
+            "p99": 74280
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 56390,
+            "p95": 78800,
+            "p99": 94350
+          },
+          {
+            "p50": 57230,
+            "p95": 67470,
+            "p99": 86120
+          }
+        ],
+        "p50": {
+          "after_ns": 56075.0,
+          "before_ns": 56810.0,
+          "descriptive_change_percent": -1.2937863052279508
+        },
+        "p95": {
+          "after_ns": 66430.0,
+          "before_ns": 73135.0,
+          "descriptive_change_percent": -9.167977028782392
+        },
+        "p99": {
+          "after_ns": 74085.0,
+          "before_ns": 90235.0,
+          "descriptive_change_percent": -17.89771153100238
+        },
+        "phase": "teardown",
+        "size": 128,
+        "workload": "source_fanout"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 6940,
+            "p95": 9830,
+            "p99": 11310
+          },
+          {
+            "p50": 6860,
+            "p95": 12420,
+            "p99": 16890
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 7860,
+            "p95": 10620,
+            "p99": 12170
+          },
+          {
+            "p50": 7440,
+            "p95": 10090,
+            "p99": 16520
+          }
+        ],
+        "p50": {
+          "after_ns": 6900.0,
+          "before_ns": 7650.0,
+          "descriptive_change_percent": -9.80392156862745
+        },
+        "p95": {
+          "after_ns": 11125.0,
+          "before_ns": 10355.0,
+          "descriptive_change_percent": 7.436021245774982
+        },
+        "p99": {
+          "after_ns": 14100.0,
+          "before_ns": 14345.0,
+          "descriptive_change_percent": -1.7079121645172557
+        },
+        "phase": "operation",
+        "size": 16,
+        "workload": "wide_diamond"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 12630,
+            "p95": 17390,
+            "p99": 19310
+          },
+          {
+            "p50": 12450,
+            "p95": 22510,
+            "p99": 36510
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 12520,
+            "p95": 16750,
+            "p99": 19150
+          },
+          {
+            "p50": 11970,
+            "p95": 15731,
+            "p99": 23530
+          }
+        ],
+        "p50": {
+          "after_ns": 12540.0,
+          "before_ns": 12245.0,
+          "descriptive_change_percent": 2.409146590445088
+        },
+        "p95": {
+          "after_ns": 19950.0,
+          "before_ns": 16240.5,
+          "descriptive_change_percent": 22.841045534312364
+        },
+        "p99": {
+          "after_ns": 27910.0,
+          "before_ns": 21340.0,
+          "descriptive_change_percent": 30.78725398313027
+        },
+        "phase": "setup",
+        "size": 16,
+        "workload": "wide_diamond"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 5160,
+            "p95": 7240,
+            "p99": 7980
+          },
+          {
+            "p50": 5100,
+            "p95": 8380,
+            "p99": 10040
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 5130,
+            "p95": 7350,
+            "p99": 9150
+          },
+          {
+            "p50": 4940,
+            "p95": 6920,
+            "p99": 10700
+          }
+        ],
+        "p50": {
+          "after_ns": 5130.0,
+          "before_ns": 5035.0,
+          "descriptive_change_percent": 1.8867924528301883
+        },
+        "p95": {
+          "after_ns": 7810.0,
+          "before_ns": 7135.0,
+          "descriptive_change_percent": 9.460406447091806
+        },
+        "p99": {
+          "after_ns": 9010.0,
+          "before_ns": 9925.0,
+          "descriptive_change_percent": -9.219143576826195
+        },
+        "phase": "teardown",
+        "size": 16,
+        "workload": "wide_diamond"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 113920,
+            "p95": 209470,
+            "p99": 295530
+          },
+          {
+            "p50": 130810,
+            "p95": 316280,
+            "p99": 719030
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 133991,
+            "p95": 529220,
+            "p99": 1084521
+          },
+          {
+            "p50": 115260,
+            "p95": 217800,
+            "p99": 281080
+          }
+        ],
+        "p50": {
+          "after_ns": 122365.0,
+          "before_ns": 124625.5,
+          "descriptive_change_percent": -1.8138342474052216
+        },
+        "p95": {
+          "after_ns": 262875.0,
+          "before_ns": 373510.0,
+          "descriptive_change_percent": -29.620358223340737
+        },
+        "p99": {
+          "after_ns": 507280.0,
+          "before_ns": 682800.5,
+          "descriptive_change_percent": -25.705971217068523
+        },
+        "phase": "operation",
+        "size": 128,
+        "workload": "wide_diamond"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 106030,
+            "p95": 151860,
+            "p99": 175140
+          },
+          {
+            "p50": 121850,
+            "p95": 178811,
+            "p99": 245751
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 122010,
+            "p95": 174100,
+            "p99": 276340
+          },
+          {
+            "p50": 105500,
+            "p95": 156930,
+            "p99": 206240
+          }
+        ],
+        "p50": {
+          "after_ns": 113940.0,
+          "before_ns": 113755.0,
+          "descriptive_change_percent": 0.1626302140565139
+        },
+        "p95": {
+          "after_ns": 165335.5,
+          "before_ns": 165515.0,
+          "descriptive_change_percent": -0.10844938525209624
+        },
+        "p99": {
+          "after_ns": 210445.5,
+          "before_ns": 241290.0,
+          "descriptive_change_percent": -12.783165485515358
+        },
+        "phase": "setup",
+        "size": 128,
+        "workload": "wide_diamond"
+      },
+      {
+        "after_runs": [
+          {
+            "p50": 62590,
+            "p95": 110320,
+            "p99": 195500
+          },
+          {
+            "p50": 73420,
+            "p95": 179570,
+            "p99": 244300
+          }
+        ],
+        "before_runs": [
+          {
+            "p50": 75100,
+            "p95": 188741,
+            "p99": 391330
+          },
+          {
+            "p50": 62420,
+            "p95": 166280,
+            "p99": 254250
+          }
+        ],
+        "p50": {
+          "after_ns": 68005.0,
+          "before_ns": 68760.0,
+          "descriptive_change_percent": -1.0980221058755069
+        },
+        "p95": {
+          "after_ns": 144945.0,
+          "before_ns": 177510.5,
+          "descriptive_change_percent": -18.345675326248312
+        },
+        "p99": {
+          "after_ns": 219900.0,
+          "before_ns": 322790.0,
+          "descriptive_change_percent": -31.875212986771583
+        },
+        "phase": "teardown",
+        "size": 128,
+        "workload": "wide_diamond"
+      }
+    ]
+  },
+  "verification": {
+    "checks": [
+      {
+        "command": [
+          "cargo",
+          "test",
+          "-p",
+          "hyphae",
+          "--all-features",
+          "-j4"
+        ],
+        "log": "test-all-features-accepted.log",
+        "returncode": 0,
+        "sha256": "9ec15c1e08e23a5c571782cffedb23427d73a556e66a45e9c68c57172dc639e1"
+      },
+      {
+        "command": [
+          "cargo",
+          "clippy",
+          "-p",
+          "hyphae",
+          "--all-features",
+          "--lib",
+          "--tests",
+          "--example",
+          "scheduler_arena_allocations",
+          "--example",
+          "scheduler_arena_contention",
+          "-j4",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        "log": "clippy-matrix-accepted.log",
+        "returncode": 0,
+        "sha256": "9a30d54c8b16d7e49510b182028079bca120aeebb7d662e88f8566e6196a49f6"
+      },
+      {
+        "command": [
+          "cargo",
+          "check",
+          "-p",
+          "hyphae",
+          "--no-default-features",
+          "--tests",
+          "-j4"
+        ],
+        "log": "default-accepted.log",
+        "returncode": 0,
+        "sha256": "d480f90a63c57035ed564d85dd5eded6f15319bd980b5bf71cacce8068d4d56a"
+      },
+      {
+        "command": [
+          "cargo",
+          "check",
+          "-p",
+          "hyphae",
+          "--target",
+          "wasm32-unknown-unknown",
+          "-j4"
+        ],
+        "log": "wasm-default-accepted.log",
+        "returncode": 0,
+        "sha256": "d7dae192715495fa89ccbe279af3efb9792c1dae1768228e369035e68a1df673"
+      },
+      {
+        "command": [
+          "cargo",
+          "check",
+          "-p",
+          "hyphae",
+          "--target",
+          "wasm32-unknown-unknown",
+          "--all-features",
+          "-j4"
+        ],
+        "log": "wasm-features-accepted.log",
+        "returncode": 0,
+        "sha256": "41d977a4c5537b9aeb777198ec1911aa13f3dc22696e062907a961a8c046374c"
+      },
+      {
+        "command": [
+          "cargo",
+          "run",
+          "--release",
+          "-p",
+          "hyphae",
+          "--features",
+          "scheduler",
+          "--example",
+          "scheduler_arena_contention",
+          "-j4",
+          "--",
+          "20000"
+        ],
+        "log": "delivery-example-accepted.log",
+        "returncode": 0,
+        "sha256": "7cdda5edb486b8a344e900e0cd04bd84bb45da6fca1c92bdfe045ce22926133f"
+      },
+      {
+        "command": [
+          "rustfmt",
+          "+nightly",
+          "--edition",
+          "2024",
+          "--check",
+          "hyphae/src/scheduler.rs",
+          "hyphae/tests/scheduler_arena_lifecycle.rs",
+          "hyphae/examples/scheduler_arena_allocations.rs",
+          "hyphae/examples/scheduler_arena_contention.rs"
+        ],
+        "log": "fmt-accepted.log",
+        "returncode": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "command": [
+          "git",
+          "diff",
+          "--check"
+        ],
+        "log": "diff-accepted.log",
+        "returncode": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ],
+    "complete": true,
+    "source_sha256": {
+      "Cargo.lock": "e9ebf6307b23a384b26d3c84f2600cde3ea9e425994d639304911098f547815b",
+      "Cargo.toml": "0612eb4c126ebbf40a509b856f664223cd1cf39b8d45efa49e532dc778236bd0",
+      "hyphae/Cargo.toml": "1c39c68c03dba720608044671b6519c91e5ce88c7300feb5b9bf82a2d6580b55",
+      "hyphae/README.md": "a775f3767caf27840e097102c32e7732243006ba80e86cfce38fe1fba48bf3f4",
+      "hyphae/benches/cell_map_chains.rs": "8dc0c2d710daf1ba2e7962c9e2f37a3dbf6605e1e24c827dff95a284316964cb",
+      "hyphae/benches/compiled_map_queries.rs": "c2ebfc14812606d0b9421410b8d0fd0bd80b1ebe11a6f55668bed065af2d0038",
+      "hyphae/benches/latency.rs": "2f444abaf0701f19e155fed538d341df0b749c6747cf6caa6ef9af5e92ace175",
+      "hyphae/benches/pipeline_chains.rs": "545dfb0f02a7a02d2083d3b21512cb591b6213e713211732e90ba0e10026e677",
+      "hyphae/benches/reactive_graphs.rs": "cf433353506e87bf4bf22b7839e5aa34a9cee5cca623cfb8e1efcb047f07b019",
+      "hyphae/benches/reactive_graphs_64.rs": "f0af6c435e008dfbd883646b835c14289a8d79a845b454c4c8d8f62dde9d1e28",
+      "hyphae/benches/region_threshold_calibration.rs": "caab3c066c82ead604bd1c8793ae53cb0ce3d0b0a672060fcd4ba73081cfa481",
+      "hyphae/benches/runtime_baseline.rs": "638f3c280437c1bc8670f9cc295ab8c131347076c241b7e6ca191b9a5088516a",
+      "hyphae/benches/scheduler.rs": "546099906a75bbc1675841a944b5f1904f511176d98abdb00d39a6e1c49ef10b",
+      "hyphae/benches/scheduler_contention.rs": "ff94cec852455f17d99bae6e1f551059943b7faeadc09d073b00d9d99db6cc73",
+      "hyphae/benches/subscriber_registry.rs": "4b41b607f6f448295f78938014ca30b5a092e0ea1241bfa28f5cee11541d4f84",
+      "hyphae/benches/support/four_join_application_workload.rs": "9492f55cb775495a70aa4ea70c3a68b6c88c1ac470483cfa4d0ca8de6c5c5051",
+      "hyphae/benches/view_chains.rs": "0fab02e794482b1363ef5e7936eb282cdf01e252ff87b7d5464795091f116ab3",
+      "hyphae/docs/profiling.md": "76bd90d3833bc325155ba24b9d059f1bbeca9f73c53e78bf78e9ab2bb3722b3a",
+      "hyphae/docs/reactive-hot-path-redesign.md": "6dba0127c0c71202b6c5fc4a2b5b84e53977dcbc4feef472bf3a006642db8b39",
+      "hyphae/docs/superpowers/plans/2026-04-23-pipeline-type-bench-results.md": "7bd822c88378988c1ad130adad739bc07efb2ed874e58080c1edc7c1a4791b18",
+      "hyphae/examples/map_update_cost.rs": "7c4b8c915887298d6e316b37b70e8c7a94b2e89c2fd3d3ecc65316928f77a6ce",
+      "hyphae/examples/owned_guard_allocations.rs": "9e2350ded61f2555b53eb1ae8040acf1436d9c7a03951b7f13f5e89f3b1753c2",
+      "hyphae/examples/scheduler_arena_allocations.rs": "2b90dd81ab41130180ef31fa53097e7370c3c43781b94a1de9c604e82544628a",
+      "hyphae/examples/scheduler_arena_contention.rs": "c91509288c367495a01bf1b50a90748eb87c3152afef507ce0dcaca99af3b547",
+      "hyphae/examples/timer_accuracy.rs": "ab0d404c07abc053f37b54ed7ee837344d160c071e8b9aa9eefd171a292d85ee",
+      "hyphae/examples/timer_reactor_load.rs": "5bfa1fb90ffd22fac59c38acb38d1ac5ca8fe6be5b6b7ff023165e233aec00c8",
+      "hyphae/src/async_support.rs": "a6163be60c84672aea308147bed70964e33dad778e6f111d955b95881380c2a3",
+      "hyphae/src/bounded_input.rs": "de07ca7f4abbc415a7ea870d5bd9e6c6f2add99d83ad457043b7693470f2946a",
+      "hyphae/src/bounded_output.rs": "38be693b7640d89192cd4fc782aad14324cedc01b180c7e548d415bd4af4aeb1",
+      "hyphae/src/cell.rs": "ef2e5cbef3e7d352e2bc83231d5e9a8c1e7d756ab8cb4800136d888b8587b256",
+      "hyphae/src/cell/subscriber.rs": "4f4f639ad97086615f2f5fccc6e561091e6d5b978325524da25983f0360679ce",
+      "hyphae/src/cell_map.rs": "e67f1f821c6a396e36495801fa7c39003b4cf0ed6a7624a7883c7d53ed69e1ac",
+      "hyphae/src/cell_map/diff.rs": "46f1389973021cf3ebfa958da7b2a26f85735f005ff81e18f4a7393c4a6912a1",
+      "hyphae/src/cell_map/mutation.rs": "a98b82bb5693e2ae86e0ea93b9f6bf10d416641cdcd2ba49b785e44bc12397e6",
+      "hyphae/src/cell_map/projection.rs": "5c717d45eed1dffd05b86cdc64e5e76d9a9ea23989c969831036552bfe17c8c6",
+      "hyphae/src/cell_map/tests.rs": "3d49665e36cce4e2132895d8327b2b0e323c0333bb220704f3e46a9b6cf4b4f6",
+      "hyphae/src/cell_set.rs": "28815cfa49f0f3836d6044d89e77855b457bbfdd08236039519ef1d2ba0dd424",
+      "hyphae/src/clock.rs": "cc5508a0dfa7dce24fbc685f084e1dc36ebf379091ce1d21ff2885aff524a579",
+      "hyphae/src/constructors/from_iter.rs": "ea6f90eb89d3e15fa9d049cd8768a180bc3d702dccb0c3116c805193460d4d7b",
+      "hyphae/src/constructors/interval.rs": "339a6f93bb85518a947b3314116be31dbd578a74e2f7f20e2eed563ed83d4ba5",
+      "hyphae/src/constructors/mod.rs": "606eaf7f7b2aaf94926b1a1c714c9e7cf109d7dc46bef7ed7b17fcfb3982a048",
+      "hyphae/src/executor.rs": "2d7aeab82c28bada2fed62897eaa70d51a1e2c7e80ae03bffb3b2db99428632b",
+      "hyphae/src/flat.rs": "11ca2830f0f2b00d8761dffead95b0304bb0ffe6bfe1c31f3fe8a454244b3d04",
+      "hyphae/src/lib.rs": "3901c1f1a25a473b8346bcc807f7717ccc9e8410f3fd854515004c4c8f5c9511",
+      "hyphae/src/map_query/compiler.rs": "8410df742a7a3c71263f3f2b2e2418857ab852f2469b3f51f80d1ba596f70c39",
+      "hyphae/src/map_query/compiler/dispatch.rs": "86bac522578901b4fd32c58f05397652eb766fd659f34a208368ee61824b609d",
+      "hyphae/src/map_query/compiler/registry.rs": "dcd8899d8678dca4d5d4dc59ebcbf23ce2656470eb0dc8243dc8d2eec0dc02b4",
+      "hyphae/src/map_query/compiler/tests.rs": "f472dfb61b061bf1648134e711ada67ddfaa0fe917686339ee199d17c708bb5d",
+      "hyphae/src/map_query/mod.rs": "bffb7898a660bd80b28666cfb9065c634f43451d3e1e12355b13f6b94cb2cb6a",
+      "hyphae/src/map_query/properties.rs": "ba32cb5fe74835c0ef0a7e3faab4bd214812da0b0e1142e269a5e5dc72b6802d",
+      "hyphae/src/map_query/reactive_map_impl.rs": "416ec48b34f955a4e62c3b0dc2420d3e7dd25955a170e91e20c9dbe2b28965f8",
+      "hyphae/src/map_query/share.rs": "9d6810c836c15c7a5eb5aad62214e7a8ba33e4680611f9ed9d0fe216829d3c8b",
+      "hyphae/src/nested_map.rs": "1627fd98944d50b902cbadc137fc881deb14cd9e500fd3f4639badad588e4962",
+      "hyphae/src/pipeline/cell_impl.rs": "40785d1525bcadaf7beaaa1ce0faf480dfa7b8c28ab8f8bfb699e685816dfe50",
+      "hyphae/src/pipeline/mod.rs": "ffcaf029a4427ebec6860adbd1f134307d7c166029a5018307ec5870aded0838",
+      "hyphae/src/pipeline/share.rs": "7a1a2ba2781583a22ebb65ff5ea1c81716fd2cc9b8f51fa7de75e1885affb6ee",
+      "hyphae/src/platform/mod.rs": "3138eb0c01b1ae5f97c7ae5ff2426972b283f73aa33cf3f232e7b4740804cb19",
+      "hyphae/src/platform/native.rs": "2b4cd2a09d8131bc1352d243f9b889d57a66803b6685b5aada84c0a0b9a57b7f",
+      "hyphae/src/platform/wasm.rs": "cc40077fe1bdbd1de23b105b5163619f6a277d261a15dc493b96109ff2068e6c",
+      "hyphae/src/profiling.rs": "641c056e32f7df93f9f121535a672b707c119297f2255c468261b4d64ba147bf",
+      "hyphae/src/region_calibration.rs": "b0a967bfd49f6f2232f8c27b5f3e6894fa10aa7675a2457203b669aee7a4600b",
+      "hyphae/src/scheduler.rs": "a56f7882abf2c23e2c125f9989420dd7a4869caf95bc330835cf7dd1c029b4ea",
+      "hyphae/src/scheduler/frontier.rs": "3246fa70b6cb390b12f8b0d0278a3c384d0a034e1acc52448ccc64433cdafcd2",
+      "hyphae/src/scheduler/ready.rs": "5bd449916a7b08f8c28940942d8ae53c6277427f297b52f4f119f5046b7f1a09",
+      "hyphae/src/signal.rs": "ece09f6153bc90116ad93c3a379a3f80aa3cf1e59442da3a963383c876c9cb43",
+      "hyphae/src/source.rs": "b953487b8051911d889804194a97051538f5e57d7e03d64a544819da7ff4ca1e",
+      "hyphae/src/subscription.rs": "1fd82c7aede7506268546e54240fab91c4137ec9315b6779441e852a6cf853df",
+      "hyphae/src/tests/bounded_input.rs": "9077d98a9a666daae76cd1142a201d76fc8389467dced7e43481d6325a78a67e",
+      "hyphae/src/tests/cell.rs": "d2fff867c761294f54f96cd06cbcc7c697b2fbc9d5428b9d633fbf7249bed80b",
+      "hyphae/src/tests/concurrency.rs": "ce173f44494a60b36c5ff78991b5cf79c5eeabbece6174ff060636fe8a18d198",
+      "hyphae/src/tests/constructors.rs": "f94d16e6a6df37bda0fb967f1ec0fe827c7efa0315a6648c80e76e083e7e4b73",
+      "hyphae/src/tests/disposal.rs": "16b7b38f6fcd17e48392017dbc24cca3a30c9bc48bc407e3299bfd60dd096ea9",
+      "hyphae/src/tests/error_handling.rs": "cbc33df453cb30c7a9fcea6828a1276398a631ca4a08aab4432615a6421126d6",
+      "hyphae/src/tests/map_query_integration.rs": "be2d400e4206e574049186cb925dc4e33c5b878345ad9e11ae765e22b7eca14d",
+      "hyphae/src/tests/mod.rs": "6c1eb97015e9c4e36ffee72a7d9c09d41650feda9df79253d3ff4ac8e8c6fabf",
+      "hyphae/src/tests/pipeline_integration.rs": "7cad52fcde597fd0d3373d2735ad2ae295acbc46e6c0d568128f16902aaf5fe3",
+      "hyphae/src/tests/subscription.rs": "779d0b2cf961cdafb38a66d7c3fd92b483a18fdaba1da92d2e7861751e6c23e0",
+      "hyphae/src/traits/cell_value.rs": "6f8d71abf9eb3ee8fba98cc7bd680909674e5642f94cee800de7b49b287a612c",
+      "hyphae/src/traits/collections/count_by.rs": "99d4235c038ed8ba8a3cb22c8eca5ac9e8eb1b3daeee66d4baa88ca56ff375c7",
+      "hyphae/src/traits/collections/group_by.rs": "f37d812e076f3dec2a4d5477b4bb89001703d469ca72cf05662ca73f7eddddb2",
+      "hyphae/src/traits/collections/inner_join.rs": "fa83624e6eeb55a9c0300d69355932ed1067f95214d8b25de143921e8fe41b19",
+      "hyphae/src/traits/collections/internal/diff_runtime.rs": "dc189f0bfa10698771f4bd3b631e820c06e50b4fb3252c9c76592bf0139e7c55",
+      "hyphae/src/traits/collections/internal/join_lifecycle.rs": "b4bb52b8f8d5d86707f1eae79b07414aa0092e9ef284427090ca125f33e35aeb",
+      "hyphae/src/traits/collections/internal/join_region.rs": "c01d2436b37dfc2a8d239e667f12f938fddbbcbf3fbe42aa9d6b68e15f169a58",
+      "hyphae/src/traits/collections/internal/join_region/declaration.rs": "1464bda32ec2f6f518f188c1447bacb6750167af6dd1b14aed7895690d48bd52",
+      "hyphae/src/traits/collections/internal/join_region/plan.rs": "f52bdcdc5f6b9bb4f9454078e4fe29877d89c8e8d92c974c31e82517faf261dc",
+      "hyphae/src/traits/collections/internal/join_region/router.rs": "5efd33f05165bb00082b721aac2535e5178552b880c19e05ce5fca1d69dc7162",
+      "hyphae/src/traits/collections/internal/join_region/stage_runtime.rs": "316c6a07b8831a906df77b543c614b222b166428576cf35f0beef83a3d603d35",
+      "hyphae/src/traits/collections/internal/join_runtime.rs": "f98f5843e0378dacb8a19c66de2ea5d03ee0b9cfa28b9ccd2146f128c72cc871",
+      "hyphae/src/traits/collections/internal/join_runtime/sharded.rs": "9aafde8f593e6898bea7860fb56649e1b03000110774607489efe6017afe7646",
+      "hyphae/src/traits/collections/internal/join_runtime/state.rs": "347daa1de77c2f43aa7095f8946b76e7e2fdaf2cac25435576f422351d829229",
+      "hyphae/src/traits/collections/internal/join_runtime/two_stage.rs": "529f753824f4421682f516e11021f3b7c63bfa7b121baa55e651c9b0333d812b",
+      "hyphae/src/traits/collections/internal/map_runtime.rs": "b07f52201d72e1a4d1c77634b353a5e64b442ca27837c831bb81269c40a41ce8",
+      "hyphae/src/traits/collections/internal/map_values_cell.rs": "d4eafea6c97fb9766ae3c17146061c462bdd74d9b8b4e3a90f896b2228e12f2b",
+      "hyphae/src/traits/collections/internal/mod.rs": "71d93bd555b3fbad95f6d0e4cfd7cc1a12f56692f5a342c94c3d69a2607fc9bd",
+      "hyphae/src/traits/collections/internal/multi_join_runtime.rs": "9e700ffa27d0c3524d7f44f35a4db2cac64b2209ca292f8744aa6f036899d6e8",
+      "hyphae/src/traits/collections/internal/ordered_set.rs": "256a9e7d52978bff3d484da94c33ec86bca0042dd5e29d92c60211d8b87cfd78",
+      "hyphae/src/traits/collections/internal/stateless_runtime.rs": "a4825aff3bca9426bdb76823eefa4355ca9725503e7c5a2d5920feac3a136f7f",
+      "hyphae/src/traits/collections/left_join.rs": "258ab023fd3c24b8c3aa19ed23565348517daaa9d8b2f0b64f80ce53d28b7729",
+      "hyphae/src/traits/collections/left_join/one_stage.rs": "ca2241cc9d31a046f7c27bf56124f2edc2cd0bfc2307d49b65def6be8848d6cb",
+      "hyphae/src/traits/collections/left_join/tests.rs": "ae9cf9da04528c87083a12883c3372d40af1b70fbd68247c38f2c6c33b1c6a71",
+      "hyphae/src/traits/collections/left_join/two_stage.rs": "a0b3f6626530daea9cb431ed97b459827755a8950dc4a7b6f58acaf4a27e8f1c",
+      "hyphae/src/traits/collections/left_semi_join.rs": "2a20aa0676676d6086d9fdd18571cd36b9ddcc81095402792d73ba7f5d88988b",
+      "hyphae/src/traits/collections/map_values.rs": "87557bbd8152aa3ae7ea54f59b978bd45d3645e1abc0e3bb7da61f56e3db7060",
+      "hyphae/src/traits/collections/mod.rs": "260994afbed3a892b2b6c6f08da50c44d3b0129ca046837bd5fa75c777b93fa8",
+      "hyphae/src/traits/collections/multi_left_join.rs": "d00138b7b0305ad8d18ffe7de2e10c177790a8eecf3f1a3aec62e5c9d044b698",
+      "hyphae/src/traits/collections/project.rs": "a0c111d851868ee695264782384099cd28188d8f0c2b22f695c3e6f8148dc3f6",
+      "hyphae/src/traits/collections/project_cell.rs": "28c3f89a8d7c8c07e2524481f3fdf7d59bb1bd6fa9d9652d08648bbaacff4f61",
+      "hyphae/src/traits/collections/project_many.rs": "a3c8ca9f602a98dccae3d85aa5813f43cf5bbc0027f120084650d06378cb4928",
+      "hyphae/src/traits/collections/select.rs": "68b19de4b25cf50ffd70755cad96ace0fea46419badd70b5e6ad6b42391d9abd",
+      "hyphae/src/traits/collections/select_cell.rs": "da0d0609d5f80b85472d356efb2bbcc83b7194252586271c5088c80e807f78e1",
+      "hyphae/src/traits/dep_node.rs": "5946be178a6fc315ce709c224a3fa6ef8ace48995d93e5a343662896a9fd129c",
+      "hyphae/src/traits/foreign_key.rs": "5f12f89627434b79abc33051ce7ea018625374bcf00e5bde1f9f1e71dd876c44",
+      "hyphae/src/traits/mod.rs": "e8d22fd408e25ff81174bfa22c59300e537e6add757ad9ca27f8a216f88697fd",
+      "hyphae/src/traits/mutable.rs": "9780a5dc46f0218ca1986dc92ed7ae1f38d571dd66dba891cc5a9be403069602",
+      "hyphae/src/traits/operators/audit.rs": "53e21e3ccd2c342b44d968e14b513e8c0d4a5fb43a78a997ad50ab68a52a5ba6",
+      "hyphae/src/traits/operators/backpressure.rs": "9a83dc2a104580ead555e0fbb08d81762d43ed13319e425ac0865aa984e2a641",
+      "hyphae/src/traits/operators/buffer_count.rs": "731770e40c35e71dfd251fa179daa22b7487072ca73afe622f1ac6b2410e18e9",
+      "hyphae/src/traits/operators/buffer_time.rs": "7d4389c6948d1da19feb9d554798a48283c993a5e143c547c677d9fe067fb4bf",
+      "hyphae/src/traits/operators/cold.rs": "0ece85896e179c33c03b905b530628752fde152628706341a8bad81a2a1b8ae0",
+      "hyphae/src/traits/operators/concat.rs": "1abb0858f4758f78c5bfee9eb9aa33517ece0cd9c4ff119748aba5c58826cfb9",
+      "hyphae/src/traits/operators/debounce.rs": "bdbe53a955b6d078d4793e13bb98662851322a80906357c18444a52101c1d681",
+      "hyphae/src/traits/operators/deduped.rs": "a181a08a0dd70f8dd2b9e4dab8d3fe773206876599ec5df9608d4b127de6c2a9",
+      "hyphae/src/traits/operators/delay.rs": "0659918c360ded7905f28df583fb20feaea9824487c45238d50630666ecfd92b",
+      "hyphae/src/traits/operators/distinct.rs": "ca285439df8e50c98abf5db46c5935ca3557e110f09ad59c58187f34076988a5",
+      "hyphae/src/traits/operators/distinct_until_changed_by.rs": "d56feb2596d1e8e2d1f0529eabe577711163fcdc750d4eb5300122b1b5c9fe8d",
+      "hyphae/src/traits/operators/filter.rs": "f7a22776b6e361de33c3fafc18ff99c89e4aa3b118e937d0aa9d3fdc87323b14",
+      "hyphae/src/traits/operators/finalize.rs": "bf664f8236b71622a16339ad9085428e248de32201d7b2ca97b39115567a69f9",
+      "hyphae/src/traits/operators/first.rs": "2c3af03f3bbfe1858f53545f60752c9f1d85de0c6ca3f665c4a7b4c350bf4275",
+      "hyphae/src/traits/operators/join.rs": "22fc8fbec3be152ae1a67ac59132013d90b93185bd891e8d0c08e90d58f43c27",
+      "hyphae/src/traits/operators/join_vec.rs": "f638b1832bbe8be9846f2fb4e2e4cecac110c04a1d2744edb12c5a1ddd349025",
+      "hyphae/src/traits/operators/last.rs": "ccb301c6f05dc0ab8c67ef4a4f36257040c1659070946468547a12b53eeac358",
+      "hyphae/src/traits/operators/map.rs": "f5154d59c8981d65bea1375b88f764a39c8106b52bbf5356c98b4783aecf8815",
+      "hyphae/src/traits/operators/merge.rs": "31b143d40acec16a3011651a21a8b84de4498d7eec92f6282d83780f4a870d06",
+      "hyphae/src/traits/operators/merge_map.rs": "ae68ad90d20dfb5bbccd5760996c4561ca583934f3a0d0578778ee660a79bee1",
+      "hyphae/src/traits/operators/mod.rs": "3063bab63bde3b65ec502e2de5ee1b9c458f2dea7554461bdfac07545d54507b",
+      "hyphae/src/traits/operators/pairwise.rs": "88a0ca11e86f9c6ea58e4adae9d8b65ba4ba9c9e871ba5aca55f100dd73a517b",
+      "hyphae/src/traits/operators/parallel.rs": "b48c4f41a4b5fd2982252fdeda9d158605bf9817a8a1c007f9b329859b7a1614",
+      "hyphae/src/traits/operators/result_ext.rs": "abe999fe51817e7f45c0e8137c46bec83760552d6655011fae77015b2a3f2465",
+      "hyphae/src/traits/operators/retry.rs": "26b7709c248d93345fcdbe0654b3e62fd881042dc3dccc1eb5619eb187019b87",
+      "hyphae/src/traits/operators/sample.rs": "e863877d6d55846f0677483395a5d34cdb75a85b0b3a334cee3c95b675fbc8fe",
+      "hyphae/src/traits/operators/scan.rs": "10d2dc4ce6ef8dee739c7d3b3c92bed0fa0eda77224ce64a3dea9fe41b7eb6d7",
+      "hyphae/src/traits/operators/skip.rs": "a8b68c327ca4f21683322fe6bb6771a89268a52193f5d3324a526c2db8ed006f",
+      "hyphae/src/traits/operators/skip_while.rs": "9b58b6b7c1d0bb5862644e2bbc014c8965c5eb8a797d372e4397e30d4fc7c909",
+      "hyphae/src/traits/operators/state_transition.rs": "19ca26cb7d4af5b0ac45bdc092941c841917f978cabff684d4e9f4e1fcd3f161",
+      "hyphae/src/traits/operators/switch_map.rs": "51441246b9a6c8adb3515d44eed1fa1196d52fa8c328d00f5e6969b316fedbe2",
+      "hyphae/src/traits/operators/take.rs": "8fb55ae83546b1053acdca0ccd6dd1f57098959853a059d292476e9d47a89466",
+      "hyphae/src/traits/operators/take_until.rs": "08a337f29bbbfb680521e760c05f5d3d260a32c8d067aa5163d0ad2f69892f7a",
+      "hyphae/src/traits/operators/take_while.rs": "8752c9c234a358eaf7a712efe39d9d5f3b57efadeeb0960398df0ff94c81eb8d",
+      "hyphae/src/traits/operators/tap.rs": "717d8d9bb9fc7ed5ca13ae961d3edf9a36a0bbc8b3f9a170e1f24e78cd35ea40",
+      "hyphae/src/traits/operators/throttle.rs": "1aa8791a355731ea0b6f42af8a117df01449469ca9813928b080d7765eac7542",
+      "hyphae/src/traits/operators/timeout.rs": "fd00da9357625ac3fdee923a84be3714cbc584e8dcf9c208af5383a31ddae271",
+      "hyphae/src/traits/operators/try_map.rs": "fae6e847a29ee6a1bfae258a73ead9d1c6e5246de0797c630189d558188d8c79",
+      "hyphae/src/traits/operators/window.rs": "c55404d1c37ccbed80e545dfb77dbdae1202de5eed36335bb53c30a79f5126de",
+      "hyphae/src/traits/operators/with_latest_from.rs": "80941fda79468caf2c516dedf296c9f5689f7fa7dd520a329b637d77bb726472",
+      "hyphae/src/traits/operators/zip.rs": "cbf85b27307fd9008b4ac786679c98ae81f4bc49675b6a69035b7cfb69ca41d7",
+      "hyphae/src/traits/reactive_keys.rs": "5a5a448019ed4c6bcfa0666dec096c7059c0190ed25e626baefc9a296154cc35",
+      "hyphae/src/traits/reactive_map.rs": "26e6d61530031b34c05be86dd3133e2ab226d2e0e38f847a1943e2bb5cff0245",
+      "hyphae/src/traits/watchable.rs": "908e058e2240c11ceced77446870cb82073b9f780e327752151591b1963309cd",
+      "hyphae/tests/arbitrary_n_public_join_region.rs": "322b40c8d5417dc41a1af89e073f56c02ae8661a2a71c61118d30d85e3b57373",
+      "hyphae/tests/cell_map_batched_diff_length.rs": "ece8dee2ee7496b15a4ddd5a51aa4bcb35e8d76adecfb4ce2e7d93145077a827",
+      "hyphae/tests/countall_size_retention.rs": "a19e2ca99cab6af82638bd6d7c593fb04fe39aac3fe2b7fb51ad540115b5a980",
+      "hyphae/tests/four_join_application_preflight.rs": "34d3c5bca4bf7707a2101cbfb37bbf6e37f84ab01f086f6da54babb07b37d081",
+      "hyphae/tests/parallelism_cellmap_joins.rs": "7e3d81c8d639f3e23765931c0fd1d0258dd106e71d2cd9653cf800e0a71efa37",
+      "hyphae/tests/parallelism_combiners.rs": "4d49ba8eff238e71ebd87742d36791e49b0e3687457d38712d6c7c5786ea2e42",
+      "hyphae/tests/parallelism_slicing.rs": "23f7ee498ac048b5f3a8fe181040d96b0f26389a6dd533926e941c7fb32f280d",
+      "hyphae/tests/parallelism_time_structural.rs": "ca78336cc075f615290d4e9f8b48ce880caf971d27822905018785a28305ed4b",
+      "hyphae/tests/parallelism_transforms.rs": "019cfd6febe23586039662c3b842dd6d2eb1f3e7d3d6c1789a18aa17b45698ff",
+      "hyphae/tests/pipeline_construction_laziness.rs": "909518dade1766d916412cba82eaa847bd2b23a88927829ee5262f9818adb459",
+      "hyphae/tests/profiling_pass.rs": "a1e863f5b291003513ec9b287e0f5352d2baf74bae263a665bf00f63e9056016",
+      "hyphae/tests/region_threshold_truth_table.rs": "ec9315562c915eeaeefc8066298a3262bfe086c820110f8b892208b7c4c9b246",
+      "hyphae/tests/scheduler_arena_lifecycle.rs": "28247dee93a072d8ea55d86be925264999a600166e398e7e0b3ea3bed8367cd9",
+      "hyphae/tests/scheduler_completeness.rs": "0b1eb63f7fb429dd5cd27ed40d067ef45d20f52e7a36ebe96e044d77b9905460",
+      "hyphae/tests/scheduler_correctness_stress.rs": "5418170f1b6f95982ebad3a321e1773fcfcaa47b0d3766520b2321a5312713a4",
+      "hyphae/tests/scheduler_map_join_torn.rs": "73eb256f8eea93a7dc6509b35aa9046710b248320c35b372101a825624139cea",
+      "hyphae/tests/scheduler_no_coalesce.rs": "e61f38df1694e6f3403b1cc8f8115911cc85b0f9b14f039578a433d83dda5a2b",
+      "hyphae/tests/scheduler_no_coalesce_wave_order.rs": "f86a425020eb33b1fbc8de7913c36d18ca8a536b572c5f8550e699883fec770e",
+      "hyphae/tests/scheduler_phase0.rs": "373d1b58f536cddddf63219f67c1a286681b447fb093bc914453d939cb069e57",
+      "hyphae/tests/scheduler_reentrant_wave.rs": "6b7498aef2823b388c9fcde5d9fb7a18cf938fc6893563a9bb241e3564b0f2df",
+      "hyphae/tests/scheduler_switch_map_leak.rs": "5bbcb7cecdd8251d14e3e550bf383084f45b5db9af4abb40311657042f0efd47",
+      "hyphae/tests/scheduler_switch_map_stress.rs": "64f2ebcbe267d84e5cede1f99ee7aafa3281c2f300b8853cb66d74d2a7509df6",
+      "hyphae/tests/scheduler_zip_mispair.rs": "057b48f7eb9de88cb6c1f68ac18dd2968a47730b881a5275eea7ae8d647f7cf2",
+      "hyphae/tests/timer_reactor.rs": "2e906c0e79dec012e3850fc58f231a06255fb0e41d80dcceeb3a66c632d7730f"
+    }
+  }
+}
