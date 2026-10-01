@@ -46,6 +46,7 @@ where
     /// distinct key ever observed keeps a slot forever). [`maybe_prune_key_cells`]
     /// amortizes a sweep of dead weaks across mutations to keep it bounded.
     key_cells: DashMap<K, WeakCell<Option<V>, CellMutable>>,
+    key_cell_slots: AtomicUsize,
     /// Mutation counter driving amortized pruning of dead `key_cells` weaks.
     prune_ops: AtomicUsize,
     /// Cell for diff notifications.
@@ -211,7 +212,9 @@ where
                 candidate
             }
             Entry::Vacant(slot) => {
-                slot.insert(candidate.downgrade());
+                let inserted = slot.insert(candidate.downgrade());
+                self.inner.key_cell_slots.fetch_add(1, Ordering::Relaxed);
+                drop(inserted);
                 candidate
             }
         };

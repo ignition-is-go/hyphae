@@ -618,6 +618,8 @@ fn concurrent_gets_share_the_single_notified_cell() {
 
     let cells: Vec<_> = rx.into_iter().collect();
     assert_eq!(cells.len(), READERS);
+    assert_eq!(map.inner.key_cell_slots.load(Ordering::Relaxed), 1);
+    assert_eq!(map.inner.key_cells.len(), 1);
     map.insert("key".to_string(), 42);
 
     assert!(cells.iter().all(|cell| cell.get() == Some(42)));
@@ -746,4 +748,344 @@ fn test_key_cells_prune_keeps_live_observer() {
         hits.load(Ordering::SeqCst) > initial,
         "live observer must still be notified after pruning sweeps",
     );
+}
+
+#[test]
+fn existing_key_diff_does_not_wait_for_unrelated_data_shard() {
+    for overwrite in [false, true] {
+        let map = CellMap::<u64, u64>::new();
+        for key in 0..256 {
+            map.insert(key, key);
+        }
+        let Some(held) = map.inner.data.get_mut(&0) else {
+            std::panic::resume_unwind(Box::new("missing shard-lock fixture key"));
+        };
+        let target = (1..256).find(|key| {
+            matches!(
+                map.inner.data.try_get(key),
+                dashmap::try_result::TryResult::Present(_)
+            )
+        });
+        let target_key = target.unwrap_or(1);
+        let updater = map.clone();
+        let (completed, completion) = std::sync::mpsc::channel();
+        let (started, start) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _ = started.send(());
+            let diff = if overwrite {
+                MapDiff::Insert {
+                    key: target_key,
+                    value: 999,
+                }
+            } else {
+                MapDiff::Update {
+                    key: target_key,
+                    old_value: target_key,
+                    new_value: 999,
+                }
+            };
+            updater.apply_diff_owned(diff);
+            let _ = completed.send(());
+        });
+        let worker_started = start
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .is_ok();
+        let finished_while_held = completion
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .is_ok();
+        drop(held);
+        let joined = worker.join().is_ok();
+        assert!(target.is_some(), "fixture must use separate data shards");
+        assert!(worker_started);
+        assert!(joined);
+        assert!(
+            finished_while_held,
+            "existing-key diffs must not scan unrelated data shards"
+        );
+        assert_eq!(map.get_value(&target_key), Some(999));
+    }
+}
+
+#[test]
+fn existing_key_update_does_not_scan_unrelated_key_cache_shard() {
+    let map = CellMap::<u64, u64>::new();
+    for key in 0..256 {
+        map.insert(key, key);
+    }
+    let observers: Vec<_> = (0..256).map(|key| map.get(&key).materialize()).collect();
+    let Some(held) = map.inner.key_cells.get_mut(&0) else {
+        std::panic::resume_unwind(Box::new("missing key-cache fixture slot"));
+    };
+    let target = (1..256).find(|key| {
+        matches!(
+            map.inner.key_cells.try_get(key),
+            dashmap::try_result::TryResult::Present(_)
+        )
+    });
+    let target_key = target.unwrap_or(1);
+    let updater = map.clone();
+    let (completed, completion) = std::sync::mpsc::channel();
+    let (started, start) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let _ = started.send(());
+        updater.apply_diff_owned(MapDiff::Update {
+            key: target_key,
+            old_value: target_key,
+            new_value: 999,
+        });
+        let _ = completed.send(());
+    });
+    let worker_started = start
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .is_ok();
+    let finished_while_held = completion
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .is_ok();
+    drop(held);
+    let joined = worker.join().is_ok();
+    assert!(
+        target.is_some(),
+        "fixture must use separate key-cache shards"
+    );
+    assert!(worker_started);
+    assert!(joined);
+    assert!(
+        finished_while_held,
+        "prune gate must not scan unrelated key-cache shards"
+    );
+    assert_eq!(map.get_value(&target_key), Some(999));
+    assert_eq!(
+        observers
+            .iter()
+            .filter(|observer| observer.get() == Some(999))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn key_cell_slot_count_tracks_dead_replacement_and_pruning() {
+    let map = CellMap::<u64, u64>::new();
+    drop(map.get(&0).materialize());
+    assert_eq!(map.inner.key_cell_slots.load(Ordering::Relaxed), 1);
+    let watched = map.get(&0).materialize();
+    assert_eq!(map.inner.key_cell_slots.load(Ordering::Relaxed), 1);
+    for key in 1..65 {
+        drop(map.get(&key).materialize());
+    }
+    assert_eq!(map.inner.key_cell_slots.load(Ordering::Relaxed), 65);
+    for value in 0..130 {
+        map.insert(999, value);
+    }
+    assert_eq!(map.inner.key_cells.len(), 1);
+    assert_eq!(map.inner.key_cell_slots.load(Ordering::Relaxed), 1);
+    map.insert(0, 42);
+    assert_eq!(watched.get(), Some(42));
+    drop(watched);
+    for value in 0..32 {
+        map.insert(999, value);
+    }
+    assert_eq!(map.inner.key_cells.len(), 0);
+    assert_eq!(map.inner.key_cell_slots.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn concurrent_key_observation_and_pruning_keep_exact_quiescent_slot_count() {
+    let map = CellMap::<String, u64>::new();
+    let watched = map.get(&"live".to_owned()).materialize();
+    let barrier = Arc::new(Barrier::new(4));
+    std::thread::scope(|scope| {
+        for reader in 0..4 {
+            let map = map.clone();
+            let barrier = barrier.clone();
+            scope.spawn(move || {
+                barrier.wait();
+                for step in 0..200 {
+                    drop(map.get(&format!("{reader}:{step}")).materialize());
+                    map.insert("updates".to_owned(), step);
+                }
+            });
+        }
+    });
+    assert_eq!(
+        map.inner.key_cell_slots.load(Ordering::Relaxed),
+        map.inner.key_cells.len()
+    );
+    for value in 0..1_000 {
+        map.insert("updates".to_owned(), value);
+    }
+    assert_eq!(map.inner.key_cell_slots.load(Ordering::Relaxed), 1);
+    assert_eq!(map.inner.key_cells.len(), 1);
+    map.insert("live".to_owned(), 42);
+    assert_eq!(watched.get(), Some(42));
+}
+
+#[test]
+fn single_diff_upserts_and_overwrites_preserve_length_and_notifications() {
+    let map = CellMap::<String, i32>::new();
+    let length = map.len().materialize();
+    let key = map.get(&"key".to_owned()).materialize();
+    let lengths = Arc::new(Mutex::new(Vec::new()));
+    let observed_lengths = lengths.clone();
+    let _length_guard = length.subscribe(move |signal| {
+        if let Signal::Value(value) = signal {
+            observed_lengths.lock().push(**value);
+        }
+    });
+    let key_values = Arc::new(Mutex::new(Vec::new()));
+    let observed_values = key_values.clone();
+    let _key_guard = key.subscribe(move |signal| {
+        if let Signal::Value(value) = signal {
+            observed_values.lock().push(**value);
+        }
+    });
+    let diffs = Arc::new(Mutex::new(Vec::new()));
+    let observed_diffs = diffs.clone();
+    let _diff_guard = map.subscribe_diffs(move |diff| observed_diffs.lock().push(diff.clone()));
+    let changes = vec![
+        MapDiff::Update {
+            key: "key".to_owned(),
+            old_value: 100,
+            new_value: 5,
+        },
+        MapDiff::Insert {
+            key: "key".to_owned(),
+            value: 6,
+        },
+        MapDiff::Remove {
+            key: "absent".to_owned(),
+            old_value: 9,
+        },
+        MapDiff::Remove {
+            key: "key".to_owned(),
+            old_value: 6,
+        },
+    ];
+    for diff in &changes {
+        map.apply_diff_owned(diff.clone());
+        if let MapDiff::Update { .. } = diff {
+            map.apply_diff_owned(MapDiff::Update {
+                key: "key".to_owned(),
+                old_value: 0,
+                new_value: 5,
+            });
+        }
+    }
+    assert_eq!(*lengths.lock(), vec![0, 1, 0]);
+    assert_eq!(*key_values.lock(), vec![None, Some(5), Some(6), None]);
+    let mut expected = vec![MapDiff::Initial {
+        entries: Vec::new(),
+    }];
+    expected.extend(changes);
+    assert_eq!(*diffs.lock(), expected);
+}
+
+#[cfg(feature = "scheduler")]
+#[test]
+fn single_diff_length_uses_membership_changes_when_cell_writes_are_deferred() {
+    let map = CellMap::<String, i32>::new();
+    let length = map.len().materialize();
+    let entries = map.entries().materialize();
+    let diffs = Arc::new(Mutex::new(Vec::new()));
+    let observed = diffs.clone();
+    let _guard = map.subscribe_diffs(move |diff| observed.lock().push(diff.clone()));
+    let changes = vec![
+        MapDiff::Insert {
+            key: "a".to_owned(),
+            value: 1,
+        },
+        MapDiff::Update {
+            key: "a".to_owned(),
+            old_value: 1,
+            new_value: 2,
+        },
+        MapDiff::Remove {
+            key: "a".to_owned(),
+            old_value: 2,
+        },
+        MapDiff::Update {
+            key: "b".to_owned(),
+            old_value: 0,
+            new_value: 3,
+        },
+        MapDiff::Remove {
+            key: "b".to_owned(),
+            old_value: 3,
+        },
+    ];
+    crate::batch(|| {
+        for diff in &changes {
+            map.apply_diff_owned(diff.clone());
+        }
+    });
+    assert_eq!(length.get(), 0);
+    assert!(entries.get().is_empty());
+    let mut expected = vec![MapDiff::Initial {
+        entries: Vec::new(),
+    }];
+    expected.extend(changes);
+    assert_eq!(*diffs.lock(), expected);
+}
+
+#[test]
+fn existing_key_diff_preserves_reentrant_membership_changes() {
+    for overwrite in [false, true] {
+        let map = CellMap::<String, i32>::new();
+        map.insert("watched".to_owned(), 1);
+        map.insert("removable".to_owned(), 7);
+        let length = map.len().materialize();
+        let lengths = Arc::new(Mutex::new(Vec::new()));
+        let observed_lengths = lengths.clone();
+        let _length_guard = length.subscribe(move |signal| {
+            if let Signal::Value(value) = signal {
+                observed_lengths.lock().push(**value);
+            }
+        });
+        let diffs = Arc::new(Mutex::new(Vec::new()));
+        let observed_diffs = diffs.clone();
+        let _diff_guard = map.subscribe_diffs(move |diff| {
+            observed_diffs.lock().push(diff.clone());
+        });
+        let watched = map.get(&"watched".to_owned()).materialize();
+        let reacting = map.clone();
+        let _key_guard = watched.subscribe(move |signal| {
+            if let Signal::Value(value) = signal
+                && value.as_ref() == &Some(2)
+            {
+                reacting.remove(&"removable".to_owned());
+                reacting.insert("added".to_owned(), 9);
+            }
+        });
+        let diff = if overwrite {
+            MapDiff::Insert {
+                key: "watched".to_owned(),
+                value: 2,
+            }
+        } else {
+            MapDiff::Update {
+                key: "watched".to_owned(),
+                old_value: 1,
+                new_value: 2,
+            }
+        };
+        map.apply_diff_owned(diff.clone());
+        assert_eq!(length.get(), 2);
+        assert_eq!(map.get_value(&"removable".to_owned()), None);
+        assert_eq!(map.get_value(&"added".to_owned()), Some(9));
+        assert_eq!(*lengths.lock(), vec![2, 1, 2]);
+        assert_eq!(
+            diffs.lock().iter().skip(1).cloned().collect::<Vec<_>>(),
+            vec![
+                MapDiff::Remove {
+                    key: "removable".to_owned(),
+                    old_value: 7
+                },
+                MapDiff::Insert {
+                    key: "added".to_owned(),
+                    value: 9
+                },
+                diff,
+            ],
+        );
+    }
 }
