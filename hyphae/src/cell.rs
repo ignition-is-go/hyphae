@@ -8,8 +8,8 @@ use std::{
     },
 };
 
-use dashmap::DashMap;
 use parking_lot::Mutex;
+use rustc_hash::FxHashMap;
 use uuid::Uuid;
 
 use crate::{
@@ -47,7 +47,7 @@ pub(crate) struct CellInner<T> {
     /// per-cell `ArcSwap` drop cost paid on every cell teardown.
     pub(crate) name: Mutex<Option<Arc<str>>>,
     /// Subscription guards owned by this cell (dropped when cell drops, provides dependency tracking).
-    pub(crate) owned: DashMap<Uuid, SubscriptionGuard>,
+    pub(crate) owned: Mutex<FxHashMap<Uuid, SubscriptionGuard>>,
     /// Whether this cell has completed (no more values will be emitted).
     pub(crate) completed: AtomicBool,
     /// Whether this cell has errored.
@@ -151,7 +151,7 @@ impl<T: CellValue> Cell<T, CellMutable> {
             result_subscribers: parking_lot::Mutex::new(SubscriberRegistry::new()),
             value: Mutex::new(Arc::new(initial_value)),
             name: Mutex::new(None),
-            owned: DashMap::new(),
+            owned: Mutex::new(FxHashMap::default()),
             completed: AtomicBool::new(false),
             errored: AtomicBool::new(false),
             error: Mutex::new(None),
@@ -267,7 +267,8 @@ impl<T, M> Cell<T, M> {
             let dep = Arc::downgrade(&erased);
             guard.source().add_height_dependent(dep);
         }
-        self.inner.owned.insert(Uuid::new_v4(), guard);
+        let previous = self.inner.owned.lock().insert(Uuid::new_v4(), guard);
+        drop(previous);
         #[cfg(feature = "scheduler")]
         invalidate_height_cone(self.inner.as_ref());
     }
@@ -291,7 +292,8 @@ impl<T, M> Cell<T, M> {
             let dep = Arc::downgrade(&erased);
             guard.source().add_height_dependent(dep);
         }
-        self.inner.owned.insert(key, guard);
+        let previous = self.inner.owned.lock().insert(key, guard);
+        drop(previous);
         // switch_map rewiring changed our dep set: invalidate our height cone
         // (this cell + its transitive dependents), not the whole process.
         #[cfg(feature = "scheduler")]
@@ -407,21 +409,16 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
     }
 
     fn deps(&self) -> Vec<Arc<dyn DepNode>> {
-        // Collect unique dependencies from owned subscription guards
-        let mut seen = std::collections::HashSet::new();
-        self.inner
+        let mut sources: Vec<_> = self
+            .inner
             .owned
-            .iter()
-            .filter_map(|entry| {
-                let source = entry.value().source();
-                let id = source.id();
-                if seen.insert(id) {
-                    Some(Arc::clone(source))
-                } else {
-                    None
-                }
-            })
-            .collect()
+            .lock()
+            .values()
+            .map(|guard| Arc::clone(guard.source()))
+            .collect();
+        let mut seen = std::collections::HashSet::new();
+        sources.retain(|source| seen.insert(source.id()));
+        sources
     }
 
     #[cfg(feature = "scheduler")]
@@ -472,7 +469,7 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
     }
 
     fn owned_count(&self) -> usize {
-        self.inner.owned.len()
+        self.inner.owned.lock().len()
     }
 }
 
@@ -895,5 +892,180 @@ mod height_dependents_tests {
             len <= 2,
             "switch_map re-knit onto a cached inner cell grew dependents to {len}"
         );
+    }
+}
+
+#[cfg(test)]
+mod owned_guard_tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use super::*;
+
+    #[test]
+    fn owned_subscription_lives_until_owner_drops() {
+        let source = Cell::new(0u64);
+        let owner = Cell::new(0u64);
+        let weak = owner.downgrade();
+        let notifications = Arc::new(AtomicUsize::new(0));
+        let observed = notifications.clone();
+        owner.own(source.subscribe(move |_| {
+            observed.fetch_add(1, Ordering::Relaxed);
+        }));
+        source.set(1);
+        assert_eq!(notifications.load(Ordering::Relaxed), 2);
+        assert_eq!(source.subscriber_count(), 1);
+        assert_eq!(owner.owned_count(), 1);
+        drop(owner);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(source.subscriber_count(), 0);
+        source.set(2);
+        assert_eq!(notifications.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn keyed_replacement_unsubscribes_old_source_and_preserves_new_source() {
+        let old = Cell::new(0u64);
+        let new = Cell::new(0u64);
+        let owner = Cell::new(0u64);
+        let key = Uuid::new_v4();
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let sink = received.clone();
+        owner.own_keyed(
+            key,
+            old.subscribe(move |signal| {
+                if let Signal::Value(value) = signal {
+                    sink.lock().push(**value);
+                }
+            }),
+        );
+        let sink = received.clone();
+        owner.own_keyed(
+            key,
+            new.subscribe(move |signal| {
+                if let Signal::Value(value) = signal {
+                    sink.lock().push(**value);
+                }
+            }),
+        );
+        assert_eq!(owner.owned_count(), 1);
+        assert_eq!(old.subscriber_count(), 0);
+        assert_eq!(new.subscriber_count(), 1);
+        old.set(1);
+        new.set(2);
+        assert_eq!(*received.lock(), vec![0, 0, 2]);
+        drop(owner);
+        assert_eq!(new.subscriber_count(), 0);
+    }
+
+    #[test]
+    fn replaced_guard_cleanup_can_reenter_owner() {
+        let owner = Cell::new(0u64);
+        let weak = owner.downgrade();
+        let key = Uuid::new_v4();
+        let cleanups = Arc::new(AtomicUsize::new(0));
+        let cleanup_count = cleanups.clone();
+        owner.own_keyed(
+            key,
+            SubscriptionGuard::from_callback(move || {
+                cleanup_count.fetch_add(1, Ordering::Relaxed);
+                if let Some(owner) = weak.upgrade() {
+                    assert!(owner.inner.owned.try_lock().is_some());
+                    owner.own(SubscriptionGuard::from_callback(|| {}));
+                }
+            }),
+        );
+        let cleanup_count = cleanups.clone();
+        owner.own_keyed(
+            key,
+            SubscriptionGuard::from_callback(move || {
+                cleanup_count.fetch_add(1, Ordering::Relaxed);
+            }),
+        );
+        assert_eq!(cleanups.load(Ordering::Relaxed), 1);
+        assert_eq!(owner.owned_count(), 2);
+        drop(owner);
+        assert_eq!(cleanups.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn owned_dependencies_are_deduplicated_by_source_id() {
+        let source = Cell::new(0u64);
+        let other = Cell::new(0u64);
+        let owner = Cell::new(0u64);
+        owner.own(source.subscribe(|_| {}));
+        owner.own(source.subscribe(|_| {}));
+        owner.own(other.subscribe(|_| {}));
+        assert_eq!(owner.owned_count(), 3);
+        let ids: std::collections::HashSet<_> = owner.deps().iter().map(|dep| dep.id()).collect();
+        assert_eq!(ids, [source.id(), other.id()].into_iter().collect());
+    }
+
+    #[test]
+    fn dependency_identity_is_read_outside_owned_lock() {
+        struct ReentrantDependency {
+            id: Uuid,
+            owner: WeakCell<u64, CellMutable>,
+        }
+        impl DepNode for ReentrantDependency {
+            fn id(&self) -> Uuid {
+                if let Some(owner) = self.owner.upgrade() {
+                    assert!(owner.inner.owned.try_lock().is_some());
+                }
+                self.id
+            }
+            fn name(&self) -> Option<String> {
+                None
+            }
+            fn deps(&self) -> Vec<Arc<dyn DepNode>> {
+                Vec::new()
+            }
+        }
+        let owner = Cell::new(0u64);
+        let id = Uuid::new_v4();
+        let dependency = Arc::new(ReentrantDependency {
+            id,
+            owner: owner.downgrade(),
+        });
+        owner.own(SubscriptionGuard::new(Uuid::new_v4(), dependency, || {}));
+        assert_eq!(owner.deps().first().map(|dep| dep.id()), Some(id));
+    }
+
+    #[test]
+    fn concurrent_keyed_replacement_drops_every_guard_once() {
+        for shared_key in [false, true] {
+            let owner = Cell::new(0u64);
+            let cleanups = Arc::new(AtomicUsize::new(0));
+            let key = Uuid::new_v4();
+            let keys: Vec<_> = (0..4)
+                .map(|_| if shared_key { key } else { Uuid::new_v4() })
+                .collect();
+            let retained = if shared_key { 1 } else { 4 };
+            std::thread::scope(|scope| {
+                for key in &keys {
+                    let owner = owner.clone();
+                    let cleanups = cleanups.clone();
+                    scope.spawn(move || {
+                        for _ in 0..100 {
+                            let cleanups = cleanups.clone();
+                            owner.own_keyed(
+                                *key,
+                                SubscriptionGuard::from_callback(move || {
+                                    cleanups.fetch_add(1, Ordering::Relaxed);
+                                }),
+                            );
+                            assert!(owner.owned_count() <= retained);
+                            assert!(owner.deps().len() <= retained);
+                        }
+                    });
+                }
+            });
+            assert_eq!(owner.owned_count(), retained);
+            assert_eq!(cleanups.load(Ordering::Relaxed), 400 - retained);
+            drop(owner);
+            assert_eq!(cleanups.load(Ordering::Relaxed), 400);
+        }
     }
 }
