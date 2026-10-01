@@ -1,0 +1,2136 @@
+{
+  "schema": 1,
+  "baseline_revision": "a02b5d340f2838999c2f37e79891d4b2f41f0e9d",
+  "stack_base": "PR37 -> PR38 -> this checkpoint",
+  "production_changes_in_checkpoint": false,
+  "criterion_protocol": {
+    "benches": [
+      "scheduler",
+      "subscriber_registry",
+      "scheduler_contention",
+      "compiled_map_queries"
+    ],
+    "criterion_args": [
+      "--bench",
+      "--noplot",
+      "--sample-size",
+      "30",
+      "--warm-up-time",
+      "1",
+      "--measurement-time",
+      "2"
+    ],
+    "filter": null,
+    "host_sample_interval_seconds": 0.25,
+    "repeats": 2,
+    "timeout_seconds": 600,
+    "worker_threads": 4
+  },
+  "toolchain": {
+    "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6"
+  },
+  "host": {
+    "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23
+    ],
+    "cpu": "Architecture:                            x86_64\nCPU op-mode(s):                          32-bit, 64-bit\nAddress sizes:                           48 bits physical, 48 bits virtual\nByte Order:                              Little Endian\nCPU(s):                                  24\nOn-line CPU(s) list:                     0-23\nVendor ID:                               AuthenticAMD\nModel name:                              AMD Ryzen 9 7900X3D 12-Core Processor\nCPU family:                              25\nModel:                                   97\nThread(s) per core:                      2\nCore(s) per socket:                      12\nSocket(s):                               1\nStepping:                                2\nMicrocode version:                       0xa60120a\nFrequency boost:                         enabled\nCPU max MHz:                             5663.3032\nCPU min MHz:                             409.3960\nBogoMIPS:                                8800.27\nFlags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good amd_lbr_v2 nopl xtopology nonstop_tsc cpuid extd_apicid aperfmperf rapl pni pclmulqdq monitor ssse3 fma cx16 sse4_1 sse4_2 movbe popcnt aes xsave avx f16c rdrand lahf_lm cmp_legacy svm extapic cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw ibs skinit wdt tce topoext perfctr_core perfctr_nb bpext perfctr_llc mwaitx cpuid_fault cpb cat_l3 cdp_l3 hw_pstate ssbd mba perfmon_v2 ibrs ibpb stibp ibrs_enhanced vmmcall fsgsbase bmi1 avx2 smep bmi2 erms invpcid cqm rdt_a avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves cqm_llc cqm_occup_llc cqm_mbm_total cqm_mbm_local user_shstk avx512_bf16 clzero irperf xsaveerptr rdpru wbnoinvd cppc arat npt lbrv svm_lock nrip_save tsc_scale vmcb_clean flushbyasid decodeassists pausefilter pfthreshold avic vgif x2avic v_spec_ctrl vnmi avx512vbmi umip pku ospke avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq rdpid overflow_recov succor smca fsrm flush_l1d amd_lbr_pmc_freeze\nVirtualization:                          AMD-V\nL1d cache:                               384 KiB (12 instances)\nL1i cache:                               384 KiB (12 instances)\nL2 cache:                                12 MiB (12 instances)\nL3 cache:                                128 MiB (2 instances)\nNUMA node(s):                            1\nNUMA node0 CPU(s):                       0-23\nVulnerability Gather data sampling:      Not affected\nVulnerability Ghostwrite:                Not affected\nVulnerability Indirect target selection: Not affected\nVulnerability Itlb multihit:             Not affected\nVulnerability L1tf:                      Not affected\nVulnerability Mds:                       Not affected\nVulnerability Meltdown:                  Not affected\nVulnerability Mmio stale data:           Not affected\nVulnerability Old microcode:             Not affected\nVulnerability Reg file data sampling:    Not affected\nVulnerability Retbleed:                  Not affected\nVulnerability Spec rstack overflow:      Mitigation; Safe RET\nVulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl\nVulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization\nVulnerability Spectre v2:                Mitigation; Enhanced / Automatic IBRS; IBPB conditional; STIBP always-on; PBRSB-eIBRS Not affected; BHI Not affected\nVulnerability Srbds:                     Not affected\nVulnerability Tsa:                       Mitigation; Clear CPU buffers\nVulnerability Tsx async abort:           Not affected\nVulnerability Vmscape:                   Mitigation; IBPB before exit to userspace",
+    "governors": {
+      "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor": "powersave",
+      "/sys/devices/system/cpu/cpu1/cpufreq/scaling_governor": "powersave",
+      "/sys/devices/system/cpu/cpu10/cpufreq/scaling_governor": "powersave",
+      "/sys/devices/system/cpu/cpu11/cpufreq/scaling_governor": "powersave",
+      "/sys/devices/system/cpu/cpu12/cpufreq/scaling_governor": "powersave",
+      "/sys/devices/system/cpu/cpu13/cpufreq/scaling_governor": "powersave",
+      "/sys/devices/system/cpu/cpu14/cpufreq/scaling_governor": "powersave",
+      "/sys/devices/system/cpu/cpu15/cpufreq/scaling_governor": "powersave",
+      "/sys/devices/system/cpu/cpu16/cpufreq/scaling_governor": "powersave",
+      "/sys/devices/system/cpu/cpu17/cpufreq/scaling_governor": "powersave",
+      "/sys/devices/system/cpu/cpu18/cpufreq/scaling_governor": "powersave",
+      "/sys/devices/system/cpu/cpu19/cpufreq/scaling_governor": "powersave",
+      "/sys/devices/system/cpu/cpu2/cpufreq/scaling_governor": "powersave",
+      "/sys/devices/system/cpu/cpu20/cpufreq/scaling_governor": "powersave",
+      "/sys/devices/system/cpu/cpu21/cpufreq/scaling_governor": "powersave",
+      "/sys/devices/system/cpu/cpu22/cpufreq/scaling_governor": "powersave",
+      "/sys/devices/system/cpu/cpu23/cpufreq/scaling_governor": "powersave",
+      "/sys/devices/system/cpu/cpu3/cpufreq/scaling_governor": "powersave",
+      "/sys/devices/system/cpu/cpu4/cpufreq/scaling_governor": "powersave",
+      "/sys/devices/system/cpu/cpu5/cpufreq/scaling_governor": "powersave",
+      "/sys/devices/system/cpu/cpu6/cpufreq/scaling_governor": "powersave",
+      "/sys/devices/system/cpu/cpu7/cpufreq/scaling_governor": "powersave",
+      "/sys/devices/system/cpu/cpu8/cpufreq/scaling_governor": "powersave",
+      "/sys/devices/system/cpu/cpu9/cpufreq/scaling_governor": "powersave"
+    },
+    "uname": {
+      "machine": "x86_64",
+      "node": "malcolm",
+      "processor": "",
+      "release": "7.2.6-arch2-1",
+      "system": "Linux",
+      "version": "#1 SMP PREEMPT_DYNAMIC Mon, 14 Sep 2026 22:41:30 +0000"
+    }
+  },
+  "criterion_cases": [
+    {
+      "name": "compiled_query/four_join_application/rekey_10pct/10000",
+      "median_run_mean_ns": 6307050.011945583,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "compiled_query/four_join_application/rekey_10pct/10000",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 6532684.970664584,
+            "upper_bound": 7202635.947636998
+          },
+          "mean_ns": 6863874.397515723,
+          "median_ns": 6770038.529840849,
+          "raw": "criterion/compiled_query_four_join_application_rekey_10pct_10000/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "compiled_query/four_join_application/rekey_10pct/10000",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 5561865.268064138,
+            "upper_bound": 5942357.139795227
+          },
+          "mean_ns": 5750225.626375443,
+          "median_ns": 5695334.416666666,
+          "raw": "criterion/compiled_query_four_join_application_rekey_10pct_10000/new/estimates.json"
+        }
+      ]
+    },
+    {
+      "name": "compiled_query/four_join_application/steady_batch/10000",
+      "median_run_mean_ns": 6525313.9795391895,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "compiled_query/four_join_application/steady_batch/10000",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 6716196.143968688,
+            "upper_bound": 7337355.1373761995
+          },
+          "mean_ns": 7012815.563890799,
+          "median_ns": 6794307.714015152,
+          "raw": "criterion/compiled_query_four_join_application_steady_batch_10000/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "compiled_query/four_join_application/steady_batch/10000",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 5756765.671568414,
+            "upper_bound": 6352325.855536128
+          },
+          "mean_ns": 6037812.395187581,
+          "median_ns": 5960500.143589744,
+          "raw": "criterion/compiled_query_four_join_application_steady_batch_10000/new/estimates.json"
+        }
+      ]
+    },
+    {
+      "name": "compiled_query/projection_region/single",
+      "median_run_mean_ns": 213.4324597522164,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "compiled_query/projection_region/single",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 221.07405294312167,
+            "upper_bound": 222.64928326986194
+          },
+          "mean_ns": 221.85038111278243,
+          "median_ns": 221.47454059829062,
+          "raw": "criterion/compiled_query_projection_region_single/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "compiled_query/projection_region/single",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 204.6015847947715,
+            "upper_bound": 205.45019326546497
+          },
+          "mean_ns": 205.0145383916504,
+          "median_ns": 204.80395117715167,
+          "raw": "criterion/compiled_query_projection_region_single/new/estimates.json"
+        }
+      ]
+    },
+    {
+      "name": "compiled_query/rekey_between_joins/single",
+      "median_run_mean_ns": 1999.2570820383798,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "compiled_query/rekey_between_joins/single",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 1999.6694621061774,
+            "upper_bound": 2020.674141228526
+          },
+          "mean_ns": 2009.935232878367,
+          "median_ns": 2004.6786808996924,
+          "raw": "criterion/compiled_query_rekey_between_joins_single/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "compiled_query/rekey_between_joins/single",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 1982.298257363675,
+            "upper_bound": 1995.3720859116886
+          },
+          "mean_ns": 1988.5789311983926,
+          "median_ns": 1986.10779853129,
+          "raw": "criterion/compiled_query_rekey_between_joins_single/new/estimates.json"
+        }
+      ]
+    },
+    {
+      "name": "compiled_query/repeated_relation_four_join/repeated_right_single",
+      "median_run_mean_ns": 41315.50498315928,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "compiled_query/repeated_relation_four_join/repeated_right_single",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 42483.18679179491,
+            "upper_bound": 43039.07669033796
+          },
+          "mean_ns": 42751.506233463166,
+          "median_ns": 42488.1576984127,
+          "raw": "criterion/compiled_query_repeated_relation_four_join_repeated_right_single/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "compiled_query/repeated_relation_four_join/repeated_right_single",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 39518.83818991057,
+            "upper_bound": 40273.34472554096
+          },
+          "mean_ns": 39879.50373285538,
+          "median_ns": 39418.4723754085,
+          "raw": "criterion/compiled_query_repeated_relation_four_join_repeated_right_single/new/estimates.json"
+        }
+      ]
+    },
+    {
+      "name": "compiled_query/repeated_relation_four_join/single",
+      "median_run_mean_ns": 1131.8038807438247,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "compiled_query/repeated_relation_four_join/single",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 1120.3909697336974,
+            "upper_bound": 1135.617169823421
+          },
+          "mean_ns": 1127.605467355666,
+          "median_ns": 1123.1777266854378,
+          "raw": "criterion/compiled_query_repeated_relation_four_join_single/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "compiled_query/repeated_relation_four_join/single",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 1128.2359368395057,
+            "upper_bound": 1144.2143366780704
+          },
+          "mean_ns": 1136.0022941319835,
+          "median_ns": 1129.2977831629605,
+          "raw": "criterion/compiled_query_repeated_relation_four_join_single/new/estimates.json"
+        }
+      ]
+    },
+    {
+      "name": "compiled_query/repeated_typed_relation_four_join/repeated_right_single",
+      "median_run_mean_ns": 1908.5813684541617,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "compiled_query/repeated_typed_relation_four_join/repeated_right_single",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 1894.8038877101726,
+            "upper_bound": 1916.278656292641
+          },
+          "mean_ns": 1905.108740668322,
+          "median_ns": 1900.6391713876187,
+          "raw": "criterion/compiled_query_repeated_typed_relation_four_join_repeated_right_/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "compiled_query/repeated_typed_relation_four_join/repeated_right_single",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 1894.3632041453932,
+            "upper_bound": 1932.4600033611262
+          },
+          "mean_ns": 1912.0539962400014,
+          "median_ns": 1892.3548525977817,
+          "raw": "criterion/compiled_query_repeated_typed_relation_four_join_repeated_right_/new/estimates.json"
+        }
+      ]
+    },
+    {
+      "name": "compiled_query/two_join_region/batch/1",
+      "median_run_mean_ns": 2401.262206923666,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "compiled_query/two_join_region/batch/1",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 2408.4403785033455,
+            "upper_bound": 2442.0624619640557
+          },
+          "mean_ns": 2423.0853716314864,
+          "median_ns": 2407.8452732849973,
+          "raw": "criterion/compiled_query_two_join_region_batch/1/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "compiled_query/two_join_region/batch/1",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 2373.0656460785617,
+            "upper_bound": 2386.367148488571
+          },
+          "mean_ns": 2379.439042215846,
+          "median_ns": 2371.9292632830657,
+          "raw": "criterion/compiled_query_two_join_region_batch/1/new/estimates.json"
+        }
+      ]
+    },
+    {
+      "name": "compiled_query/two_join_region/batch/10",
+      "median_run_mean_ns": 4340.8350573435855,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "compiled_query/two_join_region/batch/10",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 4333.790407320513,
+            "upper_bound": 4376.114656464187
+          },
+          "mean_ns": 4353.369630607789,
+          "median_ns": 4341.643518533159,
+          "raw": "criterion/compiled_query_two_join_region_batch/10/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "compiled_query/two_join_region/batch/10",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 4312.204931773793,
+            "upper_bound": 4344.615114870256
+          },
+          "mean_ns": 4328.300484079383,
+          "median_ns": 4320.669139658987,
+          "raw": "criterion/compiled_query_two_join_region_batch/10/new/estimates.json"
+        }
+      ]
+    },
+    {
+      "name": "compiled_query/two_join_region/batch/100",
+      "median_run_mean_ns": 25359.68761510797,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "compiled_query/two_join_region/batch/100",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 24979.40250413186,
+            "upper_bound": 25104.611496926394
+          },
+          "mean_ns": 25036.568067328168,
+          "median_ns": 24992.099252761534,
+          "raw": "criterion/compiled_query_two_join_region_batch/100/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "compiled_query/two_join_region/batch/100",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 25519.952614056936,
+            "upper_bound": 25885.616197437867
+          },
+          "mean_ns": 25682.80716288777,
+          "median_ns": 25548.72491522925,
+          "raw": "criterion/compiled_query_two_join_region_batch/100/new/estimates.json"
+        }
+      ]
+    },
+    {
+      "name": "compiled_query/two_join_region/batch/1000",
+      "median_run_mean_ns": 236188.94431392953,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "compiled_query/two_join_region/batch/1000",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 232793.45406932523,
+            "upper_bound": 235455.95324231108
+          },
+          "mean_ns": 234058.1219749107,
+          "median_ns": 232740.90614035088,
+          "raw": "criterion/compiled_query_two_join_region_batch/1000/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "compiled_query/two_join_region/batch/1000",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 236620.75859631185,
+            "upper_bound": 240505.55779867948
+          },
+          "mean_ns": 238319.7666529484,
+          "median_ns": 237319.1992481203,
+          "raw": "criterion/compiled_query_two_join_region_batch/1000/new/estimates.json"
+        }
+      ]
+    },
+    {
+      "name": "compiled_query/two_join_region/batch/10000",
+      "median_run_mean_ns": 3836748.2706469493,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "compiled_query/two_join_region/batch/10000",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 3731698.324965099,
+            "upper_bound": 4017521.7109655933
+          },
+          "mean_ns": 3867913.9715896104,
+          "median_ns": 3774601.958333333,
+          "raw": "criterion/compiled_query_two_join_region_batch/10000/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "compiled_query/two_join_region/batch/10000",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 3679156.6207088595,
+            "upper_bound": 3960871.3057485004
+          },
+          "mean_ns": 3805582.5697042886,
+          "median_ns": 3662939.8379629627,
+          "raw": "criterion/compiled_query_two_join_region_batch/10000/new/estimates.json"
+        }
+      ]
+    },
+    {
+      "name": "compiled_query/two_join_region/single",
+      "median_run_mean_ns": 1146.7738573984695,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "compiled_query/two_join_region/single",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 1130.4795919330663,
+            "upper_bound": 1138.749818195679
+          },
+          "mean_ns": 1134.3730498747448,
+          "median_ns": 1131.4625436915098,
+          "raw": "criterion/compiled_query_two_join_region_single/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "compiled_query/two_join_region/single",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 1158.0863265127648,
+            "upper_bound": 1160.3157782604767
+          },
+          "mean_ns": 1159.1746649221943,
+          "median_ns": 1158.9239187044918,
+          "raw": "criterion/compiled_query_two_join_region_single/new/estimates.json"
+        }
+      ]
+    },
+    {
+      "name": "contention/independent/threads=1",
+      "median_run_mean_ns": 6265500.253022168,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "contention/independent/threads=1",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 6254385.825362411,
+            "upper_bound": 6287823.712989675
+          },
+          "mean_ns": 6271286.81966294,
+          "median_ns": 6275794.34375,
+          "raw": "criterion/contention_independent/threads=1/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "contention/independent/threads=1",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 6246471.738149976,
+            "upper_bound": 6273202.308594378
+          },
+          "mean_ns": 6259713.686381396,
+          "median_ns": 6261577.19551282,
+          "raw": "criterion/contention_independent/threads=1/new/estimates.json"
+        }
+      ]
+    },
+    {
+      "name": "contention/independent/threads=2",
+      "median_run_mean_ns": 6229058.492311022,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "contention/independent/threads=2",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 6167020.705118129,
+            "upper_bound": 6473363.246855348
+          },
+          "mean_ns": 6308706.758002144,
+          "median_ns": 6269048.555555556,
+          "raw": "criterion/contention_independent/threads=2/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "contention/independent/threads=2",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 6040994.278093215,
+            "upper_bound": 6255117.085818317
+          },
+          "mean_ns": 6149410.2266199,
+          "median_ns": 6165593.273148148,
+          "raw": "criterion/contention_independent/threads=2/new/estimates.json"
+        }
+      ]
+    },
+    {
+      "name": "contention/independent/threads=4",
+      "median_run_mean_ns": 14237494.296666667,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "contention/independent/threads=4",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 13835182.905666668,
+            "upper_bound": 14491751.69066667
+          },
+          "mean_ns": 14175545.406666668,
+          "median_ns": 14259575.3,
+          "raw": "criterion/contention_independent/threads=4/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "contention/independent/threads=4",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 14039698.455833334,
+            "upper_bound": 14562930.985500002
+          },
+          "mean_ns": 14299443.186666666,
+          "median_ns": 14256787.8,
+          "raw": "criterion/contention_independent/threads=4/new/estimates.json"
+        }
+      ]
+    },
+    {
+      "name": "contention/independent/threads=8",
+      "median_run_mean_ns": 80528348.36666667,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "contention/independent/threads=8",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 76628912.42,
+            "upper_bound": 83017810.78583333
+          },
+          "mean_ns": 79811881.2,
+          "median_ns": 79555738.0,
+          "raw": "criterion/contention_independent/threads=8/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "contention/independent/threads=8",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 77948871.87916668,
+            "upper_bound": 84351400.10416666
+          },
+          "mean_ns": 81244815.53333333,
+          "median_ns": 81791966.5,
+          "raw": "criterion/contention_independent/threads=8/new/estimates.json"
+        }
+      ]
+    },
+    {
+      "name": "contention/shared_sink/threads=1",
+      "median_run_mean_ns": 12528119.149999999,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "contention/shared_sink/threads=1",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 12469222.867916668,
+            "upper_bound": 12561603.25
+          },
+          "mean_ns": 12515228.816666665,
+          "median_ns": 12514091.0,
+          "raw": "criterion/contention_shared_sink/threads=1/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "contention/shared_sink/threads=1",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 12476509.68611111,
+            "upper_bound": 12615051.132222222
+          },
+          "mean_ns": 12541009.48333333,
+          "median_ns": 12470811.666666668,
+          "raw": "criterion/contention_shared_sink/threads=1/new/estimates.json"
+        }
+      ]
+    },
+    {
+      "name": "contention/shared_sink/threads=2",
+      "median_run_mean_ns": 8273828.619301505,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "contention/shared_sink/threads=2",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 8106700.933301396,
+            "upper_bound": 8568156.772016928
+          },
+          "mean_ns": 8335342.075601648,
+          "median_ns": 8340018.6375,
+          "raw": "criterion/contention_shared_sink/threads=2/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "contention/shared_sink/threads=2",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 7967790.673679571,
+            "upper_bound": 8455898.269473994
+          },
+          "mean_ns": 8212315.163001362,
+          "median_ns": 8205156.688405797,
+          "raw": "criterion/contention_shared_sink/threads=2/new/estimates.json"
+        }
+      ]
+    },
+    {
+      "name": "contention/shared_sink/threads=4",
+      "median_run_mean_ns": 15494177.873333335,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "contention/shared_sink/threads=4",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 15353274.795999996,
+            "upper_bound": 16173752.060000002
+          },
+          "mean_ns": 15761914.206666669,
+          "median_ns": 15725463.6,
+          "raw": "criterion/contention_shared_sink/threads=4/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "contention/shared_sink/threads=4",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 14743425.955333332,
+            "upper_bound": 15740889.165833332
+          },
+          "mean_ns": 15226441.54,
+          "median_ns": 15166088.7,
+          "raw": "criterion/contention_shared_sink/threads=4/new/estimates.json"
+        }
+      ]
+    },
+    {
+      "name": "contention/shared_sink/threads=8",
+      "median_run_mean_ns": 77268494.19999999,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "contention/shared_sink/threads=8",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 72705975.6175,
+            "upper_bound": 79384970.43833333
+          },
+          "mean_ns": 76057312.3,
+          "median_ns": 74486122.0,
+          "raw": "criterion/contention_shared_sink/threads=8/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "contention/shared_sink/threads=8",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 75374418.36833334,
+            "upper_bound": 81473526.49916667
+          },
+          "mean_ns": 78479676.1,
+          "median_ns": 78425185.5,
+          "raw": "criterion/contention_shared_sink/threads=8/new/estimates.json"
+        }
+      ]
+    },
+    {
+      "name": "diamond/batched/work=0",
+      "median_run_mean_ns": 770.167942799678,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "diamond/batched/work=0",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 766.7085099108928,
+            "upper_bound": 772.29265789327
+          },
+          "mean_ns": 769.4840807188541,
+          "median_ns": 770.1360534969833,
+          "raw": "criterion/diamond/batched_work=0/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "diamond/batched/work=0",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 769.3068639023887,
+            "upper_bound": 772.4688037686677
+          },
+          "mean_ns": 770.851804880502,
+          "median_ns": 769.472328946116,
+          "raw": "criterion/diamond/batched_work=0/new/estimates.json"
+        }
+      ]
+    },
+    {
+      "name": "diamond/batched/work=4096",
+      "median_run_mean_ns": 3217.044372700393,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "diamond/batched/work=4096",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 3212.6033391205347,
+            "upper_bound": 3236.283880428669
+          },
+          "mean_ns": 3223.881779373652,
+          "median_ns": 3214.644080354865,
+          "raw": "criterion/diamond/batched_work=4096/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "diamond/batched/work=4096",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 3199.6167984579297,
+            "upper_bound": 3222.217435682369
+          },
+          "mean_ns": 3210.206966027134,
+          "median_ns": 3201.0800690286096,
+          "raw": "criterion/diamond/batched_work=4096/new/estimates.json"
+        }
+      ]
+    },
+    {
+      "name": "diamond/synchronous/work=0",
+      "median_run_mean_ns": 379.1069084448772,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "diamond/synchronous/work=0",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 372.4655680280665,
+            "upper_bound": 375.77430822602895
+          },
+          "mean_ns": 374.0440134848447,
+          "median_ns": 372.45166194690034,
+          "raw": "criterion/diamond/synchronous_work=0/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "diamond/synchronous/work=0",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 381.5400057705507,
+            "upper_bound": 387.54595288972
+          },
+          "mean_ns": 384.1698034049097,
+          "median_ns": 382.3613329791316,
+          "raw": "criterion/diamond/synchronous_work=0/new/estimates.json"
+        }
+      ]
+    },
+    {
+      "name": "diamond/synchronous/work=4096",
+      "median_run_mean_ns": 5231.366400103059,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "diamond/synchronous/work=4096",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 5214.978550297807,
+            "upper_bound": 5242.356230454253
+          },
+          "mean_ns": 5228.191361944144,
+          "median_ns": 5217.4439234449765,
+          "raw": "criterion/diamond/synchronous_work=4096/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "diamond/synchronous/work=4096",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 5210.645539148678,
+            "upper_bound": 5262.048633241932
+          },
+          "mean_ns": 5234.541438261974,
+          "median_ns": 5203.242973507917,
+          "raw": "criterion/diamond/synchronous_work=4096/new/estimates.json"
+        }
+      ]
+    },
+    {
+      "name": "resubscribe per fire/16",
+      "median_run_mean_ns": 226.71138042695594,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "resubscribe per fire/16",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 228.36934554396646,
+            "upper_bound": 230.90337001288472
+          },
+          "mean_ns": 229.5790187846816,
+          "median_ns": 227.82536434450554,
+          "raw": "criterion/resubscribe per fire/16/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "resubscribe per fire/16",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 222.7054970496664,
+            "upper_bound": 225.18740808131093
+          },
+          "mean_ns": 223.8437420692303,
+          "median_ns": 222.5314978046112,
+          "raw": "criterion/resubscribe per fire/16/new/estimates.json"
+        }
+      ]
+    },
+    {
+      "name": "resubscribe per fire/256",
+      "median_run_mean_ns": 1998.797400325242,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "resubscribe per fire/256",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 2058.4728688150653,
+            "upper_bound": 2085.287884648414
+          },
+          "mean_ns": 2071.5198425846,
+          "median_ns": 2063.5802693433943,
+          "raw": "criterion/resubscribe per fire/256/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "resubscribe per fire/256",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 1921.1583512353748,
+            "upper_bound": 1931.4969662489839
+          },
+          "mean_ns": 1926.0749580658842,
+          "median_ns": 1921.6676337544845,
+          "raw": "criterion/resubscribe per fire/256/new/estimates.json"
+        }
+      ]
+    },
+    {
+      "name": "resubscribe per fire/4096",
+      "median_run_mean_ns": 32106.975659384196,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "resubscribe per fire/4096",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 31718.620234192156,
+            "upper_bound": 32111.523213979723
+          },
+          "mean_ns": 31907.219470927477,
+          "median_ns": 31709.464615384615,
+          "raw": "criterion/resubscribe per fire/4096/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "resubscribe per fire/4096",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 32093.82886750844,
+            "upper_bound": 32544.799146442725
+          },
+          "mean_ns": 32306.731847840918,
+          "median_ns": 32150.34009120475,
+          "raw": "criterion/resubscribe per fire/4096/new/estimates.json"
+        }
+      ]
+    },
+    {
+      "name": "single_cell/synchronous",
+      "median_run_mean_ns": 42.20282620195222,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "single_cell/synchronous",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 42.03064895857762,
+            "upper_bound": 42.3145644922231
+          },
+          "mean_ns": 42.166399418321795,
+          "median_ns": 42.07928698537109,
+          "raw": "criterion/single_cell_synchronous/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "single_cell/synchronous",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 42.054084138232675,
+            "upper_bound": 42.3988771551805
+          },
+          "mean_ns": 42.23925298558265,
+          "median_ns": 42.273372783990354,
+          "raw": "criterion/single_cell_synchronous/new/estimates.json"
+        }
+      ]
+    },
+    {
+      "name": "subscribe+unsubscribe churn/16",
+      "median_run_mean_ns": 101.77411108906125,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "subscribe+unsubscribe churn/16",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 101.54298649204662,
+            "upper_bound": 102.68751092502073
+          },
+          "mean_ns": 102.086731440735,
+          "median_ns": 101.94294469883761,
+          "raw": "criterion/subscribe+unsubscribe churn/16/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "subscribe+unsubscribe churn/16",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 101.03856034244573,
+            "upper_bound": 101.9141166801053
+          },
+          "mean_ns": 101.46149073738752,
+          "median_ns": 101.36523824210522,
+          "raw": "criterion/subscribe+unsubscribe churn/16/new/estimates.json"
+        }
+      ]
+    },
+    {
+      "name": "subscribe+unsubscribe churn/256",
+      "median_run_mean_ns": 102.09806752943288,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "subscribe+unsubscribe churn/256",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 101.68580608579038,
+            "upper_bound": 102.56020580070248
+          },
+          "mean_ns": 102.1077432149931,
+          "median_ns": 101.80148097872808,
+          "raw": "criterion/subscribe+unsubscribe churn/256/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "subscribe+unsubscribe churn/256",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 101.82134187512602,
+            "upper_bound": 102.36138153746425
+          },
+          "mean_ns": 102.08839184387267,
+          "median_ns": 101.89800309485548,
+          "raw": "criterion/subscribe+unsubscribe churn/256/new/estimates.json"
+        }
+      ]
+    },
+    {
+      "name": "subscribe+unsubscribe churn/4096",
+      "median_run_mean_ns": 106.04181594252191,
+      "runs": [
+        {
+          "repeat": 1,
+          "benchmark": "subscribe+unsubscribe churn/4096",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 103.52793038481559,
+            "upper_bound": 104.94255351134422
+          },
+          "mean_ns": 104.16190487333913,
+          "median_ns": 103.65201699303203,
+          "raw": "criterion/subscribe+unsubscribe churn/4096/new/estimates.json"
+        },
+        {
+          "repeat": 2,
+          "benchmark": "subscribe+unsubscribe churn/4096",
+          "mean_ci_ns": {
+            "confidence_level": 0.95,
+            "lower_bound": 107.49018057127098,
+            "upper_bound": 108.41366740123804
+          },
+          "mean_ns": 107.92172701170469,
+          "median_ns": 107.47913940869213,
+          "raw": "criterion/subscribe+unsubscribe churn/4096/new/estimates.json"
+        }
+      ]
+    }
+  ],
+  "workload_protocol": {
+    "iterations": 1000,
+    "repeats": 2,
+    "sizes": [
+      16,
+      128
+    ],
+    "warmup": 50,
+    "workers": 4
+  },
+  "workload_runs": [
+    {
+      "command": [
+        "/home/trevor/Code/pulse/.workspaces/hyphae-runtime-arena/hyphae/feat-runtime-arena/benchmark-results/runtime-arena-baseline/prepared-workloads-final-v2/bin/runtime_baseline",
+        "--workload",
+        "all",
+        "--size",
+        "16",
+        "--iterations",
+        "1000",
+        "--warmup",
+        "50"
+      ],
+      "returncode": 0,
+      "results": [
+        {
+          "iterations": 1000,
+          "p50": 1380,
+          "p95": 1790,
+          "p99": 2000,
+          "phase": "setup",
+          "size": 16,
+          "unit": "ns",
+          "workload": "lifecycle"
+        },
+        {
+          "iterations": 1000,
+          "p50": 70,
+          "p95": 90,
+          "p99": 140,
+          "phase": "operation",
+          "size": 16,
+          "unit": "ns",
+          "workload": "lifecycle"
+        },
+        {
+          "iterations": 1000,
+          "p50": 310,
+          "p95": 480,
+          "p99": 550,
+          "phase": "teardown",
+          "size": 16,
+          "unit": "ns",
+          "workload": "lifecycle"
+        },
+        {
+          "iterations": 1000,
+          "p50": 5160,
+          "p95": 6150,
+          "p99": 9720,
+          "phase": "setup",
+          "size": 16,
+          "unit": "ns",
+          "workload": "deep_chain"
+        },
+        {
+          "iterations": 1000,
+          "p50": 1190,
+          "p95": 1310,
+          "p99": 1530,
+          "phase": "operation",
+          "size": 16,
+          "unit": "ns",
+          "workload": "deep_chain"
+        },
+        {
+          "iterations": 1000,
+          "p50": 2030,
+          "p95": 2350,
+          "p99": 3360,
+          "phase": "teardown",
+          "size": 16,
+          "unit": "ns",
+          "workload": "deep_chain"
+        },
+        {
+          "iterations": 1000,
+          "p50": 11420,
+          "p95": 13290,
+          "p99": 17430,
+          "phase": "setup",
+          "size": 16,
+          "unit": "ns",
+          "workload": "wide_diamond"
+        },
+        {
+          "iterations": 1000,
+          "p50": 7000,
+          "p95": 7600,
+          "p99": 12930,
+          "phase": "operation",
+          "size": 16,
+          "unit": "ns",
+          "workload": "wide_diamond"
+        },
+        {
+          "iterations": 1000,
+          "p50": 4670,
+          "p95": 4950,
+          "p99": 9740,
+          "phase": "teardown",
+          "size": 16,
+          "unit": "ns",
+          "workload": "wide_diamond"
+        },
+        {
+          "iterations": 1000,
+          "p50": 430,
+          "p95": 460,
+          "p99": 610,
+          "phase": "setup",
+          "size": 16,
+          "unit": "ns",
+          "workload": "event_no_coalesce"
+        },
+        {
+          "iterations": 1000,
+          "p50": 3580,
+          "p95": 3710,
+          "p99": 5600,
+          "phase": "operation",
+          "size": 16,
+          "unit": "ns",
+          "workload": "event_no_coalesce"
+        },
+        {
+          "iterations": 1000,
+          "p50": 210,
+          "p95": 220,
+          "p99": 330,
+          "phase": "teardown",
+          "size": 16,
+          "unit": "ns",
+          "workload": "event_no_coalesce"
+        },
+        {
+          "iterations": 1000,
+          "p50": 1990,
+          "p95": 2090,
+          "p99": 2900,
+          "phase": "setup",
+          "size": 16,
+          "unit": "ns",
+          "workload": "source_fanout"
+        },
+        {
+          "iterations": 1000,
+          "p50": 60,
+          "p95": 80,
+          "p99": 100,
+          "phase": "operation",
+          "size": 16,
+          "unit": "ns",
+          "workload": "source_fanout"
+        },
+        {
+          "iterations": 1000,
+          "p50": 1440,
+          "p95": 1530,
+          "p99": 2350,
+          "phase": "teardown",
+          "size": 16,
+          "unit": "ns",
+          "workload": "source_fanout"
+        },
+        {
+          "iterations": 1000,
+          "p50": 51910,
+          "p95": 64830,
+          "p99": 74060,
+          "phase": "setup",
+          "size": 16,
+          "unit": "ns",
+          "workload": "project_cell_churn"
+        },
+        {
+          "iterations": 1000,
+          "p50": 13720,
+          "p95": 19080,
+          "p99": 24431,
+          "phase": "operation",
+          "size": 16,
+          "unit": "ns",
+          "workload": "project_cell_churn"
+        },
+        {
+          "iterations": 1000,
+          "p50": 6290,
+          "p95": 18410,
+          "p99": 25560,
+          "phase": "teardown",
+          "size": 16,
+          "unit": "ns",
+          "workload": "project_cell_churn"
+        }
+      ],
+      "raw_sha256": "bc3cd4d52cf490bca1a15234ee0f00c0445989f70e4bb4de6bf5437e36888cab"
+    },
+    {
+      "command": [
+        "/home/trevor/Code/pulse/.workspaces/hyphae-runtime-arena/hyphae/feat-runtime-arena/benchmark-results/runtime-arena-baseline/prepared-workloads-final-v2/bin/runtime_baseline",
+        "--workload",
+        "all",
+        "--size",
+        "128",
+        "--iterations",
+        "1000",
+        "--warmup",
+        "50"
+      ],
+      "returncode": 0,
+      "results": [
+        {
+          "iterations": 1000,
+          "p50": 13250,
+          "p95": 13510,
+          "p99": 16210,
+          "phase": "setup",
+          "size": 128,
+          "unit": "ns",
+          "workload": "lifecycle"
+        },
+        {
+          "iterations": 1000,
+          "p50": 590,
+          "p95": 650,
+          "p99": 740,
+          "phase": "operation",
+          "size": 128,
+          "unit": "ns",
+          "workload": "lifecycle"
+        },
+        {
+          "iterations": 1000,
+          "p50": 4900,
+          "p95": 5110,
+          "p99": 8140,
+          "phase": "teardown",
+          "size": 128,
+          "unit": "ns",
+          "workload": "lifecycle"
+        },
+        {
+          "iterations": 1000,
+          "p50": 40050,
+          "p95": 46710,
+          "p99": 62800,
+          "phase": "setup",
+          "size": 128,
+          "unit": "ns",
+          "workload": "deep_chain"
+        },
+        {
+          "iterations": 1000,
+          "p50": 10600,
+          "p95": 11470,
+          "p99": 14970,
+          "phase": "operation",
+          "size": 128,
+          "unit": "ns",
+          "workload": "deep_chain"
+        },
+        {
+          "iterations": 1000,
+          "p50": 19000,
+          "p95": 23320,
+          "p99": 29400,
+          "phase": "teardown",
+          "size": 128,
+          "unit": "ns",
+          "workload": "deep_chain"
+        },
+        {
+          "iterations": 1000,
+          "p50": 97410,
+          "p95": 121380,
+          "p99": 147650,
+          "phase": "setup",
+          "size": 128,
+          "unit": "ns",
+          "workload": "wide_diamond"
+        },
+        {
+          "iterations": 1000,
+          "p50": 99290,
+          "p95": 119200,
+          "p99": 145360,
+          "phase": "operation",
+          "size": 128,
+          "unit": "ns",
+          "workload": "wide_diamond"
+        },
+        {
+          "iterations": 1000,
+          "p50": 56780,
+          "p95": 72890,
+          "p99": 79850,
+          "phase": "teardown",
+          "size": 128,
+          "unit": "ns",
+          "workload": "wide_diamond"
+        },
+        {
+          "iterations": 1000,
+          "p50": 460,
+          "p95": 490,
+          "p99": 660,
+          "phase": "setup",
+          "size": 128,
+          "unit": "ns",
+          "workload": "event_no_coalesce"
+        },
+        {
+          "iterations": 1000,
+          "p50": 30300,
+          "p95": 34590,
+          "p99": 41250,
+          "phase": "operation",
+          "size": 128,
+          "unit": "ns",
+          "workload": "event_no_coalesce"
+        },
+        {
+          "iterations": 1000,
+          "p50": 230,
+          "p95": 260,
+          "p99": 360,
+          "phase": "teardown",
+          "size": 128,
+          "unit": "ns",
+          "workload": "event_no_coalesce"
+        },
+        {
+          "iterations": 1000,
+          "p50": 52191,
+          "p95": 58670,
+          "p99": 69170,
+          "phase": "setup",
+          "size": 128,
+          "unit": "ns",
+          "workload": "source_fanout"
+        },
+        {
+          "iterations": 1000,
+          "p50": 440,
+          "p95": 500,
+          "p99": 590,
+          "phase": "operation",
+          "size": 128,
+          "unit": "ns",
+          "workload": "source_fanout"
+        },
+        {
+          "iterations": 1000,
+          "p50": 53340,
+          "p95": 60220,
+          "p99": 74920,
+          "phase": "teardown",
+          "size": 128,
+          "unit": "ns",
+          "workload": "source_fanout"
+        },
+        {
+          "iterations": 1000,
+          "p50": 337841,
+          "p95": 352481,
+          "p99": 378311,
+          "phase": "setup",
+          "size": 128,
+          "unit": "ns",
+          "workload": "project_cell_churn"
+        },
+        {
+          "iterations": 1000,
+          "p50": 109991,
+          "p95": 119460,
+          "p99": 143820,
+          "phase": "operation",
+          "size": 128,
+          "unit": "ns",
+          "workload": "project_cell_churn"
+        },
+        {
+          "iterations": 1000,
+          "p50": 45580,
+          "p95": 50550,
+          "p99": 59190,
+          "phase": "teardown",
+          "size": 128,
+          "unit": "ns",
+          "workload": "project_cell_churn"
+        }
+      ],
+      "raw_sha256": "f78e76cc698682b34c8867f85e5ed131c0b3e8afb8c9c355472b0a47c8823ab5"
+    },
+    {
+      "command": [
+        "/home/trevor/Code/pulse/.workspaces/hyphae-runtime-arena/hyphae/feat-runtime-arena/benchmark-results/runtime-arena-baseline/prepared-workloads-final-v2/bin/runtime_baseline",
+        "--workload",
+        "all",
+        "--size",
+        "16",
+        "--iterations",
+        "1000",
+        "--warmup",
+        "50"
+      ],
+      "returncode": 0,
+      "results": [
+        {
+          "iterations": 1000,
+          "p50": 1520,
+          "p95": 1640,
+          "p99": 2110,
+          "phase": "setup",
+          "size": 16,
+          "unit": "ns",
+          "workload": "lifecycle"
+        },
+        {
+          "iterations": 1000,
+          "p50": 80,
+          "p95": 180,
+          "p99": 190,
+          "phase": "operation",
+          "size": 16,
+          "unit": "ns",
+          "workload": "lifecycle"
+        },
+        {
+          "iterations": 1000,
+          "p50": 350,
+          "p95": 520,
+          "p99": 610,
+          "phase": "teardown",
+          "size": 16,
+          "unit": "ns",
+          "workload": "lifecycle"
+        },
+        {
+          "iterations": 1000,
+          "p50": 5600,
+          "p95": 5960,
+          "p99": 8180,
+          "phase": "setup",
+          "size": 16,
+          "unit": "ns",
+          "workload": "deep_chain"
+        },
+        {
+          "iterations": 1000,
+          "p50": 1330,
+          "p95": 1490,
+          "p99": 1610,
+          "phase": "operation",
+          "size": 16,
+          "unit": "ns",
+          "workload": "deep_chain"
+        },
+        {
+          "iterations": 1000,
+          "p50": 2150,
+          "p95": 2300,
+          "p99": 3290,
+          "phase": "teardown",
+          "size": 16,
+          "unit": "ns",
+          "workload": "deep_chain"
+        },
+        {
+          "iterations": 1000,
+          "p50": 11830,
+          "p95": 13540,
+          "p99": 18090,
+          "phase": "setup",
+          "size": 16,
+          "unit": "ns",
+          "workload": "wide_diamond"
+        },
+        {
+          "iterations": 1000,
+          "p50": 7320,
+          "p95": 7870,
+          "p99": 12680,
+          "phase": "operation",
+          "size": 16,
+          "unit": "ns",
+          "workload": "wide_diamond"
+        },
+        {
+          "iterations": 1000,
+          "p50": 4880,
+          "p95": 5320,
+          "p99": 8070,
+          "phase": "teardown",
+          "size": 16,
+          "unit": "ns",
+          "workload": "wide_diamond"
+        },
+        {
+          "iterations": 1000,
+          "p50": 440,
+          "p95": 480,
+          "p99": 700,
+          "phase": "setup",
+          "size": 16,
+          "unit": "ns",
+          "workload": "event_no_coalesce"
+        },
+        {
+          "iterations": 1000,
+          "p50": 3720,
+          "p95": 4830,
+          "p99": 7670,
+          "phase": "operation",
+          "size": 16,
+          "unit": "ns",
+          "workload": "event_no_coalesce"
+        },
+        {
+          "iterations": 1000,
+          "p50": 200,
+          "p95": 240,
+          "p99": 360,
+          "phase": "teardown",
+          "size": 16,
+          "unit": "ns",
+          "workload": "event_no_coalesce"
+        },
+        {
+          "iterations": 1000,
+          "p50": 2050,
+          "p95": 2230,
+          "p99": 3040,
+          "phase": "setup",
+          "size": 16,
+          "unit": "ns",
+          "workload": "source_fanout"
+        },
+        {
+          "iterations": 1000,
+          "p50": 70,
+          "p95": 110,
+          "p99": 150,
+          "phase": "operation",
+          "size": 16,
+          "unit": "ns",
+          "workload": "source_fanout"
+        },
+        {
+          "iterations": 1000,
+          "p50": 1520,
+          "p95": 1850,
+          "p99": 2290,
+          "phase": "teardown",
+          "size": 16,
+          "unit": "ns",
+          "workload": "source_fanout"
+        },
+        {
+          "iterations": 1000,
+          "p50": 59190,
+          "p95": 67891,
+          "p99": 74670,
+          "phase": "setup",
+          "size": 16,
+          "unit": "ns",
+          "workload": "project_cell_churn"
+        },
+        {
+          "iterations": 1000,
+          "p50": 13780,
+          "p95": 17800,
+          "p99": 23740,
+          "phase": "operation",
+          "size": 16,
+          "unit": "ns",
+          "workload": "project_cell_churn"
+        },
+        {
+          "iterations": 1000,
+          "p50": 17140,
+          "p95": 24770,
+          "p99": 30960,
+          "phase": "teardown",
+          "size": 16,
+          "unit": "ns",
+          "workload": "project_cell_churn"
+        }
+      ],
+      "raw_sha256": "7f87d990d5f954586ed702cdfef496b9de39ffbb742a1ee594a970098a38cefa"
+    },
+    {
+      "command": [
+        "/home/trevor/Code/pulse/.workspaces/hyphae-runtime-arena/hyphae/feat-runtime-arena/benchmark-results/runtime-arena-baseline/prepared-workloads-final-v2/bin/runtime_baseline",
+        "--workload",
+        "all",
+        "--size",
+        "128",
+        "--iterations",
+        "1000",
+        "--warmup",
+        "50"
+      ],
+      "returncode": 0,
+      "results": [
+        {
+          "iterations": 1000,
+          "p50": 12510,
+          "p95": 15370,
+          "p99": 19450,
+          "phase": "setup",
+          "size": 128,
+          "unit": "ns",
+          "workload": "lifecycle"
+        },
+        {
+          "iterations": 1000,
+          "p50": 580,
+          "p95": 680,
+          "p99": 870,
+          "phase": "operation",
+          "size": 128,
+          "unit": "ns",
+          "workload": "lifecycle"
+        },
+        {
+          "iterations": 1000,
+          "p50": 4550,
+          "p95": 5500,
+          "p99": 7930,
+          "phase": "teardown",
+          "size": 128,
+          "unit": "ns",
+          "workload": "lifecycle"
+        },
+        {
+          "iterations": 1000,
+          "p50": 40580,
+          "p95": 49950,
+          "p99": 59390,
+          "phase": "setup",
+          "size": 128,
+          "unit": "ns",
+          "workload": "deep_chain"
+        },
+        {
+          "iterations": 1000,
+          "p50": 10420,
+          "p95": 11230,
+          "p99": 16540,
+          "phase": "operation",
+          "size": 128,
+          "unit": "ns",
+          "workload": "deep_chain"
+        },
+        {
+          "iterations": 1000,
+          "p50": 19250,
+          "p95": 26220,
+          "p99": 30710,
+          "phase": "teardown",
+          "size": 128,
+          "unit": "ns",
+          "workload": "deep_chain"
+        },
+        {
+          "iterations": 1000,
+          "p50": 97910,
+          "p95": 109550,
+          "p99": 125780,
+          "phase": "setup",
+          "size": 128,
+          "unit": "ns",
+          "workload": "wide_diamond"
+        },
+        {
+          "iterations": 1000,
+          "p50": 100770,
+          "p95": 115110,
+          "p99": 133010,
+          "phase": "operation",
+          "size": 128,
+          "unit": "ns",
+          "workload": "wide_diamond"
+        },
+        {
+          "iterations": 1000,
+          "p50": 55890,
+          "p95": 64790,
+          "p99": 75580,
+          "phase": "teardown",
+          "size": 128,
+          "unit": "ns",
+          "workload": "wide_diamond"
+        },
+        {
+          "iterations": 1000,
+          "p50": 450,
+          "p95": 480,
+          "p99": 670,
+          "phase": "setup",
+          "size": 128,
+          "unit": "ns",
+          "workload": "event_no_coalesce"
+        },
+        {
+          "iterations": 1000,
+          "p50": 33530,
+          "p95": 39821,
+          "p99": 43781,
+          "phase": "operation",
+          "size": 128,
+          "unit": "ns",
+          "workload": "event_no_coalesce"
+        },
+        {
+          "iterations": 1000,
+          "p50": 250,
+          "p95": 290,
+          "p99": 380,
+          "phase": "teardown",
+          "size": 128,
+          "unit": "ns",
+          "workload": "event_no_coalesce"
+        },
+        {
+          "iterations": 1000,
+          "p50": 51370,
+          "p95": 58680,
+          "p99": 63870,
+          "phase": "setup",
+          "size": 128,
+          "unit": "ns",
+          "workload": "source_fanout"
+        },
+        {
+          "iterations": 1000,
+          "p50": 450,
+          "p95": 490,
+          "p99": 530,
+          "phase": "operation",
+          "size": 128,
+          "unit": "ns",
+          "workload": "source_fanout"
+        },
+        {
+          "iterations": 1000,
+          "p50": 54110,
+          "p95": 63111,
+          "p99": 68301,
+          "phase": "teardown",
+          "size": 128,
+          "unit": "ns",
+          "workload": "source_fanout"
+        },
+        {
+          "iterations": 1000,
+          "p50": 342370,
+          "p95": 356471,
+          "p99": 380240,
+          "phase": "setup",
+          "size": 128,
+          "unit": "ns",
+          "workload": "project_cell_churn"
+        },
+        {
+          "iterations": 1000,
+          "p50": 110970,
+          "p95": 121521,
+          "p99": 134880,
+          "phase": "operation",
+          "size": 128,
+          "unit": "ns",
+          "workload": "project_cell_churn"
+        },
+        {
+          "iterations": 1000,
+          "p50": 46680,
+          "p95": 52540,
+          "p99": 60321,
+          "phase": "teardown",
+          "size": 128,
+          "unit": "ns",
+          "workload": "project_cell_churn"
+        }
+      ],
+      "raw_sha256": "2818de4254ac166305aa5722d59bec0cf0482d87b1e496eb5970c45b34d2c06e"
+    }
+  ],
+  "allocation_runs": [
+    {
+      "repeat": 1,
+      "command": [
+        "/home/trevor/Code/pulse/.workspaces/hyphae-runtime-arena/target/release/examples/owned_guard_allocations",
+        "cell",
+        "10000",
+        "0"
+      ],
+      "result": {
+        "kind": "cell",
+        "count": 10000,
+        "guards": 0,
+        "available_cpus": 24,
+        "alloc_calls": 20000,
+        "alloc_bytes": 3920000,
+        "retained_bytes": 3920000,
+        "remaining_bytes": 0,
+        "construction_ns": 2100523,
+        "drop_ns": 423581,
+        "dropped_guards": 0
+      }
+    },
+    {
+      "repeat": 1,
+      "command": [
+        "/home/trevor/Code/pulse/.workspaces/hyphae-runtime-arena/target/release/examples/owned_guard_allocations",
+        "cell",
+        "10000",
+        "1"
+      ],
+      "result": {
+        "kind": "cell",
+        "count": 10000,
+        "guards": 1,
+        "available_cpus": 24,
+        "alloc_calls": 60000,
+        "alloc_bytes": 7920000,
+        "retained_bytes": 7080000,
+        "remaining_bytes": 0,
+        "construction_ns": 4972517,
+        "drop_ns": 859572,
+        "dropped_guards": 10000
+      }
+    },
+    {
+      "repeat": 1,
+      "command": [
+        "/home/trevor/Code/pulse/.workspaces/hyphae-runtime-arena/target/release/examples/owned_guard_allocations",
+        "cell",
+        "10000",
+        "4"
+      ],
+      "result": {
+        "kind": "cell",
+        "count": 10000,
+        "guards": 4,
+        "available_cpus": 24,
+        "alloc_calls": 160000,
+        "alloc_bytes": 17000000,
+        "retained_bytes": 10880000,
+        "remaining_bytes": 0,
+        "construction_ns": 12374639,
+        "drop_ns": 2315753,
+        "dropped_guards": 40000
+      }
+    },
+    {
+      "repeat": 1,
+      "command": [
+        "/home/trevor/Code/pulse/.workspaces/hyphae-runtime-arena/target/release/examples/owned_guard_allocations",
+        "source",
+        "10000",
+        "0"
+      ],
+      "result": {
+        "kind": "source",
+        "count": 10000,
+        "guards": 0,
+        "available_cpus": 24,
+        "alloc_calls": 20000,
+        "alloc_bytes": 1440000,
+        "retained_bytes": 1440000,
+        "remaining_bytes": 0,
+        "construction_ns": 1050772,
+        "drop_ns": 1179841,
+        "dropped_guards": 0
+      }
+    },
+    {
+      "repeat": 1,
+      "command": [
+        "/home/trevor/Code/pulse/.workspaces/hyphae-runtime-arena/target/release/examples/owned_guard_allocations",
+        "source",
+        "10000",
+        "1"
+      ],
+      "result": {
+        "kind": "source",
+        "count": 10000,
+        "guards": 1,
+        "available_cpus": 24,
+        "alloc_calls": 50000,
+        "alloc_bytes": 4600000,
+        "retained_bytes": 4600000,
+        "remaining_bytes": 0,
+        "construction_ns": 4052847,
+        "drop_ns": 711311,
+        "dropped_guards": 10000
+      }
+    },
+    {
+      "repeat": 1,
+      "command": [
+        "/home/trevor/Code/pulse/.workspaces/hyphae-runtime-arena/target/release/examples/owned_guard_allocations",
+        "source",
+        "10000",
+        "4"
+      ],
+      "result": {
+        "kind": "source",
+        "count": 10000,
+        "guards": 4,
+        "available_cpus": 24,
+        "alloc_calls": 120000,
+        "alloc_bytes": 11160000,
+        "retained_bytes": 8400000,
+        "remaining_bytes": 0,
+        "construction_ns": 8606573,
+        "drop_ns": 1722553,
+        "dropped_guards": 40000
+      }
+    },
+    {
+      "repeat": 2,
+      "command": [
+        "/home/trevor/Code/pulse/.workspaces/hyphae-runtime-arena/target/release/examples/owned_guard_allocations",
+        "cell",
+        "10000",
+        "0"
+      ],
+      "result": {
+        "kind": "cell",
+        "count": 10000,
+        "guards": 0,
+        "available_cpus": 24,
+        "alloc_calls": 20000,
+        "alloc_bytes": 3920000,
+        "retained_bytes": 3920000,
+        "remaining_bytes": 0,
+        "construction_ns": 2010603,
+        "drop_ns": 470521,
+        "dropped_guards": 0
+      }
+    },
+    {
+      "repeat": 2,
+      "command": [
+        "/home/trevor/Code/pulse/.workspaces/hyphae-runtime-arena/target/release/examples/owned_guard_allocations",
+        "cell",
+        "10000",
+        "1"
+      ],
+      "result": {
+        "kind": "cell",
+        "count": 10000,
+        "guards": 1,
+        "available_cpus": 24,
+        "alloc_calls": 60000,
+        "alloc_bytes": 7920000,
+        "retained_bytes": 7080000,
+        "remaining_bytes": 0,
+        "construction_ns": 5171738,
+        "drop_ns": 1023852,
+        "dropped_guards": 10000
+      }
+    },
+    {
+      "repeat": 2,
+      "command": [
+        "/home/trevor/Code/pulse/.workspaces/hyphae-runtime-arena/target/release/examples/owned_guard_allocations",
+        "cell",
+        "10000",
+        "4"
+      ],
+      "result": {
+        "kind": "cell",
+        "count": 10000,
+        "guards": 4,
+        "available_cpus": 24,
+        "alloc_calls": 160000,
+        "alloc_bytes": 17000000,
+        "retained_bytes": 10880000,
+        "remaining_bytes": 0,
+        "construction_ns": 12673219,
+        "drop_ns": 3703406,
+        "dropped_guards": 40000
+      }
+    },
+    {
+      "repeat": 2,
+      "command": [
+        "/home/trevor/Code/pulse/.workspaces/hyphae-runtime-arena/target/release/examples/owned_guard_allocations",
+        "source",
+        "10000",
+        "0"
+      ],
+      "result": {
+        "kind": "source",
+        "count": 10000,
+        "guards": 0,
+        "available_cpus": 24,
+        "alloc_calls": 20000,
+        "alloc_bytes": 1440000,
+        "retained_bytes": 1440000,
+        "remaining_bytes": 0,
+        "construction_ns": 1340842,
+        "drop_ns": 268871,
+        "dropped_guards": 0
+      }
+    },
+    {
+      "repeat": 2,
+      "command": [
+        "/home/trevor/Code/pulse/.workspaces/hyphae-runtime-arena/target/release/examples/owned_guard_allocations",
+        "source",
+        "10000",
+        "1"
+      ],
+      "result": {
+        "kind": "source",
+        "count": 10000,
+        "guards": 1,
+        "available_cpus": 24,
+        "alloc_calls": 50000,
+        "alloc_bytes": 4600000,
+        "retained_bytes": 4600000,
+        "remaining_bytes": 0,
+        "construction_ns": 3572985,
+        "drop_ns": 771171,
+        "dropped_guards": 10000
+      }
+    },
+    {
+      "repeat": 2,
+      "command": [
+        "/home/trevor/Code/pulse/.workspaces/hyphae-runtime-arena/target/release/examples/owned_guard_allocations",
+        "source",
+        "10000",
+        "4"
+      ],
+      "result": {
+        "kind": "source",
+        "count": 10000,
+        "guards": 4,
+        "available_cpus": 24,
+        "alloc_calls": 120000,
+        "alloc_bytes": 11160000,
+        "retained_bytes": 8400000,
+        "remaining_bytes": 0,
+        "construction_ns": 8908463,
+        "drop_ns": 2570434,
+        "dropped_guards": 40000
+      }
+    }
+  ],
+  "limitations": [
+    "Synthetic library workloads; no production end-to-end latency claim.",
+    "No arena implementation or before/after improvement claim.",
+    "Final performance acceptance requires interleaved reference/candidate runs.",
+    "Only benchmark/API compatibility preparation changed; production source remains inherited."
+  ],
+  "raw_archive": {
+    "path": "docs/runtime-baseline-data.tar.gz",
+    "sha256": "30aa26c239eb35fa2030f2e1e1a874be6e8617b29b188a39f6bcd9f188f6fb88",
+    "bytes": 918539,
+    "members": 562
+  }
+}

@@ -1,0 +1,70 @@
+Runtime arena compatibility boundary
+
+Status and evidence
+
+This note audits commit a02b5d340f2838999c2f37e79891d4b2f41f0e9d. It is a compatibility constraint and a recommendation for the first private implementation slice, not a public API proposal.
+
+The codebase-memory project `hyphae-current` points at the same repository lineage. Its recorded generation is 2026-09-04 and its status reports commit 3c7afbf, so it predates the combined PR37+38 base used here. Coverage checks reported no recorded gaps for the cited Rust files, except changed metadata for `hyphae/Cargo.toml`; that is only a best-effort coverage signal. Every claim below was therefore checked directly against the a02b5d3 worktree source. No build, test, or benchmark was run for this document.
+
+Public compatibility surface
+
+`CellMutable` and `CellImmutable` are public `Debug + Clone` marker structs. `Cell<T, M>` is public, but both fields are `pub(crate)`: an `Arc<CellInner<T>>` and `PhantomData<M>`. `WeakCell<T, M>` is public through the public `cell` module, although it is not re-exported at crate root. Its fields are private. It stores `Weak<CellInner<T>>`; `upgrade` returns `Option<Cell<T, M>>`, and `is_alive` reads that exact Arc strong count. `Cell::clone`, `lock`, and `downgrade` retain or transform the same inner allocation. These facts make the inner Arc's identity and lifetime behavior part of practical compatibility even though its address is not an exported value (`hyphae/src/cell.rs:21-25,98-139,145-180,192-209`).
+
+`Cell::new(T) -> Self`, both `with_name` methods, `lock(self) -> Cell<T, CellImmutable>`, `own(SubscriptionGuard)`, `own_keyed(Uuid, SubscriptionGuard)`, and scheduler-only `no_coalesce(self) -> Self` are infallible and take no runtime argument (`hyphae/src/cell.rs:145-189,201-209,256-301,306-332,476-484`). `notify(Signal<T>)` is public but doc-hidden (`hyphae/src/cell.rs:488-545`). `Gettable::get`, `Mutable::{set, complete, fail}`, `Watchable::{subscribe, unsubscribe, is_complete, is_error, error}`, and `WatchableResult::subscribe_result` fix the remaining signatures (`hyphae/src/traits/watchable.rs:9-59`, `hyphae/src/traits/mutable.rs:3-10`). In particular, subscriptions synchronously replay the current `Cell` value and any prior terminal state before returning (`hyphae/src/cell.rs:656-714,745-790`).
+
+`Source<T>` and `WeakSource<T>` are crate-root exports with no public fields. They likewise wrap `Arc<SourceInner<T>>` and `Weak<SourceInner<T>>`; clone, downgrade, and upgrade preserve that allocation's lifetime. `Source::new() -> Self`, `Default`, `own`, `subscribe`, `emit`, and `complete` are infallible and require no runtime. A Source subscription has no initial replay. Scheduler-only `batched` changes fanout batching, while the no-feature path remains eager (`hyphae/src/source.rs:49-120,123-168,170-294,297-300`; exports at `hyphae/src/lib.rs:189-207`).
+
+`DepNode: Send + Sync` publicly returns `Uuid`, optional name, and `Vec<Arc<dyn DepNode>>`. Under `scheduler`, its public surface also exposes references to height atomics, weak `HeightInvalidate` back-edges, and `no_coalesce`; subscriber and owned counts plus dependency-tree helpers are public defaults (`hyphae/src/traits/dep_node.rs:9-117`). `HeightInvalidate` is public and doc-hidden because it appears in that signature (`hyphae/src/cell.rs:335-366`). The Cell implementation derives dependencies from owned guards and uses the stable `Arc<CellInner<T>>` as height-invalidation identity. Trait-object weak deduplication compares the inner data address (`hyphae/src/cell.rs:398-472`). A first arena slice cannot replace this identity without changing both public scheduler trait signatures and topology behavior.
+
+`SubscriptionGuard` has private fields but public `from_callback`, `source`, `leak`, `unsubscribe`, and `id`. It is not Clone. It stores a boxed `FnMut() + Send + Sync`, a UUID, and a strong `Arc<dyn DepNode>`. Drop synchronously invokes cleanup once. `leak` suppresses that cleanup and returns the subscription UUID (`hyphae/src/subscription.rs:7-13,61-87,132-172`). An arena must not weaken the source reference, defer cleanup, or make final-drop cleanup asynchronous.
+
+`CellValue` requires `Clone + Debug + PartialEq + Send + Sync + 'static` (`hyphae/src/traits/cell_value.rs:3-9`). Cell and Source Send/Sync behavior is currently derived from their Arc inner storage and generic bounds; there are no unsafe Send/Sync implementations to preserve by fiat. Any private arena member placed in an inner must itself be Send + Sync and must not broaden unsafe auto-trait behavior. Public structs have no public fields, so adding private state does not prevent normal construction, but changing generic auto traits, method bounds, return types, or required arguments is an API break.
+
+The current base already incorporates PR37's compact `Mutex<FxHashMap<Uuid, SubscriptionGuard>>` for owned guards in Cell and Source (`hyphae/src/cell.rs:44-50,148-166,256-301,411-472`; `hyphae/src/source.rs:49-73,123-155`). PR38 fixes CellMap shard scanning; it is separate from guard storage. Moving guards immediately into a shared arena would discard a fresh targeted optimization, add cross-node lock contention, and alter teardown hazards without evidence of a win. Internal code also reaches directly into Cell value and subscriber fields in the parallel adapter (`hyphae/src/traits/operators/parallel.rs:39-57,68-94`), so moving heterogeneous values or subscriber registries is not a contained first change.
+
+Required behavioral compatibility
+
+The first slice must preserve all accepted values and events, terminal ordering, synchronous unbatched propagation, scheduler coalescing choices, and Cell's replay-before-return contract. It must also preserve the insert-before-replay race defense in `subscribe` and `subscribe_result` (`hyphae/src/cell.rs:664-713,758-789`). Changing a callback's thread, deferring replay, returning a pending guard, or allowing a Source to replay would require an explicit consumer migration. Those are not slight internal behavior changes.
+
+Last strong Cell/Source handle drop must still make its Weak handle fail and synchronously drop owned guards. `own_keyed` must drop a replaced guard before returning, and no guard cleanup may run while an arena or per-node lock is held. Strong closure cycles documented by `Cell::own` must remain possible and diagnosable; a private registry cannot collect arbitrary Rust closure cycles safely (`hyphae/src/cell.rs:212-299`).
+
+Permissible internal differences are allocation layout, slot numbering, free-slot reuse, diagnostic enumeration order, and approximate accounting. A generation can change when a freed private slot is reused because no slot handle is public. UUID identity returned by `DepNode::id` and `SubscriptionGuard::id` must remain stable and must not be replaced by the private slot number.
+
+Platform and feature constraints
+
+The crate's default feature set is empty. `scheduler` is optional, and native-only Rayon is selected under `cfg(not(target_arch = "wasm32"))`; wasm has separate dependencies (`hyphae/Cargo.toml:14-31,45-59`). The proposed arena must be entirely cfg-elided when scheduler is disabled, leaving no registration or release cost and preserving eager no-feature delivery. With scheduler enabled it must compile on native and wasm without requiring Rayon, TLS beyond the scheduler's existing construction/batch scopes, or a background thread. It may use the AtomicU64 fields the scheduler already requires, but slot allocation/reuse should use the existing synchronization layer rather than introduce a stronger target requirement. No arena lock may be held across a callback, subscriber replay, guard drop, value clone/drop, or scheduler execution.
+
+Compatibility exploration rejected as the first implementation
+
+An earlier version of this note recommended a metadata-only generational slab with one lease per Cell and Source. That shape remains API-compatible, but it is not an accepted performance implementation. It adds an Arc clone, slot allocation, central mutex acquisition, resident slot metadata, and release work to every node create/drop without replacing any current field or hot-path operation. It also conflicts with the profiling feature's stated zero-per-cell-resident-overhead and no-global-census posture (`hyphae/Cargo.toml:24-30`). A global census should be an optional diagnostic experiment, measured separately, rather than the foundation merged first.
+
+First useful private arena slice: scheduler metadata pages
+
+Under `cfg(feature = "scheduler")` only, add a private `hyphae/src/scheduler/arena.rs` (or an equivalent private module inside `scheduler.rs`) that owns stable paged slots for the scheduler state already resident in every Cell:
+
+    SchedulerKey { page: u32, slot: u16, generation: u64 }
+    SchedulerSlot { height_cache: AtomicU64, height_epoch: AtomicU64,
+                    flags: AtomicU8 }
+    SchedulerLease { arena: Arc<SchedulerArena>, page: Arc<SchedulerPage>,
+                     key: SchedulerKey }
+    SchedulerArena { pages, free_slots, dependent_shards }
+
+This slice replaces `CellInner::{height_cache, height_epoch, no_coalesce, height_dependents}` rather than adding parallel metadata (`hyphae/src/cell.rs:58-92`). `CellInner` retains one scheduler-only, non-Clone lease. Fixed-capacity, Arc-owned pages provide stable addresses for the two atomics without raw pointers or unsafe Send/Sync implementations, which is necessary because the public `DepNode` trait returns references to them (`hyphae/src/traits/dep_node.rs:18-39`). Pages cannot move or be freed while any slot is live. Slot reuse increments generation; overflow retires the slot. The UUID remains the public node and queue identity.
+
+Pack `no_coalesce` into `flags`; `Cell::no_coalesce`, `DepNode::no_coalesce`, and construction-time `birth_no_coalesce` keep their signatures and load/store that bit (`hyphae/src/cell.rs:306-332,458-461`). `height_cache` and `height_epoch` return stable references from the pinned slot. The scheduler's DFS and queue need no signature change and continue to use UUID keys (`hyphae/src/scheduler.rs:326-406`).
+
+Move `height_dependents` into sharded arena adjacency keyed by `SchedulerKey`, allocating a vector only for slots that acquire dependents. This replaces a `Mutex<Vec<Weak<dyn HeightInvalidate>>>` in every scheduler Cell. `add_height_dependent` and `hi_dependents` already operate on topology-change paths, so the shard lock does not enter ordinary `get`, unbatched `set`, queue enqueue, or cached height reads. Both methods must clone/extract weak entries while locked and drop/prune upgraded objects after releasing the shard lock. Invalidation remains the existing affected-cone traversal; it must not scan pages or all arena slots (`hyphae/src/cell.rs:335-395,434-455`).
+
+This is still a process-default scheduler arena because current constructors carry no runtime. It does not solve independent-runtime ownership or replace the process-global `TICK`. The existing queue is one `Mutex<SharedTick>` containing a height-ordered `BTreeMap`, UUID coalescing index, depth, and drainer state; its lock deliberately coordinates cross-thread batches and is never held while executing callbacks (`hyphae/src/scheduler.rs:24-72,185-224,299-323,392-406,518-579`). Splitting that queue by arena in the same slice would change cross-thread batching and completion behavior and needs a separate behavioral decision.
+
+The bounded implementation files are `hyphae/src/cell.rs`, `hyphae/src/scheduler.rs`, and the new private scheduler arena module. `source.rs`, subscriber storage, value storage, guards, the parallel adapter, public exports, and no-feature builds remain structurally unchanged. Verification should cover stable returned atomic references, stale-generation rejection, slot reuse, generation overflow retirement, dependent dedup/pruning, dynamic `own_keyed` invalidation, concurrent topology edits, deep invalidation, and capacity returning after churn. Feature checks must cover default, scheduler, and wasm with scheduler. Performance acceptance should compare scheduler Cell construction/drop bytes and time, stable cached-height reads, and switch-map topology churn against a02b5d3. Reject the slice if page/Arc/free-list overhead exceeds the four fields it replaces or if adjacency sharding regresses churn.
+
+Lifecycle limitations and next gate
+
+The scheduler arena observes only scheduler metadata. It cannot identify external roots, arbitrary closure captures, ownership cycles, bytes retained inside user values, in-flight queue closures, or semantic demand. A live scheduler slot means its Cell inner is alive. Source currently has no height-cache slot and should not be registered merely to make census counts look complete.
+
+Do not move committed values, subscribers, or guards in this slice. Moving heterogeneous values requires typed pools and changes to the direct-field parallel adapter. Moving subscriptions requires cancellation generations and a replay-preserving install protocol. Either can preserve public signatures while intentionally changing some allowed scheduling or storage behavior, but loss, replay, terminal order, Weak lifetime, and synchronous guard cleanup remain explicit migration gates rather than incidental implementation details.
+
+Concrete first recommendation
+
+Implement the scheduler-only paged arena and use it to replace all four existing per-Cell scheduler fields. Preserve Arc/Weak storage, UUID identity, public trait/method signatures, queue semantics, and replay/drop behavior. Expose no Runtime, scheduler key, Result, or constructor change. Keep metrics crate-private and compiled only with scheduler or profiling. This earns the arena indirection by removing existing resident state, gives later runtime-owned execution a generational scheduler handle, and keeps the first change bounded enough to measure and revert.

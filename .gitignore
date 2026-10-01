@@ -2,3 +2,4 @@
 /benchmark-results/*
 !/benchmark-results/README.md
 .claude/
+/scripts/__pycache__/

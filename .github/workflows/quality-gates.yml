@@ -55,6 +55,8 @@ jobs:
       - run: cargo flux run check-wasm-features
       - run: cargo flux run lint
       - run: cargo flux run test
+      - name: Check public runtime API workloads
+        run: cargo test -p hyphae --features scheduler --bench runtime_baseline -- --size 16 --iterations 2 --warmup 0
       - name: Verify hyphae-gpui is publishable
         run: cargo publish --dry-run --locked --allow-dirty -p hyphae-gpui
       - uses: ignition-is-go/pulse-actions/actions/report-resources@2c94ebf4fedd47f0c36d491e0dee5ad446a071b5 # v1.0.0
