@@ -93,10 +93,11 @@
 //! The mistake was sharding the cheap, frequent *enqueue* path to serve the
 //! rarer, bulkier *drain* path.
 //!
-//! This version keeps [`enqueue`]'s single-lock `BTreeMap` push exactly as
-//! cheap as the non-parallel design, and moves all the "can this run in
-//! parallel" work to the drain side, where it only has to happen once per
-//! height per tick instead of once per push: [`SharedTick::pop_min_height_groups`]
+//! Each ordinary pending cell stores its operation inline in one ordered frontier
+//! record. Only cells with several arrival-ordered event/terminal operations
+//! use reusable arena storage. Repeated coalescing writes replace the inline
+//! operation directly. Parallel dispatch stays on the drain side, once per height
+//! rather than once per push: [`SharedTick::pop_min_height_groups`]
 //! pulls every op at the current minimum height out in one locked pass, grouped
 //! by cell, and [`run_wave`] runs those groups — sequentially if there are few
 //! (the common/resting case: a join has 2 inputs, most fan-out is a handful of
@@ -114,9 +115,8 @@
 //! unrelated graphs still collide on) would help the "many unrelated threads"
 //! case further, but needs its own careful design — dynamic topology changes
 //! would require a concurrent union-find to merge domains safely — and
-//! wasn't pursued here; this hybrid captures the parallelism win for the
-//! common case (one graph, a wide wave) at effectively no cost to the small
-//! case.
+//! wasn't pursued here; dispatch still depends on the width of the current
+//! height wave.
 //!
 //! `join`/`join_vec`'s implementations were also hardened for this: both used
 //! to have each input side independently peek at a sibling's `.get()` to
@@ -143,19 +143,21 @@
 //! the batch (before the closing brace) still sees its pre-batch value — the
 //! glitch-free trade-off, and the reason this is opt-in.
 
-use std::{
-    collections::BTreeMap,
-    sync::{
-        LazyLock,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-    },
+use std::sync::{
+    LazyLock,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use parking_lot::Mutex;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashSet;
 use uuid::Uuid;
 
 use crate::traits::DepNode;
+
+mod frontier;
+mod ready;
+
+use ready::{PendingRun, ReadyQueue};
 
 thread_local! {
     /// Reentrancy depth of the active [`no_coalesce`] construction scope on
@@ -189,21 +191,7 @@ thread_local! {
 /// per-thread one that silently doesn't hold at the seams where two threads'
 /// timers/dispatch converge on a shared cell.
 struct SharedTick {
-    /// Height-ordered frontier: `(height, id, seq) -> deferred op`. `BTreeMap`
-    /// pops the minimum key first, giving height ordering; the `seq`
-    /// tiebreaker keeps a `no_coalesce` cell's multiple ops distinct **and**
-    /// in arrival order (a cell's keys share `(height, id)`, so they sort
-    /// contiguously by `seq`). Coalescing cells keep exactly one live key at
-    /// a time.
-    order: BTreeMap<(u64, Uuid, u64), Box<dyn FnOnce() + Send>>,
-    /// For coalescing cells only: `id -> (height, seq)` of its single live
-    /// entry in `order`, so a re-notify can find and drop the superseded op
-    /// (last-write-wins) before re-inserting. `no_coalesce` cells are never
-    /// tracked here — each of their ops survives to the drain.
-    scheduled: FxHashMap<Uuid, (u64, u64)>,
-    /// Monotonic sequence stamp, ordering ops enqueued at the same
-    /// `(height, id)` by arrival, across every thread.
-    seq: u64,
+    ready: ReadyQueue,
     /// Number of currently-open [`batch`] calls, summed across every thread.
     /// Together with `draining` it gates whether a fresh `notify` defers:
     /// deferral is on whenever `depth > 0 || draining` (a batch is open
@@ -226,28 +214,19 @@ impl SharedTick {
     /// cell is already queued, its previous op is dropped (last-write-wins).
     /// When false (a `no_coalesce` cell), every op is kept as a distinct
     /// arrival-ordered key so event semantics survive.
+    #[inline]
     fn enqueue_locked(
         &mut self,
         id: Uuid,
         height: u64,
         coalesce: bool,
         run: Box<dyn FnOnce() + Send>,
-    ) {
-        let seq = self.seq;
-        self.seq = self.seq.wrapping_add(1);
-        if coalesce && let Some((prev_height, prev_seq)) = self.scheduled.insert(id, (height, seq))
-        {
-            // Drop the superseded op (and the value/cell it captured). We hold
-            // no cell lock here, so a cascading Arc drop is safe. (The insert
-            // short-circuits away for `no_coalesce` cells — they're never
-            // tracked in `scheduled`.)
-            self.order.remove(&(prev_height, id, prev_seq));
-        }
-        self.order.insert((height, id, seq), run);
+    ) -> Option<PendingRun> {
+        self.ready.enqueue(id, height, coalesce, run)
     }
 
     /// Remove every op at the current minimum height, **grouped by cell id**,
-    /// each group in `seq` (arrival) order; or `None` if the frontier is empty.
+    /// each group in arrival order; or `None` if the frontier is empty.
     ///
     /// The parallel unit is a *cell*, not an op. Distinct groups are distinct
     /// cells at the same height — mathematically independent (see [`run_wave`]'s
@@ -255,52 +234,17 @@ impl SharedTick {
     /// same cell: a `no_coalesce` cell can have several ops queued here at once,
     /// and running its value-settle + fanout concurrently with itself would both
     /// reorder its events and invoke its subscribers on two threads at once. So
-    /// a group must run sequentially in arrival order. Coalescing cells always
-    /// have exactly one op, hence a one-element group.
-    ///
-    /// `order` is a `BTreeMap` keyed `(height, id, seq)`, so a cell's ops sort
-    /// contiguously by `seq` within the height — one linear pass groups them
-    /// with no map or sort, and the `scheduled` back-pointer cleanup (formerly
-    /// in `pop_min`) is folded inline.
+    /// a group must run sequentially in arrival order. A coalescing cell can
+    /// also have terminal or event operations in its group.
+    #[inline]
     fn pop_min_height_groups(&mut self) -> Option<Vec<Vec<Box<dyn FnOnce() + Send>>>> {
-        let target = self.order.keys().next().map(|&(h, _, _)| h)?;
-        let mut groups: Vec<Vec<Box<dyn FnOnce() + Send>>> = Vec::new();
-        let mut cur_id: Option<Uuid> = None;
-        while matches!(self.order.keys().next(), Some(&(h, _, _)) if h == target) {
-            let Some(((_, id, seq), run)) = self.order.pop_first() else {
-                break;
-            };
-            // Clear the coalescing back-pointer only if it still names the op we
-            // popped: a coalescing cell has exactly one entry (this one); a
-            // `no_coalesce` cell has none; a cell re-coalesced at a new seq keeps
-            // its newer entry.
-            if let Some(&(_, live_seq)) = self.scheduled.get(&id)
-                && live_seq == seq
-            {
-                self.scheduled.remove(&id);
-            }
-            // Same id as the previous pop → same cell → extend its group (keys
-            // are already seq-ordered). Otherwise start a new group.
-            if cur_id == Some(id) {
-                if let Some(group) = groups.last_mut() {
-                    group.push(run);
-                } else {
-                    groups.push(vec![run]);
-                }
-            } else {
-                cur_id = Some(id);
-                groups.push(vec![run]);
-            }
-        }
-        Some(groups)
+        self.ready.pop_min_height_groups()
     }
 }
 
 static TICK: LazyLock<Mutex<SharedTick>> = LazyLock::new(|| {
     Mutex::new(SharedTick {
-        order: BTreeMap::new(),
-        scheduled: FxHashMap::default(),
-        seq: 0,
+        ready: ReadyQueue::new(),
         depth: 0,
         draining: false,
     })
@@ -385,10 +329,9 @@ pub(crate) fn tick_active() -> bool {
 /// `Complete` for the same cell in one batch, and if the terminal coalesced it
 /// would last-write-wins-drop the value it follows — the final value would
 /// silently vanish under `batch` (confirmed by repro). Kept non-coalescing, the
-/// terminal takes a distinct later `seq`, so the value drains first and the
-/// terminal after it. (A value can't legitimately follow a terminal on the same
-/// cell — `notify` early-returns once the cell is completed/errored — so this
-/// never leaves a terminal ordered before a live value.)
+/// terminal takes a later position in its cell group, so the value drains
+/// first and the terminal after it. The queue preserves arrival order for
+/// later operations too; completion only takes effect when its operation runs.
 pub(crate) fn enqueue(id: Uuid, node: &dyn DepNode, terminal: bool, run: Box<dyn FnOnce() + Send>) {
     let mut guard = TICK.lock();
     // Defer only if a batch is open somewhere, or a drain is in flight (a
@@ -403,7 +346,11 @@ pub(crate) fn enqueue(id: Uuid, node: &dyn DepNode, terminal: bool, run: Box<dyn
     }
     let height = compute_height(node);
     let coalesce = !node.no_coalesce() && !terminal;
-    guard.enqueue_locked(id, height, coalesce, run);
+    let displaced = guard.enqueue_locked(id, height, coalesce, run);
+    drop(guard);
+    // Captured values can own Cells whose final Drop re-enters scheduler paths.
+    // Never destroy a superseded closure while holding the process-wide tick.
+    drop(displaced);
 }
 
 /// Default minimum number of distinct-cell *groups* in one height-wave before
@@ -671,7 +618,7 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
     let claimed_drain = {
         let mut guard = TICK.lock();
         guard.depth = guard.depth.saturating_sub(1);
-        let claim = outermost && !guard.draining && !guard.order.is_empty();
+        let claim = outermost && !guard.draining && !guard.ready.is_empty();
         if claim {
             guard.draining = true;
         }

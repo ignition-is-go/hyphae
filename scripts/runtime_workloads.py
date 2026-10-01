@@ -8,10 +8,13 @@ from pathlib import Path
 
 import runtime_baseline as baseline
 
+WORKLOADS = ("lifecycle", "deep_chain", "wide_diamond", "event_no_coalesce", "source_fanout", "project_cell_churn")
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prepared", type=Path, required=True)
+    parser.add_argument("--workload", choices=("all", *WORKLOADS), default="all")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--sizes", default="16,128")
     parser.add_argument("--iterations", type=int, default=1000)
@@ -31,23 +34,24 @@ def main():
         raise ValueError("Sizes, iterations, and repeats must be positive; warmup must be nonnegative")
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
+    env = os.environ.copy()
+    env["HYPHAE_WORKER_THREADS"] = "4"
     manifest = {
         "schema": 1,
         "complete": False,
         "prepared": prepared,
         "prepared_sha256": baseline.digest(prepared_path),
         "host": baseline.host_identity(),
-        "protocol": {"sizes": sizes, "iterations": args.iterations, "warmup": args.warmup, "repeats": args.repeats, "workers": 4},
+        "environment": {key: env.get(key) for key in ("RAYON_NUM_THREADS", "HYPHAE_WORKER_THREADS", "HYPHAE_WAVE_THREADS", "HYPHAE_WAVE_THRESHOLD")},
+        "protocol": {"workload": args.workload, "sizes": sizes, "iterations": args.iterations, "warmup": args.warmup, "repeats": args.repeats, "workers": 4},
         "runs": [],
         "interpretation": "Empirical phase latencies of repeatedly constructed synthetic graphs, not production end-to-end tails.",
     }
-    env = os.environ.copy()
-    env["HYPHAE_WORKER_THREADS"] = "4"
     for repeat in range(args.repeats):
         for size in sizes:
             run_dir = output / f"run-{repeat + 1}-size-{size}"
             run_dir.mkdir()
-            invocation = [str(binary), "--workload", "all", "--size", str(size), "--iterations", str(args.iterations), "--warmup", str(args.warmup)]
+            invocation = [str(binary), "--workload", args.workload, "--size", str(size), "--iterations", str(args.iterations), "--warmup", str(args.warmup)]
             print(f"Workloads size={size}, repeat={repeat + 1}", flush=True)
             entry = {"command": invocation, "before": baseline.host_snapshot()}
             manifest["runs"].append(entry)
@@ -59,7 +63,8 @@ def main():
             if returncode != 0 or timed_out:
                 raise RuntimeError(f"Workload failed; see {run_dir}")
             records = [json.loads(line) for line in (run_dir / "samples.jsonl").read_text().splitlines()]
-            expected = {(name, phase) for name in ("lifecycle", "deep_chain", "wide_diamond", "event_no_coalesce", "source_fanout", "project_cell_churn") for phase in ("setup", "operation", "teardown")}
+            selected = WORKLOADS if args.workload == "all" else (args.workload,)
+            expected = {(name, phase) for name in selected for phase in ("setup", "operation", "teardown")}
             actual = {(row["workload"], row["phase"]) for row in records}
             if actual != expected or len(records) != len(expected):
                 raise RuntimeError("Missing or duplicate workload phase")
