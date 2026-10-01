@@ -93,10 +93,7 @@
 //! The mistake was sharding the cheap, frequent *enqueue* path to serve the
 //! rarer, bulkier *drain* path.
 //!
-//! This version keeps [`enqueue`]'s single-lock `BTreeMap` push exactly as
-//! cheap as the non-parallel design, and moves all the "can this run in
-//! parallel" work to the drain side, where it only has to happen once per
-//! height per tick instead of once per push: [`SharedTick::pop_min_height_groups`]
+//! [`SharedTick::pop_min_height_groups`]
 //! pulls every op at the current minimum height out in one locked pass, grouped
 //! by cell, and [`run_wave`] runs those groups — sequentially if there are few
 //! (the common/resting case: a join has 2 inputs, most fan-out is a handful of
@@ -143,14 +140,20 @@
 //! the batch (before the closing brace) still sees its pre-batch value — the
 //! glitch-free trade-off, and the reason this is opt-in.
 
+#[cfg(all(not(target_arch = "wasm32"), target_has_atomic = "64"))]
+use std::cell::RefCell;
+#[cfg(all(not(target_arch = "wasm32"), target_has_atomic = "64"))]
+use std::sync::atomic::AtomicU64;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, hash_map::Entry},
     sync::{
         LazyLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 
+#[cfg(all(not(target_arch = "wasm32"), target_has_atomic = "64"))]
+use crossbeam::{queue::ArrayQueue, utils::CachePadded};
 use parking_lot::Mutex;
 use rustc_hash::{FxHashMap, FxHashSet};
 use uuid::Uuid;
@@ -172,6 +175,75 @@ thread_local! {
     /// because it tracks one call stack's nesting; the cross-thread batch
     /// count is [`SharedTick::depth`].
     static BATCH_NEST: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    #[cfg(all(not(target_arch = "wasm32"), target_has_atomic = "64"))]
+    static GROUP_PENDING: RefCell<Option<Vec<PendingOp>>> = const { RefCell::new(None) };
+}
+
+type DeferredOp = Box<dyn FnOnce() + Send>;
+
+#[derive(Default)]
+struct DiscardedOps {
+    superseded: Option<DeferredOp>,
+    collision: Option<DeferredOp>,
+}
+
+#[cfg(all(not(target_arch = "wasm32"), target_has_atomic = "64"))]
+struct PendingOp {
+    id: Uuid,
+    height: u64,
+    seq: u64,
+    coalesce: bool,
+    run: DeferredOp,
+}
+
+#[cfg(all(not(target_arch = "wasm32"), target_has_atomic = "64"))]
+#[derive(Default)]
+struct GroupResult {
+    pending: Vec<PendingOp>,
+    panics: Vec<Box<dyn std::any::Any + Send>>,
+}
+
+#[cfg(all(not(target_arch = "wasm32"), target_has_atomic = "64"))]
+static NEXT_SEQ: CachePadded<AtomicU64> = CachePadded::new(AtomicU64::new(0));
+
+#[cfg(all(not(target_arch = "wasm32"), target_has_atomic = "64"))]
+const MAX_SPARE_PENDING: usize = 128;
+#[cfg(all(not(target_arch = "wasm32"), target_has_atomic = "64"))]
+const MAX_SPARE_PENDING_CAPACITY: usize = 4096;
+
+#[cfg(all(not(target_arch = "wasm32"), target_has_atomic = "64"))]
+fn spare_pending_limit() -> usize {
+    crate::executor::configured_worker_threads()
+        .saturating_mul(4)
+        .clamp(1, MAX_SPARE_PENDING)
+}
+
+#[cfg(all(not(target_arch = "wasm32"), target_has_atomic = "64"))]
+static SPARE_PENDING: LazyLock<ArrayQueue<Vec<PendingOp>>> =
+    LazyLock::new(|| ArrayQueue::new(spare_pending_limit()));
+
+#[cfg(all(not(target_arch = "wasm32"), target_has_atomic = "64"))]
+fn take_pending_buffer() -> Vec<PendingOp> {
+    SPARE_PENDING.pop().unwrap_or_default()
+}
+
+#[cfg(all(not(target_arch = "wasm32"), target_has_atomic = "64"))]
+fn recycle_pending_buffer(mut buffer: Vec<PendingOp>) {
+    buffer.clear();
+    if buffer.capacity() <= MAX_SPARE_PENDING_CAPACITY {
+        let _ = SPARE_PENDING.push(buffer);
+    }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), target_has_atomic = "64"))]
+fn push_group_pending(op: PendingOp) -> Result<(), PendingOp> {
+    GROUP_PENDING.with(|pending| match pending.borrow_mut().as_mut() {
+        Some(buffer) => {
+            buffer.push(op);
+            Ok(())
+        }
+        None => Err(op),
+    })
 }
 
 // Height-cache invalidation is **per-node**, not global. Each cell carries its
@@ -204,6 +276,8 @@ struct SharedTick {
     /// Monotonic sequence stamp, ordering ops enqueued at the same
     /// `(height, id)` by arrival, across every thread.
     seq: u64,
+    #[cfg(all(not(target_arch = "wasm32"), target_has_atomic = "64"))]
+    parallel_wave_active: bool,
     /// Number of currently-open [`batch`] calls, summed across every thread.
     /// Together with `draining` it gates whether a fresh `notify` defers:
     /// deferral is on whenever `depth > 0 || draining` (a batch is open
@@ -230,20 +304,34 @@ impl SharedTick {
         &mut self,
         id: Uuid,
         height: u64,
+        seq: u64,
         coalesce: bool,
-        run: Box<dyn FnOnce() + Send>,
-    ) {
-        let seq = self.seq;
-        self.seq = self.seq.wrapping_add(1);
-        if coalesce && let Some((prev_height, prev_seq)) = self.scheduled.insert(id, (height, seq))
-        {
-            // Drop the superseded op (and the value/cell it captured). We hold
-            // no cell lock here, so a cascading Arc drop is safe. (The insert
-            // short-circuits away for `no_coalesce` cells — they're never
-            // tracked in `scheduled`.)
-            self.order.remove(&(prev_height, id, prev_seq));
+        run: DeferredOp,
+    ) -> DiscardedOps {
+        let mut discarded = None;
+        if coalesce {
+            match self.scheduled.entry(id) {
+                Entry::Occupied(mut scheduled) => {
+                    let &(prev_height, prev_seq) = scheduled.get();
+                    if !seq_is_newer(seq, prev_seq) {
+                        return DiscardedOps {
+                            superseded: Some(run),
+                            collision: None,
+                        };
+                    }
+                    discarded = self.order.remove(&(prev_height, id, prev_seq));
+                    scheduled.insert((height, seq));
+                }
+                Entry::Vacant(scheduled) => {
+                    scheduled.insert((height, seq));
+                }
+            }
         }
-        self.order.insert((height, id, seq), run);
+        let collision = self.order.insert((height, id, seq), run);
+        DiscardedOps {
+            superseded: discarded,
+            collision,
+        }
     }
 
     /// Remove every op at the current minimum height, **grouped by cell id**,
@@ -296,11 +384,35 @@ impl SharedTick {
     }
 }
 
+const fn seq_is_newer(candidate: u64, current: u64) -> bool {
+    candidate > current
+}
+
+#[cfg(all(not(target_arch = "wasm32"), target_has_atomic = "64"))]
+fn next_seq_locked(tick: &mut SharedTick) -> u64 {
+    if tick.parallel_wave_active {
+        NEXT_SEQ.fetch_add(1, Ordering::Relaxed)
+    } else {
+        let seq = tick.seq;
+        tick.seq = tick.seq.wrapping_add(1);
+        seq
+    }
+}
+
+#[cfg(not(all(not(target_arch = "wasm32"), target_has_atomic = "64")))]
+fn next_seq_locked(tick: &mut SharedTick) -> u64 {
+    let seq = tick.seq;
+    tick.seq = tick.seq.wrapping_add(1);
+    seq
+}
+
 static TICK: LazyLock<Mutex<SharedTick>> = LazyLock::new(|| {
     Mutex::new(SharedTick {
         order: BTreeMap::new(),
         scheduled: FxHashMap::default(),
         seq: 0,
+        #[cfg(all(not(target_arch = "wasm32"), target_has_atomic = "64"))]
+        parallel_wave_active: false,
         depth: 0,
         draining: false,
     })
@@ -316,6 +428,11 @@ static TICK: LazyLock<Mutex<SharedTick>> = LazyLock::new(|| {
 /// safely falls back to running synchronously instead of enqueueing into a
 /// queue nobody will drain.
 static TICK_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+static ENQUEUE_LOCK_ACQUISITIONS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static WAVE_MERGE_ACQUISITIONS: AtomicUsize = AtomicUsize::new(0);
 
 /// Set `TICK_ACTIVE` from the authoritative state under the lock. Call after
 /// any mutation of `depth` or `draining`.
@@ -390,6 +507,45 @@ pub(crate) fn tick_active() -> bool {
 /// cell — `notify` early-returns once the cell is completed/errored — so this
 /// never leaves a terminal ordered before a live value.)
 pub(crate) fn enqueue(id: Uuid, node: &dyn DepNode, terminal: bool, run: Box<dyn FnOnce() + Send>) {
+    #[cfg(all(not(target_arch = "wasm32"), target_has_atomic = "64"))]
+    if GROUP_PENDING.with(|pending| pending.borrow().is_some()) {
+        let seq = NEXT_SEQ.fetch_add(1, Ordering::Relaxed);
+        let height = compute_height(node);
+        let coalesce = !node.no_coalesce() && !terminal;
+        let pending = PendingOp {
+            id,
+            height,
+            seq,
+            coalesce,
+            run,
+        };
+        match push_group_pending(pending) {
+            Ok(()) => return,
+            Err(pending) => {
+                #[cfg(test)]
+                ENQUEUE_LOCK_ACQUISITIONS.fetch_add(1, Ordering::Relaxed);
+                let mut tick = TICK.lock();
+                if tick.depth == 0 && !tick.draining {
+                    drop(tick);
+                    (pending.run)();
+                    return;
+                }
+                let discarded = tick.enqueue_locked(
+                    pending.id,
+                    pending.height,
+                    pending.seq,
+                    pending.coalesce,
+                    pending.run,
+                );
+                drop(tick);
+                drop(discarded);
+                return;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    ENQUEUE_LOCK_ACQUISITIONS.fetch_add(1, Ordering::Relaxed);
     let mut guard = TICK.lock();
     // Defer only if a batch is open somewhere, or a drain is in flight (a
     // popped op's fanout must land in the current drain's queue, not cascade
@@ -403,7 +559,10 @@ pub(crate) fn enqueue(id: Uuid, node: &dyn DepNode, terminal: bool, run: Box<dyn
     }
     let height = compute_height(node);
     let coalesce = !node.no_coalesce() && !terminal;
-    guard.enqueue_locked(id, height, coalesce, run);
+    let seq = next_seq_locked(&mut guard);
+    let discarded = guard.enqueue_locked(id, height, seq, coalesce, run);
+    drop(guard);
+    drop(discarded);
 }
 
 /// Default minimum number of distinct-cell *groups* in one height-wave before
@@ -488,10 +647,167 @@ fn run_wave(groups: Vec<Vec<Box<dyn FnOnce() + Send>>>) -> Vec<Box<dyn std::any:
     match crate::executor::worker_pool() {
         Some(pool) => {
             use rayon::prelude::*;
+            #[cfg(target_has_atomic = "64")]
+            {
+                let min_len = groups
+                    .len()
+                    .div_ceil(pool.current_num_threads().saturating_mul(4).max(1));
+                let phase = WaveSequencePhase::begin();
+                let results = pool.install(|| {
+                    groups
+                        .into_par_iter()
+                        .with_min_len(min_len)
+                        .fold(
+                            || GroupResult {
+                                pending: take_pending_buffer(),
+                                panics: Vec::new(),
+                            },
+                            run_group_buffered_into,
+                        )
+                        .collect::<Vec<_>>()
+                });
+                merge_wave(results, phase)
+            }
+            #[cfg(not(target_has_atomic = "64"))]
             pool.install(|| groups.into_par_iter().flat_map_iter(run_group).collect())
         }
         None => run_sequential(groups),
     }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), target_has_atomic = "64"))]
+struct WaveSequencePhase {
+    active: bool,
+}
+
+#[cfg(all(not(target_arch = "wasm32"), target_has_atomic = "64"))]
+impl WaveSequencePhase {
+    fn begin() -> Self {
+        let mut tick = TICK.lock();
+        NEXT_SEQ.store(tick.seq, Ordering::Relaxed);
+        tick.parallel_wave_active = true;
+        drop(tick);
+        Self { active: true }
+    }
+
+    fn finish_locked(&mut self, tick: &mut SharedTick) {
+        tick.seq = NEXT_SEQ.load(Ordering::Relaxed);
+        tick.parallel_wave_active = false;
+        self.active = false;
+    }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), target_has_atomic = "64"))]
+impl Drop for WaveSequencePhase {
+    fn drop(&mut self) {
+        if self.active {
+            let mut tick = TICK.lock();
+            self.finish_locked(&mut tick);
+        }
+    }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), target_has_atomic = "64"))]
+struct PendingScope {
+    previous: Option<Vec<PendingOp>>,
+    active: bool,
+}
+
+#[cfg(all(not(target_arch = "wasm32"), target_has_atomic = "64"))]
+impl PendingScope {
+    #[cfg(test)]
+    fn enter() -> Self {
+        Self::enter_with(Vec::new())
+    }
+
+    fn enter_with(buffer: Vec<PendingOp>) -> Self {
+        let previous = GROUP_PENDING.with(|pending| pending.replace(Some(buffer)));
+        Self {
+            previous,
+            active: true,
+        }
+    }
+
+    fn finish(mut self) -> Vec<PendingOp> {
+        let current = GROUP_PENDING.with(|pending| {
+            let current = pending.replace(self.previous.take());
+            current.unwrap_or_default()
+        });
+        self.active = false;
+        current
+    }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), target_has_atomic = "64"))]
+impl Drop for PendingScope {
+    fn drop(&mut self) {
+        if self.active {
+            GROUP_PENDING.with(|pending| {
+                pending.replace(self.previous.take());
+            });
+        }
+    }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), target_has_atomic = "64"))]
+#[cfg(test)]
+fn run_group_buffered(group: Vec<DeferredOp>) -> GroupResult {
+    run_group_buffered_into(GroupResult::default(), group)
+}
+
+#[cfg(all(not(target_arch = "wasm32"), target_has_atomic = "64"))]
+fn run_group_buffered_into(mut result: GroupResult, group: Vec<DeferredOp>) -> GroupResult {
+    let scope = PendingScope::enter_with(std::mem::take(&mut result.pending));
+    for run in group {
+        if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) {
+            result.panics.push(panic);
+        }
+    }
+    result.pending = scope.finish();
+    result
+}
+
+#[cfg(all(not(target_arch = "wasm32"), target_has_atomic = "64"))]
+fn merge_wave(
+    results: Vec<GroupResult>,
+    mut phase: WaveSequencePhase,
+) -> Vec<Box<dyn std::any::Any + Send>> {
+    #[cfg(test)]
+    WAVE_MERGE_ACQUISITIONS.fetch_add(1, Ordering::Relaxed);
+    let mut tick = TICK.lock();
+    phase.finish_locked(&mut tick);
+    let mut results = results;
+    let mut discarded = Vec::new();
+    for result in &mut results {
+        for pending in result.pending.drain(..) {
+            let dropped = tick.enqueue_locked(
+                pending.id,
+                pending.height,
+                pending.seq,
+                pending.coalesce,
+                pending.run,
+            );
+            if let Some(run) = dropped.superseded {
+                discarded.push(run);
+            }
+            if let Some(run) = dropped.collision {
+                discarded.push(run);
+            }
+        }
+    }
+    drop(tick);
+
+    let mut panics = Vec::new();
+    for result in results {
+        panics.extend(result.panics);
+        recycle_pending_buffer(result.pending);
+    }
+    for run in discarded {
+        if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(run))) {
+            panics.push(panic);
+        }
+    }
+    panics
 }
 
 /// wasm is single-threaded — no real parallelism to exploit, and no
@@ -694,3 +1010,6 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
         Err(payload) => std::panic::resume_unwind(payload),
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32"), target_has_atomic = "64"))]
+mod wave_tests;

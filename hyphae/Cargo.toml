@@ -123,3 +123,8 @@ required-features = ["scheduler", "region-calibration"]
 [[test]]
 name = "region_threshold_truth_table"
 required-features = ["scheduler", "region-calibration"]
+
+[[bench]]
+name = "scheduler_wave"
+harness = false
+required-features = ["scheduler"]

@@ -1,0 +1,2 @@
+[tasks.test-wave-buffers]
+root = ["cargo", "test", "--jobs", "4", "--features", "scheduler", "--lib", "--test", "scheduler_wave_terminal", "--", "--test-threads=1"]
