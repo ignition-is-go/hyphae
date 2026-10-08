@@ -128,3 +128,8 @@ required-features = ["scheduler", "region-calibration"]
 name = "runtime_baseline"
 harness = false
 required-features = ["scheduler"]
+
+[[bench]]
+name = "wave_calibration"
+harness = false
+required-features = ["scheduler"]

@@ -368,7 +368,10 @@ pub(crate) fn enqueue(id: Uuid, node: &dyn DepNode, terminal: bool, run: Box<dyn
 /// threshold keeps the common/resting case sequential — and because
 /// the shared worker pool is built lazily, so a process whose waves never cross it spawns
 /// zero wave threads and pays zero idle cost.
-const DEFAULT_WAVE_THRESHOLD: usize = 64;
+// Rack emitter/state-frame calibration found cheap 64/128-cell waves were
+// 5.7–7.7x faster sequentially. Keep wider waves eligible for compute-heavy
+// callbacks; applications with expensive narrow waves can explicitly use 64.
+const DEFAULT_WAVE_THRESHOLD: usize = 256;
 
 fn env_usize(key: &str) -> Option<usize> {
     std::env::var(key).ok().and_then(|v| v.trim().parse().ok())
