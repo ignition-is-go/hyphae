@@ -583,15 +583,12 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         // `profiling` is off this compiles to nothing. Later phases nest this
         // under a per-frame span.
         #[cfg(feature = "profiling")]
-        let _fanout_span = {
-            let name = self.inner.name.lock().clone();
-            ::tracing::trace_span!(
-                "hyphae.fanout",
-                cell.id = %self.inner.id,
-                cell.name = name.as_deref().unwrap_or(""),
-            )
-            .entered()
-        };
+        let _fanout_span = ::tracing::trace_span!(
+            "hyphae.fanout",
+            cell.id = %self.inner.id,
+            cell.name = { self.inner.name.lock().clone() }.as_deref().unwrap_or(""),
+        )
+        .entered();
 
         // Hot path: take the subscribers mutex briefly to grab the notify
         // snapshot (rebuilt from the id-index only if it changed since the last
@@ -903,6 +900,28 @@ mod owned_guard_tests {
     };
 
     use super::*;
+
+    #[cfg(feature = "profiling")]
+    #[test]
+    fn disabled_fanout_trace_does_not_acquire_name_lock() {
+        let source = Cell::new(0_u64).with_name("trace-test");
+        let sender = source.clone();
+        let name_lock = source.inner.name.lock();
+        let (done, received) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            ::tracing::subscriber::with_default(
+                ::tracing::subscriber::NoSubscriber::default(),
+                || {
+                    sender.fanout(&Signal::value(1));
+                },
+            );
+            let _ = done.send(());
+        });
+        let delivered = received.recv_timeout(std::time::Duration::from_secs(5));
+        drop(name_lock);
+        assert!(delivered.is_ok());
+        assert!(thread.join().is_ok());
+    }
 
     #[test]
     fn owned_subscription_lives_until_owner_drops() {
