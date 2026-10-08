@@ -26,7 +26,7 @@
 //! Operators that may swallow the initial value force `S = Empty`, and
 //! downstream operators (`map`, `tap`, ...) propagate `S` through the chain.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use parking_lot::Mutex;
 
@@ -213,7 +213,12 @@ impl<T: CellValue> SignalQueue<T> {
 enum InstallCapture<T> {
     Capturing(SignalQueue<T>),
     Activating(SignalQueue<T>),
-    Live(Arc<dyn Fn(&Signal<T>) + Send + Sync>),
+    Live,
+}
+
+struct InstallState<T> {
+    capture: Mutex<InstallCapture<T>>,
+    live: OnceLock<Arc<dyn Fn(&Signal<T>) + Send + Sync>>,
 }
 
 /// A definite pipeline subscription installed before its observation cell exists.
@@ -224,7 +229,7 @@ enum InstallCapture<T> {
 /// forwarding. This closes the former `seed(); install()` lost-update window.
 pub(crate) struct PreparedInstall<T: CellValue> {
     initial: T,
-    state: Arc<Mutex<InstallCapture<T>>>,
+    state: Arc<InstallState<T>>,
     guard: SubscriptionGuard,
 }
 
@@ -238,12 +243,12 @@ impl<T: CellValue> PreparedInstall<T> {
         callback: &Arc<dyn Fn(&Signal<T>) + Send + Sync>,
     ) -> SubscriptionGuard {
         let mut pending = {
-            let mut state = self.state.lock();
+            let mut state = self.state.capture.lock();
             let pending = match &mut *state {
                 InstallCapture::Capturing(signals) | InstallCapture::Activating(signals) => {
                     signals.take()
                 }
-                InstallCapture::Live(_) => SignalQueue::Empty,
+                InstallCapture::Live => SignalQueue::Empty,
             };
             *state = InstallCapture::Activating(SignalQueue::Empty);
             pending
@@ -252,17 +257,20 @@ impl<T: CellValue> PreparedInstall<T> {
         loop {
             pending.deliver(callback);
             pending = {
-                let mut state = self.state.lock();
+                let mut state = self.state.capture.lock();
                 match &mut *state {
                     InstallCapture::Activating(queued) if queued.is_empty() => {
-                        *state = InstallCapture::Live(Arc::clone(callback));
+                        // Publish only after the activation backlog is empty, while holding
+                        // the capture lock so a concurrent slow-path emit cannot be lost.
+                        let _ = self.state.live.set(Arc::clone(callback));
+                        *state = InstallCapture::Live;
                         drop(state);
                         break;
                     }
                     InstallCapture::Activating(queued) | InstallCapture::Capturing(queued) => {
                         queued.take()
                     }
-                    InstallCapture::Live(_) => break,
+                    InstallCapture::Live => break,
                 }
             };
         }
@@ -321,11 +329,18 @@ where
     P: PipelineSeed<T>,
     T: CellValue,
 {
-    let state = Arc::new(Mutex::new(InstallCapture::Capturing(SignalQueue::Empty)));
+    let state = Arc::new(InstallState {
+        capture: Mutex::new(InstallCapture::Capturing(SignalQueue::Empty)),
+        live: OnceLock::new(),
+    });
     let capture = state.clone();
     let guard = pipeline.install(Arc::new(move |signal| {
+        if let Some(callback) = capture.live.get() {
+            callback(signal);
+            return;
+        }
         let live = {
-            let mut state = capture.lock();
+            let mut state = capture.capture.lock();
             match &mut *state {
                 InstallCapture::Capturing(signals) => {
                     signals.push(signal.clone());
@@ -335,7 +350,7 @@ where
                     queued.push(signal.clone());
                     None
                 }
-                InstallCapture::Live(callback) => Some(callback.clone()),
+                InstallCapture::Live => capture.live.get(),
             }
         };
         if let Some(callback) = live {
@@ -344,28 +359,28 @@ where
     }));
 
     let captured_initial = {
-        let state = state.lock();
+        let state = state.capture.lock();
         match &*state {
             InstallCapture::Capturing(signals) | InstallCapture::Activating(signals) => {
                 signals.latest_value()
             }
-            InstallCapture::Live(_) => None,
+            InstallCapture::Live => None,
         }
     };
 
     let (initial, initial_boundary) = captured_initial.unwrap_or_else(|| {
         let fallback = pipeline.seed();
-        let state = state.lock();
+        let state = state.capture.lock();
         match &*state {
             InstallCapture::Capturing(signals) | InstallCapture::Activating(signals) => {
                 signals.latest_value().unwrap_or((fallback, 0))
             }
-            InstallCapture::Live(_) => (fallback, 0),
+            InstallCapture::Live => (fallback, 0),
         }
     });
 
     {
-        let mut state = state.lock();
+        let mut state = state.capture.lock();
         if let InstallCapture::Capturing(signals) | InstallCapture::Activating(signals) =
             &mut *state
         {
@@ -477,5 +492,58 @@ mod tests {
         let materialized = Materialize::materialize(SynchronousBurst);
         assert_eq!(materialized.get(), 2);
         assert!(materialized.is_complete());
+    }
+}
+
+#[cfg(test)]
+mod install_tests {
+    use super::*;
+    use crate::Mutable;
+
+    #[test]
+    fn activation_drains_reentrant_signals_before_live_forwarding() {
+        let source = Cell::new(0_u32);
+        let prepared = prepare_install(&source);
+        assert_eq!(*prepared.initial(), 0);
+        source.set(1);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let output = seen.clone();
+        let input = source.clone();
+        let callback: Arc<dyn Fn(&Signal<u32>) + Send + Sync> = Arc::new(move |signal| {
+            if let Signal::Value(value) = signal {
+                output.lock().push(**value);
+                if **value == 1 {
+                    input.set(2);
+                }
+            }
+        });
+        let _guard = prepared.activate(&callback);
+        source.set(3);
+        assert_eq!(*seen.lock(), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn live_delivery_does_not_acquire_capture_lock() {
+        let source = Cell::new(0_u32);
+        let prepared = prepare_install(&source);
+        let state = prepared.state.clone();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let output = seen.clone();
+        let callback: Arc<dyn Fn(&Signal<u32>) + Send + Sync> = Arc::new(move |signal| {
+            if let Signal::Value(value) = signal {
+                output.lock().push(**value);
+            }
+        });
+        let _guard = prepared.activate(&callback);
+        let capture_lock = state.capture.lock();
+        let sender = std::thread::spawn(move || source.set(1));
+        let (done, received) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(sender.join().is_ok());
+        });
+        let delivered = received.recv_timeout(std::time::Duration::from_secs(5));
+        drop(capture_lock);
+        assert!(matches!(delivered, Ok(true)));
+        assert_eq!(*seen.lock(), vec![1]);
     }
 }

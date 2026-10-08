@@ -1,0 +1,59 @@
+Rack emitter performance changes, 2026-10-08
+
+The deployed Hyphae 3.1.8 default dispatches height waves containing at least
+64 distinct cell groups to its dedicated pool. Rack profiling showed growing
+reactive propagation and enqueue contention as emitter activity increased.
+The new default is 256 groups. HYPHAE_WAVE_THRESHOLD remains an explicit
+startup override; use 64 for compute-heavy narrow waves when measurements
+support it. Worker count and within-cell event order are unchanged.
+
+Calibration uses hyphae/benches/wave_calibration.rs, Rust 1.97.1, four default
+workers, and an AMD Ryzen 9 7900X3D with 24 logical CPUs. Five process runs
+per threshold, with threshold 64 versus 100000, produced these median times
+per frame. Every case asserts every cell's final value. Other compilation
+was running on the host; these are local mechanism measurements rather than
+production capacity or latency forecasts.
+
+Groups  Callback work  threshold=64 ns  sequential ns
+64      trivial        207791           27100
+128     trivial        317162           55817
+256     trivial        699266          120129
+64      65536 rounds    988760         2728951
+128     65536 rounds   2099123         5528805
+256     65536 rounds   3767999        11660946
+
+The chosen cutoff improves the observed 64/128 cheap-wave region while
+retaining parallel eligibility at 256 and above. It is deliberately a
+conservative width policy, not a universal cost model. Expensive 64/128
+waves become slower under the new default and can retain threshold 64.
+
+Reproduce individual calibration runs:
+  HYPHAE_WAVE_THRESHOLD=64 cargo bench -p hyphae --features scheduler,profiling --bench wave_calibration
+  HYPHAE_WAVE_THRESHOLD=100000 cargo bench -p hyphae --features scheduler,profiling --bench wave_calibration
+
+A separate paired probe used real Hyphae APIs with a reduced row model and
+join_vec ingestion. Five alternating before/after runs compared the frozen
+registry 3.1.8 binary against these changes, retaining shared dependency
+versions. At 128 inputs, batch ingestion improved from 200463 to 44367 ns
+per frame, and broadcast publication from 198186 to 35019 ns per update.
+These workloads validate outputs and exact notification counts. They do not
+predict the whole rship server's speedup.
+
+Prepared pipeline activation still captures concurrent/reentrant signals
+until its backlog is empty. It then publishes the immutable callback through
+OnceLock while holding the capture mutex. Later deliveries avoid that mutex
+and an Arc clone. This adds a callback slot to per-install resident storage;
+there is no added per-signal allocation. Fanout name preparation now lives
+inside trace_span's lazy field expressions, preserving span filtering while
+avoiding the name lock when tracing is disabled.
+
+Verification includes all core native tests and doctests with every feature,
+native Clippy, the scheduler/async/profiling WASM compile guard, benchmark
+Clippy, and formatting. Tests explicitly cover reentrant activation backlog,
+live delivery while the capture mutex is held, and disabled tracing while
+the cell-name mutex is held. Existing scheduler tests cover event ordering,
+shared cross-thread ticks, reentrancy, panics, lifecycle, and glitch freedom.
+
+Release the Hyphae crate before updating rship's registry Cargo.lock. Repeat
+both rack 60-second captures after deployment, with emitter rate, changed-row
+density, and p95/p99 latency. Queue contention follow-up: hyphae/lv-91f0.
