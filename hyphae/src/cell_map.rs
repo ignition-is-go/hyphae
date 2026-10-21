@@ -31,6 +31,30 @@ mod projection;
 pub use diff::MapDiff;
 use projection::{EntryProjection, KeyProjection, ProjectionOwner, ValueProjection};
 
+impl<K, V> MapDiff<K, V> {
+    /// Visit each leaf diff, flattening nested Batch wrappers.
+    ///
+    /// ```ignore
+    /// map.subscribe_diffs(|diff| {
+    ///     diff.for_each(|d| {
+    ///         if let MapDiff::Update { key, new_value, .. } = d {
+    ///             // ...
+    ///         }
+    ///     });
+    /// });
+    /// ```
+    pub fn for_each(&self, f: &mut impl FnMut(&MapDiff<K, V>)) {
+        match self {
+            MapDiff::Batch { changes } => {
+                for change in changes {
+                    change.for_each(f);
+                }
+            }
+            _ => f(self),
+        }
+    }
+}
+
 pub(crate) struct CellMapInner<K, V>
 where
     K: Hash + Eq + CellValue,
