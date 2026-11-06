@@ -69,17 +69,10 @@ fn run_reactor(reactor: &'static Reactor) -> ! {
     loop {
         let due = wait_for_due(reactor);
         for mut entry in due {
-            // Isolate a panicking tick callback. Under the old one-thread-per-
-            // timer design a panicking subscriber killed only that timer's own
-            // thread; on the shared reactor an unguarded panic would unwind
-            // `run_reactor`, kill the single reactor thread, and silently stop
-            // EVERY timer process-wide (the `OnceLock` never respawns it). Catch
-            // it and drop just this entry, matching the old blast radius — the
-            // same per-op isolation `scheduler::run_wave` already applies.
             let keep = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 (entry.tick)(entry.count)
             }))
-            .unwrap_or(false);
+            .unwrap_or(true);
             if !keep {
                 continue;
             }
@@ -215,7 +208,8 @@ pub fn spawn_delayed(delay: Duration, f: impl FnOnce() + Send + 'static) {
 
 /// Repeatedly invoke `tick(count)` every `period`, starting one `period` after
 /// the call, with `count` beginning at 1. Stops being rescheduled once `tick`
-/// returns `false`.
+/// returns `false`. A panicking callback unwinds the current tick, but the
+/// interval remains scheduled for its next deadline.
 ///
 /// `precise` is accepted for API compatibility but no longer changes the
 /// wait strategy: the shared reactor schedules every timer against a monotonic
@@ -243,6 +237,65 @@ pub fn par_for_each<T: Sync>(items: &[T], f: impl Fn(&T) + Send + Sync) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[allow(clippy::panic)]
+    fn interval_can_cancel_after_panicking() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut first = true;
+        spawn_interval(Duration::from_millis(10), false, move |count| {
+            let _sent = tx.send(count);
+            if first {
+                first = false;
+                panic!("transient timer callback failure");
+            }
+            false
+        });
+
+        let first = rx.recv_timeout(Duration::from_secs(2));
+        let second = rx.recv_timeout(Duration::from_secs(2));
+        assert_eq!(first, Ok(1));
+        assert!(matches!(second, Ok(count) if count > 1));
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(2)),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+        );
+    }
+
+    #[test]
+    #[allow(clippy::panic)]
+    fn delayed_panic_runs_once_and_other_timers_continue() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+            mpsc,
+        };
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_cb = calls.clone();
+        let (delayed_tx, delayed_rx) = mpsc::channel();
+        spawn_delayed(Duration::from_millis(5), move || {
+            calls_cb.fetch_add(1, Ordering::SeqCst);
+            let _sent = delayed_tx.send(());
+            panic!("delayed callback failure");
+        });
+        let (interval_tx, interval_rx) = mpsc::channel();
+        spawn_interval(Duration::from_millis(10), false, move |count| {
+            if count < 3 {
+                return true;
+            }
+            let _sent = interval_tx.send(());
+            false
+        });
+
+        assert_eq!(delayed_rx.recv_timeout(Duration::from_secs(2)), Ok(()));
+        assert_eq!(interval_rx.recv_timeout(Duration::from_secs(2)), Ok(()));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            delayed_rx.recv_timeout(Duration::from_secs(2)),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        );
+    }
 
     fn entry(next_fire: Instant) -> TimerEntry {
         TimerEntry {

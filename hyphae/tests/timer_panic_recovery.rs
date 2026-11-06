@@ -2,7 +2,6 @@
 
 use std::{
     sync::{
-        Arc,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -15,11 +14,12 @@ use hyphae::{Signal, interval_precise_with_elapsed_source};
 #[allow(clippy::panic)]
 fn interval_resumes_after_subscriber_panics() {
     let source = interval_precise_with_elapsed_source(Duration::from_millis(10));
-    let panicked = Arc::new(AtomicBool::new(false));
+    #[cfg(feature = "scheduler")]
+    let source = source.batched();
+    let panicked = AtomicBool::new(false);
     let (panic_tx, panic_rx) = mpsc::channel();
-    let panicked_cb = panicked.clone();
     let _panicking = source.subscribe(move |signal| {
-        if matches!(signal, Signal::Value(_)) && !panicked_cb.swap(true, Ordering::SeqCst) {
+        if matches!(signal, Signal::Value(_)) && !panicked.swap(true, Ordering::SeqCst) {
             let _sent = panic_tx.send(());
             panic!("transient interval subscriber failure");
         }
