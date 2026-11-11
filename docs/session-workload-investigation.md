@@ -21,7 +21,7 @@ session consumes clocks/device inputs, evaluates binding graphs, produces device
 actions, and exposes optional live inspection. Editing and lifecycle changes
 alter what runs. Domain commands may return to a central authority.
 
-The reusable model has no application-specific entities or Myko dependency:
+The reusable model has no application-specific entities or database dependency:
 
 | Application concern | Generic benchmark representation | Fidelity |
 | --- | --- | --- |

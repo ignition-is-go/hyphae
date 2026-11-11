@@ -130,57 +130,10 @@ WASM feature build also passed.
 
 ```sh
 cargo test -p hyphae --all-features -- --test-threads=1
-cargo clippy -p hyphae --all-features --lib --tests --bench scene_workload -- -D warnings
+cargo clippy -p hyphae --all-features --lib --tests -- -D warnings
 cargo check -p hyphae --target wasm32-unknown-unknown --features scheduler,async,profiling,local-runtime
-python3 tools/bench-scene-workload.py --output docs/local-runtime-results.jsonl
-python3 tools/summarize-scene-workload.py docs/local-runtime-results.jsonl
 ```
 
-The benchmark adds this runtime to the existing production-shaped workload:
-10/20/28 scenes, 12/14 clients, a 60 Hz offered load, field expansion, deep
-pipelines, batched feedback, branch selection, and branch rebuild stress. The
-runner randomizes four implementations across ten cases and three repetitions
-(120 fresh processes). Each accepted update is checked against the same full
-recomputation oracle. It records admission rejection, frame-budget misses,
-queue/scheduling delay, CPU, memory, and source hashes alongside evaluation time.
-Local runs also report allocation, reclamation, live scope/node, and cutoff
-counters.
-
-See [the workload investigation](scene-workload-investigation.md) for captured
-topology and model assumptions. This is a generic `u64` computation model with
-simulated JSON fanout, not execution of production node implementations or real
-network clients. Short two-second runs measure this workload on this host; they
-do not establish production capacity, long-term stability, or the isolated
-benefit of any one internal optimization.
-
-Results: [raw runs](local-runtime-results.jsonl) and
-[median per-run quantiles](local-runtime-summary.md).
-
-## Measured outcome
-
-All 120 processes succeeded. The oracle checked 179,839 admitted updates out of
-181,440 offered. The existing runtime rejected 1,601 updates under switch stress;
-the local and Incremental backends rejected none. Both sequential incremental
-backends had zero frame-budget misses across all 30 runs each. Quantiles below
-are medians of three per-run p99s, not pooled percentiles.
-
-| Case, evaluation p99 | Existing, 0 wave workers | Existing, 4 wave workers | incremental-rs | Local |
-| --- | ---: | ---: | ---: | ---: |
-| 28 scenes, normal updates | 5.978 ms | 5.076 ms | 0.827 ms | 0.428 ms |
-| 14 clients | 7.899 ms | 7.390 ms | 0.974 ms | 0.479 ms |
-| Deeper expansion | 4.748 ms | 10.755 ms | 0.944 ms | 1.217 ms |
-| Switch rebuild stress | 29.149 ms | 16.922 ms | 1.145 ms | 3.828 ms |
-
-The normal 28-scene case used median process CPU of 0.266 seconds for local,
-0.356 for Incremental, and 1.112 for four-worker existing Hyphae over the roughly
-two-second offered interval (including setup/verification overhead). Its p99
-scheduled-to-fanout latency was 2.053 ms local versus 8.518 ms with four workers.
-These show useful headroom from the overall design, not an isolated proof that
-Rayon, Tokio, or any single old data structure caused the difference.
-
-Incremental remains the stronger topology-churn reference: switch-only p99 was
-2.662 ms versus local's 6.292 ms under rebuild stress. Local also trailed it in
-the 10/20-scene and deeper-expansion evaluation quantiles. The next useful work
-is a real semantic adapter plus profiling dirty traversal, branch retirement,
-and allocation under churn. There is no evidence here that automatic
-parallelism should precede those steps.
+The generic session workload benchmark remains available in this repository.
+Application-specific fixtures and stack comparisons belong to their consuming
+repositories; they are not part of this runtime API experiment.
