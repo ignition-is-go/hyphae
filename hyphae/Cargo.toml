@@ -71,6 +71,7 @@ tasks = ["fmt", "check", "check-wasm", "check-wasm-features", "build", "test", "
 [dev-dependencies]
 criterion = "0.5"
 seq-macro = "0.3"
+serde_json.workspace = true
 
 [[bench]]
 name = "latency"
@@ -131,5 +132,10 @@ required-features = ["scheduler"]
 
 [[bench]]
 name = "wave_calibration"
+harness = false
+required-features = ["scheduler"]
+
+[[bench]]
+name = "session_workload"
 harness = false
 required-features = ["scheduler"]

@@ -1,0 +1,22 @@
+| Case | Mode | Median session p99, µs | Approx. completed ticks/s | Cheap-session p99, µs |
+| --- | --- | ---: | ---: | ---: |
+| cheap | processes | 31.8 | 168,533 | 31.8 |
+| cheap | serial | 30.0 | 44,866 | 30.0 |
+| cheap | threads | 173.6 | 32,570 | 173.6 |
+| compute | processes | 128.6 | 37,925 | — |
+| compute | serial | 115.5 | 9,958 | — |
+| compute | threads | 558.9 | 8,515 | — |
+| deep | processes | 37.9 | 135,528 | 37.9 |
+| deep | serial | 36.2 | 34,969 | 36.2 |
+| deep | threads | 498.8 | 25,469 | 498.8 |
+| noisy_neighbor | processes | 34.1 | 11,183 | 32.7 |
+| noisy_neighbor | serial | 33.0 | 9,575 | 28.1 |
+| noisy_neighbor | threads | 655.1 | 8,701 | 655.2 |
+| observers | processes | 33.2 | 167,175 | 33.2 |
+| observers | serial | 28.9 | 46,791 | 28.9 |
+| observers | threads | 316.8 | 27,866 | 316.8 |
+| shared_edits | serial | 127.0 | 31,252 | 127.0 |
+| shared_edits | threads | 204.3 | 29,865 | 204.3 |
+| wide | processes | 1078.7 | 7,634 | 1078.7 |
+| wide | serial | 777.8 | 2,609 | 777.8 |
+| wide | threads | 4928.6 | 2,653 | 4928.6 |

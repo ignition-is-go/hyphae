@@ -2045,6 +2045,7 @@ dependencies = [
  "rayon",
  "rustc-hash",
  "seq-macro",
+ "serde_json",
  "tracing",
  "uuid",
  "wasm-bindgen-futures",
