@@ -30,7 +30,7 @@ cargo = [
     "--target",
     "wasm32-unknown-unknown",
     "--features",
-    "scheduler,async,profiling",
+    "scheduler,async,profiling,local-runtime",
 ]
 workspace_batchable = true
 

@@ -70,7 +70,7 @@ impl Config {
             }
             if key == "--help" {
                 println!(
-                    "scene_workload --backend hyphae|incremental --scenes 10|20|28 --clients N --layers N --branch-depth N --switch-every N --switch-mode rebuild|select --frames N --hz N --queue N --encode shared|per-client --verify-every N --feedback staggered|batched --dynamic-sinks on|off --fields authored|one; hz=0 means saturation"
+                    "scene_workload --backend hyphae|incremental|local --scenes 10|20|28 --clients N --layers N --branch-depth N --switch-every N --switch-mode rebuild|select --frames N --hz N --queue N --encode shared|per-client --verify-every N --feedback staggered|batched --dynamic-sinks on|off --fields authored|one; hz=0 means saturation"
                 );
                 return Err("help".into());
             }
@@ -122,7 +122,7 @@ impl Config {
                 _ => return Err(format!("unknown option {key}")),
             }
         }
-        if !matches!(c.backend.as_str(), "hyphae" | "incremental")
+        if !matches!(c.backend.as_str(), "hyphae" | "incremental" | "local")
             || c.scenes == 0
             || c.scenes > 28
             || c.clients == 0
@@ -475,6 +475,9 @@ impl Plan {
 }
 
 trait Engine {
+    fn metrics(&self) -> Option<Value> {
+        None
+    }
     fn evaluate(
         &mut self,
         changes: &[(usize, u64)],
@@ -692,6 +695,130 @@ impl Engine for IncrementalEngine {
     }
 }
 
+#[cfg(feature = "local-runtime")]
+struct LocalEngine {
+    rt: hyphae::local::Runtime,
+    roots: Vec<hyphae::local::Input<u64>>,
+    selectors: Vec<hyphae::local::Input<u64>>,
+    outputs: Vec<hyphae::local::Observer<u64>>,
+}
+#[cfg(feature = "local-runtime")]
+impl LocalEngine {
+    fn build(plan: &Plan, cfg: &Config) -> Result<Self, String> {
+        let build = || -> Result<Self, hyphae::local::Error> {
+            let mut rt = hyphae::local::Runtime::new();
+            let roots: Vec<_> = (0..plan.roots)
+                .map(|_| rt.input(0_u64))
+                .collect::<Result<_, _>>()?;
+            let selectors: Vec<_> = (0..28).map(|_| rt.input(0_u64)).collect::<Result<_, _>>()?;
+            let mut cells: Vec<_> = roots.iter().map(hyphae::local::Input::cell).collect();
+            for node in &plan.nodes {
+                let inputs: Vec<_> = node
+                    .inputs
+                    .iter()
+                    .map(|i| {
+                        cells
+                            .get(*i)
+                            .cloned()
+                            .ok_or(hyphae::local::Error::InvalidHandle)
+                    })
+                    .collect::<Result<_, _>>()?;
+                let base = if node.select && !inputs.is_empty() {
+                    let selector = selectors
+                        .get(node.scene)
+                        .ok_or(hyphae::local::Error::InvalidHandle)?
+                        .cell();
+                    let rebuild = cfg.rebuild;
+                    let depth = cfg.branch_depth;
+                    rt.switch_map(&selector, move |b, revision| {
+                        let mut tail = inputs
+                            .get(slot(*revision, inputs.len()))
+                            .cloned()
+                            .ok_or(hyphae::local::Error::InvalidHandle)?;
+                        if rebuild {
+                            for layer in 0..depth {
+                                let salt = revision.wrapping_add(u64_of(layer));
+                                tail = b.map(&tail, move |v| mix(*v, salt))?;
+                            }
+                        }
+                        Ok(tail)
+                    })?
+                } else {
+                    rt.fold(&inputs, 0_u64, |sum, v| sum.wrapping_add(*v))?
+                };
+                let base = if node.dynamic {
+                    let selector = selectors
+                        .get(node.scene)
+                        .ok_or(hyphae::local::Error::InvalidHandle)?
+                        .cell();
+                    rt.switch_map(&selector, move |b, _| b.map(&base, |v| *v))?
+                } else {
+                    base
+                };
+                let mut tail = base;
+                for layer in 0..node.layers {
+                    let salt = node.salt.wrapping_add(u64_of(layer));
+                    tail = rt.map(&tail, move |v| mix(*v, salt))?;
+                }
+                cells.push(tail);
+            }
+            let outputs = plan
+                .outputs
+                .iter()
+                .map(|i| rt.observe(cells.get(*i).ok_or(hyphae::local::Error::InvalidHandle)?))
+                .collect::<Result<_, _>>()?;
+            rt.stabilize()?;
+            Ok(Self {
+                rt,
+                roots,
+                selectors,
+                outputs,
+            })
+        };
+        build().map_err(|e| e.to_string())
+    }
+}
+#[cfg(feature = "local-runtime")]
+impl Engine for LocalEngine {
+    fn metrics(&self) -> Option<Value> {
+        let s = self.rt.stats();
+        Some(
+            json!({"live_nodes":s.live_nodes,"live_scopes":s.live_scopes,"allocated_nodes":s.allocated_nodes,"reclaimed_nodes":s.reclaimed_nodes,"evaluations":s.evaluations,"equality_cutoffs":s.equality_cutoffs,"evaluation_steps":s.evaluation_steps}),
+        )
+    }
+    fn evaluate(
+        &mut self,
+        changes: &[(usize, u64)],
+        revisions: &[(usize, u64)],
+    ) -> Result<Vec<u64>, String> {
+        self.rt
+            .transaction(|tx| {
+                for (i, v) in changes {
+                    tx.set(
+                        self.roots
+                            .get(*i)
+                            .ok_or(hyphae::local::Error::InvalidHandle)?,
+                        *v,
+                    )?;
+                }
+                for (i, v) in revisions {
+                    tx.set(
+                        self.selectors
+                            .get(*i)
+                            .ok_or(hyphae::local::Error::InvalidHandle)?,
+                        *v,
+                    )?;
+                }
+                Ok(())
+            })
+            .map_err(|e| e.to_string())?;
+        self.outputs
+            .iter()
+            .map(|o| o.get(&self.rt).map_err(|e| e.to_string()))
+            .collect()
+    }
+}
+
 struct Frame {
     sequence: u64,
     scheduled: Instant,
@@ -703,6 +830,7 @@ struct Measurements {
     latency: Vec<u128>,
     verification: Vec<u128>,
     switches: Vec<u128>,
+    runtime_metrics: Option<Value>,
     producer: Vec<u128>,
     queue_wait: Vec<u128>,
     setup_ns: u128,
@@ -735,10 +863,12 @@ fn worker(
     ready: &mpsc::Sender<()>,
 ) -> Result<Measurements, String> {
     let setup = Instant::now();
-    let mut engine: Box<dyn Engine> = if cfg.backend == "hyphae" {
-        Box::new(HyphaeEngine::build(plan, cfg)?)
-    } else {
-        Box::new(IncrementalEngine::build(plan, cfg)?)
+    let mut engine: Box<dyn Engine> = match cfg.backend.as_str() {
+        "hyphae" => Box::new(HyphaeEngine::build(plan, cfg)?),
+        "incremental" => Box::new(IncrementalEngine::build(plan, cfg)?),
+        #[cfg(feature = "local-runtime")]
+        "local" => Box::new(LocalEngine::build(plan, cfg)?),
+        _ => return Err("backend requires the local-runtime feature".into()),
     };
     let setup_ns = setup.elapsed().as_nanos();
     let mut roots = vec![0_u64; plan.roots];
@@ -754,6 +884,7 @@ fn worker(
         latency: Vec::new(),
         verification: Vec::new(),
         switches: Vec::new(),
+        runtime_metrics: None,
         producer: Vec::new(),
         queue_wait: Vec::new(),
         setup_ns,
@@ -857,6 +988,7 @@ fn worker(
     if previous != plan.reference(&roots, &revisions, cfg)? {
         return Err("final oracle mismatch".into());
     }
+    m.runtime_metrics = engine.metrics();
     let teardown = Instant::now();
     drop(engine);
     m.teardown_ns = teardown.elapsed().as_nanos();
@@ -927,7 +1059,7 @@ async fn run(cfg: Config) -> Result<(), String> {
     }
     println!(
         "{}",
-        json!({"backend":cfg.backend,"scenes":cfg.scenes,"clients":cfg.clients,"layers":cfg.layers,"branch_depth":cfg.branch_depth,"switch_every":cfg.switch_every,"switch_mode":if cfg.rebuild{"rebuild"}else{"select"},"encoding":if cfg.encode_each{"per-client"}else{"shared"},"hz":cfg.hz,"logical_frames":cfg.frames,"events_offered":events,"feedback":if cfg.staggered{"staggered"}else{"batched"},"dynamic_sinks":cfg.dynamic_sinks,"field_expansion":if cfg.expand_fields{"authored"}else{"one"},"events_admitted":admitted,"events_rejected":rejected,"events_checked":m.checked,"deadline_misses":m.missed,"queue_capacity":cfg.queue,"wall_ns":elapsed,"setup_ns":m.setup_ns,"teardown_ns":m.teardown_ns,"bytes_fanned_out":m.bytes,"simulated_deliveries":m.delivered,"plan":summary,"evaluation_ns":percentiles(m.eval),"switch_evaluation_ns":percentiles(m.switches),"encoding_ns":percentiles(m.encoding),"scheduled_to_fanout_ns":percentiles(m.latency),"oracle_ns":percentiles(m.verification),"producer_lateness_ns":percentiles(m.producer),"queue_wait_ns":percentiles(m.queue_wait),"hyphae_workers_env":env::var("HYPHAE_WORKER_THREADS").ok(),"hyphae_wave_threshold_env":env::var("HYPHAE_WAVE_THRESHOLD").ok()})
+        json!({"backend":cfg.backend,"runtime_metrics":m.runtime_metrics,"scenes":cfg.scenes,"clients":cfg.clients,"layers":cfg.layers,"branch_depth":cfg.branch_depth,"switch_every":cfg.switch_every,"switch_mode":if cfg.rebuild{"rebuild"}else{"select"},"encoding":if cfg.encode_each{"per-client"}else{"shared"},"hz":cfg.hz,"logical_frames":cfg.frames,"events_offered":events,"feedback":if cfg.staggered{"staggered"}else{"batched"},"dynamic_sinks":cfg.dynamic_sinks,"field_expansion":if cfg.expand_fields{"authored"}else{"one"},"events_admitted":admitted,"events_rejected":rejected,"events_checked":m.checked,"deadline_misses":m.missed,"queue_capacity":cfg.queue,"wall_ns":elapsed,"setup_ns":m.setup_ns,"teardown_ns":m.teardown_ns,"bytes_fanned_out":m.bytes,"simulated_deliveries":m.delivered,"plan":summary,"evaluation_ns":percentiles(m.eval),"switch_evaluation_ns":percentiles(m.switches),"encoding_ns":percentiles(m.encoding),"scheduled_to_fanout_ns":percentiles(m.latency),"oracle_ns":percentiles(m.verification),"producer_lateness_ns":percentiles(m.producer),"queue_wait_ns":percentiles(m.queue_wait),"hyphae_workers_env":env::var("HYPHAE_WORKER_THREADS").ok(),"hyphae_wave_threshold_env":env::var("HYPHAE_WAVE_THRESHOLD").ok()})
     );
     Ok(())
 }

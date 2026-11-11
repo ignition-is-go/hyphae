@@ -158,6 +158,8 @@ pub mod cell_set;
 #[cfg(feature = "scheduler")]
 pub mod clock;
 pub mod constructors;
+#[cfg(feature = "local-runtime")]
+pub mod local;
 #[cfg(feature = "scheduler")]
 pub(crate) mod executor;
 pub mod map_query;

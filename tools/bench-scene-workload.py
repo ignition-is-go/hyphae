@@ -21,6 +21,7 @@ def main():
     parser.add_argument('--frames', type=int, default=120)
     parser.add_argument('--hz', type=int, default=60)
     parser.add_argument('--case', action='append', help='limit to named cases')
+    parser.add_argument('--implementation', action='append', choices=['hyphae0', 'hyphae4', 'incremental', 'local'])
     args = parser.parse_args()
     if args.repeats < 1 or args.frames < 1 or args.hz < 0:
         parser.error('positive repeats/frames and nonnegative hz required')
@@ -41,22 +42,27 @@ def main():
         if unknown:
             parser.error(f'unknown cases: {sorted(unknown)}')
         cases = {key: value for key, value in cases.items() if key in args.case}
-    build = subprocess.run(['cargo', 'bench', '-p', 'hyphae', '--features', 'scheduler',
+    build = subprocess.run(['cargo', 'bench', '-p', 'hyphae', '--features', 'scheduler,local-runtime',
                             '--bench', 'scene_workload', '--no-run', '--message-format=json'],
                            cwd=ROOT, text=True, capture_output=True, check=True)
     artifacts = [json.loads(line) for line in build.stdout.splitlines() if line.startswith('{')]
     executable = next(item['executable'] for item in artifacts
                       if item.get('reason') == 'compiler-artifact' and item.get('executable')
                       and item.get('target', {}).get('name') == 'scene_workload')
+    implementations = {'hyphae0': ('hyphae', 0), 'hyphae4': ('hyphae', 4),
+                       'incremental': ('incremental', 0), 'local': ('local', 0)}
+    selected = [implementations[name] for name in (args.implementation or implementations)]
     jobs = [(repeat, name, backend, workers, options)
             for repeat in range(args.repeats) for name, options in cases.items()
-            for backend, workers in [('hyphae', 0), ('hyphae', 4), ('incremental', 0)]]
+            for backend, workers in selected]
     random.Random(2603).shuffle(jobs)
     digest = lambda name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
     metadata = {'kind': 'metadata', 'source_commit': subprocess.check_output(
                     ['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
                 'dirty': bool(subprocess.check_output(['git', 'status', '--porcelain'], cwd=ROOT, text=True)),
                 'benchmark_sha256': digest('hyphae/benches/scene_workload.rs'),
+                'runtime_sources_sha256': {name: digest(f'hyphae/src/local/{name}')
+                                          for name in ['mod.rs', 'body.rs', 'runtime.rs']},
                 'fixture_sha256': digest('hyphae/benches/fixtures/scene_topology.json'),
                 'lock_sha256': digest('Cargo.lock'),
                 'rustc': subprocess.check_output(['rustc', '-Vv'], cwd=ROOT, text=True).strip(),

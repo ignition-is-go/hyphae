@@ -16,6 +16,8 @@ path = "src/lib.rs"
 
 [features]
 default = []
+# Experimental owned evaluator; independent of the shared propagation scheduler.
+local-runtime = []
 async = ["flume", "futures-core"]
 # Opt-in deferred/ordered/glitch-free propagation under an explicit `batch()`
 # boundary, plus the `clock`/`TickSource` seam for frame-locked ticking. Off by
