@@ -72,6 +72,9 @@ tasks = ["fmt", "check", "check-wasm", "check-wasm-features", "build", "test", "
 criterion = "0.5"
 seq-macro = "0.3"
 serde_json.workspace = true
+serde.workspace = true
+incremental = "=0.2.8"
+tokio.workspace = true
 
 [[bench]]
 name = "latency"
@@ -137,5 +140,10 @@ required-features = ["scheduler"]
 
 [[bench]]
 name = "session_workload"
+harness = false
+required-features = ["scheduler"]
+
+[[bench]]
+name = "scene_workload"
 harness = false
 required-features = ["scheduler"]
