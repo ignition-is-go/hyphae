@@ -16,6 +16,8 @@ path = "src/lib.rs"
 
 [features]
 default = []
+# Experimental owned evaluator; independent of the shared propagation scheduler.
+local-runtime = []
 async = ["flume", "futures-core"]
 # Opt-in deferred/ordered/glitch-free propagation under an explicit `batch()`
 # boundary, plus the `clock`/`TickSource` seam for frame-locked ticking. Off by
@@ -71,6 +73,8 @@ tasks = ["fmt", "check", "check-wasm", "check-wasm-features", "build", "test", "
 [dev-dependencies]
 criterion = "0.5"
 seq-macro = "0.3"
+serde_json.workspace = true
+serde.workspace = true
 
 [[bench]]
 name = "latency"
@@ -131,5 +135,10 @@ required-features = ["scheduler"]
 
 [[bench]]
 name = "wave_calibration"
+harness = false
+required-features = ["scheduler"]
+
+[[bench]]
+name = "session_workload"
 harness = false
 required-features = ["scheduler"]
