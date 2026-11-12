@@ -250,3 +250,101 @@ where
 
     crate::map_query::compile_runtime_into(source, cx, Arc::new(upstream_sink))
 }
+
+#[cfg(test)]
+mod single_runtime_comparison {
+    use super::*;
+
+    fn replay(diff: &MapDiff<u32, i32>, output: &mut FxHashMap<u32, i32>) {
+        match diff {
+            MapDiff::Initial { entries } => {
+                output.clear();
+                output.extend(entries.iter().copied());
+            }
+            MapDiff::Insert { key, value } => {
+                assert!(output.insert(*key, *value).is_none());
+            }
+            MapDiff::Update {
+                key,
+                old_value,
+                new_value,
+            } => {
+                assert_eq!(output.insert(*key, *new_value), Some(*old_value));
+            }
+            MapDiff::Remove { key, old_value } => {
+                assert_eq!(output.remove(key), Some(*old_value));
+            }
+            MapDiff::Batch { changes } => {
+                for change in changes {
+                    replay(change, output);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn single_projection_matches_general_runtime_for_mixed_transactions() {
+        let mut general = MapState::<u32, i32, u32, i32>::default();
+        let mut single = super::super::single_runtime::State::<u32, u32, i32>::default();
+        let mut general_output = FxHashMap::default();
+        let mut single_output = FxHashMap::default();
+        let compute = |key: &u32, value: &i32| {
+            (*value % 5 != 0).then_some((key * 3 + value.unsigned_abs() % 3, *value))
+        };
+        let mut rng = 7_u16;
+        for step in 0..512 {
+            rng = rng.wrapping_mul(25_173).wrapping_add(13_849);
+            let key = u32::from(rng % 16);
+            let value = i32::from(rng % 100);
+            let diff = if step % 31 == 0 {
+                MapDiff::Batch {
+                    changes: vec![
+                        MapDiff::Insert { key, value },
+                        MapDiff::Initial {
+                            entries: vec![(key, value + 1)],
+                        },
+                    ],
+                }
+            } else if step % 7 == 0 {
+                MapDiff::Remove {
+                    key,
+                    old_value: value,
+                }
+            } else {
+                MapDiff::Batch {
+                    changes: vec![
+                        MapDiff::Insert { key, value },
+                        MapDiff::Batch {
+                            changes: vec![MapDiff::Insert {
+                                key,
+                                value: value + 2,
+                            }],
+                        },
+                    ],
+                }
+            };
+            let mut impacted = OrderedSet::default();
+            apply_source_diff(
+                &mut general.source_rows,
+                &mut general.source_order,
+                &diff,
+                &mut impacted,
+            );
+            let old_changes = recompute_impacted(&mut general, impacted, &|k, v| {
+                compute(k, v).into_iter().collect()
+            });
+            let new_changes = single.apply(&diff, &compute);
+            assert_eq!(
+                new_changes, old_changes,
+                "diff sequence in transaction {step}"
+            );
+            for change in &old_changes {
+                replay(change, &mut general_output);
+            }
+            for change in &new_changes {
+                replay(change, &mut single_output);
+            }
+            assert_eq!(single_output, general_output, "transaction {step}");
+        }
+    }
+}

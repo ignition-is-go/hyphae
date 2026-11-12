@@ -6,4 +6,5 @@ pub mod map_runtime;
 pub mod map_values_cell;
 pub mod multi_join_runtime;
 mod ordered_set;
+pub mod single_runtime;
 pub mod stateless_runtime;
