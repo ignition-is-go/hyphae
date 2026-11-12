@@ -8,7 +8,7 @@ use crate::{
         properties::{ExactlyOne, PlanProperties, Repartition, ZeroOrOne},
     },
     subscription::SubscriptionGuard,
-    traits::{CellValue, collections::internal::map_runtime::install_map_runtime_via_query},
+    traits::{CellValue, collections::internal::single_runtime::install_single_runtime},
 };
 
 impl<S, SK, SV, OK, OV, F> PlanProperties for ProjectPlan<S, SK, SV, OK, OV, F>
@@ -77,12 +77,7 @@ where
         sink: crate::map_query::BoxedMapDiffSink<OK, OV>,
     ) -> Vec<SubscriptionGuard> {
         let f = self.f;
-        install_map_runtime_via_query::<SK, SV, OK, OV, S, _>(
-            cx,
-            self.source,
-            move |k, v| f(k, v).into_iter().collect(),
-            sink,
-        )
+        install_single_runtime(cx, self.source, f, sink)
     }
 }
 
@@ -130,7 +125,7 @@ where
         sink: crate::map_query::BoxedMapDiffSink<OK, OV>,
     ) -> Vec<SubscriptionGuard> {
         let f = self.f;
-        install_map_runtime_via_query(cx, self.source, move |k, v| vec![f(k, v)], sink)
+        install_single_runtime(cx, self.source, move |k, v| Some(f(k, v)), sink)
     }
 }
 
