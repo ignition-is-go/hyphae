@@ -1042,3 +1042,74 @@ fn existing_key_diff_preserves_reentrant_membership_changes() {
         );
     }
 }
+
+#[test]
+fn key_observers_can_observe_colliding_keys_during_every_mutation() -> Result<(), String> {
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct CollidingKey(u8);
+    impl std::hash::Hash for CollidingKey {
+        fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+            // Every key shares a shard, independently of the map's shard count.
+            std::hash::Hash::hash(&0_u8, state);
+        }
+    }
+    for mutation in 0..10 {
+        let (done, received) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let map = CellMap::<CollidingKey, u32>::new();
+            map.insert(CollidingKey(1), 0);
+            let observed = map.get(&CollidingKey(1)).materialize();
+            let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let callback_armed = armed.clone();
+            let callback_map = map.clone();
+            let guard = observed.subscribe(move |signal| {
+                if matches!(signal, Signal::Value(_)) && callback_armed.load(Ordering::Acquire) {
+                    let other = callback_map.get(&CollidingKey(2)).materialize();
+                    drop(other);
+                }
+            });
+            armed.store(true, Ordering::Release);
+            match mutation {
+                0 => {
+                    map.insert(CollidingKey(1), 1);
+                }
+                1 => map.insert_many(vec![(CollidingKey(1), 1)]),
+                2 => {
+                    map.remove(&CollidingKey(1));
+                }
+                3 => map.remove_many(vec![CollidingKey(1)]),
+                4 => map.replace_all(vec![(CollidingKey(1), 1)]),
+                5 => map.replace_all(vec![]),
+                6 => map.apply_diff_owned(MapDiff::Insert {
+                    key: CollidingKey(1),
+                    value: 1,
+                }),
+                7 => map.apply_diff_owned(MapDiff::Update {
+                    key: CollidingKey(1),
+                    old_value: 0,
+                    new_value: 1,
+                }),
+                8 => map.apply_diff_owned(MapDiff::Remove {
+                    key: CollidingKey(1),
+                    old_value: 0,
+                }),
+                _ => map.apply_batch(vec![MapDiff::Update {
+                    key: CollidingKey(1),
+                    old_value: 0,
+                    new_value: 1,
+                }]),
+            }
+            drop(guard);
+            let _ = done.send(());
+        });
+        received
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .map_err(|error| {
+                format!("mutation {mutation} held a map guard across a callback: {error}")
+            })?;
+        worker
+            .join()
+            .map_err(|_| format!("mutation {mutation} panicked"))?;
+    }
+    Ok(())
+}

@@ -61,3 +61,19 @@ cascade = "all"
 autoapply = "inherit"
 depends_on = ["build"]
 cargo = ["cargo", "publish", "--locked"]
+
+# Focus the core runtime without compiling platform UI adapters.
+[tasks.test-core]
+root = ["cargo", "test", "-p", "hyphae", "--all-features", "--", "--test-threads=1"]
+
+[tasks.lint-core]
+root = ["cargo", "clippy", "-p", "hyphae", "--tests", "--all-features", "--", "-D", "warnings"]
+
+[tasks.fmt-map-storage]
+root = ["rustfmt", "+nightly", "--edition", "2024", "--check", "hyphae/src/cell_map/mutation.rs"]
+
+[tasks.test-map-reentrant]
+root = ["cargo", "test", "-p", "hyphae", "--all-features", "cell_map::tests::key_observers_can_observe_colliding_keys_during_every_mutation", "--", "--exact", "--test-threads=1"]
+
+[tasks.format-map-storage]
+root = ["rustfmt", "+nightly", "--edition", "2024", "hyphae/src/cell_map/mutation.rs", "hyphae/src/cell_map/tests.rs"]
