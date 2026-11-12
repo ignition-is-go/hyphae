@@ -5,9 +5,8 @@ use std::{
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::{cell_map::MapDiff, subscription::SubscriptionGuard, traits::CellValue};
-
 use super::ordered_set::OrderedSet;
+use crate::{cell_map::MapDiff, subscription::SubscriptionGuard, traits::CellValue};
 
 // Internal projection state — keys are workspace-trusted (entity IDs, etc.),
 // so we use FxHash for ~2-3× faster hashing than std's SipHash13.
@@ -61,7 +60,7 @@ fn apply_source_diff<SK, SV>(
 
     match diff {
         MapDiff::Initial { entries } => {
-            let previous: Vec<SK> = source_order.drain().collect();
+            let previous: Vec<SK> = source_order.drain_vec();
             source_rows.clear();
             for key in previous {
                 impacted.insert(key);
@@ -103,7 +102,7 @@ where
     OV: CellValue,
     FO: Fn(&SK, &SV) -> Vec<(OK, OV)>,
 {
-    let impacted: Vec<SK> = impacted.drain().collect();
+    let impacted: Vec<SK> = impacted.drain_vec();
     let impacted_set: FxHashSet<SK> = impacted.iter().cloned().collect();
     let mut claimed_outputs = FxHashMap::<OK, SK>::default();
     let mut computed = Vec::with_capacity(impacted.len());

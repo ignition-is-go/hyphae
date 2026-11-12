@@ -71,9 +71,21 @@ where
         }
     }
 
+    /// Preserve the existing vector when a caller needs owned contiguous keys.
+    /// Collecting the general iterator would allocate and copy large sets.
+    pub(super) fn drain_vec(&mut self) -> Vec<T> {
+        let (single, values) = self.take_values();
+        single.map_or(values, |value| vec![value])
+    }
+
     pub(super) fn drain(&mut self) -> impl Iterator<Item = T> + use<T> {
+        let (single, values) = self.take_values();
+        single.into_iter().chain(values)
+    }
+
+    fn take_values(&mut self) -> (Option<T>, Vec<T>) {
         let previous = std::mem::replace(&mut self.storage, Storage::Empty);
-        let (single, values) = match previous {
+        match previous {
             Storage::Empty => (None, Vec::new()),
             Storage::One(value) => (Some(value), Vec::new()),
             Storage::Many { mut seen, values } => {
@@ -84,8 +96,7 @@ where
                 };
                 (None, values)
             }
-        };
-        single.into_iter().chain(values)
+        }
     }
 
     /// Move ordered values into a reusable sibling buffer. Large sets swap
@@ -200,6 +211,21 @@ mod tests {
         assert!(set.is_empty());
         assert!(set.insert(8));
         assert_eq!(set.heap_slots(), 0);
+    }
+
+    #[test]
+    fn owned_vector_drain_reuses_large_set_storage() {
+        let mut set = OrderedSet::default();
+        set.extend(0..4096_usize);
+        let backing = set.iter().as_slice().as_ptr();
+        let values = set.drain_vec();
+        assert_eq!(values, (0..4096).collect::<Vec<_>>());
+        assert_eq!(
+            backing,
+            values.as_ptr(),
+            "draining into a vector must move its allocation, not copy it"
+        );
+        assert!(set.is_empty());
     }
 
     #[test]

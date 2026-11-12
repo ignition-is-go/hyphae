@@ -103,4 +103,4 @@ root = ["cargo", "test", "-p", "hyphae", "--all-features", "initial_join_does_no
 root = ["cargo", "test", "-p", "hyphae", "--all-features", "ordered_set::tests", "--", "--test-threads=1", "--nocapture"]
 
 [tasks.format-query-storage]
-root = ["rustfmt", "+nightly", "--edition", "2024", "--config", "skip_children=true", "hyphae/src/traits/collections/internal/ordered_set.rs", "hyphae/src/traits/collections/internal/join_runtime/pair.rs"]
+root = ["rustfmt", "+nightly", "--edition", "2024", "--config", "skip_children=true", "hyphae/src/traits/collections/internal/ordered_set.rs", "hyphae/src/traits/collections/internal/join_runtime/pair.rs", "hyphae/src/traits/collections/internal/map_runtime.rs"]
