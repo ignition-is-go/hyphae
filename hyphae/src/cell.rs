@@ -594,6 +594,7 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         let _fanout_span = ::tracing::trace_span!(
             "hyphae.fanout",
             cell.id = %self.inner.id,
+            cell.value_type = std::any::type_name::<T>(),
             cell.name = { self.inner.name.lock().clone() }.as_deref().unwrap_or(""),
         )
         .entered();
