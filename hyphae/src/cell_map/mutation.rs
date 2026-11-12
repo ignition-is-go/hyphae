@@ -55,6 +55,9 @@ where
                 key_cell_slots: AtomicUsize::new(0),
                 prune_ops: AtomicUsize::new(0),
                 diffs_cell,
+                #[cfg(all(feature = "scheduler", feature = "profiling"))]
+                pending_diffs: map_diff_batch_experiment()
+                    .then(|| Arc::new(Mutex::new(Vec::new()))),
                 len_cell,
                 owned: DashMap::with_shard_amount(4),
                 name: Mutex::new(None),
@@ -138,6 +141,39 @@ where
         }
     }
 
+    fn publish_diff(&self, diff: MapDiff<K, V>) {
+        #[cfg(all(feature = "scheduler", feature = "profiling"))]
+        if let Some(pending) = &self.inner.pending_diffs
+            && crate::scheduler::tick_active()
+        {
+            let first = {
+                let mut changes = pending.lock();
+                changes.push(diff);
+                changes.len() == 1
+            };
+            if first {
+                let pending = Arc::clone(pending);
+                let cell = self.inner.diffs_cell.clone();
+                crate::scheduler::enqueue(
+                    crate::traits::DepNode::id(&cell),
+                    &cell,
+                    false,
+                    Box::new({
+                        let cell = cell.clone();
+                        move || {
+                            let changes = std::mem::take(&mut *pending.lock());
+                            cell.deliver_queued(&crate::Signal::Value(Arc::new(MapDiff::Batch {
+                                changes,
+                            })));
+                        }
+                    }),
+                );
+            }
+            return;
+        }
+        self.inner.diffs_cell.set(diff);
+    }
+
     /// Insert a key-value pair, returning the old value if present.
     pub fn insert(&self, key: K, value: V) -> Option<V> {
         self.maybe_prune_key_cells();
@@ -161,7 +197,7 @@ where
                 new_value: value.clone(),
             })
             .unwrap_or(MapDiff::Insert { key, value });
-        self.inner.diffs_cell.set(diff);
+        self.publish_diff(diff);
         if old.is_none() {
             self.inner.len_cell.set(self.inner.data.len());
         }
@@ -205,7 +241,7 @@ where
             return;
         }
 
-        self.inner.diffs_cell.set(MapDiff::Batch { changes });
+        self.publish_diff(MapDiff::Batch { changes });
         self.notify_len_if_changed(previous_len);
     }
 
@@ -216,7 +252,7 @@ where
 
         if let Some((k, old_value)) = removed {
             // Emit diff (O(1) - just notifies subscribers)
-            self.inner.diffs_cell.set(MapDiff::Remove {
+            self.publish_diff(MapDiff::Remove {
                 key: k.clone(),
                 old_value: old_value.clone(),
             });
@@ -263,11 +299,11 @@ where
         }
 
         if self.inner.data.is_empty() && changes.len() == original_len {
-            self.inner.diffs_cell.set(MapDiff::Initial {
+            self.publish_diff(MapDiff::Initial {
                 entries: Vec::new(),
             });
         } else {
-            self.inner.diffs_cell.set(MapDiff::Batch { changes });
+            self.publish_diff(MapDiff::Batch { changes });
         }
         self.inner.len_cell.set(self.inner.data.len());
     }
@@ -328,7 +364,7 @@ where
         }
 
         if !changes.is_empty() {
-            self.inner.diffs_cell.set(MapDiff::Batch { changes });
+            self.publish_diff(MapDiff::Batch { changes });
         }
         self.notify_len_if_changed(previous_len);
     }
@@ -409,7 +445,7 @@ where
         if membership_changed {
             self.inner.len_cell.set(self.inner.data.len());
         }
-        self.inner.diffs_cell.set(diff);
+        self.publish_diff(diff);
     }
 
     /// Apply a batch of diffs and emit them as one `MapDiff::Batch`.
@@ -489,7 +525,7 @@ where
             return;
         }
         self.notify_len_if_changed(previous_len);
-        self.inner.diffs_cell.set(MapDiff::Batch {
+        self.publish_diff(MapDiff::Batch {
             changes: applied_changes,
         });
     }
@@ -532,4 +568,10 @@ where
     fn default() -> Self {
         Self::new()
     }
+}
+
+#[cfg(all(feature = "scheduler", feature = "profiling"))]
+fn map_diff_batch_experiment() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("HYPHAE_BATCH_MAP_DIFFS").is_ok_and(|value| value == "1"))
 }

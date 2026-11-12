@@ -1113,3 +1113,83 @@ fn key_observers_can_observe_colliding_keys_during_every_mutation() -> Result<()
     }
     Ok(())
 }
+
+#[cfg(all(feature = "scheduler", feature = "profiling"))]
+fn diff_batched_test_map() -> CellMap<u32, i32> {
+    let mut map = CellMap::new();
+    let installed = Arc::get_mut(&mut map.inner).map(|inner| {
+        inner.pending_diffs = Some(Arc::new(Mutex::new(Vec::new())));
+    });
+    assert!(installed.is_some());
+    map
+}
+
+#[cfg(all(feature = "scheduler", feature = "profiling"))]
+#[test]
+fn diff_batch_retains_every_change_in_order() {
+    let map = diff_batched_test_map();
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let output = Arc::clone(&received);
+    let _guard = map.subscribe_diffs(move |diff| {
+        output.lock().push(diff.clone());
+    });
+    received.lock().clear();
+    crate::batch(|| {
+        map.insert(1, 10);
+        crate::batch(|| {
+            map.insert(1, 20);
+        });
+        map.remove(&1);
+        map.insert(1, 30);
+    });
+    let diffs = received.lock();
+    assert_eq!(diffs.len(), 1);
+    let mut leaves = Vec::new();
+    if let Some(diff) = diffs.first() {
+        diff.visit_leaves(&mut |leaf| leaves.push(leaf.clone()));
+    }
+    drop(diffs);
+    assert_eq!(
+        leaves,
+        vec![
+            MapDiff::Insert { key: 1, value: 10 },
+            MapDiff::Update {
+                key: 1,
+                old_value: 10,
+                new_value: 20
+            },
+            MapDiff::Remove {
+                key: 1,
+                old_value: 20
+            },
+            MapDiff::Insert { key: 1, value: 30 },
+        ]
+    );
+    assert_eq!(map.get_value(&1), Some(30));
+}
+
+#[cfg(all(feature = "scheduler", feature = "profiling"))]
+#[test]
+fn diff_batch_reentrant_mutation_publishes_after_current_batch() {
+    let map = diff_batched_test_map();
+    let nested = map.clone();
+    let values = Arc::new(Mutex::new(Vec::new()));
+    let output = Arc::clone(&values);
+    let _guard = map.subscribe_diffs(move |diff| {
+        let mut trigger = false;
+        diff.visit_leaves(&mut |leaf| {
+            if let MapDiff::Insert { key, value } = leaf {
+                output.lock().push(*value);
+                trigger |= *key == 1;
+            }
+        });
+        if trigger {
+            nested.insert(2, 20);
+        }
+    });
+    crate::batch(|| {
+        map.insert(1, 10);
+    });
+    assert_eq!(*values.lock(), vec![10, 20]);
+    assert_eq!(map.get_value(&2), Some(20));
+}

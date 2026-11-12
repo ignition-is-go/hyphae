@@ -47,6 +47,12 @@ fn single_diff_length_uses_membership_changes_when_cell_writes_are_deferred() {
     let mut expected = vec![MapDiff::Initial {
         entries: Vec::new(),
     }];
-    expected.extend(changes);
+    if cfg!(feature = "profiling")
+        && std::env::var("HYPHAE_BATCH_MAP_DIFFS").is_ok_and(|value| value == "1")
+    {
+        expected.push(MapDiff::Batch { changes });
+    } else {
+        expected.extend(changes);
+    }
     assert_eq!(*diffs.lock(), expected);
 }

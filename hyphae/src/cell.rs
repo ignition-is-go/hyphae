@@ -520,9 +520,7 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
                 dependency,
                 terminal,
                 Box::new(move || {
-                    if cell.write_value(&signal) {
-                        cell.fanout(&signal);
-                    }
+                    cell.deliver_queued(&signal);
                 }),
             );
             return;
@@ -542,6 +540,14 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         // explicitly as well so feature-minimal dependent builds preserve the
         // same ownership contract.
         drop(signal);
+    }
+
+    // Already inside the serialized scheduler operation for this cell.
+    #[cfg(feature = "scheduler")]
+    pub(crate) fn deliver_queued(&self, signal: &Signal<T>) {
+        if self.write_value(signal) {
+            self.fanout(signal);
+        }
     }
 
     /// Settle this cell's current value — or its terminal completed/errored

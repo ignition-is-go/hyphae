@@ -258,31 +258,45 @@ fn batched_source_coalesces_a_same_rate_diamond_that_per_subscriber_batch_cannot
 
 #[test]
 fn cellmap_diffs_survive_a_batched_add_then_remove() {
+    fn flatten(diff: &hyphae::MapDiff<u32, u32>, leaves: &mut Vec<hyphae::MapDiff<u32, u32>>) {
+        if let hyphae::MapDiff::Batch { changes } = diff {
+            for change in changes {
+                flatten(change, leaves);
+            }
+        } else {
+            leaves.push(diff.clone());
+        }
+    }
     let _serial = scheduler_test_serial();
     let map: CellMap<u32, u32> = CellMap::new();
-    let seen = std::sync::Arc::new(Mutex::new(0usize));
+    let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
     let sink = seen.clone();
-    let guard = map.subscribe_diffs(move |_diff| {
-        let mut count = sink.lock();
-        *count = count.saturating_add(1);
-    });
-    std::mem::forget(guard);
-    *seen.lock() = 0; // discard the Initial replay
+    let _guard = map.subscribe_diffs(move |diff| sink.lock().push(diff.clone()));
+    seen.lock().clear();
 
-    // Add then remove the same key inside one batch: two diffs_cell.set calls.
-    // The diffs_cell is no_coalesce by default, so BOTH the Insert and Remove
-    // survive; a plain (coalescing) cell would drop the Insert (LWW keeps the
-    // Remove) and an accumulating subscriber would corrupt.
     batch(|| {
         map.insert(1, 100);
         map.remove(&1);
     });
 
-    assert!(
-        *seen.lock() >= 2,
-        "both the add and the remove diff must survive the batch, saw {}",
-        *seen.lock()
+    let observed = seen.lock().clone();
+    let mut leaves = Vec::new();
+    for diff in &observed {
+        flatten(diff, &mut leaves);
+    }
+    assert_eq!(
+        leaves,
+        vec![
+            hyphae::MapDiff::Insert { key: 1, value: 100 },
+            hyphae::MapDiff::Remove {
+                key: 1,
+                old_value: 100
+            },
+        ]
     );
+    let grouped = cfg!(feature = "profiling")
+        && std::env::var("HYPHAE_BATCH_MAP_DIFFS").is_ok_and(|value| value == "1");
+    assert_eq!(observed.len(), if grouped { 1 } else { 2 });
 }
 
 #[test]

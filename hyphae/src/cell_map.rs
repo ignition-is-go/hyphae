@@ -51,6 +51,8 @@ where
     prune_ops: AtomicUsize,
     /// Cell for diff notifications.
     pub(crate) diffs_cell: Cell<MapDiff<K, V>, CellMutable>,
+    #[cfg(all(feature = "scheduler", feature = "profiling"))]
+    pending_diffs: Option<Arc<Mutex<Vec<MapDiff<K, V>>>>>,
     /// Cell for length.
     len_cell: Cell<usize, CellMutable>,
     /// Subscription guards owned by this map (dropped when map drops).
