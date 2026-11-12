@@ -520,8 +520,9 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
                 dependency,
                 terminal,
                 Box::new(move || {
-                    cell.write_value(&signal);
-                    cell.fanout(&signal);
+                    if cell.write_value(&signal) {
+                        cell.fanout(&signal);
+                    }
                 }),
             );
             return;
@@ -533,8 +534,9 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         // distinct symbols instead of one folded `notify`. Outside a scheduler
         // batch (the default, and always on wasm) they run back-to-back: the
         // exact synchronous eager-push path, with no behavioral change.
-        self.write_value(&signal);
-        self.fanout(&signal);
+        if self.write_value(&signal) {
+            self.fanout(&signal);
+        }
         // `notify` owns its signal because scheduler-enabled builds may move it
         // into the deferred tick closure. End the synchronous signal lifetime
         // explicitly as well so feature-minimal dependent builds preserve the
@@ -545,7 +547,7 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
     /// Settle this cell's current value — or its terminal completed/errored
     /// state — from `signal`. Brief mutex work only; runs no subscriber fanout.
     #[cfg_attr(feature = "profiling", inline(never))]
-    fn write_value(&self, signal: &Signal<T>) {
+    fn write_value(&self, signal: &Signal<T>) -> bool {
         match signal {
             Signal::Value(arc_value) => {
                 // `Mutex<Arc<T>>` write: brief lock, swap the Arc, drop lock.
@@ -554,7 +556,12 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
                 // it hits zero), no `arc_swap::Debt::pay_all` reader-slot
                 // scan. Readers that grabbed an earlier Arc keep it alive
                 // via their own clone until they're done.
-                *self.inner.value.lock() = arc_value.clone();
+                let mut current = self.inner.value.lock();
+                #[cfg(feature = "profiling")]
+                if equality_cutoff_experiment() && current.as_ref() == arc_value.as_ref() {
+                    return false;
+                }
+                *current = arc_value.clone();
             }
             Signal::Complete => {
                 self.inner.completed.store(true, Ordering::SeqCst);
@@ -564,6 +571,7 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
                 *self.inner.error.lock() = Some(err.clone());
             }
         }
+        true
     }
 
     /// Fan `signal` out to this cell's subscribers. The value is assumed already
@@ -890,6 +898,14 @@ mod height_dependents_tests {
             "switch_map re-knit onto a cached inner cell grew dependents to {len}"
         );
     }
+}
+
+// Experimental policy is process-wide, fixed at startup, and opt-in. Keep the
+// default and non-profiling builds unchanged while measuring cutoff semantics.
+#[cfg(feature = "profiling")]
+fn equality_cutoff_experiment() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("HYPHAE_EQ_CUTOFF").is_ok_and(|value| value == "1"))
 }
 
 #[cfg(test)]

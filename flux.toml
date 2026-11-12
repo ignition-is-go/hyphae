@@ -80,3 +80,6 @@ root = ["rustfmt", "+nightly", "--edition", "2024", "hyphae/src/cell_map/mutatio
 
 [tasks.test-fanout-order]
 root = ["cargo", "test", "-p", "hyphae", "--all-features", "--test", "concurrent_fanout_order", "--", "--ignored", "--test-threads=1"]
+
+[tasks.test-equality-cutoff]
+root = ["env", "HYPHAE_EQ_CUTOFF=1", "cargo", "test", "-p", "hyphae", "--all-features", "--test", "equality_cutoff", "--", "--test-threads=1"]
