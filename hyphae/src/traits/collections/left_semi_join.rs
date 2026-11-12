@@ -8,7 +8,6 @@
 use std::{hash::Hash, marker::PhantomData};
 
 use super::left_join::RelationPlan;
-
 use crate::{
     map_query::{
         BuildQueryRuntime, MapQuery,
@@ -87,6 +86,16 @@ where
         cx: &mut crate::map_query::compiler::CompileContext,
         sink: crate::map_query::BoxedMapDiffSink<LK, LV>,
     ) -> Vec<SubscriptionGuard> {
+        if incremental_semi_enabled() {
+            return super::internal::join_runtime::install_semi_join_runtime(
+                cx,
+                self.left,
+                self.right,
+                self.left_key,
+                self.right_key,
+                sink,
+            );
+        }
         install_keyed_join_runtime_via_query::<LK, LV, RK, RV, JK, LV, _, _, _, _, _>(
             cx,
             self.left,
@@ -233,6 +242,17 @@ where
     V: CellValue,
     M: MapQuery<Key = K, Value = V>,
 {
+}
+
+// Opt-in until generic semantics and application CPU comparisons are validated.
+#[cfg(feature = "profiling")]
+fn incremental_semi_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("HYPHAE_SEMI_JOIN_DELTA").is_ok_and(|v| v == "1"))
+}
+#[cfg(not(feature = "profiling"))]
+const fn incremental_semi_enabled() -> bool {
+    false
 }
 
 #[cfg(test)]

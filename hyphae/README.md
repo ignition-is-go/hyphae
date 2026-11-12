@@ -214,3 +214,13 @@ For live-cell counts and memory attribution, use a heap profiler
 ## License
 
 MIT OR Apache-2.0
+
+### Semi-join delta experiment
+
+With `profiling`, `HYPHAE_SEMI_JOIN_DELTA=1` selects an experimental membership-only
+runtime for existing `LeftSemiJoinExt` plans. It stores right key membership counts
+rather than right payloads, processes changed left rows directly, and revisits
+left buckets only when right membership becomes present or absent. The default
+remains the general join runtime. Public operators and value-equality semantics
+are unchanged; previously published values remain the source of later old-value
+diffs. Generic tests cover duplicates, key moves, batches and Initial resets.

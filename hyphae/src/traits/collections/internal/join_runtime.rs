@@ -1,4 +1,6 @@
 mod pair;
+mod semi;
+pub use semi::install_semi_join_runtime;
 mod sharded;
 pub use pair::install_pair_join_runtime_via_query;
 mod state;

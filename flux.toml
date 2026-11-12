@@ -125,3 +125,15 @@ root = ["cargo", "test", "-p", "hyphae", "--all-features", "--test", "cell_map_b
 
 [tasks.test-diff-batch-docs]
 root = ["env", "HYPHAE_BATCH_MAP_DIFFS=1", "cargo", "test", "-p", "hyphae", "--all-features", "--doc", "--", "--test-threads=1"]
+
+[tasks.format-semi-join-delta]
+root = ["rustfmt", "+nightly", "--edition", "2024", "--config", "skip_children=true", "hyphae/src/traits/collections/left_semi_join.rs", "hyphae/src/traits/collections/internal/join_runtime.rs", "hyphae/src/traits/collections/internal/join_runtime/semi.rs", "hyphae/tests/semi_join_delta.rs"]
+
+[tasks.test-semi-join-delta]
+root = ["env", "HYPHAE_SEMI_JOIN_DELTA=1", "cargo", "test", "-p", "hyphae", "--all-features", "--test", "semi_join_delta", "--", "--test-threads=1", "--nocapture"]
+
+[tasks.test-semi-join-core]
+root = ["env", "HYPHAE_SEMI_JOIN_DELTA=1", "cargo", "test", "-p", "hyphae", "--all-features", "--", "--test-threads=1"]
+
+[tasks.test-semi-join-legacy]
+root = ["env", "HYPHAE_SEMI_JOIN_DELTA=0", "cargo", "test", "-p", "hyphae", "--all-features", "--test", "semi_join_delta", "--", "--test-threads=1", "--nocapture"]
