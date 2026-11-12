@@ -46,13 +46,17 @@ where
 
         Self {
             inner: Arc::new(CellMapInner {
-                data: DashMap::new(),
-                key_cells: DashMap::new(),
+                // Each reactive operator owns narrow maps as well as broad collections.
+                // CPU-scaled shard counts multiply their resident storage and make
+                // aggregate operations scan many empty shards. Keep the small-map
+                // default bounded independently of the host's processor count.
+                data: DashMap::with_shard_amount(4),
+                key_cells: DashMap::with_shard_amount(4),
                 key_cell_slots: AtomicUsize::new(0),
                 prune_ops: AtomicUsize::new(0),
                 diffs_cell,
                 len_cell,
-                owned: DashMap::new(),
+                owned: DashMap::with_shard_amount(4),
                 name: Mutex::new(None),
             }),
             _marker: PhantomData,
