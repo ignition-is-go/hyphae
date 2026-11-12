@@ -57,7 +57,7 @@ where
                 diffs_cell,
                 #[cfg(all(feature = "scheduler", feature = "profiling"))]
                 pending_diffs: map_diff_batch_experiment()
-                    .then(|| Arc::new(Mutex::new(Vec::new()))),
+                    .then(|| Arc::new(Mutex::new(super::PendingDiff::default()))),
                 len_cell,
                 owned: DashMap::with_shard_amount(4),
                 name: Mutex::new(None),
@@ -148,8 +148,7 @@ where
         {
             let first = {
                 let mut changes = pending.lock();
-                changes.push(diff);
-                changes.len() == 1
+                changes.push(diff)
             };
             if first {
                 let pending = Arc::clone(pending);
@@ -161,10 +160,11 @@ where
                     Box::new({
                         let cell = cell.clone();
                         move || {
-                            let changes = std::mem::take(&mut *pending.lock());
-                            cell.deliver_queued(&crate::Signal::Value(Arc::new(MapDiff::Batch {
-                                changes,
-                            })));
+                            let diff = pending.lock().take();
+                            let Some(diff) = diff else {
+                                return;
+                            };
+                            cell.deliver_queued(&crate::Signal::Value(Arc::new(diff)));
                         }
                     }),
                 );

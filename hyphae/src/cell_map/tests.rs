@@ -1118,7 +1118,7 @@ fn key_observers_can_observe_colliding_keys_during_every_mutation() -> Result<()
 fn diff_batched_test_map() -> CellMap<u32, i32> {
     let mut map = CellMap::new();
     let installed = Arc::get_mut(&mut map.inner).map(|inner| {
-        inner.pending_diffs = Some(Arc::new(Mutex::new(Vec::new())));
+        inner.pending_diffs = Some(Arc::new(Mutex::new(PendingDiff::default())));
     });
     assert!(installed.is_some());
     map
@@ -1192,4 +1192,26 @@ fn diff_batch_reentrant_mutation_publishes_after_current_batch() {
     });
     assert_eq!(*values.lock(), vec![10, 20]);
     assert_eq!(map.get_value(&2), Some(20));
+}
+
+#[cfg(all(feature = "scheduler", feature = "profiling"))]
+#[test]
+fn diff_batch_preserves_a_single_existing_batch_without_an_outer_wrapper() {
+    let map = diff_batched_test_map();
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let output = Arc::clone(&received);
+    let _guard = map.subscribe_diffs(move |diff| output.lock().push(diff.clone()));
+    received.lock().clear();
+    crate::batch(|| {
+        map.insert_many(vec![(1, 10), (2, 20)]);
+    });
+    assert_eq!(
+        *received.lock(),
+        vec![MapDiff::Batch {
+            changes: vec![
+                MapDiff::Insert { key: 1, value: 10 },
+                MapDiff::Insert { key: 2, value: 20 },
+            ]
+        }]
+    );
 }

@@ -26,9 +26,13 @@ use crate::{
 
 mod diff;
 mod mutation;
+#[cfg(all(feature = "scheduler", feature = "profiling"))]
+mod pending_diff;
 mod projection;
 
 pub use diff::MapDiff;
+#[cfg(all(feature = "scheduler", feature = "profiling"))]
+use pending_diff::PendingDiff;
 use projection::{EntryProjection, KeyProjection, ProjectionOwner, ValueProjection};
 
 pub(crate) struct CellMapInner<K, V>
@@ -52,7 +56,7 @@ where
     /// Cell for diff notifications.
     pub(crate) diffs_cell: Cell<MapDiff<K, V>, CellMutable>,
     #[cfg(all(feature = "scheduler", feature = "profiling"))]
-    pending_diffs: Option<Arc<Mutex<Vec<MapDiff<K, V>>>>>,
+    pending_diffs: Option<Arc<Mutex<PendingDiff<K, V>>>>,
     /// Cell for length.
     len_cell: Cell<usize, CellMutable>,
     /// Subscription guards owned by this map (dropped when map drops).
