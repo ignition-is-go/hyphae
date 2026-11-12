@@ -122,3 +122,6 @@ root = ["cargo", "test", "-p", "hyphae", "--all-features", "diff_batch_", "--", 
 
 [tasks.test-diff-batch-default-contract]
 root = ["cargo", "test", "-p", "hyphae", "--all-features", "--test", "cell_map_batched_diff_length", "--test", "scheduler_no_coalesce", "--", "--test-threads=1"]
+
+[tasks.test-diff-batch-docs]
+root = ["env", "HYPHAE_BATCH_MAP_DIFFS=1", "cargo", "test", "-p", "hyphae", "--all-features", "--doc", "--", "--test-threads=1"]
