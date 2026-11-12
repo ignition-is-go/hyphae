@@ -188,6 +188,15 @@ nothing per cell and ~1% on the hot path:
 - `hyphae::profiling::pass` / `take_report` tally per-cell re-fires inside a
   measured propagation pass.
 
+Pair-producing inner joins maintain row deltas by default: changing one right
+row visits only its matching left rows, not every unchanged right row in the
+same bucket. A profiling-enabled process can set `HYPHAE_PAIR_JOIN_DELTA=0`
+before constructing queries to select the previous bucket-recompute strategy
+as a measurement control. The setting is read once; builds without `profiling`
+always use incremental pair maintenance. This does not change the public query
+API. Clone-work regression tests are algorithmic checks, not application
+speedup measurements.
+
 For live-cell counts and memory attribution, use a heap profiler
 (jemalloc/`jeprof`, or `pprof`) rather than an in-process registry. See
 [`docs/profiling.md`](docs/profiling.md).

@@ -8,7 +8,6 @@
 use std::{hash::Hash, marker::PhantomData};
 
 use super::left_join::RelationPlan;
-
 use crate::{
     map_query::{
         BuildQueryRuntime, MapQuery,
@@ -19,6 +18,7 @@ use crate::{
         CellValue, ForeignKeyRelation, IdFor, OptionalRightKey, RequiredRightKey, RightJoinKey,
         collections::internal::join_runtime::{
             install_join_runtime_via_query, install_keyed_join_runtime_via_query,
+            install_pair_join_runtime_via_query,
         },
     },
 };
@@ -159,6 +159,16 @@ where
         cx: &mut crate::map_query::compiler::CompileContext,
         sink: crate::map_query::BoxedMapDiffSink<(LK, RK), (LV, RV)>,
     ) -> Vec<SubscriptionGuard> {
+        if incremental_pairs_enabled() {
+            return install_pair_join_runtime_via_query::<LK, LV, RK, RV, JK, _, _, _, _>(
+                cx,
+                self.left,
+                self.right,
+                self.left_key,
+                self.right_key,
+                sink,
+            );
+        }
         install_join_runtime_via_query::<LK, LV, RK, RV, JK, (LK, RK), (LV, RV), _, _, _, _, _>(
             cx,
             self.left,
@@ -302,6 +312,18 @@ where
     V: CellValue,
     M: MapQuery<Key = K, Value = V>,
 {
+}
+
+// The legacy path is retained as a profiling control, not a second public API.
+#[cfg(feature = "profiling")]
+fn incremental_pairs_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED
+        .get_or_init(|| !std::env::var("HYPHAE_PAIR_JOIN_DELTA").is_ok_and(|value| value == "0"))
+}
+#[cfg(not(feature = "profiling"))]
+const fn incremental_pairs_enabled() -> bool {
+    true
 }
 
 #[cfg(test)]

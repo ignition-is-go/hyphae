@@ -77,3 +77,15 @@ root = ["cargo", "test", "-p", "hyphae", "--all-features", "cell_map::tests::key
 
 [tasks.format-map-storage]
 root = ["rustfmt", "+nightly", "--edition", "2024", "hyphae/src/cell_map/mutation.rs", "hyphae/src/cell_map/tests.rs"]
+
+[tasks.test-pair-join-delta]
+root = ["cargo", "test", "-p", "hyphae", "--all-features", "--test", "pair_join_delta", "--", "--test-threads=1", "--nocapture"]
+
+[tasks.format-pair-join-delta]
+root = ["rustfmt", "+nightly", "--edition", "2024", "--config", "skip_children=true", "hyphae/tests/pair_join_delta.rs", "hyphae/src/traits/collections/inner_join.rs", "hyphae/src/traits/collections/internal/join_runtime.rs", "hyphae/src/traits/collections/internal/join_runtime/pair.rs"]
+
+[tasks.check-core-default]
+root = ["cargo", "check", "-p", "hyphae", "--no-default-features"]
+
+[tasks.check-pair-join-wasm]
+root = ["cargo", "check", "-p", "hyphae", "--target", "wasm32-unknown-unknown", "--features", "scheduler,async,profiling"]
