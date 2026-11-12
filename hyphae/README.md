@@ -188,6 +188,16 @@ nothing per cell and ~1% on the hot path:
 - `hyphae::profiling::pass` / `take_report` tally per-cell re-fires inside a
   measured propagation pass.
 
+For controlled experiments only, a profiling-enabled binary can opt into
+process-wide value equality cutoffs with `HYPHAE_EQ_CUTOFF=1`. The value is read
+once, on first use. Unset or `0` retains existing behavior; builds without
+`profiling` ignore it. Equal values then do not fan out on either eager or
+scheduled paths. Completion and errors still propagate. This changes event
+semantics: occurrences that must remain distinct need unequal occurrence IDs.
+Equality implementations must be pure, fast, and must not reenter a cell while
+its write lock is held. This is an experimental measurement switch, not a
+promoted default or a claim that all existing operators use state semantics.
+
 For live-cell counts and memory attribution, use a heap profiler
 (jemalloc/`jeprof`, or `pprof`) rather than an in-process registry. See
 [`docs/profiling.md`](docs/profiling.md).
