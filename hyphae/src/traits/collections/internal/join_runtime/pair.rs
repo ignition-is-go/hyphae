@@ -37,6 +37,7 @@ struct Touched<K, J> {
     order: OrderedSet<K>,
     previous: FxHashMap<K, Option<J>>,
     work: Vec<K>,
+    initial: bool,
 }
 impl<K, J> Default for Touched<K, J> {
     fn default() -> Self {
@@ -44,6 +45,7 @@ impl<K, J> Default for Touched<K, J> {
             order: OrderedSet::default(),
             previous: FxHashMap::default(),
             work: Vec::new(),
+            initial: false,
         }
     }
 }
@@ -100,6 +102,7 @@ where
     ) {
         match diff {
             MapDiff::Initial { entries } => {
+                touched.initial = true;
                 for row in self.rows.keys() {
                     self.remember(row, touched);
                 }
@@ -176,7 +179,15 @@ fn affected<K, V, OK, OV, J>(
             bucket(next);
         }
     }
-    touched.work.clear();
+    // Initial snapshots can touch every source row even when no pair matches.
+    // Keep small buffers warm, but do not retain a full snapshot's scratch for
+    // the point updates that follow it. The authoritative rows/indexes survive.
+    if touched.initial && touched.work.len() > 256 {
+        *touched = Touched::default();
+    } else {
+        touched.work.clear();
+        touched.initial = false;
+    }
 }
 
 // Retain the last published value, not just source snapshots. PartialEq may
@@ -319,4 +330,34 @@ where
         Arc::new(right_sink),
     ));
     guards
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Side, Touched, affected};
+    use crate::MapDiff;
+
+    #[test]
+    fn initial_join_does_not_retain_large_touched_scratch() {
+        let mut side = Side::<usize, usize, usize>::default();
+        let other = Side::<usize, usize, usize>::default();
+        let mut touched = Touched::default();
+        side.apply(
+            &MapDiff::Initial {
+                entries: (0..16_384).map(|key| (key, key)).collect(),
+            },
+            &|_, value| Some(*value),
+            &mut touched,
+        );
+        affected(&side, &other, &mut touched, |_, _, _| {});
+        assert_eq!(side.rows.len(), 16_384);
+        assert_eq!(side.buckets.len(), 16_384);
+        eprintln!(
+            "post-initial scratch capacities: previous={}, work={}",
+            touched.previous.capacity(),
+            touched.work.capacity()
+        );
+        assert!(touched.previous.capacity() <= 256);
+        assert!(touched.work.capacity() <= 256);
+    }
 }
