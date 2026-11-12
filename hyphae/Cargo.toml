@@ -18,6 +18,8 @@ path = "src/lib.rs"
 default = []
 # Experimental owned evaluator; independent of the shared propagation scheduler.
 local-runtime = []
+# Experimental thread-local facade backed by incremental-rs, not our evaluator.
+incremental-runtime = ["dep:incremental-engine"]
 async = ["flume", "futures-core"]
 # Opt-in deferred/ordered/glitch-free propagation under an explicit `batch()`
 # boundary, plus the `clock`/`TickSource` seam for frame-locked ticking. Off by
@@ -39,6 +41,7 @@ profiling = ["dep:tracing"]
 deep-bench = []
 
 [dependencies]
+incremental-engine = { package = "incremental", version = "=0.2.8", optional = true }
 anyhow = "1"
 arc-swap.workspace = true
 crossbeam = "0.8"
@@ -142,3 +145,7 @@ required-features = ["scheduler"]
 name = "session_workload"
 harness = false
 required-features = ["scheduler"]
+
+[[example]]
+name = "incremental_workload"
+required-features = ["incremental-runtime", "local-runtime", "scheduler"]

@@ -2040,6 +2040,7 @@ dependencies = [
  "futures-core",
  "getrandom 0.3.4",
  "gloo-timers",
+ "incremental",
  "log",
  "parking_lot",
  "rayon",
@@ -2242,6 +2243,16 @@ name = "imgref"
 version = "1.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "89194689a993ab15268672e99e7b0e19da2da3268ac682e8f02d29d4d1434cd7"
+
+[[package]]
+name = "incremental"
+version = "0.2.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03b27a2f1812b8cf850db9c5c323d6e5f7d86eaa4876c2487b1e1445d08cc563"
+dependencies = [
+ "smallvec",
+ "tracing",
+]
 
 [[package]]
 name = "indexmap"
