@@ -1,8 +1,8 @@
+mod pair;
 mod sharded;
+pub use pair::install_pair_join_runtime_via_query;
 mod state;
 mod two_stage;
-
-pub use two_stage::install_two_keyed_join_runtime_via_query;
 
 use std::{
     any::TypeId,
@@ -10,17 +10,18 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::{
-    cell_map::MapDiff,
-    subscription::SubscriptionGuard,
-    traits::{CellValue, RightJoinKey},
-};
-
 use state::{
     JoinState, apply_left_diff, apply_right_diff, observe_shared_right_diff, recompute_impacted,
     recompute_keyed_impacted,
 };
 pub(super) use state::{RelationIndex, RelationIndexStorage};
+pub use two_stage::install_two_keyed_join_runtime_via_query;
+
+use crate::{
+    cell_map::MapDiff,
+    subscription::SubscriptionGuard,
+    traits::{CellValue, RightJoinKey},
+};
 
 /// Emit a batch of output diffs through `sink`.
 ///
@@ -338,8 +339,7 @@ mod read_acquisition_tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    use super::state::JoinScratch;
-    use super::*;
+    use super::{state::JoinScratch, *};
 
     struct CountingIndex {
         index: RelationIndex<usize, usize, usize>,

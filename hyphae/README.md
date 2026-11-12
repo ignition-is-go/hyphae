@@ -198,6 +198,15 @@ Equality implementations must be pure, fast, and must not reenter a cell while
 its write lock is held. This is an experimental measurement switch, not a
 promoted default or a claim that all existing operators use state semantics.
 
+Pair-producing inner joins maintain row deltas by default: changing one right
+row visits only its matching left rows, not every unchanged right row in the
+same bucket. A profiling-enabled process can set `HYPHAE_PAIR_JOIN_DELTA=0`
+before constructing queries to select the previous bucket-recompute strategy
+as a measurement control. The setting is read once; builds without `profiling`
+always use incremental pair maintenance. This does not change the public query
+API. Clone-work regression tests are algorithmic checks, not application
+speedup measurements.
+
 For live-cell counts and memory attribution, use a heap profiler
 (jemalloc/`jeprof`, or `pprof`) rather than an in-process registry. See
 [`docs/profiling.md`](docs/profiling.md).
