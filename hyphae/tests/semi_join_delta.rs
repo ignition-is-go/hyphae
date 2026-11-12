@@ -269,3 +269,53 @@ fn changing_a_right_payload_without_membership_change_does_not_clone_left_rows()
     }
     assert_eq!(joined.snapshot().len(), 4096);
 }
+
+#[test]
+fn racing_roots_settle_to_their_final_snapshot() {
+    let left = CellMap::<usize, (usize, usize)>::new();
+    let right = CellMap::<usize, usize>::new();
+    for key in 0..16 {
+        left.insert(key, (key & 3, 0));
+    }
+    for key in 0..4 {
+        right.insert(key, key);
+    }
+    let joined = left
+        .clone()
+        .left_semi_join_by(right.clone(), |_, v| v.0, |_, v| *v)
+        .materialize();
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    std::thread::scope(|scope| {
+        let left_barrier = barrier.clone();
+        let left_source = left.clone();
+        scope.spawn(move || {
+            left_barrier.wait();
+            for revision in 1..128_usize {
+                let key = revision & 15;
+                left_source.insert(key, (key & 3, revision));
+                std::thread::yield_now();
+            }
+        });
+        scope.spawn(|| {
+            barrier.wait();
+            for revision in 1..128_usize {
+                let key = revision & 3;
+                if revision & 1 == 0 {
+                    right.insert(key, key);
+                } else {
+                    right.remove(&key);
+                }
+                std::thread::yield_now();
+            }
+            right.insert_many((0..4).map(|key| (key, key)).collect());
+        });
+    });
+    hyphae::batch(|| {});
+    assert_eq!(
+        joined
+            .snapshot()
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>(),
+        left.snapshot().into_iter().collect()
+    );
+}
