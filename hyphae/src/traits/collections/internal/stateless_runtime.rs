@@ -120,6 +120,12 @@ where
     S: MapQuery<Key = K, Value = V>,
     F: Fn(&K, &V) -> U + Send + Sync + 'static,
 {
+    #[cfg(feature = "profiling")]
+    let f = move |key: &K, value: &V| {
+        #[cfg(feature = "profiling")]
+        tracing::trace!(target: "hyphae::work", work = "map_values", label = std::any::type_name::<V>());
+        f(key, value)
+    };
     let upstream_sink = move |diff: &MapDiff<K, V>| {
         if let Some(mapped) = map_diff(diff, &f) {
             sink(&mapped);
@@ -141,6 +147,12 @@ where
     S: MapQuery<Key = K, Value = V>,
     F: Fn(&K, &V) -> Option<U> + Send + Sync + 'static,
 {
+    #[cfg(feature = "profiling")]
+    let f = move |key: &K, value: &V| {
+        #[cfg(feature = "profiling")]
+        tracing::trace!(target: "hyphae::work", work = "filter_map_values", label = std::any::type_name::<V>());
+        f(key, value)
+    };
     let upstream_sink = move |diff: &MapDiff<K, V>| {
         if let Some(mapped) = filter_map_diff(diff, &f) {
             sink(&mapped);

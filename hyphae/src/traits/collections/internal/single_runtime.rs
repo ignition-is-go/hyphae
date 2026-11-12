@@ -228,6 +228,12 @@ where
     S: MapQuery<Key = SK, Value = SV>,
     F: Fn(&SK, &SV) -> Option<(OK, OV)> + Send + Sync + 'static,
 {
+    #[cfg(feature = "profiling")]
+    let compute = move |key: &SK, value: &SV| {
+        #[cfg(feature = "profiling")]
+        tracing::trace!(target: "hyphae::work", work = "map_single", label = std::any::type_name::<SV>());
+        compute(key, value)
+    };
     let state = Arc::new(Mutex::new(State::<SK, OK, OV>::default()));
     crate::map_query::compile_runtime_into(
         source,

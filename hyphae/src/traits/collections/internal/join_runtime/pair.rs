@@ -166,6 +166,8 @@ fn affected<K, V, OK, OV, J>(
                                     .get(other_key)
                                     .map(|other| (&row.value, &other.value))
                             });
+                    #[cfg(feature = "profiling")]
+                    tracing::trace!(target: "hyphae::work", work = "pair_join_visit", label = std::any::type_name::<(V, OV)>());
                     visit(key, other_key, value);
                 }
             }

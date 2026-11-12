@@ -227,6 +227,12 @@ where
     S: crate::map_query::MapQuery<Key = SK, Value = SV>,
     FO: Fn(&SK, &SV) -> Vec<(OK, OV)> + Send + Sync + 'static,
 {
+    #[cfg(feature = "profiling")]
+    let compute_rows = move |key: &SK, value: &SV| {
+        #[cfg(feature = "profiling")]
+        tracing::trace!(target: "hyphae::work", work = "map_general", label = std::any::type_name::<SV>());
+        compute_rows(key, value)
+    };
     let state = Arc::new(Mutex::new(MapState::<SK, SV, OK, OV>::default()));
     let upstream_sink = {
         move |diff: &MapDiff<SK, SV>| {
