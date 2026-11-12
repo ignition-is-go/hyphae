@@ -11,13 +11,12 @@ use dashmap::DashMap;
 use parking_lot::Mutex;
 use uuid::Uuid;
 
+use super::{CellMap, CellMapInner, MapDiff};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     subscription::SubscriptionGuard,
     traits::{CellValue, Mutable},
 };
-
-use super::{CellMap, CellMapInner, MapDiff};
 
 impl<K, V> CellMap<K, V, CellMutable>
 where
@@ -118,6 +117,16 @@ where
         });
     }
 
+    // Upgrading inside this helper releases the shard guard before any callback.
+    // Observers may materialize another key in this same map, including a key
+    // sharing the shard. Holding a Ref across `set` would deadlock that lookup.
+    fn observed_key_cell(&self, key: &K) -> Option<Cell<Option<V>, CellMutable>> {
+        self.inner
+            .key_cells
+            .get(key)
+            .and_then(|weak| weak.upgrade())
+    }
+
     fn notify_len_if_changed(&self, previous_len: usize) {
         let len = self.inner.data.len();
         if len != previous_len {
@@ -136,9 +145,7 @@ where
         }
 
         // Notify per-key observers (O(1))
-        if let Some(weak) = self.inner.key_cells.get(&key)
-            && let Some(cell) = weak.upgrade()
-        {
+        if let Some(cell) = self.observed_key_cell(&key) {
             cell.set(Some(value.clone()));
         }
 
@@ -185,9 +192,7 @@ where
             );
             changes.push(diff);
 
-            if let Some(weak) = self.inner.key_cells.get(&key)
-                && let Some(cell) = weak.upgrade()
-            {
+            if let Some(cell) = self.observed_key_cell(&key) {
                 cell.set(Some(value));
             }
         }
@@ -216,9 +221,7 @@ where
             self.inner.len_cell.set(self.inner.data.len());
 
             // Notify per-key observers (O(1))
-            if let Some(weak) = self.inner.key_cells.get(&k)
-                && let Some(cell) = weak.upgrade()
-            {
+            if let Some(cell) = self.observed_key_cell(&k) {
                 cell.set(None);
             }
 
@@ -245,9 +248,7 @@ where
                     old_value: old_value.clone(),
                 });
 
-                if let Some(weak) = self.inner.key_cells.get(&k)
-                    && let Some(cell) = weak.upgrade()
-                {
+                if let Some(cell) = self.observed_key_cell(&k) {
                     cell.set(None);
                 }
             }
@@ -294,9 +295,7 @@ where
                     key: k.clone(),
                     old_value,
                 });
-                if let Some(weak) = self.inner.key_cells.get(&k)
-                    && let Some(cell) = weak.upgrade()
-                {
+                if let Some(cell) = self.observed_key_cell(&k) {
                     cell.set(None);
                 }
             }
@@ -319,9 +318,7 @@ where
                     new_value: value.clone(),
                 },
             ));
-            if let Some(weak) = self.inner.key_cells.get(&key)
-                && let Some(cell) = weak.upgrade()
-            {
+            if let Some(cell) = self.observed_key_cell(&key) {
                 cell.set(Some(value));
             }
         }
@@ -353,17 +350,13 @@ where
                 let stale_keys: Vec<K> = self.inner.data.iter().map(|r| r.key().clone()).collect();
                 for key in stale_keys {
                     self.inner.data.remove(&key);
-                    if let Some(weak) = self.inner.key_cells.get(&key)
-                        && let Some(cell) = weak.upgrade()
-                    {
+                    if let Some(cell) = self.observed_key_cell(&key) {
                         cell.set(None);
                     }
                 }
                 for (key, value) in entries {
                     self.inner.data.insert(key.clone(), value.clone());
-                    if let Some(weak) = self.inner.key_cells.get(key)
-                        && let Some(cell) = weak.upgrade()
-                    {
+                    if let Some(cell) = self.observed_key_cell(key) {
                         cell.set(Some(value.clone()));
                     }
                 }
@@ -372,18 +365,14 @@ where
             }
             MapDiff::Insert { key, value } => {
                 let inserted = self.inner.data.insert(key.clone(), value.clone()).is_none();
-                if let Some(weak) = self.inner.key_cells.get(key)
-                    && let Some(cell) = weak.upgrade()
-                {
+                if let Some(cell) = self.observed_key_cell(key) {
                     cell.set(Some(value.clone()));
                 }
                 inserted
             }
             MapDiff::Remove { key, .. } => {
                 let removed = self.inner.data.remove(key).is_some();
-                if let Some(weak) = self.inner.key_cells.get(key)
-                    && let Some(cell) = weak.upgrade()
-                {
+                if let Some(cell) = self.observed_key_cell(key) {
                     cell.set(None);
                 }
                 removed
@@ -402,9 +391,7 @@ where
                     .data
                     .insert(key.clone(), new_value.clone())
                     .is_none();
-                if let Some(weak) = self.inner.key_cells.get(key)
-                    && let Some(cell) = weak.upgrade()
-                {
+                if let Some(cell) = self.observed_key_cell(key) {
                     cell.set(Some(new_value.clone()));
                 }
                 inserted
@@ -443,34 +430,26 @@ where
                     let keys: Vec<K> = map.inner.data.iter().map(|r| r.key().clone()).collect();
                     for key in keys {
                         map.inner.data.remove(&key);
-                        if let Some(weak) = map.inner.key_cells.get(&key)
-                            && let Some(cell) = weak.upgrade()
-                        {
+                        if let Some(cell) = map.observed_key_cell(&key) {
                             cell.set(None);
                         }
                     }
                     for (key, value) in entries {
                         map.inner.data.insert(key.clone(), value.clone());
-                        if let Some(weak) = map.inner.key_cells.get(key)
-                            && let Some(cell) = weak.upgrade()
-                        {
+                        if let Some(cell) = map.observed_key_cell(key) {
                             cell.set(Some(value.clone()));
                         }
                     }
                 }
                 MapDiff::Insert { key, value } => {
                     map.inner.data.insert(key.clone(), value.clone());
-                    if let Some(weak) = map.inner.key_cells.get(key)
-                        && let Some(cell) = weak.upgrade()
-                    {
+                    if let Some(cell) = map.observed_key_cell(key) {
                         cell.set(Some(value.clone()));
                     }
                 }
                 MapDiff::Remove { key, .. } => {
                     map.inner.data.remove(key);
-                    if let Some(weak) = map.inner.key_cells.get(key)
-                        && let Some(cell) = weak.upgrade()
-                    {
+                    if let Some(cell) = map.observed_key_cell(key) {
                         cell.set(None);
                     }
                 }
@@ -484,9 +463,7 @@ where
                         return None;
                     }
                     map.inner.data.insert(key.clone(), new_value.clone());
-                    if let Some(weak) = map.inner.key_cells.get(key)
-                        && let Some(cell) = weak.upgrade()
-                    {
+                    if let Some(cell) = map.observed_key_cell(key) {
                         cell.set(Some(new_value.clone()));
                     }
                 }
