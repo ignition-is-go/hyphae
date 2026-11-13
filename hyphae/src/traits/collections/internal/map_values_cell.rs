@@ -1,11 +1,9 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     hash::Hash,
     marker::PhantomData,
     sync::{Arc, Mutex},
 };
-
-use dashmap::DashMap;
 
 use crate::{
     cell_map::MapDiff,
@@ -13,6 +11,26 @@ use crate::{
     subscription::SubscriptionGuard,
     traits::{CellValue, Gettable, Watchable},
 };
+
+#[cfg(test)]
+#[path = "map_values_cell_initialization_tests.rs"]
+mod initialization_tests;
+
+enum MapValuesEvent<K, V, U> {
+    Source(MapDiff<K, V>),
+    Inner { key: K, token: Arc<()>, value: U },
+}
+
+struct MapValuesRow<U> {
+    token: Arc<()>,
+    value: U,
+    guard: Option<SubscriptionGuard>,
+}
+
+struct MapValuesQueue<K, V, U> {
+    events: VecDeque<MapValuesEvent<K, V, U>>,
+    idle_rows: Option<HashMap<K, MapValuesRow<U>>>,
+}
 
 struct MapValuesRuntime<K, V, U, W, F>
 where
@@ -23,8 +41,7 @@ where
     F: Fn(&K, &V) -> W + Send + Sync + 'static,
 {
     mapper: Arc<F>,
-    per_key_guards: Arc<DashMap<K, SubscriptionGuard>>,
-    last_value: Arc<Mutex<HashMap<K, U>>>,
+    queue: Mutex<MapValuesQueue<K, V, U>>,
     sink: crate::map_query::BoxedMapDiffSink<K, U>,
     marker: PhantomData<fn(V) -> W>,
 }
@@ -45,20 +62,28 @@ where
         }
     }
 
-    fn attach(&self, key: K, value: &V, changes: Option<&mut Vec<MapDiff<K, U>>>) {
-        if let Some((_, old_guard)) = self.per_key_guards.remove(&key) {
-            drop(old_guard);
-        }
-
-        let inner_cell = (self.mapper)(&key, value);
+    fn attach(
+        self: &Arc<Self>,
+        rows: &mut HashMap<K, MapValuesRow<U>>,
+        key: &K,
+        value: &V,
+        changes: Option<&mut Vec<MapDiff<K, U>>>,
+    ) {
+        let prior = rows.remove(key).map(|row| {
+            drop(row.guard);
+            row.value
+        });
+        let inner_cell = (self.mapper)(key, value);
         let initial = inner_cell.get();
-        let prior = {
-            let mut last = self
-                .last_value
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            last.insert(key.clone(), initial.clone())
-        };
+        let token = Arc::new(());
+        rows.insert(
+            key.clone(),
+            MapValuesRow {
+                token: Arc::clone(&token),
+                value: initial.clone(),
+                guard: None,
+            },
+        );
         let diff = match prior {
             None => MapDiff::Insert {
                 key: key.clone(),
@@ -73,88 +98,124 @@ where
         self.emit(diff, changes);
 
         let key_for_sub = key.clone();
-        let last_value = Arc::clone(&self.last_value);
-        let sink = Arc::clone(&self.sink);
-        let first = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let runtime = Arc::downgrade(self);
         let sub_guard = inner_cell.subscribe(move |signal| {
-            if let Signal::Value(value) = signal {
-                if first.swap(false, std::sync::atomic::Ordering::SeqCst) {
-                    return;
-                }
-                let new_value: U = (**value).clone();
-                let prior = {
-                    let mut last = last_value
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    last.insert(key_for_sub.clone(), new_value.clone())
-                };
-                let diff = match prior {
-                    None => MapDiff::Insert {
-                        key: key_for_sub.clone(),
-                        value: new_value,
-                    },
-                    Some(old_value) => {
-                        if old_value == new_value {
-                            return;
-                        }
-                        MapDiff::Update {
-                            key: key_for_sub.clone(),
-                            old_value,
-                            new_value,
-                        }
-                    }
-                };
-                sink(&diff);
+            if let Signal::Value(value) = signal
+                && let Some(runtime) = runtime.upgrade()
+            {
+                runtime.enqueue(MapValuesEvent::Inner {
+                    key: key_for_sub.clone(),
+                    token: Arc::clone(&token),
+                    value: (**value).clone(),
+                });
             }
         });
-        self.per_key_guards.insert(key, sub_guard);
+        if let Some(row) = rows.get_mut(key) {
+            row.guard = Some(sub_guard);
+        }
     }
 
-    fn detach(&self, key: &K, changes: Option<&mut Vec<MapDiff<K, U>>>) {
-        if let Some((_, old_guard)) = self.per_key_guards.remove(key) {
-            drop(old_guard);
-        }
-        let prior = {
-            let mut last = self
-                .last_value
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            last.remove(key)
-        };
-        if let Some(old_value) = prior {
+    fn detach(
+        &self,
+        rows: &mut HashMap<K, MapValuesRow<U>>,
+        key: &K,
+        changes: Option<&mut Vec<MapDiff<K, U>>>,
+    ) {
+        if let Some(row) = rows.remove(key) {
+            drop(row.guard);
             self.emit(
                 MapDiff::Remove {
                     key: key.clone(),
-                    old_value,
+                    old_value: row.value,
                 },
                 changes,
             );
         }
     }
 
-    fn apply(&self, diff: &MapDiff<K, V>, mut changes: Option<&mut Vec<MapDiff<K, U>>>) {
+    fn apply(
+        self: &Arc<Self>,
+        rows: &mut HashMap<K, MapValuesRow<U>>,
+        diff: &MapDiff<K, V>,
+        mut changes: Option<&mut Vec<MapDiff<K, U>>>,
+    ) {
         match diff {
             MapDiff::Initial { entries } => {
-                let existing_keys: Vec<K> = self
-                    .per_key_guards
-                    .iter()
-                    .map(|entry| entry.key().clone())
-                    .collect();
+                let existing_keys: Vec<K> = rows.keys().cloned().collect();
                 for key in existing_keys {
-                    self.detach(&key, changes.as_deref_mut());
+                    self.detach(rows, &key, changes.as_deref_mut());
                 }
                 for (key, value) in entries {
-                    self.attach(key.clone(), value, changes.as_deref_mut());
+                    self.attach(rows, key, value, changes.as_deref_mut());
                 }
             }
             MapDiff::Insert { key, value } => {
-                self.attach(key.clone(), value, changes);
+                self.attach(rows, key, value, changes);
             }
-            MapDiff::Remove { key, .. } => self.detach(key, changes),
+            MapDiff::Remove { key, .. } => self.detach(rows, key, changes),
             MapDiff::Update { key, new_value, .. } => {
-                self.attach(key.clone(), new_value, changes);
+                self.attach(rows, key, new_value, changes);
             }
             MapDiff::Batch { .. } => {}
+        }
+    }
+
+    fn enqueue(self: &Arc<Self>, event: MapValuesEvent<K, V, U>) {
+        let mut rows = {
+            let mut queue = self
+                .queue
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            queue.events.push_back(event);
+            let Some(rows) = queue.idle_rows.take() else {
+                return;
+            };
+            drop(queue);
+            rows
+        };
+        loop {
+            let event = {
+                let mut queue = self
+                    .queue
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let Some(event) = queue.events.pop_front() else {
+                    queue.idle_rows = Some(rows);
+                    return;
+                };
+                drop(queue);
+                event
+            };
+            match event {
+                MapValuesEvent::Source(MapDiff::Batch { changes }) => {
+                    let mut atomic_changes = Vec::new();
+                    MapDiff::Batch { changes }.flatten_into(&mut atomic_changes);
+                    let mut downstream_changes = Vec::new();
+                    for change in &atomic_changes {
+                        self.apply(&mut rows, change, Some(&mut downstream_changes));
+                    }
+                    if !downstream_changes.is_empty() {
+                        (self.sink)(&MapDiff::Batch {
+                            changes: downstream_changes,
+                        });
+                    }
+                }
+                MapValuesEvent::Source(diff) => self.apply(&mut rows, &diff, None),
+                MapValuesEvent::Inner { key, token, value } => {
+                    let Some(row) = rows.get_mut(&key) else {
+                        continue;
+                    };
+                    if !Arc::ptr_eq(&row.token, &token) || row.value == value {
+                        continue;
+                    }
+                    let old_value = std::mem::replace(&mut row.value, value.clone());
+                    (self.sink)(&MapDiff::Update {
+                        key,
+                        old_value,
+                        new_value: value,
+                    });
+                }
+            }
         }
     }
 }
@@ -185,27 +246,15 @@ where
 {
     let runtime = Arc::new(MapValuesRuntime::<K, V, U, W, F> {
         mapper: Arc::new(mapper),
-        per_key_guards: Arc::new(DashMap::new()),
-        last_value: Arc::new(Mutex::new(HashMap::new())),
+        queue: Mutex::new(MapValuesQueue {
+            events: VecDeque::new(),
+            idle_rows: Some(HashMap::new()),
+        }),
         sink,
         marker: PhantomData,
     });
     let upstream_sink = move |diff: &MapDiff<K, V>| {
-        if matches!(diff, MapDiff::Batch { .. }) {
-            let mut atomic_changes = Vec::new();
-            diff.clone().flatten_into(&mut atomic_changes);
-            let mut downstream_changes = Vec::new();
-            for change in &atomic_changes {
-                runtime.apply(change, Some(&mut downstream_changes));
-            }
-            if !downstream_changes.is_empty() {
-                (runtime.sink)(&MapDiff::Batch {
-                    changes: downstream_changes,
-                });
-            }
-        } else {
-            runtime.apply(diff, None);
-        }
+        runtime.enqueue(MapValuesEvent::Source(diff.clone()));
     };
 
     crate::map_query::compile_runtime_into(source, cx, Arc::new(upstream_sink))
