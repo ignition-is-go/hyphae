@@ -7,7 +7,7 @@ use std::{
     hash::Hash,
     marker::PhantomData,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
@@ -103,7 +103,7 @@ where
     /// unchecked this is an unbounded leak on maps with high key churn (every
     /// distinct key ever observed keeps a slot forever). [`maybe_prune_key_cells`]
     /// amortizes a sweep of dead weaks across mutations to keep it bounded.
-    key_cells: DashMap<K, Arc<PointCellSlot<V>>>,
+    key_cells: OnceLock<DashMap<K, Arc<PointCellSlot<V>>>>,
     key_cell_slots: AtomicUsize,
     /// Mutation counter driving amortized pruning of dead `key_cells` weaks.
     prune_ops: AtomicUsize,
@@ -251,12 +251,9 @@ where
     /// underlying per-key cell, but that cache is not part of the public API.
     #[track_caller]
     pub fn get(&self, key: &K) -> impl Materialize<Option<V>, Definite> + use<K, V, M> {
-        let reserved = self
-            .inner
-            .key_cells
-            .get(key)
-            .map(|slot| slot.value().clone());
-        let slot = reserved.unwrap_or_else(|| match self.inner.key_cells.entry(key.clone()) {
+        let key_cells = self.inner.key_cells.get_or_init(DashMap::new);
+        let reserved = key_cells.get(key).map(|slot| slot.value().clone());
+        let slot = reserved.unwrap_or_else(|| match key_cells.entry(key.clone()) {
             Entry::Occupied(slot) => slot.get().clone(),
             Entry::Vacant(entry) => {
                 let slot = Arc::new(PointCellSlot::new());
@@ -610,3 +607,6 @@ mod point_cell_race_tests;
 
 #[cfg(test)]
 mod owned_guard_tests;
+
+#[cfg(test)]
+mod lazy_point_cache_tests;

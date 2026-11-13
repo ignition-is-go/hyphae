@@ -2,7 +2,7 @@ use std::{
     hash::Hash,
     marker::PhantomData,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicUsize, Ordering},
     },
 };
@@ -46,7 +46,7 @@ where
         Self {
             inner: Arc::new(CellMapInner {
                 data: DashMap::new(),
-                key_cells: DashMap::new(),
+                key_cells: OnceLock::new(),
                 key_cell_slots: AtomicUsize::new(0),
                 prune_ops: AtomicUsize::new(0),
                 diffs_cell,
@@ -88,7 +88,9 @@ where
     /// MUST be called before this method takes any `key_cells` shard `Ref`:
     /// `retain` locks every shard, so holding a `Ref` across it would deadlock.
     fn maybe_prune_key_cells(&self) {
-        let key_cells = &self.inner.key_cells;
+        let Some(key_cells) = self.inner.key_cells.get() else {
+            return;
+        };
         let len = self.inner.key_cell_slots.load(Ordering::Relaxed);
         if len == 0 {
             return;
@@ -123,6 +125,7 @@ where
         let slot = self
             .inner
             .key_cells
+            .get()?
             .get(key)
             .map(|slot| slot.value().clone());
         slot.and_then(|slot| slot.changed())
