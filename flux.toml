@@ -66,6 +66,9 @@ cargo = ["cargo", "publish", "--locked"]
 [tasks.test-core]
 root = ["cargo", "test", "-p", "hyphae", "--all-features", "--", "--test-threads=1"]
 
+[tasks.test-map-point-cache]
+root = ["cargo", "test", "-p", "hyphae", "--all-features", "--lib", "cell_map::point_cell_race_tests", "--", "--test-threads=1"]
+
 [tasks.lint-core]
 root = ["cargo", "clippy", "-p", "hyphae", "--tests", "--all-features", "--", "-D", "warnings"]
 

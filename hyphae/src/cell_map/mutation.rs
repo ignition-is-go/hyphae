@@ -107,8 +107,8 @@ where
             return;
         }
         self.inner.prune_ops.store(0, Ordering::Relaxed);
-        key_cells.retain(|_, weak| {
-            if weak.is_alive() {
+        key_cells.retain(|_, slot| {
+            if Arc::strong_count(slot) > 1 || slot.is_alive() {
                 true
             } else {
                 self.inner.key_cell_slots.fetch_sub(1, Ordering::Relaxed);
@@ -121,10 +121,12 @@ where
     // Observers may materialize another key in this same map, including a key
     // sharing the shard. Holding a Ref across `set` would deadlock that lookup.
     fn observed_key_cell(&self, key: &K) -> Option<Cell<Option<V>, CellMutable>> {
-        self.inner
+        let slot = self
+            .inner
             .key_cells
             .get(key)
-            .and_then(|weak| weak.upgrade())
+            .map(|slot| slot.value().clone());
+        slot.and_then(|slot| slot.changed())
     }
 
     fn notify_len_if_changed(&self, previous_len: usize) {
@@ -211,9 +213,10 @@ where
         let removed = self.inner.data.remove(key);
 
         if let Some((k, old_value)) = removed {
+            let observed = self.observed_key_cell(&k);
             // Emit diff (O(1) - just notifies subscribers)
             self.inner.diffs_cell.set(MapDiff::Remove {
-                key: k.clone(),
+                key: k,
                 old_value: old_value.clone(),
             });
 
@@ -221,7 +224,7 @@ where
             self.inner.len_cell.set(self.inner.data.len());
 
             // Notify per-key observers (O(1))
-            if let Some(cell) = self.observed_key_cell(&k) {
+            if let Some(cell) = observed {
                 cell.set(None);
             }
 
