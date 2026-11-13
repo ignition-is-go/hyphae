@@ -5,6 +5,15 @@ use std::sync::{
 
 use hyphae::{CellMap, InnerJoinExt, MapDiff, MapQuery};
 
+// An open batch defers propagation process-wide, including other tests' graphs.
+static SCHEDULER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
+    SCHEDULER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[derive(Debug)]
 struct CountedRow {
     group: usize,
@@ -30,6 +39,7 @@ impl Eq for CountedRow {}
 
 #[test]
 fn updating_one_right_row_does_not_clone_its_unchanged_bucket_siblings() {
+    let _serial = scheduler_test_serial();
     let clones = Arc::new(AtomicUsize::new(0));
     let left = CellMap::<usize, usize>::new();
     let right = CellMap::<usize, CountedRow>::new();
@@ -77,6 +87,7 @@ fn updating_one_right_row_does_not_clone_its_unchanged_bucket_siblings() {
 fn pair_deltas_match_a_snapshot_join_after_updates_moves_batches_and_resets() {
     use std::collections::BTreeMap;
 
+    let _serial = scheduler_test_serial();
     let left = CellMap::<usize, (usize, usize)>::new();
     let right = CellMap::<usize, (usize, usize)>::new();
     let joined = left
@@ -161,6 +172,7 @@ fn capture(diff: &MapDiff<(usize, usize), (Revision, usize)>, old: &mut Vec<&'st
 fn old_values_are_the_published_payload_after_an_equal_source_reset() {
     use std::sync::Mutex;
 
+    let _serial = scheduler_test_serial();
     let left = CellMap::<usize, Revision>::new();
     let right = CellMap::<usize, usize>::new();
     left.insert(
@@ -216,6 +228,7 @@ fn old_values_are_the_published_payload_after_an_equal_source_reset() {
 #[cfg(feature = "scheduler")]
 #[test]
 fn concurrent_pair_roots_settle_on_the_latest_values() {
+    let _serial = scheduler_test_serial();
     hyphae::scheduler::set_wave_threshold_for_test(4);
     let graphs: Vec<_> = (0..8)
         .map(|_| {
