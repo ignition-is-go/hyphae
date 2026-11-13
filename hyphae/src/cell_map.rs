@@ -14,7 +14,6 @@ use std::{
 
 use dashmap::{DashMap, mapref::entry::Entry};
 use parking_lot::Mutex;
-use uuid::Uuid;
 
 use crate::{
     cell::{Cell, CellImmutable, CellMutable, WeakCell},
@@ -113,7 +112,7 @@ where
     /// Cell for length.
     len_cell: Cell<usize, CellMutable>,
     /// Subscription guards owned by this map (dropped when map drops).
-    owned: DashMap<Uuid, SubscriptionGuard>,
+    owned: Mutex<Vec<SubscriptionGuard>>,
     /// Optional name for debugging. Cold path — set once via `with_name`,
     /// read by per-key cell formatting helpers.
     pub(crate) name: Mutex<Option<Arc<str>>>,
@@ -608,3 +607,6 @@ mod tests;
 
 #[cfg(test)]
 mod point_cell_race_tests;
+
+#[cfg(test)]
+mod owned_guard_tests;

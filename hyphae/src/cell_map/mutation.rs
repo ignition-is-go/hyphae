@@ -9,7 +9,6 @@ use std::{
 
 use dashmap::DashMap;
 use parking_lot::Mutex;
-use uuid::Uuid;
 
 use super::{CellMap, CellMapInner, MapDiff};
 use crate::{
@@ -52,7 +51,7 @@ where
                 prune_ops: AtomicUsize::new(0),
                 diffs_cell,
                 len_cell,
-                owned: DashMap::new(),
+                owned: Mutex::new(Vec::new()),
                 name: Mutex::new(None),
             }),
             _marker: PhantomData,
@@ -61,7 +60,7 @@ where
 
     /// Own a subscription guard, keeping it alive as long as this `CellMap` exists.
     pub fn own(&self, guard: SubscriptionGuard) {
-        self.inner.owned.insert(Uuid::new_v4(), guard);
+        self.inner.owned.lock().push(guard);
     }
 
     /// Own a subscription guard, keeping it alive as long as this `CellMap` exists.
