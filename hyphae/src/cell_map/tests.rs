@@ -619,7 +619,7 @@ fn concurrent_gets_share_the_single_notified_cell() {
     let cells: Vec<_> = rx.into_iter().collect();
     assert_eq!(cells.len(), READERS);
     assert_eq!(map.inner.key_cell_slots.load(Ordering::Relaxed), 1);
-    assert_eq!(map.inner.key_cells.len(), 1);
+    assert_eq!(map.inner.key_cells.get().map_or(0, DashMap::len), 1);
     map.insert("key".to_string(), 42);
 
     assert!(cells.iter().all(|cell| cell.get() == Some(42)));
@@ -711,7 +711,7 @@ fn test_key_cells_pruned_under_churn() {
 
     // Amortized pruning must have kept key_cells bounded far below the
     // number of distinct keys churned (it would otherwise be ~CHURN).
-    let live = map.inner.key_cells.len();
+    let live = map.inner.key_cells.get().map_or(0, DashMap::len);
     assert!(
         live < 256,
         "key_cells should stay bounded under churn, got {live} slots after {KEY_CELL_CHURN} keys",
@@ -813,12 +813,15 @@ fn existing_key_update_does_not_scan_unrelated_key_cache_shard() {
         map.insert(key, key);
     }
     let observers: Vec<_> = (0..256).map(|key| map.get(&key).materialize()).collect();
-    let Some(held) = map.inner.key_cells.get_mut(&0) else {
+    let Some(key_cells) = map.inner.key_cells.get() else {
+        std::panic::resume_unwind(Box::new("missing key-cache fixture"));
+    };
+    let Some(held) = key_cells.get_mut(&0) else {
         std::panic::resume_unwind(Box::new("missing key-cache fixture slot"));
     };
     let target = (1..256).find(|key| {
         matches!(
-            map.inner.key_cells.try_get(key),
+            key_cells.try_get(key),
             dashmap::try_result::TryResult::Present(_)
         )
     });
@@ -877,7 +880,7 @@ fn key_cell_slot_count_tracks_dead_replacement_and_pruning() {
     for value in 0..130 {
         map.insert(999, value);
     }
-    assert_eq!(map.inner.key_cells.len(), 1);
+    assert_eq!(map.inner.key_cells.get().map_or(0, DashMap::len), 1);
     assert_eq!(map.inner.key_cell_slots.load(Ordering::Relaxed), 1);
     map.insert(0, 42);
     assert_eq!(watched.get(), Some(42));
@@ -885,7 +888,7 @@ fn key_cell_slot_count_tracks_dead_replacement_and_pruning() {
     for value in 0..32 {
         map.insert(999, value);
     }
-    assert_eq!(map.inner.key_cells.len(), 0);
+    assert_eq!(map.inner.key_cells.get().map_or(0, DashMap::len), 0);
     assert_eq!(map.inner.key_cell_slots.load(Ordering::Relaxed), 0);
 }
 
@@ -909,13 +912,13 @@ fn concurrent_key_observation_and_pruning_keep_exact_quiescent_slot_count() {
     });
     assert_eq!(
         map.inner.key_cell_slots.load(Ordering::Relaxed),
-        map.inner.key_cells.len()
+        map.inner.key_cells.get().map_or(0, DashMap::len)
     );
     for value in 0..1_000 {
         map.insert("updates".to_owned(), value);
     }
     assert_eq!(map.inner.key_cell_slots.load(Ordering::Relaxed), 1);
-    assert_eq!(map.inner.key_cells.len(), 1);
+    assert_eq!(map.inner.key_cells.get().map_or(0, DashMap::len), 1);
     map.insert("live".to_owned(), 42);
     assert_eq!(watched.get(), Some(42));
 }
@@ -1041,4 +1044,75 @@ fn existing_key_diff_preserves_reentrant_membership_changes() {
             ],
         );
     }
+}
+
+#[test]
+fn key_observers_can_observe_colliding_keys_during_every_mutation() -> Result<(), String> {
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct CollidingKey(u8);
+    impl std::hash::Hash for CollidingKey {
+        fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+            // Every key shares a shard, independently of the map's shard count.
+            std::hash::Hash::hash(&0_u8, state);
+        }
+    }
+    for mutation in 0..10 {
+        let (done, received) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let map = CellMap::<CollidingKey, u32>::new();
+            map.insert(CollidingKey(1), 0);
+            let observed = map.get(&CollidingKey(1)).materialize();
+            let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let callback_armed = armed.clone();
+            let callback_map = map.clone();
+            let guard = observed.subscribe(move |signal| {
+                if matches!(signal, Signal::Value(_)) && callback_armed.load(Ordering::Acquire) {
+                    let other = callback_map.get(&CollidingKey(2)).materialize();
+                    drop(other);
+                }
+            });
+            armed.store(true, Ordering::Release);
+            match mutation {
+                0 => {
+                    map.insert(CollidingKey(1), 1);
+                }
+                1 => map.insert_many(vec![(CollidingKey(1), 1)]),
+                2 => {
+                    map.remove(&CollidingKey(1));
+                }
+                3 => map.remove_many(vec![CollidingKey(1)]),
+                4 => map.replace_all(vec![(CollidingKey(1), 1)]),
+                5 => map.replace_all(vec![]),
+                6 => map.apply_diff_owned(MapDiff::Insert {
+                    key: CollidingKey(1),
+                    value: 1,
+                }),
+                7 => map.apply_diff_owned(MapDiff::Update {
+                    key: CollidingKey(1),
+                    old_value: 0,
+                    new_value: 1,
+                }),
+                8 => map.apply_diff_owned(MapDiff::Remove {
+                    key: CollidingKey(1),
+                    old_value: 0,
+                }),
+                _ => map.apply_batch(vec![MapDiff::Update {
+                    key: CollidingKey(1),
+                    old_value: 0,
+                    new_value: 1,
+                }]),
+            }
+            drop(guard);
+            let _ = done.send(());
+        });
+        received
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .map_err(|error| {
+                format!("mutation {mutation} held a map guard across a callback: {error}")
+            })?;
+        worker
+            .join()
+            .map_err(|_| format!("mutation {mutation} panicked"))?;
+    }
+    Ok(())
 }

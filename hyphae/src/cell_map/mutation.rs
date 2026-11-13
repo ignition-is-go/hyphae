@@ -2,22 +2,20 @@ use std::{
     hash::Hash,
     marker::PhantomData,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicUsize, Ordering},
     },
 };
 
 use dashmap::DashMap;
 use parking_lot::Mutex;
-use uuid::Uuid;
 
+use super::{CellMap, CellMapInner, MapDiff};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     subscription::SubscriptionGuard,
     traits::{CellValue, Mutable},
 };
-
-use super::{CellMap, CellMapInner, MapDiff};
 
 impl<K, V> CellMap<K, V, CellMutable>
 where
@@ -48,12 +46,12 @@ where
         Self {
             inner: Arc::new(CellMapInner {
                 data: DashMap::new(),
-                key_cells: DashMap::new(),
+                key_cells: OnceLock::new(),
                 key_cell_slots: AtomicUsize::new(0),
                 prune_ops: AtomicUsize::new(0),
                 diffs_cell,
                 len_cell,
-                owned: DashMap::new(),
+                owned: Mutex::new(Vec::new()),
                 name: Mutex::new(None),
             }),
             _marker: PhantomData,
@@ -62,7 +60,7 @@ where
 
     /// Own a subscription guard, keeping it alive as long as this `CellMap` exists.
     pub fn own(&self, guard: SubscriptionGuard) {
-        self.inner.owned.insert(Uuid::new_v4(), guard);
+        self.inner.owned.lock().push(guard);
     }
 
     /// Own a subscription guard, keeping it alive as long as this `CellMap` exists.
@@ -90,7 +88,9 @@ where
     /// MUST be called before this method takes any `key_cells` shard `Ref`:
     /// `retain` locks every shard, so holding a `Ref` across it would deadlock.
     fn maybe_prune_key_cells(&self) {
-        let key_cells = &self.inner.key_cells;
+        let Some(key_cells) = self.inner.key_cells.get() else {
+            return;
+        };
         let len = self.inner.key_cell_slots.load(Ordering::Relaxed);
         if len == 0 {
             return;
@@ -108,14 +108,27 @@ where
             return;
         }
         self.inner.prune_ops.store(0, Ordering::Relaxed);
-        key_cells.retain(|_, weak| {
-            if weak.is_alive() {
+        key_cells.retain(|_, slot| {
+            if Arc::strong_count(slot) > 1 || slot.is_alive() {
                 true
             } else {
                 self.inner.key_cell_slots.fetch_sub(1, Ordering::Relaxed);
                 false
             }
         });
+    }
+
+    // Upgrading inside this helper releases the shard guard before any callback.
+    // Observers may materialize another key in this same map, including a key
+    // sharing the shard. Holding a Ref across `set` would deadlock that lookup.
+    fn observed_key_cell(&self, key: &K) -> Option<Cell<Option<V>, CellMutable>> {
+        let slot = self
+            .inner
+            .key_cells
+            .get()?
+            .get(key)
+            .map(|slot| slot.value().clone());
+        slot.and_then(|slot| slot.changed())
     }
 
     fn notify_len_if_changed(&self, previous_len: usize) {
@@ -136,9 +149,7 @@ where
         }
 
         // Notify per-key observers (O(1))
-        if let Some(weak) = self.inner.key_cells.get(&key)
-            && let Some(cell) = weak.upgrade()
-        {
+        if let Some(cell) = self.observed_key_cell(&key) {
             cell.set(Some(value.clone()));
         }
 
@@ -185,9 +196,7 @@ where
             );
             changes.push(diff);
 
-            if let Some(weak) = self.inner.key_cells.get(&key)
-                && let Some(cell) = weak.upgrade()
-            {
+            if let Some(cell) = self.observed_key_cell(&key) {
                 cell.set(Some(value));
             }
         }
@@ -206,9 +215,10 @@ where
         let removed = self.inner.data.remove(key);
 
         if let Some((k, old_value)) = removed {
+            let observed = self.observed_key_cell(&k);
             // Emit diff (O(1) - just notifies subscribers)
             self.inner.diffs_cell.set(MapDiff::Remove {
-                key: k.clone(),
+                key: k,
                 old_value: old_value.clone(),
             });
 
@@ -216,9 +226,7 @@ where
             self.inner.len_cell.set(self.inner.data.len());
 
             // Notify per-key observers (O(1))
-            if let Some(weak) = self.inner.key_cells.get(&k)
-                && let Some(cell) = weak.upgrade()
-            {
+            if let Some(cell) = observed {
                 cell.set(None);
             }
 
@@ -245,9 +253,7 @@ where
                     old_value: old_value.clone(),
                 });
 
-                if let Some(weak) = self.inner.key_cells.get(&k)
-                    && let Some(cell) = weak.upgrade()
-                {
+                if let Some(cell) = self.observed_key_cell(&k) {
                     cell.set(None);
                 }
             }
@@ -294,9 +300,7 @@ where
                     key: k.clone(),
                     old_value,
                 });
-                if let Some(weak) = self.inner.key_cells.get(&k)
-                    && let Some(cell) = weak.upgrade()
-                {
+                if let Some(cell) = self.observed_key_cell(&k) {
                     cell.set(None);
                 }
             }
@@ -319,9 +323,7 @@ where
                     new_value: value.clone(),
                 },
             ));
-            if let Some(weak) = self.inner.key_cells.get(&key)
-                && let Some(cell) = weak.upgrade()
-            {
+            if let Some(cell) = self.observed_key_cell(&key) {
                 cell.set(Some(value));
             }
         }
@@ -353,17 +355,13 @@ where
                 let stale_keys: Vec<K> = self.inner.data.iter().map(|r| r.key().clone()).collect();
                 for key in stale_keys {
                     self.inner.data.remove(&key);
-                    if let Some(weak) = self.inner.key_cells.get(&key)
-                        && let Some(cell) = weak.upgrade()
-                    {
+                    if let Some(cell) = self.observed_key_cell(&key) {
                         cell.set(None);
                     }
                 }
                 for (key, value) in entries {
                     self.inner.data.insert(key.clone(), value.clone());
-                    if let Some(weak) = self.inner.key_cells.get(key)
-                        && let Some(cell) = weak.upgrade()
-                    {
+                    if let Some(cell) = self.observed_key_cell(key) {
                         cell.set(Some(value.clone()));
                     }
                 }
@@ -372,18 +370,14 @@ where
             }
             MapDiff::Insert { key, value } => {
                 let inserted = self.inner.data.insert(key.clone(), value.clone()).is_none();
-                if let Some(weak) = self.inner.key_cells.get(key)
-                    && let Some(cell) = weak.upgrade()
-                {
+                if let Some(cell) = self.observed_key_cell(key) {
                     cell.set(Some(value.clone()));
                 }
                 inserted
             }
             MapDiff::Remove { key, .. } => {
                 let removed = self.inner.data.remove(key).is_some();
-                if let Some(weak) = self.inner.key_cells.get(key)
-                    && let Some(cell) = weak.upgrade()
-                {
+                if let Some(cell) = self.observed_key_cell(key) {
                     cell.set(None);
                 }
                 removed
@@ -402,9 +396,7 @@ where
                     .data
                     .insert(key.clone(), new_value.clone())
                     .is_none();
-                if let Some(weak) = self.inner.key_cells.get(key)
-                    && let Some(cell) = weak.upgrade()
-                {
+                if let Some(cell) = self.observed_key_cell(key) {
                     cell.set(Some(new_value.clone()));
                 }
                 inserted
@@ -443,34 +435,26 @@ where
                     let keys: Vec<K> = map.inner.data.iter().map(|r| r.key().clone()).collect();
                     for key in keys {
                         map.inner.data.remove(&key);
-                        if let Some(weak) = map.inner.key_cells.get(&key)
-                            && let Some(cell) = weak.upgrade()
-                        {
+                        if let Some(cell) = map.observed_key_cell(&key) {
                             cell.set(None);
                         }
                     }
                     for (key, value) in entries {
                         map.inner.data.insert(key.clone(), value.clone());
-                        if let Some(weak) = map.inner.key_cells.get(key)
-                            && let Some(cell) = weak.upgrade()
-                        {
+                        if let Some(cell) = map.observed_key_cell(key) {
                             cell.set(Some(value.clone()));
                         }
                     }
                 }
                 MapDiff::Insert { key, value } => {
                     map.inner.data.insert(key.clone(), value.clone());
-                    if let Some(weak) = map.inner.key_cells.get(key)
-                        && let Some(cell) = weak.upgrade()
-                    {
+                    if let Some(cell) = map.observed_key_cell(key) {
                         cell.set(Some(value.clone()));
                     }
                 }
                 MapDiff::Remove { key, .. } => {
                     map.inner.data.remove(key);
-                    if let Some(weak) = map.inner.key_cells.get(key)
-                        && let Some(cell) = weak.upgrade()
-                    {
+                    if let Some(cell) = map.observed_key_cell(key) {
                         cell.set(None);
                     }
                 }
@@ -484,9 +468,7 @@ where
                         return None;
                     }
                     map.inner.data.insert(key.clone(), new_value.clone());
-                    if let Some(weak) = map.inner.key_cells.get(key)
-                        && let Some(cell) = weak.upgrade()
-                    {
+                    if let Some(cell) = map.observed_key_cell(key) {
                         cell.set(Some(new_value.clone()));
                     }
                 }

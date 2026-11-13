@@ -7,21 +7,20 @@ use std::{
     hash::Hash,
     marker::PhantomData,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 
 use dashmap::{DashMap, mapref::entry::Entry};
 use parking_lot::Mutex;
-use uuid::Uuid;
 
 use crate::{
     cell::{Cell, CellImmutable, CellMutable, WeakCell},
     pipeline::{Definite, Materialize},
     signal::Signal,
     subscription::SubscriptionGuard,
-    traits::{CellValue, Gettable, Mutable, Watchable},
+    traits::{CellValue, Mutable, Watchable},
 };
 
 mod diff;
@@ -30,6 +29,65 @@ mod projection;
 
 pub use diff::MapDiff;
 use projection::{EntryProjection, KeyProjection, ProjectionOwner, ValueProjection};
+
+struct PointCellSlot<V: CellValue> {
+    state: Mutex<PointCellState<V>>,
+}
+
+struct PointCellState<V: CellValue> {
+    cell: Option<WeakCell<Option<V>, CellMutable>>,
+    revision: usize,
+}
+
+impl<V: CellValue> PointCellSlot<V> {
+    const fn new() -> Self {
+        Self {
+            state: Mutex::new(PointCellState {
+                cell: None,
+                revision: 0,
+            }),
+        }
+    }
+
+    fn snapshot(&self) -> (usize, Option<Cell<Option<V>, CellMutable>>) {
+        let state = self.state.lock();
+        (
+            state.revision,
+            state.cell.as_ref().and_then(WeakCell::upgrade),
+        )
+    }
+
+    fn publish(
+        &self,
+        revision: usize,
+        candidate: &Cell<Option<V>, CellMutable>,
+    ) -> Option<Cell<Option<V>, CellMutable>> {
+        let mut state = self.state.lock();
+        if let Some(existing) = state.cell.as_ref().and_then(WeakCell::upgrade) {
+            return Some(existing);
+        }
+        if state.revision != revision {
+            return None;
+        }
+        state.cell = Some(candidate.downgrade());
+        drop(state);
+        Some(candidate.clone())
+    }
+
+    fn changed(&self) -> Option<Cell<Option<V>, CellMutable>> {
+        let mut state = self.state.lock();
+        state.revision = state.revision.wrapping_add(1);
+        state.cell.as_ref().and_then(WeakCell::upgrade)
+    }
+
+    fn is_alive(&self) -> bool {
+        self.state
+            .lock()
+            .cell
+            .as_ref()
+            .is_some_and(WeakCell::is_alive)
+    }
+}
 
 pub(crate) struct CellMapInner<K, V>
 where
@@ -40,12 +98,12 @@ where
     pub(crate) data: DashMap<K, V>,
     /// Cached per-key observation cells.
     ///
-    /// Entries are `WeakCell`s: once every strong handle a caller holds from
+    /// Slots hold only `WeakCell`s: once every strong handle a caller holds from
     /// `get(k)` drops, the weak dangles but its slot lingers here. Left
     /// unchecked this is an unbounded leak on maps with high key churn (every
     /// distinct key ever observed keeps a slot forever). [`maybe_prune_key_cells`]
     /// amortizes a sweep of dead weaks across mutations to keep it bounded.
-    key_cells: DashMap<K, WeakCell<Option<V>, CellMutable>>,
+    key_cells: OnceLock<DashMap<K, Arc<PointCellSlot<V>>>>,
     key_cell_slots: AtomicUsize,
     /// Mutation counter driving amortized pruning of dead `key_cells` weaks.
     prune_ops: AtomicUsize,
@@ -54,7 +112,7 @@ where
     /// Cell for length.
     len_cell: Cell<usize, CellMutable>,
     /// Subscription guards owned by this map (dropped when map drops).
-    owned: DashMap<Uuid, SubscriptionGuard>,
+    owned: Mutex<Vec<SubscriptionGuard>>,
     /// Optional name for debugging. Cold path — set once via `with_name`,
     /// read by per-key cell formatting helpers.
     pub(crate) name: Mutex<Option<Arc<str>>>,
@@ -193,40 +251,43 @@ where
     /// underlying per-key cell, but that cache is not part of the public API.
     #[track_caller]
     pub fn get(&self, key: &K) -> impl Materialize<Option<V>, Definite> + use<K, V, M> {
-        // Snapshot before entering the key-cell shard: mutation paths update data
-        // before observing this cache, so holding both locks would invert their order.
-        let initial = self.inner.data.get(key).map(|entry| entry.value().clone());
-        let candidate = Cell::new(initial.clone());
-        if let Some(map_name) = self.inner.name.lock().as_ref() {
-            drop(candidate.clone().with_name(format!("{map_name}[{key:?}]")));
-        }
-
-        // Install exactly one live cell per key. Concurrent `get` calls must not
-        // return different cells, because only the cached winner receives diffs.
-        let cell = match self.inner.key_cells.entry(key.clone()) {
-            Entry::Occupied(mut slot) => {
-                if let Some(existing) = slot.get().upgrade() {
-                    return existing.lock();
-                }
-                slot.insert(candidate.downgrade());
-                candidate
-            }
-            Entry::Vacant(slot) => {
-                let inserted = slot.insert(candidate.downgrade());
+        let key_cells = self.inner.key_cells.get_or_init(DashMap::new);
+        let reserved = key_cells.get(key).map(|slot| slot.value().clone());
+        let slot = reserved.unwrap_or_else(|| match key_cells.entry(key.clone()) {
+            Entry::Occupied(slot) => slot.get().clone(),
+            Entry::Vacant(entry) => {
+                let slot = Arc::new(PointCellSlot::new());
+                let inserted = entry.insert(slot.clone());
                 self.inner.key_cell_slots.fetch_add(1, Ordering::Relaxed);
                 drop(inserted);
-                candidate
+                slot
             }
-        };
-
-        // Close the data-read/cache-install race. Do not overwrite a concurrent
-        // mutation that already updated the newly cached cell.
-        let latest = self.inner.data.get(key).map(|entry| entry.value().clone());
-        if latest != initial && cell.get() == initial {
-            cell.set(latest);
+        });
+        let (mut revision, cached) = slot.snapshot();
+        if let Some(cached) = cached {
+            return cached.lock();
         }
-
-        cell.lock()
+        let mut current = self.inner.data.get(key).map(|entry| entry.value().clone());
+        let map_name = self.inner.name.lock().clone();
+        let point_name = map_name.map(|name| Arc::<str>::from(format!("{name}[{key:?}]")));
+        loop {
+            let candidate = Cell::new(current);
+            if let Some(point_name) = &point_name {
+                drop(candidate.clone().with_name(point_name.clone()));
+            }
+            // NOTE(cx): Cloning may mutate another key. Only this key's writes
+            // invalidate the seed, and user code runs outside the slot mutex.
+            if let Some(cell) = slot.publish(revision, &candidate) {
+                return cell.lock();
+            }
+            drop(candidate);
+            let (next_revision, cached) = slot.snapshot();
+            if let Some(cached) = cached {
+                return cached.lock();
+            }
+            revision = next_revision;
+            current = self.inner.data.get(key).map(|entry| entry.value().clone());
+        }
     }
 
     /// Build an observable pipeline of all entries.
@@ -540,3 +601,12 @@ where
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod point_cell_race_tests;
+
+#[cfg(test)]
+mod owned_guard_tests;
+
+#[cfg(test)]
+mod lazy_point_cache_tests;
