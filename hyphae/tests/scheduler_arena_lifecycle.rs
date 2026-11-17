@@ -65,8 +65,8 @@ impl Drop for ReentrantCleanup {
             temporary.set(2);
             drop(temporary);
             assert!(
-                weak.is_alive(),
-                "queued work must retain its captured Cell until the outer drain"
+                !weak.is_alive(),
+                "queued work kept alive a Cell that nothing else holds"
             );
             *self
                 .temporary_weak

@@ -508,7 +508,14 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         // bool load when the feature is on but no batch is open.
         #[cfg(feature = "scheduler")]
         if crate::scheduler::tick_active() {
-            let cell = self.clone();
+            // Weak: the queued op must not be what keeps this cell alive. If
+            // its source is rewritten before the op runs, the rewrite reaches
+            // the cell through the op's reference and queues a fresh op that
+            // holds it again, so a cell nobody uses any more never drops, never
+            // unsubscribes, and keeps recomputing for as long as the queue
+            // stays busy. A cell with no other holder has no subscribers left
+            // to tell, so skipping its op changes nothing observable.
+            let cell = self.downgrade();
             // A terminal signal must not coalesce over a value it follows (an
             // emit-then-complete operator would otherwise lose its final value
             // under `batch`) — see [`crate::scheduler::enqueue`].
@@ -520,8 +527,10 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
                 dependency,
                 terminal,
                 Box::new(move || {
-                    cell.write_value(&signal);
-                    cell.fanout(&signal);
+                    if let Some(cell) = cell.upgrade() {
+                        cell.write_value(&signal);
+                        cell.fanout(&signal);
+                    }
                 }),
             );
             return;
