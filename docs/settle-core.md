@@ -333,5 +333,6 @@ that reach a `Latest` node if that walk shows up in a profile.
 `settle::stats()` returns process-wide totals since start: event sets
 submitted, runs settled, fanouts, duplicate fanouts (a node that fanned out
 more than once in one run), lock misses, lock waits, deferred writes, and
-nanoseconds the settle lock was held, the longest single hold, and hand-overs.
+nanoseconds the settle lock was held, the longest single hold, hand-overs, and
+empty event sets queued by `flush`.
 They are relaxed atomics and always on.

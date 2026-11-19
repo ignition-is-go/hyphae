@@ -297,6 +297,8 @@ pub struct SettleStats {
     pub max_hold_nanos: u64,
     /// Times a holder left work queued and woke a sleeping writer to continue.
     pub handovers: u64,
+    /// Empty event sets that [`flush`] queued to wait behind earlier ones.
+    pub flush_sets: u64,
 }
 
 static EVENT_SETS: AtomicU64 = AtomicU64::new(0);
@@ -309,6 +311,7 @@ static DEFERRED_WRITES: AtomicU64 = AtomicU64::new(0);
 static SETTLE_NANOS: AtomicU64 = AtomicU64::new(0);
 static MAX_HOLD_NANOS: AtomicU64 = AtomicU64::new(0);
 static HANDOVERS: AtomicU64 = AtomicU64::new(0);
+static FLUSH_SETS: AtomicU64 = AtomicU64::new(0);
 
 /// Read the process-wide settle counters.
 #[must_use]
@@ -324,6 +327,7 @@ pub fn stats() -> SettleStats {
         settle_nanos: SETTLE_NANOS.load(Ordering::Relaxed),
         max_hold_nanos: MAX_HOLD_NANOS.load(Ordering::Relaxed),
         handovers: HANDOVERS.load(Ordering::Relaxed),
+        flush_sets: FLUSH_SETS.load(Ordering::Relaxed),
     }
 }
 
@@ -742,6 +746,7 @@ pub fn flush() {
         MODE.set(Mode::Wait);
         restore
     };
+    FLUSH_SETS.fetch_add(1, Ordering::Relaxed);
     push(EventSet {
         barrier: false,
         keys: Vec::new(),
