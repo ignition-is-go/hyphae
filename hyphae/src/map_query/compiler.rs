@@ -21,7 +21,7 @@ use registry::{
     TypedRelationshipBinding,
 };
 
-pub use dispatch::{QUERY_POISONED_MESSAGE, QueryPoison};
+pub use dispatch::{QUERY_POISONED_MESSAGE, QueryGate, QueryPoison};
 pub use registry::DeferredPhysical;
 
 /// Stable identity of a reactive root for the duration of query compilation.
@@ -56,6 +56,13 @@ pub struct CompileContext {
 impl CompileContext {
     pub(crate) fn query_poison(&self) -> QueryPoison {
         self.query_poison.clone()
+    }
+
+    pub(crate) fn query_gate(&self) -> QueryGate {
+        QueryGate {
+            dispatch: Arc::clone(&self.query_dispatch),
+            poison: self.query_poison.clone(),
+        }
     }
 
     /// Register a typed root entry point without activating its subscription.

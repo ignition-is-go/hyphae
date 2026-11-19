@@ -29,7 +29,8 @@ impl QueryPoison {
     }
 }
 
-/// One publication transaction gate shared by every physical root in a query.
+/// One publication transaction gate shared by every entry into a query's
+/// sinks: each physical root, and each [`QueryGate`] event.
 ///
 /// The first event remains borrowed and statically typed. Only an event that
 /// arrives behind active fanout is cloned and type-erased into the FIFO.
@@ -80,6 +81,53 @@ pub(super) fn dispatch_query_root<K, V>(
     K: Clone + Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
 {
+    run_gated(
+        dispatch,
+        poison,
+        (),
+        |()| fanout_root_diff(sinks, diff),
+        |()| {
+            let sinks = Arc::clone(sinks);
+            let diff = diff.clone();
+            Box::new(move || fanout_root_diff(&sinks, &diff))
+        },
+    );
+}
+
+/// The gate of one compiled query, for an event that enters the query's
+/// sinks from somewhere other than a root.
+///
+/// Every entry into a query's sinks passes this gate, so one thread at a time
+/// runs them. Nodes of one height fire at the same time; without the gate a
+/// root fanout and such an event could run one stateful sink on two threads
+/// and publish their results in the wrong order.
+#[derive(Clone)]
+pub struct QueryGate {
+    pub(super) dispatch: Arc<Mutex<QueryDispatch>>,
+    pub(super) poison: QueryPoison,
+}
+
+impl QueryGate {
+    /// Run `event` now when no fanout of the query is active. Otherwise the
+    /// active thread runs it after the fanout, in arrival order.
+    pub fn run(&self, event: impl FnOnce() + Send + 'static) {
+        run_gated(
+            &self.dispatch,
+            &self.poison,
+            event,
+            |event| event(),
+            |event| Box::new(event),
+        );
+    }
+}
+
+fn run_gated<E>(
+    dispatch: &Mutex<QueryDispatch>,
+    poison: &QueryPoison,
+    event: E,
+    run: impl FnOnce(E),
+    queue: impl FnOnce(E) -> QueuedQueryEvent,
+) {
     {
         let mut state = dispatch
             .lock()
@@ -89,11 +137,7 @@ pub(super) fn dispatch_query_root<K, V>(
             panic_query_poisoned();
         }
         if state.active {
-            let sinks = Arc::clone(sinks);
-            let diff = diff.clone();
-            state
-                .queued
-                .push_back(Box::new(move || fanout_root_diff(&sinks, &diff)));
+            state.queued.push_back(queue(event));
             return;
         }
         state.active = true;
@@ -103,7 +147,7 @@ pub(super) fn dispatch_query_root<K, V>(
         dispatch,
         armed: true,
     };
-    fanout_root_diff(sinks, diff);
+    run(event);
 
     loop {
         let mut state = dispatch

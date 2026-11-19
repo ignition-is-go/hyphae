@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     hash::Hash,
     marker::PhantomData,
     sync::{Arc, Mutex},
@@ -16,21 +16,11 @@ use crate::{
 #[path = "map_values_cell_initialization_tests.rs"]
 mod initialization_tests;
 
-enum MapValuesEvent<K, V, U> {
-    Source(MapDiff<K, V>),
-    Inner { key: K, token: Arc<()>, value: U },
-}
-
 struct MapValuesRow<U> {
     token: Arc<()>,
     value: U,
     /// Key of the row's inner subscription in `MapValuesRuntime::inner`.
     guard: Option<uuid::Uuid>,
-}
-
-struct MapValuesQueue<K, V, U> {
-    events: VecDeque<MapValuesEvent<K, V, U>>,
-    idle_rows: Option<HashMap<K, MapValuesRow<U>>>,
 }
 
 struct MapValuesRuntime<K, V, U, W, F>
@@ -42,7 +32,12 @@ where
     F: Fn(&K, &V) -> W + Send + Sync + 'static,
 {
     mapper: Arc<F>,
-    queue: Mutex<MapValuesQueue<K, V, U>>,
+    /// Locked only inside `gate`, so it is never contended and a row's
+    /// replay during `attach` queues behind the event that attached it.
+    rows: Mutex<HashMap<K, MapValuesRow<U>>>,
+    /// A row update enters the query here. The source diff arrives inside
+    /// the gate already, from its root.
+    gate: crate::map_query::compiler::QueryGate,
     sink: crate::map_query::BoxedMapDiffSink<K, U>,
     /// Owns every row's inner subscription and is never written. The output
     /// depends on it, so the output sits above every inner cell and a row
@@ -108,11 +103,11 @@ where
             if let Signal::Value(value) = signal
                 && let Some(runtime) = runtime.upgrade()
             {
-                runtime.enqueue(MapValuesEvent::Inner {
-                    key: key_for_sub.clone(),
-                    token: Arc::clone(&token),
-                    value: (**value).clone(),
-                });
+                let key = key_for_sub.clone();
+                let token = Arc::clone(&token);
+                let value = (**value).clone();
+                let gate = runtime.gate.clone();
+                gate.run(move || runtime.row_changed(key, &token, value));
             }
         });
         if let Some(row) = rows.get_mut(key) {
@@ -173,63 +168,46 @@ where
         }
     }
 
-    fn enqueue(self: &Arc<Self>, event: MapValuesEvent<K, V, U>) {
-        let mut rows = {
-            let mut queue = self
-                .queue
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            queue.events.push_back(event);
-            let Some(rows) = queue.idle_rows.take() else {
-                return;
-            };
-            drop(queue);
-            rows
-        };
-        loop {
-            let event = {
-                let mut queue = self
-                    .queue
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let Some(event) = queue.events.pop_front() else {
-                    queue.idle_rows = Some(rows);
-                    return;
-                };
-                drop(queue);
-                event
-            };
-            match event {
-                MapValuesEvent::Source(MapDiff::Batch { changes }) => {
-                    let mut atomic_changes = Vec::new();
-                    MapDiff::Batch { changes }.flatten_into(&mut atomic_changes);
-                    let mut downstream_changes = Vec::new();
-                    for change in &atomic_changes {
-                        self.apply(&mut rows, change, Some(&mut downstream_changes));
-                    }
-                    if !downstream_changes.is_empty() {
-                        (self.sink)(&MapDiff::Batch {
-                            changes: downstream_changes,
-                        });
-                    }
-                }
-                MapValuesEvent::Source(diff) => self.apply(&mut rows, &diff, None),
-                MapValuesEvent::Inner { key, token, value } => {
-                    let Some(row) = rows.get_mut(&key) else {
-                        continue;
-                    };
-                    if !Arc::ptr_eq(&row.token, &token) || row.value == value {
-                        continue;
-                    }
-                    let old_value = std::mem::replace(&mut row.value, value.clone());
-                    (self.sink)(&MapDiff::Update {
-                        key,
-                        old_value,
-                        new_value: value,
-                    });
-                }
+    fn source_changed(self: &Arc<Self>, diff: &MapDiff<K, V>) {
+        let mut rows = self
+            .rows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let MapDiff::Batch { .. } = diff {
+            let mut atomic_changes = Vec::new();
+            diff.clone().flatten_into(&mut atomic_changes);
+            let mut downstream_changes = Vec::new();
+            for change in &atomic_changes {
+                self.apply(&mut rows, change, Some(&mut downstream_changes));
             }
+            if !downstream_changes.is_empty() {
+                (self.sink)(&MapDiff::Batch {
+                    changes: downstream_changes,
+                });
+            }
+        } else {
+            self.apply(&mut rows, diff, None);
         }
+    }
+
+    fn row_changed(&self, key: K, token: &Arc<()>, value: U) {
+        let mut rows = self
+            .rows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(row) = rows.get_mut(&key) else {
+            return;
+        };
+        if !Arc::ptr_eq(&row.token, token) || row.value == value {
+            return;
+        }
+        let old_value = std::mem::replace(&mut row.value, value.clone());
+        drop(rows);
+        (self.sink)(&MapDiff::Update {
+            key,
+            old_value,
+            new_value: value,
+        });
     }
 }
 
@@ -259,17 +237,15 @@ where
 {
     let runtime = Arc::new(MapValuesRuntime::<K, V, U, W, F> {
         mapper: Arc::new(mapper),
-        queue: Mutex::new(MapValuesQueue {
-            events: VecDeque::new(),
-            idle_rows: Some(HashMap::new()),
-        }),
+        rows: Mutex::new(HashMap::new()),
+        gate: cx.query_gate(),
         sink,
         inner: crate::Cell::new(()),
         marker: PhantomData,
     });
     let inner = SubscriptionGuard::dependency(&runtime.inner);
     let upstream_sink = move |diff: &MapDiff<K, V>| {
-        runtime.enqueue(MapValuesEvent::Source(diff.clone()));
+        runtime.source_changed(diff);
     };
 
     let mut guards = crate::map_query::compile_runtime_into(source, cx, Arc::new(upstream_sink));
