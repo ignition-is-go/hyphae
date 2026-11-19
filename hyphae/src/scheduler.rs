@@ -71,6 +71,34 @@
 //! today depends on (there was no cross-thread coordination to depend on
 //! before this).
 //!
+//! # Passes
+//!
+//! Draining in height order has a failure mode under load. A write that arrives
+//! while a drain is in flight sits at a low height, so it is popped ahead of the
+//! deeper ops the drain still owes. That is what lets a fresh write settle
+//! promptly, and for a short drain it costs nothing. But a writer that produces
+//! work faster than one full traversal keeps the drain at the top of the graph:
+//! shallow cells stay current and deep cells stop updating, for as long as the
+//! load lasts.
+//!
+//! So a drain is divided into **passes**. A pass admits arrivals from outside
+//! itself only for a short merge window after it starts
+//! ([`DEFAULT_PASS_MERGE_WINDOW_MICROS`]). After that, outside arrivals are held,
+//! coalescing per cell, and become the next pass once the current one has
+//! reached its deepest cell. Propagation made by the pass itself always joins
+//! it, on whichever thread it runs. The result is a bound: no cell waits longer
+//! than the window plus one pass. A pass that finishes inside the window behaves
+//! exactly as an undivided drain did.
+//!
+//! One rule keeps this safe. Writes to a single cell are applied in the order
+//! they arrived, whichever pass they land in: once a cell has a held write, every
+//! later write to it is held behind it, including one made by the pass in flight.
+//! Without that, an older held value could be applied after a newer one and win,
+//! and an event cell could deliver its events out of order.
+//!
+//! [`stats`] exposes how much of the time the scheduler spends draining and how
+//! long a pass takes, so saturation can be observed from outside.
+//!
 //! # Wave-parallel draining, cheaply
 //!
 //! Two cells at the *same* height can never depend on each other (height is
@@ -145,7 +173,7 @@
 
 use std::sync::{
     LazyLock,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
 use parking_lot::Mutex;
@@ -174,6 +202,98 @@ thread_local! {
     /// because it tracks one call stack's nesting; the cross-thread batch
     /// count is [`SharedTick::depth`].
     static BATCH_NEST: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// How many popped ops THIS thread is currently running. Non-zero means a
+    /// write made here is propagation from the pass in flight, so it joins that
+    /// pass. Zero means the write is a fresh arrival and waits for the next pass
+    /// (see [`SharedTick::next`]). Set around each op wherever it runs, so the
+    /// wave pool's threads are covered too.
+    static PASS_OPS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+static PASSES: AtomicU64 = AtomicU64::new(0);
+static CELLS_SETTLED: AtomicU64 = AtomicU64::new(0);
+static DRAIN_NANOS: AtomicU64 = AtomicU64::new(0);
+
+/// Cumulative scheduler work since process start.
+///
+/// Sample it on an interval and difference the samples. `drain_nanos` per
+/// second of wall time is the fraction of one thread the scheduler is using:
+/// near one, propagation is saturated and every pass is running late.
+/// `drain_nanos / passes` is the mean time one pass takes, which is how stale a
+/// deep cell can be.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SchedulerStats {
+    /// Passes started. A pass settles every cell dirtied before it began.
+    pub passes: u64,
+    /// Cells settled across all passes.
+    pub cells_settled: u64,
+    /// Wall time spent draining, in nanoseconds.
+    pub drain_nanos: u64,
+}
+
+/// Read the cumulative [`SchedulerStats`].
+#[must_use]
+pub fn stats() -> SchedulerStats {
+    SchedulerStats {
+        passes: PASSES.load(Ordering::Relaxed),
+        cells_settled: CELLS_SETTLED.load(Ordering::Relaxed),
+        drain_nanos: DRAIN_NANOS.load(Ordering::Relaxed),
+    }
+}
+
+/// Adds the time since it was created to [`DRAIN_NANOS`] when dropped.
+struct DrainClock(crate::platform::Instant);
+
+impl Drop for DrainClock {
+    fn drop(&mut self) {
+        let nanos = u64::try_from(self.0.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        DRAIN_NANOS.fetch_add(nanos, Ordering::Relaxed);
+    }
+}
+
+/// Marks this thread as running a popped op for the guard's lifetime.
+struct PassOp;
+
+impl PassOp {
+    fn enter() -> Self {
+        PASS_OPS.with(|ops| ops.set(ops.get().saturating_add(1)));
+        Self
+    }
+}
+
+impl Drop for PassOp {
+    fn drop(&mut self) {
+        PASS_OPS.with(|ops| ops.set(ops.get().saturating_sub(1)));
+    }
+}
+
+fn in_pass() -> bool {
+    PASS_OPS.with(|ops| ops.get() > 0)
+}
+
+/// Carries "this work is propagation of the pass in flight" onto other threads.
+///
+/// An operator that fans its work out across the worker pool captures this
+/// before dispatching and enters it in each job. Without it a write made on a
+/// pool thread looks like a fresh arrival from outside the pass, and can be
+/// held for the next pass while its siblings settle in this one.
+#[derive(Clone, Copy)]
+pub(crate) struct PassScope(bool);
+
+impl PassScope {
+    pub(crate) fn capture() -> Self {
+        Self(in_pass())
+    }
+
+    pub(crate) fn enter(self) -> Option<impl Drop> {
+        self.0.then(PassOp::enter)
+    }
+}
+
+/// Run one popped op, catching its panic.
+fn run_op(run: PendingRun) -> Option<Box<dyn std::any::Any + Send>> {
+    let _op = PassOp::enter();
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).err()
 }
 
 // Height-cache invalidation is **per-node**, not global. Each cell carries its
@@ -191,7 +311,27 @@ thread_local! {
 /// per-thread one that silently doesn't hold at the seams where two threads'
 /// timers/dispatch converge on a shared cell.
 struct SharedTick {
+    /// The pass in flight: ops queued by its own propagation, drained in height
+    /// order until empty.
     ready: ReadyQueue,
+    /// Arrivals from outside the pass in flight that came after its merge
+    /// window closed. They wait here, coalescing per cell, and become the next
+    /// pass when `ready` runs empty.
+    ///
+    /// An arrival at a low height is popped ahead of the deeper ops the pass
+    /// still owes. That is what makes a fresh write settle promptly, and for a
+    /// short pass it is harmless. But a writer that outpaces one full pass
+    /// would keep the drain at the top of the graph forever: deep cells would
+    /// never run while shallow ones stayed current. Closing the window bounds
+    /// that. No cell waits longer than the window plus one pass, and overload
+    /// shows up as fewer, larger passes across the whole graph.
+    next: ReadyQueue,
+    /// Cells with work waiting in `next`. Any further write to one of them
+    /// joins it there, including a write made by the pass in flight, so a
+    /// cell's writes are never applied out of the order they arrived in.
+    held: FxHashSet<Uuid>,
+    /// When the pass in flight popped its first wave, or `None` between passes.
+    pass_started: Option<crate::platform::Instant>,
     /// Number of currently-open [`batch`] calls, summed across every thread.
     /// Together with `draining` it gates whether a fresh `notify` defers:
     /// deferral is on whenever `depth > 0 || draining` (a batch is open
@@ -220,9 +360,54 @@ impl SharedTick {
         id: Uuid,
         height: u64,
         coalesce: bool,
+        in_pass: bool,
         run: Box<dyn FnOnce() + Send>,
     ) -> Option<PendingRun> {
-        self.ready.enqueue(id, height, coalesce, run)
+        let joins_pass = (in_pass || self.merge_window_open())
+            && (self.held.is_empty() || !self.held.contains(&id));
+        if joins_pass {
+            self.ready.enqueue(id, height, coalesce, run)
+        } else {
+            self.held.insert(id);
+            self.next.enqueue(id, height, coalesce, run)
+        }
+    }
+
+    /// Whether an arrival from outside the pass may still join it.
+    fn merge_window_open(&self) -> bool {
+        self.pass_started
+            .is_none_or(|started| started.elapsed() < pass_merge_window())
+    }
+
+    /// Pop the next wave of the pass in flight, starting a new pass when the
+    /// current one has finished. `None` means there is nothing left to drain.
+    fn pop_wave(&mut self) -> Option<Vec<Vec<PendingRun>>> {
+        if self.ready.is_empty() {
+            self.pass_started = None;
+            if !self.begin_next_pass() {
+                return None;
+            }
+        }
+        if self.pass_started.is_none() {
+            self.pass_started = Some(crate::platform::Instant::now());
+            PASSES.fetch_add(1, Ordering::Relaxed);
+        }
+        self.pop_min_height_groups()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.ready.is_empty() && self.next.is_empty()
+    }
+
+    /// Start the next pass if the one in flight has finished. Returns whether
+    /// there is now work to pop.
+    fn begin_next_pass(&mut self) -> bool {
+        if self.next.is_empty() {
+            return false;
+        }
+        std::mem::swap(&mut self.ready, &mut self.next);
+        self.held.clear();
+        true
     }
 
     /// Remove every op at the current minimum height, **grouped by cell id**,
@@ -245,6 +430,9 @@ impl SharedTick {
 static TICK: LazyLock<Mutex<SharedTick>> = LazyLock::new(|| {
     Mutex::new(SharedTick {
         ready: ReadyQueue::new(),
+        next: ReadyQueue::new(),
+        held: FxHashSet::default(),
+        pass_started: None,
         depth: 0,
         draining: false,
     })
@@ -346,11 +534,42 @@ pub(crate) fn enqueue(id: Uuid, node: &dyn DepNode, terminal: bool, run: Box<dyn
     }
     let height = compute_height(node);
     let coalesce = !node.no_coalesce() && !terminal;
-    let displaced = guard.enqueue_locked(id, height, coalesce, run);
+    let displaced = guard.enqueue_locked(id, height, coalesce, in_pass(), run);
     drop(guard);
     // Captured values can own Cells whose final Drop re-enters scheduler paths.
     // Never destroy a superseded closure while holding the process-wide tick.
     drop(displaced);
+}
+
+/// How long after a pass starts an arrival from outside it may still join it.
+///
+/// Long enough that an ordinary pass finishes inside it, so a fresh write
+/// settles as promptly as it always has. Short enough that under sustained
+/// load the pass is left alone to reach its deepest cells. Overridable at
+/// startup via `HYPHAE_PASS_MERGE_WINDOW_US`.
+const DEFAULT_PASS_MERGE_WINDOW_MICROS: u64 = 2_000;
+
+static PASS_MERGE_WINDOW_MICROS: LazyLock<AtomicU64> = LazyLock::new(|| {
+    AtomicU64::new(
+        std::env::var("HYPHAE_PASS_MERGE_WINDOW_US")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(DEFAULT_PASS_MERGE_WINDOW_MICROS),
+    )
+});
+
+fn pass_merge_window() -> std::time::Duration {
+    std::time::Duration::from_micros(PASS_MERGE_WINDOW_MICROS.load(Ordering::Relaxed))
+}
+
+/// Override the pass merge window. For tests that need a pass boundary at a
+/// known point; a zero window admits nothing to the pass in flight.
+#[doc(hidden)]
+pub fn set_pass_merge_window_for_test(window: std::time::Duration) {
+    PASS_MERGE_WINDOW_MICROS.store(
+        u64::try_from(window.as_micros()).unwrap_or(u64::MAX),
+        Ordering::Relaxed,
+    );
 }
 
 /// Default minimum number of distinct-cell *groups* in one height-wave before
@@ -420,10 +639,7 @@ pub fn set_wave_threshold_for_test(groups: usize) {
 #[cfg(not(target_arch = "wasm32"))]
 fn run_wave(groups: Vec<Vec<Box<dyn FnOnce() + Send>>>) -> Vec<Box<dyn std::any::Any + Send>> {
     fn run_group(group: Vec<Box<dyn FnOnce() + Send>>) -> Vec<Box<dyn std::any::Any + Send>> {
-        group
-            .into_iter()
-            .filter_map(|run| std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).err())
-            .collect()
+        group.into_iter().filter_map(run_op).collect()
     }
     fn run_sequential(
         groups: Vec<Vec<Box<dyn FnOnce() + Send>>>,
@@ -450,11 +666,7 @@ fn run_wave(groups: Vec<Vec<Box<dyn FnOnce() + Send>>>) -> Vec<Box<dyn std::any:
 /// native-only). Groups run in order, ops within each in arrival order.
 #[cfg(target_arch = "wasm32")]
 fn run_wave(groups: Vec<Vec<Box<dyn FnOnce() + Send>>>) -> Vec<Box<dyn std::any::Any + Send>> {
-    groups
-        .into_iter()
-        .flatten()
-        .filter_map(|run| std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).err())
-        .collect()
+    groups.into_iter().flatten().filter_map(run_op).collect()
 }
 
 /// Drain the shared queue one height-wave at a time until it is empty, then
@@ -485,6 +697,7 @@ fn run_wave(groups: Vec<Vec<Box<dyn FnOnce() + Send>>>) -> Vec<Box<dyn std::any:
 /// concurrent batches' queued work; the first panic seen is returned for the
 /// caller to re-raise after the drain has fully completed.
 fn drain() -> Option<Box<dyn std::any::Any + Send>> {
+    let _clock = DrainClock(crate::platform::Instant::now());
     let mut first_panic: Option<Box<dyn std::any::Any + Send>> = None;
     let mut waves = 0usize;
     loop {
@@ -505,7 +718,7 @@ fn drain() -> Option<Box<dyn std::any::Any + Send>> {
                 drop(guard);
                 return first_panic;
             }
-            if let Some(groups) = guard.pop_min_height_groups() {
+            if let Some(groups) = guard.pop_wave() {
                 drop(guard);
                 groups
             } else {
@@ -515,6 +728,10 @@ fn drain() -> Option<Box<dyn std::any::Any + Send>> {
                 return first_panic;
             }
         };
+        CELLS_SETTLED.fetch_add(
+            u64::try_from(groups.len()).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
         let panics = run_wave(groups);
         if first_panic.is_none() {
             first_panic = panics.into_iter().next();
@@ -621,7 +838,7 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
     let claimed_drain = {
         let mut guard = TICK.lock();
         guard.depth = guard.depth.saturating_sub(1);
-        let claim = outermost && !guard.draining && !guard.ready.is_empty();
+        let claim = outermost && !guard.draining && !guard.is_empty();
         if claim {
             guard.draining = true;
         }

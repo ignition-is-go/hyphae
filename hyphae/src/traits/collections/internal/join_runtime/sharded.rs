@@ -467,11 +467,15 @@ where
         && let Some(pool) = crate::executor::worker_pool()
     {
         use rayon::prelude::*;
+        let pass = crate::scheduler::PassScope::capture();
         return pool.install(|| {
             shards
                 .par_iter_mut()
                 .zip(routed.par_iter())
-                .map(&process)
+                .map(|item| {
+                    let _pass = pass.enter();
+                    process(item)
+                })
                 .collect()
         });
     }

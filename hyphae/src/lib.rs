@@ -201,7 +201,7 @@ pub use pipeline::{
     Definite, Empty, Materialize, Pipeline, PipelineShareExt, Seedness, SharedPipeline,
 };
 #[cfg(feature = "scheduler")]
-pub use scheduler::batch;
+pub use scheduler::{SchedulerStats, batch};
 pub use signal::Signal;
 pub use source::{SampleOnSourceExt, Source, WeakSource};
 pub use subscription::SubscriptionGuard;

@@ -490,12 +490,16 @@ where
                 #[cfg(feature = "region-calibration")]
                 crate::region_calibration::left_parallel_dispatch();
                 use rayon::prelude::*;
+                let pass = crate::scheduler::PassScope::capture();
                 pool.install(|| {
                     shards
                         .par_iter_mut()
                         .zip(routed.into_par_iter())
                         .enumerate()
-                        .map(process)
+                        .map(|item| {
+                            let _pass = pass.enter();
+                            process(item)
+                        })
                         .collect::<Vec<_>>()
                 })
             } else {

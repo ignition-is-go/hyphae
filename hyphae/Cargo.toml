@@ -72,6 +72,10 @@ tasks = ["fmt", "check", "check-wasm", "check-wasm-features", "build", "test", "
 criterion = "0.5"
 seq-macro = "0.3"
 
+[[example]]
+name = "scheduler_deep_starvation"
+required-features = ["scheduler"]
+
 [[bench]]
 name = "latency"
 harness = false

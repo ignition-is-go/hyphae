@@ -52,7 +52,11 @@ impl<T: CellValue> ParallelCell<T> {
             drop(old);
             subs
         };
+        #[cfg(feature = "scheduler")]
+        let pass = crate::scheduler::PassScope::capture();
         platform::par_for_each(subs.as_slice(), |(_, sub)| {
+            #[cfg(feature = "scheduler")]
+            let _pass = pass.enter();
             (sub.callback)(&signal);
         });
     }
@@ -82,7 +86,11 @@ pub trait ParallelExt<T>: Watchable<T> {
                             drop(old);
                             subs
                         };
+                        #[cfg(feature = "scheduler")]
+                        let pass = crate::scheduler::PassScope::capture();
                         platform::par_for_each(subs.as_slice(), |(_, sub)| {
+                            #[cfg(feature = "scheduler")]
+                            let _pass = pass.enter();
                             (sub.callback)(signal);
                         });
                     }

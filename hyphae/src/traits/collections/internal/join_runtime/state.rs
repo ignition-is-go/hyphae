@@ -729,10 +729,12 @@ where
 {
     use rayon::prelude::*;
 
+    let pass = crate::scheduler::PassScope::capture();
     pool.install(|| {
         impacted
             .par_iter()
             .map(|left_key| {
+                let _pass = pass.enter();
                 let desired = state.left_rows.get(left_key).and_then(|left_value| {
                     let right_rows = state
                         .left_join_keys
