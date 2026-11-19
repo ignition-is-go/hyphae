@@ -188,8 +188,8 @@ enum Combine<T> {
 
 | Node | Rule | Reason |
 | --- | --- | --- |
-| A `Cell` written through `Mutable::set` from outside a settle | Latest | State. Sets of one cell that share a settle leave the last value |
-| A `Cell` written through `notify`, or from a callback inside a settle | Each | The operator may carry events. Nothing is dropped |
+| A `Cell` written through `Mutable::set`, when the write goes through the input queue: from outside a settle, or deferred from a callback (section 6) | `Latest` | State. Queued sets of one cell that share a settle leave the last value |
+| A `Cell` written through `notify`, or through `set` from a callback whose write joins the settle in progress | `Each` | The operator may carry events. Nothing is dropped |
 | The output of `join`, `join_vec`, and `switch_map` | `Latest` | Each input's callback emits the full combined state, so the last one holds every settled input. This is the glitch-free join |
 | `CellMap` diff cell | `Fold(MapDiff::compose)` | Diffs of one settle become one `MapDiff::Batch`, in write order. None is dropped |
 | `CellSet` diff cell | `Each` | `SetDiff` has no batch form |
@@ -209,9 +209,15 @@ suppressing equal values breaks event-like cells, and equal writes are under
 
 A cell is state, and a source is events. One thread's consecutive writes to a
 cell never share a settle, because each returns settled before the next
-starts. Writes from different threads, and writes inside one batch, can. A
-caller that needs every one of those delivered uses a `Source`, or gives the
+starts. Writes from different threads, writes inside one batch, and sets that
+callbacks deferred during one settle can. A caller that needs every one of
+those delivered uses a `Source`, writes the cell with `notify`, or gives the
 event sets an exclusive key.
+
+`Latest` on a fan-in output applies to every value, however it was written. An
+event that passes through `join`, `join_vec`, or `switch_map` survives only if
+no other value of the same output shares its settle. Give such events an
+exclusive key so that each one settles alone.
 
 Collections: a `CellMap` mutation is one event set. `CellMap::own` records the
 guard's source as a dependency of the diff cell, and the length cell and each
