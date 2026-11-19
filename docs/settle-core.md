@@ -66,6 +66,7 @@ pub fn submit<R>(keys: &[SettleKey], epoch: Option<Epoch>, f: impl FnOnce() -> R
 pub fn enqueue<R>(keys: &[SettleKey], epoch: Option<Epoch>, f: impl FnOnce() -> R) -> R;
 pub fn flush();
 pub fn stats() -> SettleStats;
+pub fn current_epoch() -> Option<Epoch>;
 
 static INPUT: SegQueue<EventSet>;        // arrival-ordered, lock-free
 static SETTLE: Mutex<()>;                // taken only with try_lock
@@ -141,7 +142,18 @@ The holder walks the popped sets in arrival order and adds each to the current
 run. It closes the run and starts a new one before adding a set when:
 
 - the set carries an exclusive key that the run already holds, or
-- the set is a `Barrier`, or the run holds a `Barrier`.
+- the set is a `Barrier`, or the run holds a `Barrier`, or
+- the set's epoch differs from the run's. A set without an epoch differs
+  from a set with one. An empty set, which `flush` queues, fits any run.
+
+A run therefore has one epoch or none. While it settles,
+`settle::current_epoch()` returns that epoch in every callback, on the
+holder and on a settle pool thread. An event set that a callback queues
+carries the epoch on unless the callback passes its own, so a feedback chain
+keeps the epoch of the write that started it. A caller uses this to
+recognize what a write caused without keeping state in a thread-local,
+which a callback on another thread would not see. Event sets without an
+epoch combine exactly as they did before epochs were read.
 
 Runs settle in order, so arrival order is preserved across runs. A hash
 collision between two keys can only cause an extra split.
@@ -347,8 +359,8 @@ of a few tens of milliseconds had to allow for that.
 
 Today an event set is settled whole inside one run, and a join fires after
 every node below it. A join therefore always has every input that a
-multi-node write touched. The `epoch` argument is accepted and stored on the
-event set, and nothing reads it.
+multi-node write touched. The epoch is kept per run (section 3), not per
+pending value.
 
 If the lock is split by partition, the parts of one write can settle at
 different times, and a join can fire between them. The envelope goes in these
@@ -386,7 +398,8 @@ submitted, runs settled, fanouts, duplicate fanouts (a node that fanned out
 more than once in one run), lock misses, lock waits, deferred writes, and
 nanoseconds the settle lock was held, the longest single hold, hand-overs,
 empty event sets queued by `flush`, waves fired, waves fired on pool threads,
-and the most nodes in one wave.
+the most nodes in one wave, and epoch splits: the times an event set started
+a new run only because its epoch differed.
 They are relaxed atomics and always on.
 
 ## 12. Parallel settling

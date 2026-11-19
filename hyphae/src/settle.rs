@@ -45,12 +45,17 @@ pub enum SettleKey {
     Barrier,
 }
 
-/// Identifies one write that spans several nodes.
+/// Names a write and everything it causes.
 ///
-/// Under the single settle lock an event set is delivered in one settle, so
-/// the epoch changes nothing a subscriber can observe. It is accepted now so
-/// that callers do not change when the lock is split; `docs/settle-core.md`
-/// says where the tag travels then.
+/// A writer attaches an epoch to an event set with [`batch_with`], [`submit`],
+/// or [`enqueue`]. While that set is delivered, [`current_epoch`] returns the
+/// epoch in every callback, and an event set that a callback queues carries
+/// it on unless the callback passes its own. A feedback chain therefore
+/// keeps the epoch of the write that started it, on whichever thread each
+/// link runs.
+///
+/// An event set with an epoch shares a settle only with event sets of the
+/// same epoch. Event sets without one combine with each other as before.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Epoch(NonZeroU64);
 
@@ -93,8 +98,6 @@ pub(crate) trait Write: Send {
 struct EventSet {
     barrier: bool,
     keys: Vec<u64>,
-    /// Not read while one lock settles every event set whole.
-    #[allow(dead_code)]
     epoch: Option<Epoch>,
     writes: Vec<Box<dyn Write>>,
     /// The writers blocked until this set has settled: the one that
@@ -358,6 +361,8 @@ struct Active {
     /// The node now firing; `None` while a run is being seeded.
     firing: Option<Stamp>,
     run_id: u64,
+    /// The epoch of the run now settling.
+    epoch: Option<Epoch>,
     /// The writers waiting on the run now settling.
     waiters: Arc<[Arc<Waiter>]>,
     out: Outbox,
@@ -428,6 +433,9 @@ pub struct SettleStats {
     pub parallel_waves: u64,
     /// The most nodes in one wave.
     pub widest_wave: u64,
+    /// Times an event set started a new settle only because its epoch
+    /// differed from the one before it.
+    pub epoch_splits: u64,
 }
 
 static EVENT_SETS: AtomicU64 = AtomicU64::new(0);
@@ -444,6 +452,7 @@ static FLUSH_SETS: AtomicU64 = AtomicU64::new(0);
 static WAVES: AtomicU64 = AtomicU64::new(0);
 static PARALLEL_WAVES: AtomicU64 = AtomicU64::new(0);
 static WIDEST_WAVE: AtomicU64 = AtomicU64::new(0);
+static EPOCH_SPLITS: AtomicU64 = AtomicU64::new(0);
 
 /// Read the process-wide settle counters.
 #[must_use]
@@ -463,6 +472,7 @@ pub fn stats() -> SettleStats {
         waves: WAVES.load(Ordering::Relaxed),
         parallel_waves: PARALLEL_WAVES.load(Ordering::Relaxed),
         widest_wave: WIDEST_WAVE.load(Ordering::Relaxed),
+        epoch_splits: EPOCH_SPLITS.load(Ordering::Relaxed),
     }
 }
 
@@ -477,6 +487,13 @@ pub(crate) fn record_fire(fired_run: &AtomicU64) {
 
 fn current_run() -> u64 {
     ACTIVE.with_borrow(|active| active.as_ref().map_or(0, |active| active.run_id))
+}
+
+/// The epoch of the event set now being delivered on this thread, or `None`
+/// outside a settle and for an event set without one. See [`Epoch`].
+#[must_use]
+pub fn current_epoch() -> Option<Epoch> {
+    ACTIVE.with_borrow(|active| active.as_ref().and_then(|active| active.epoch))
 }
 
 /// Where a write made right now belongs.
@@ -612,6 +629,7 @@ fn queue(mut set: EventSet) -> Queued {
         DEFERRED_WRITES.fetch_add(1, Ordering::Relaxed);
         ACTIVE.with_borrow_mut(|active| {
             if let Some(active) = active.as_mut() {
+                set.epoch = set.epoch.or(active.epoch);
                 set.waiters = active.waiters.to_vec();
                 for waiter in &set.waiters {
                     waiter.outstanding.fetch_add(1, Ordering::AcqRel);
@@ -647,6 +665,7 @@ fn drain(mut guard: Option<parking_lot::MutexGuard<'static, ()>>) {
         ACTIVE.set(Some(Active {
             firing: None,
             run_id: 0,
+            epoch: None,
             waiters: Arc::default(),
             out: Outbox::default(),
         }));
@@ -694,14 +713,27 @@ fn settle_queued() -> Option<Box<dyn Any + Send>> {
     let mut run: Vec<EventSet> = Vec::new();
     let mut run_keys: FxHashSet<u64> = FxHashSet::default();
     let mut run_barrier = false;
+    let mut run_epoch: Option<Option<Epoch>> = None;
     for _ in 0..INPUT.len() {
         let Some(set) = INPUT.pop() else { break };
         let conflicts = !run.is_empty()
             && (run_barrier || set.barrier || set.keys.iter().any(|key| run_keys.contains(key)));
+        // A run has one epoch, so that `current_epoch` names one write. An
+        // empty set, which `flush` queues, writes nothing and fits any run.
+        let writes = !set.writes.is_empty();
+        let other_epoch = writes && run_epoch.is_some_and(|epoch| epoch != set.epoch);
+        if other_epoch && !conflicts {
+            EPOCH_SPLITS.fetch_add(1, Ordering::Relaxed);
+        }
+        let conflicts = conflicts || other_epoch;
         if conflicts {
             settle_run(std::mem::take(&mut run), &mut frontier, &mut first_panic);
             run_keys.clear();
             run_barrier = false;
+            run_epoch = None;
+        }
+        if writes {
+            run_epoch = Some(set.epoch);
         }
         run_barrier |= set.barrier;
         run_keys.extend(set.keys.iter().copied());
@@ -737,8 +769,10 @@ fn settle_run(
             distinct.push(waiter.clone());
         }
     }
+    let epoch = run.iter().find_map(|set| set.epoch);
     ACTIVE.with_borrow_mut(|active| {
         if let Some(active) = active.as_mut() {
+            active.epoch = epoch;
             active.waiters = distinct.into();
         }
     });

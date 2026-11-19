@@ -23,7 +23,8 @@ use std::{
 use parking_lot::{Condvar, Mutex};
 
 use super::{
-    ACTIVE, Active, Entry, Frontier, Outbox, PARALLEL_WAVES, Waiter, fire_entries, take_outbox,
+    ACTIVE, Active, Entry, Epoch, Frontier, Outbox, PARALLEL_WAVES, Waiter, fire_entries,
+    take_outbox,
 };
 
 const DEFAULT_WAVE_MIN: usize = 64;
@@ -92,6 +93,7 @@ pub(super) fn workers_for(len: usize) -> Option<usize> {
 struct Wave {
     entries: Vec<Entry>,
     run_id: u64,
+    epoch: Option<Epoch>,
     waiters: Arc<[Arc<Waiter>]>,
     /// Entries a thread claims at a time.
     chunk: usize,
@@ -223,6 +225,7 @@ fn pool_thread() {
         ACTIVE.set(Some(Active {
             firing: None,
             run_id: wave.run_id,
+            epoch: wave.epoch,
             waiters: Arc::clone(&wave.waiters),
             out: Outbox::default(),
         }));
@@ -255,15 +258,16 @@ pub(super) fn fire(
         let chunks = len.div_ceil(chunk);
         (chunk, workers.min(chunks).saturating_sub(1))
     };
-    let (run_id, waiters) = ACTIVE.with_borrow(|active| {
+    let (run_id, epoch, waiters) = ACTIVE.with_borrow(|active| {
         active.as_ref().map_or_else(
-            || (0, Arc::default()),
-            |active| (active.run_id, Arc::clone(&active.waiters)),
+            || (0, None, Arc::default()),
+            |active| (active.run_id, active.epoch, Arc::clone(&active.waiters)),
         )
     });
     let wave = Arc::new(Wave {
         entries,
         run_id,
+        epoch,
         waiters,
         chunk,
         next: AtomicUsize::new(0),

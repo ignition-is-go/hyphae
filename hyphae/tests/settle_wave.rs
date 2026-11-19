@@ -14,8 +14,8 @@ use std::{
 };
 
 use hyphae::{
-    Cell, CellImmutable, CellMutable, Gettable, MapExt, Materialize, MergeExt, Mutable, Signal,
-    Source, SubscriptionGuard, Watchable, settle,
+    Cell, CellImmutable, CellMutable, Epoch, Gettable, MapExt, Materialize, MergeExt, Mutable,
+    Signal, Source, SubscriptionGuard, Watchable, batch_with, enqueue, flush, settle,
 };
 use parking_lot::{Mutex, MutexGuard};
 
@@ -288,4 +288,72 @@ fn the_counters_report_waves() {
     assert!(after.waves >= before.waves.saturating_add(2));
     assert!(after.parallel_waves > before.parallel_waves);
     assert!(after.widest_wave >= 32);
+}
+
+#[test]
+fn a_write_and_the_feedback_it_causes_keep_its_epoch_on_every_thread() {
+    let _turn = with_workers(4);
+    let root = Cell::new(0u64);
+    let feedback = Cell::new(0u64);
+    let leaves = leaves(&root, 8);
+    let in_leaves = Arc::new(Mutex::new(Vec::new()));
+    let in_feedback = Arc::new(Mutex::new(Vec::new()));
+    let _guards: Vec<_> = leaves
+        .iter()
+        .map(|leaf| {
+            let (log, feedback) = (in_leaves.clone(), feedback.clone());
+            on_change(leaf, move |value| {
+                log.lock().push(settle::current_epoch());
+                // An input cell, so this write is a later event set.
+                feedback.set(*value);
+            })
+        })
+        .collect();
+    let log = in_feedback.clone();
+    let _feedback_guard = on_change(&feedback, move |_| log.lock().push(settle::current_epoch()));
+    let epoch = Epoch::next();
+
+    batch_with(&[], Some(epoch), || root.set(1));
+    assert_eq!(*in_leaves.lock(), vec![Some(epoch); 8]);
+    let caused = std::mem::take(&mut *in_feedback.lock());
+    assert!(!caused.is_empty());
+    assert!(caused.iter().all(|seen| *seen == Some(epoch)));
+    assert_eq!(settle::current_epoch(), None, "no settle is in progress");
+
+    in_leaves.lock().clear();
+    root.set(2);
+    assert_eq!(*in_leaves.lock(), vec![None; 8], "a plain write");
+}
+
+#[test]
+fn event_sets_share_a_settle_only_within_one_epoch() {
+    let _turn = with_workers(0);
+    let cell = Cell::new(0u64);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = seen.clone();
+    let _guard = on_change(&cell, move |value| {
+        log.lock().push((*value, settle::current_epoch()));
+    });
+    let (first, second) = (Epoch::next(), Epoch::next());
+    let splits = settle::stats().epoch_splits;
+
+    // Sets of one cell that share a settle leave the last value.
+    enqueue(&[], None, || cell.set(1));
+    enqueue(&[], None, || cell.set(2));
+    flush();
+    assert_eq!(std::mem::take(&mut *seen.lock()), vec![(2, None)]);
+    enqueue(&[], Some(first), || cell.set(3));
+    enqueue(&[], Some(first), || cell.set(4));
+    flush();
+    assert_eq!(std::mem::take(&mut *seen.lock()), vec![(4, Some(first))]);
+    assert_eq!(settle::stats().epoch_splits, splits);
+
+    enqueue(&[], Some(first), || cell.set(5));
+    enqueue(&[], Some(second), || cell.set(6));
+    flush();
+    assert_eq!(
+        std::mem::take(&mut *seen.lock()),
+        vec![(5, Some(first)), (6, Some(second))]
+    );
+    assert_eq!(settle::stats().epoch_splits, splits.saturating_add(1));
 }
