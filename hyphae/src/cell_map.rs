@@ -490,12 +490,37 @@ where
             callback_for_diffs(diff.as_ref());
         });
 
-        let entries: Vec<(K, V)> = self
-            .inner
-            .data
-            .iter()
-            .map(|r| (r.key().clone(), r.value().clone()))
-            .collect();
+        // The snapshot is what subscribers hold. A change that waits to be
+        // published, or whose diff waits in the diff cell, reaches this
+        // subscriber as a diff, so it must not be in the snapshot as well.
+        let entries = {
+            let order = self.inner.write_order.lock();
+            let mut held: std::collections::HashMap<K, V> = order
+                .borrow()
+                .held(
+                    self.inner
+                        .data
+                        .iter()
+                        .map(|r| (r.key().clone(), r.value().clone())),
+                )
+                .into_iter()
+                .collect();
+            let pending = self.inner.diffs_cell.inner.pending.lock();
+            // An `Initial` replaces what the subscriber holds, so only the
+            // diffs after the last one need undoing.
+            let undone = pending.iter().rev().map_while(|(_, signal)| match signal {
+                Signal::Value(diff) if matches!(**diff, MapDiff::Initial { .. }) => None,
+                signal => Some(signal),
+            });
+            for signal in undone {
+                if let Some(diff) = signal.value_ref() {
+                    diff.undo(&mut held);
+                }
+            }
+            drop(pending);
+            drop(order);
+            held.into_iter().collect::<Vec<_>>()
+        };
         callback(&MapDiff::Initial { entries });
         loop {
             let queued = {
