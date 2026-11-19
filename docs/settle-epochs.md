@@ -160,6 +160,82 @@ The cost of the static form is fan-in: without routing, a reader hears every
 ticket that changes the table. With routing it hears its own key, plus any
 ticket that its key cell has not yet passed.
 
+### Target API: lookup into a family
+
+```rust
+fn lookup<F: Family>(self: Cell<F::Key>, family: F) -> Cell<F::Output>;
+fn lookup<F: Family>(self: Cell<Option<F::Key>>, family: F) -> Cell<Option<F::Output>>; // None in, None out
+```
+
+```rust
+let target_id: Cell<Option<TargetId>> =
+    emitter.map(|e| e.as_ref().map(|e| e.target_id.clone()));
+let target = target_id.lookup(ctx.family::<GetTargetById>());
+```
+
+A family's output is one value (a myko report) or a keyed collection (a myko
+view). The two differ only in output shape. The lookup node has two static
+edges: one from the key cell, and one from the family. A join over a reactive
+key set (P4) is the same lookup with a set-valued key, over a view family.
+
+At the ticket N where the key changes, the output is `family[new key]@N`:
+
+- **A value** is that row's value at N.
+- **A collection** is told the new key's snapshot as one `Initial` at N, and
+  not a diff from the old key's rows. After N it gets `Delta`s of the new
+  key's rows only. A row change in ticket N itself is already in the snapshot
+  and is not told again.
+
+### Families (P3) and joins over a key set (P4)
+
+A `Family<R>` is a parameterized report exposed as a keyed collection. Its
+rows are built when a key is first demanded, refcounted, and torn down when no
+reader remains. This is growth at a keyed boundary: new nodes whose inputs are
+existing nodes. Nothing rewires an existing node's inputs.
+
+**The anchor rule.** A family node `Fam` has static edges from every input its
+rows can read (for a myko report, the store collections it queries) and from
+the demand: the key cells, or the key-set cells, of its readers. Readers have
+static edges from their key cell and from `Fam`.
+
+**Build inside the ticket.** When `Fam` fires ticket N and finds a demanded
+key k with no row:
+
+1. It builds row node `F_k`, whose value at N is computed from the inputs at N.
+2. It sets `p(F_k) = N` and `w(F_k) = N+1`.
+3. It adds the edges `input → F_k` and `F_k → Fam` from N+1.
+4. It backfills into `F_k` every ticket above N that the inputs have already
+   fired.
+
+The reader then sees `family[k]@N` at N. There is no lag and no structural
+ticket.
+
+This is sound, unlike a mid-ticket rewire of an existing node, because of the
+anchor edge. Any ticket above N that an input has fired is also pending at
+`Fam`, since `Fam` has a static edge from that input and is still firing N. So
+no ticket that the backfill touches can have completed. The rewire
+counterexample in section 6 had no such anchor. The checker confirms it:
+without the anchor edge, ticket 1 reaches the new row after it completed.
+
+**Teardown.** `Fam` drops `F_k` in the ticket where the demand for k drops,
+inside its own fire. At that point `F_k` has passed the ticket, because `Fam`'s
+fire waits on it, and `Fam` is its only consumer. The checker also passes when
+the reader drops the row at its own fire and `Fam` rebuilds it on the next
+demand. That is safe only because a row there is a pure function of its inputs
+and a rebuild reproduces it exactly. A row with state of its own, such as a
+fold, must be torn down by the family at the dropping ticket, or never.
+Keeping a row alive is always correct; it only wastes work.
+
+**Both output shapes.** The checker runs once with value rows (combined by
+sum) and once with collection rows (sets, combined by union). For collections
+the reader's diff stream is replayed the way a subscriber holds it. Every
+insert must name an absent element, and every remove a present one. The
+replayed state must equal the serial result at every emission.
+
+**Joins over a reactive key set (P4).** The demand is a set. `Fam` builds or
+drops rows for keys entering or leaving the set at ticket N, and the reader
+combines the rows of the set at N. A singleton set is the lookup form (b).
+
 ### Rewiring at a ticket boundary (for anything select cannot express)
 
 If a candidate set is truly not static, the rewire is its own **structural
@@ -280,7 +356,15 @@ writing the key, an entry, or both in one event set: 7,776 sequences,
 13,352,217 states, 23 s. This covers a key and an entry changing in the same
 ticket and in adjacent tickets.
 
-Checked in both:
+**`family_model.rs`.** Store I, demand K (a set over 2 keys: empty, {0},
+{1}, {0,1}), family Fam with built-in-ticket rows F0 and F1, and reader L =
+the sum of the demanded rows. Every 4-ticket sequence of store writes and
+demand changes: 625 sequences, 6,743,447 states, 34 s with value rows and 38 s
+with collection rows. This covers a first
+demand, a drop, a rebuild after a drop, and store writes in flight during a
+build. A 5-ticket run (3,125 sequences) was still going after 15 minutes at about 100 MB and was stopped; it found no failure before it was stopped.
+
+Checked in all three:
 
 1. **Per-node ticket order.** Every fire is above `p(n)`.
 2. **Promise safety.** No push lands at or below `p` or below the target's
@@ -308,6 +392,12 @@ time:
 | (`next` mode) the rewire is applied at W's fire, not at admission | not serializable |
 | (keyed) routing by the reader's last fired key | not serializable: the update at ticket 1 is lost |
 | (keyed) the output emits on every fire | not serializable: extra emissions |
+| (family) no backfill into a new row | not serializable: store updates after the build are lost |
+| (family) no anchor edge from the store to Fam | ticket 1 reaches the new row after it completed |
+| (family, collection) a row diff is also told at the switch ticket | the diff stream double-tells ticket 0 |
+
+Two family variants pass, and both are correct: keeping every row forever, and
+dropping a row when the reader fires (sound only for stateless rows).
 
 Not modeled: a bounded worker pool (the help-on-wait rule), `Latest`
 coalescing, more than two keys, and collections with structural diffs
@@ -381,9 +471,10 @@ that ticket holds open.
 Each step ends in a state that a test or the harness can check. The sizes are
 estimates.
 
-1. **Static switch_map and lookup** (about 600 lines, plus migration). Add
-   forms (a) and (b) beside the current `switch_map`, and migrate sites per
-   the audit. Check: the operator tests, and rship's suites, still on today's
+1. **`Family` and `lookup`** (about 900 lines, plus migration). Add the
+   family primitive with in-ticket row build and family-owned teardown, the
+   value and collection output shapes, and `lookup` beside the current
+   `switch_map`. Migrate sites per the audit. Check: the operator tests, and rship's suites, still on today's
    core.
 2. **Declare the internal edges** (about 150 lines): `cell_map.rs:214`, the
    collection diff and length cells, and myko projections. Check: opt1's
