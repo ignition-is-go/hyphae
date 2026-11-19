@@ -119,34 +119,44 @@ fn a_join_vec_of_cells_that_fire_together_ends_with_all() {
 #[test]
 fn a_switch_map_ends_on_the_new_inner_when_the_old_inner_fires_with_the_switch() {
     waves_on();
-    let inners = [Cell::new(0u64), Cell::new(0u64)];
-    let selector = Cell::new(0usize);
-    let choices = [above(&inners[0]), above(&inners[1])];
-    let switched = above_usize(&selector)
-        .switch_map(move |index| choices[*index].clone())
+    let (first, second) = (Cell::new(0u64), Cell::new(0u64));
+    let pick_second = Cell::new(false);
+    let (first_inner, second_inner) = (above(&first), above(&second));
+    let switched = pick_second
+        .clone()
+        .map(|pick| *pick)
+        .materialize()
+        .switch_map(move |pick| {
+            if *pick {
+                second_inner.clone()
+            } else {
+                first_inner.clone()
+            }
+        })
         .materialize();
     for round in 1..=ROUNDS {
-        let (old, new) = if round % 2 == 0 { (1, 0) } else { (0, 1) };
+        let to_second = round % 2 == 1;
+        let (old, new) = if to_second {
+            (&first, &second)
+        } else {
+            (&second, &first)
+        };
         batch(|| {
-            inners[old].set(round * 10);
-            inners[new].set(round);
-            selector.set(new);
+            old.set(round * 10);
+            new.set(round);
+            pick_second.set(to_second);
         });
         assert_eq!(switched.get(), round);
     }
-}
-
-fn above_usize(source: &Cell<usize, hyphae::CellMutable>) -> Cell<usize, hyphae::CellImmutable> {
-    source.clone().map(|value| *value).materialize()
 }
 
 #[test]
 fn a_merge_delivers_in_write_order_and_never_runs_downstream_twice_at_once() {
     waves_on();
     let (left, right) = (Cell::new(0u64), Cell::new(0u64));
-    let running = Arc::new(AtomicUsize::new(0));
+    let inside = AtomicUsize::new(0);
     let overlapped = Arc::new(AtomicBool::new(false));
-    let (inside, overlap) = (running.clone(), overlapped.clone());
+    let overlap = overlapped.clone();
     let merged = above(&left)
         .merge(above(&right))
         .scan(Vec::new(), move |trail: &Vec<u64>, value| {
@@ -339,20 +349,20 @@ fn two_threads_that_write_one_element_leave_subscribers_with_the_set_state() {
 
 #[test]
 fn row_updates_and_a_source_change_in_one_settle_leave_the_projection_exact() {
-    waves_on();
     const ROWS: u64 = 64;
+    waves_on();
     let rows = CellMap::<u64, u64>::new();
-    let weights: Vec<_> = (0..ROWS).map(|_| Cell::new(1u64)).collect();
+    let weights = [Cell::new(1u64), Cell::new(1u64)];
     for key in 0..ROWS {
         rows.insert(key, key);
     }
-    let per_row: Vec<_> = weights.iter().map(above).collect();
+    let [even, odd] = weights.each_ref().map(above);
     let projected = rows
         .clone()
         .project_cell(move |key, value| {
             let (key, value) = (*key, *value);
-            let index = usize::try_from(key).unwrap_or(0);
-            per_row[index]
+            let weight = if key % 2 == 0 { &even } else { &odd };
+            weight
                 .clone()
                 .map(move |weight| Some((key, value * weight)))
                 .materialize()
