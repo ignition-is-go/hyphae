@@ -12,6 +12,7 @@ mod deduped;
 mod delay;
 mod distinct;
 mod distinct_until_changed_by;
+mod fan_in;
 mod filter;
 mod finalize;
 mod first;

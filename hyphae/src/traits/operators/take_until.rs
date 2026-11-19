@@ -6,7 +6,10 @@ use std::{
     },
 };
 
-use super::CellValue;
+use super::{
+    CellValue,
+    fan_in::{Arrival, fan_in},
+};
 use crate::{
     pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed},
     signal::Signal,
@@ -27,23 +30,21 @@ where
     U: CellValue,
 {
     fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
-        let stopped = Arc::new(AtomicBool::new(false));
-        let notifier_stopped = stopped.clone();
-        let notifier_callback = callback.clone();
+        let stopped = AtomicBool::new(false);
         let notifier_first = AtomicBool::new(true);
-        let notifier = self.notifier.install(Arc::new(move |signal| {
-            if matches!(signal, Signal::Value(_)) && !notifier_first.swap(false, Ordering::SeqCst) {
-                notifier_stopped.store(true, Ordering::SeqCst);
-                notifier_callback(&Signal::Complete);
-            }
-        }));
         let source_first = AtomicBool::new(true);
-        let source = self.source.install(Arc::new(move |signal| match signal {
-            Signal::Value(_) if source_first.swap(false, Ordering::SeqCst) => {}
-            Signal::Value(_) if stopped.load(Ordering::SeqCst) => {}
-            _ => callback(signal),
-        }));
-        SubscriptionGuard::combine(vec![notifier, source])
+        fan_in(&self.notifier, &self.source, move |arrival| match arrival {
+            Arrival::Left(Signal::Value(_)) => {
+                if !notifier_first.swap(false, Ordering::SeqCst) {
+                    stopped.store(true, Ordering::SeqCst);
+                    callback(&Signal::Complete);
+                }
+            }
+            Arrival::Left(_) => {}
+            Arrival::Right(Signal::Value(_)) if source_first.swap(false, Ordering::SeqCst) => {}
+            Arrival::Right(Signal::Value(_)) if stopped.load(Ordering::SeqCst) => {}
+            Arrival::Right(signal) => callback(&signal),
+        })
     }
 }
 impl<S, N, T, U> PipelineSeed<T> for TakeUntilPipeline<S, N, T, U>

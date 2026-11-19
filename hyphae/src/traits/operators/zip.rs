@@ -9,7 +9,10 @@ use std::{
 
 use parking_lot::Mutex;
 
-use super::CellValue;
+use super::{
+    CellValue,
+    fan_in::{Arrival, fan_in},
+};
 use crate::{
     pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed},
     signal::Signal,
@@ -30,38 +33,45 @@ where
     U: CellValue,
 {
     fn install(&self, callback: Arc<dyn Fn(&Signal<(T, U)>) + Send + Sync>) -> SubscriptionGuard {
-        let buffers = Arc::new(Mutex::new((VecDeque::<T>::new(), VecDeque::<U>::new())));
-        let left_buffers = buffers.clone();
-        let left_callback = callback.clone();
+        let buffers = Mutex::new((VecDeque::<T>::new(), VecDeque::<U>::new()));
         let left_first = AtomicBool::new(true);
-        let left = self.left.install(Arc::new(move |signal| match signal {
-            Signal::Value(_) if left_first.swap(false, Ordering::SeqCst) => {}
-            Signal::Value(value) => {
-                let mut buffers = left_buffers.lock();
-                if let Some(right) = buffers.1.pop_front() {
-                    left_callback(&Signal::value((value.as_ref().clone(), right)));
-                } else {
-                    buffers.0.push_back(value.as_ref().clone());
-                }
-            }
-            Signal::Complete => left_callback(&Signal::Complete),
-            Signal::Error(error) => left_callback(&Signal::Error(error.clone())),
-        }));
         let right_first = AtomicBool::new(true);
-        let right = self.right.install(Arc::new(move |signal| match signal {
-            Signal::Value(_) if right_first.swap(false, Ordering::SeqCst) => {}
-            Signal::Value(value) => {
-                let mut buffers = buffers.lock();
-                if let Some(left) = buffers.0.pop_front() {
-                    callback(&Signal::value((left, value.as_ref().clone())));
-                } else {
-                    buffers.1.push_back(value.as_ref().clone());
+        fan_in(&self.left, &self.right, move |arrival| match arrival {
+            Arrival::Left(Signal::Value(_)) if left_first.swap(false, Ordering::SeqCst) => {}
+            Arrival::Right(Signal::Value(_)) if right_first.swap(false, Ordering::SeqCst) => {}
+            Arrival::Left(Signal::Value(value)) => {
+                let right = {
+                    let mut buffers = buffers.lock();
+                    let right = buffers.1.pop_front();
+                    if right.is_none() {
+                        buffers.0.push_back(value.as_ref().clone());
+                    }
+                    right
+                };
+                if let Some(right) = right {
+                    callback(&Signal::value((value.as_ref().clone(), right)));
                 }
             }
-            Signal::Complete => callback(&Signal::Complete),
-            Signal::Error(error) => callback(&Signal::Error(error.clone())),
-        }));
-        SubscriptionGuard::combine(vec![left, right])
+            Arrival::Right(Signal::Value(value)) => {
+                let left = {
+                    let mut buffers = buffers.lock();
+                    let left = buffers.0.pop_front();
+                    if left.is_none() {
+                        buffers.1.push_back(value.as_ref().clone());
+                    }
+                    left
+                };
+                if let Some(left) = left {
+                    callback(&Signal::value((left, value.as_ref().clone())));
+                }
+            }
+            Arrival::Left(Signal::Complete) | Arrival::Right(Signal::Complete) => {
+                callback(&Signal::Complete);
+            }
+            Arrival::Left(Signal::Error(error)) | Arrival::Right(Signal::Error(error)) => {
+                callback(&Signal::Error(error));
+            }
+        })
     }
 }
 

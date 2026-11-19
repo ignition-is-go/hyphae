@@ -6,7 +6,10 @@ use std::{
     },
 };
 
-use super::CellValue;
+use super::{
+    CellValue,
+    fan_in::{Arrival, fan_in},
+};
 use crate::{
     pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed},
     signal::Signal,
@@ -29,34 +32,24 @@ where
     T: CellValue,
 {
     fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
-        let complete = Arc::new(AtomicU8::new(0));
-        let left_complete = complete.clone();
-        let left_callback = callback.clone();
-        let first = AtomicBool::new(true);
-        let left = self.left.install(Arc::new(move |signal| match signal {
-            Signal::Value(_) if first.swap(false, Ordering::SeqCst) => {}
-            Signal::Value(_) => left_callback(signal),
-            Signal::Complete
-                if left_complete.fetch_or(LEFT_COMPLETE, Ordering::SeqCst) == RIGHT_COMPLETE =>
-            {
-                left_callback(&Signal::Complete);
-            }
-            Signal::Complete => {}
-            Signal::Error(error) => left_callback(&Signal::Error(error.clone())),
-        }));
+        let complete = AtomicU8::new(0);
+        let left_first = AtomicBool::new(true);
         // The right seed is intentionally emitted during installation: merge is
         // left-seeded, so the right current value is a real second event.
-        let right = self.right.install(Arc::new(move |signal| match signal {
-            Signal::Value(_) => callback(signal),
-            Signal::Complete
-                if complete.fetch_or(RIGHT_COMPLETE, Ordering::SeqCst) == LEFT_COMPLETE =>
-            {
-                callback(&Signal::Complete);
+        fan_in(&self.left, &self.right, move |arrival| match arrival {
+            Arrival::Left(Signal::Value(_)) if left_first.swap(false, Ordering::SeqCst) => {}
+            Arrival::Left(Signal::Complete) => {
+                if complete.fetch_or(LEFT_COMPLETE, Ordering::SeqCst) == RIGHT_COMPLETE {
+                    callback(&Signal::Complete);
+                }
             }
-            Signal::Complete => {}
-            Signal::Error(error) => callback(&Signal::Error(error.clone())),
-        }));
-        SubscriptionGuard::combine(vec![left, right])
+            Arrival::Right(Signal::Complete) => {
+                if complete.fetch_or(RIGHT_COMPLETE, Ordering::SeqCst) == LEFT_COMPLETE {
+                    callback(&Signal::Complete);
+                }
+            }
+            Arrival::Left(signal) | Arrival::Right(signal) => callback(&signal),
+        })
     }
 }
 
