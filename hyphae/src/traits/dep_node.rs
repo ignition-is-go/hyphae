@@ -24,6 +24,12 @@ pub trait DepNode: Send + Sync {
         None
     }
 
+    /// Shadow-ticket state, for a node that has one.
+    #[doc(hidden)]
+    fn shadow(&self) -> Option<&crate::settle::Shadow> {
+        None
+    }
+
     /// Register a node whose height depends on this one.
     #[doc(hidden)]
     fn add_dependent(&self, _dependent: std::sync::Weak<dyn crate::settle::Node>) {}

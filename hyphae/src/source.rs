@@ -65,6 +65,7 @@ pub(crate) struct SourceInner<T> {
     pub(crate) pending: Mutex<Vec<Signal<T>>>,
     /// True while this source is in the settle frontier.
     pub(crate) queued: AtomicBool,
+    pub(crate) shadow: crate::settle::Shadow,
     /// The settle in which this source last fanned out.
     pub(crate) fired_run: std::sync::atomic::AtomicU64,
     /// Source location where this source was created (`#[track_caller]`).
@@ -131,6 +132,7 @@ impl<T: CellValue> Source<T> {
             completed: AtomicBool::new(false),
             pending: Mutex::new(Vec::new()),
             queued: AtomicBool::new(false),
+            shadow: crate::settle::Shadow::default(),
             fired_run: std::sync::atomic::AtomicU64::new(0),
             caller: Location::caller(),
         });
@@ -260,7 +262,7 @@ impl<T: CellValue> crate::settle::Write for SourceWrite<T> {
         };
         source.pending.lock().push(self.signal);
         let node: Arc<dyn crate::settle::Node> = source;
-        crate::settle::schedule(Arc::downgrade(&node), 0);
+        crate::settle::schedule(&node, 0);
     }
 }
 
@@ -271,6 +273,14 @@ impl<T: CellValue> crate::settle::Node for SourceInner<T> {
 
     fn node_height(&self) -> u64 {
         0
+    }
+
+    fn shadow(&self) -> &crate::settle::Shadow {
+        &self.shadow
+    }
+
+    fn shadow_inputs(&self) -> Vec<Arc<dyn DepNode>> {
+        Vec::new()
     }
 
     fn claim(&self) -> bool {
@@ -379,6 +389,10 @@ impl<T: Send + Sync> DepNode for Source<T> {
 
     fn deps(&self) -> Vec<Arc<dyn DepNode>> {
         Vec::new()
+    }
+
+    fn shadow(&self) -> Option<&crate::settle::Shadow> {
+        Some(&self.inner.shadow)
     }
 
     fn subscriber_count(&self) -> usize {

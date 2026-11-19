@@ -29,7 +29,12 @@ use uuid::Uuid;
 
 use crate::traits::DepNode;
 
+mod shadow;
 mod wave;
+
+#[doc(hidden)]
+pub use shadow::Shadow;
+pub use shadow::{Histogram, ShadowStats};
 
 pub use wave::{set_wave_min, set_workers};
 
@@ -186,6 +191,10 @@ pub trait Node: Send + Sync {
     fn bump_height_epoch(&self);
     /// The nodes whose height depends on this one. Dead entries are pruned.
     fn node_dependents(&self) -> Vec<Weak<dyn Node>>;
+    /// This node's shadow-ticket state.
+    fn shadow(&self) -> &Shadow;
+    /// The nodes this one hears, for the shadow watermark pull.
+    fn shadow_inputs(&self) -> Vec<Arc<dyn DepNode>>;
 }
 
 /// One typed write, queued until a settle seeds it.
@@ -469,6 +478,8 @@ struct Active {
     epoch: Option<Epoch>,
     /// The writers waiting on the run now settling.
     waiters: Arc<[Arc<Waiter>]>,
+    /// The shadow tickets that a write made now carries.
+    tickets: shadow::Tickets,
     out: Outbox,
 }
 
@@ -540,6 +551,9 @@ pub struct SettleStats {
     /// Times an event set started a new settle only because its epoch
     /// differed from the one before it.
     pub epoch_splits: u64,
+    /// Shadow tickets and the cost of the watermark pull that
+    /// `docs/settle-epochs.md` would need. Measurement only.
+    pub shadow: ShadowStats,
 }
 
 static EVENT_SETS: AtomicU64 = AtomicU64::new(0);
@@ -577,6 +591,7 @@ pub fn stats() -> SettleStats {
         parallel_waves: PARALLEL_WAVES.load(Ordering::Relaxed),
         widest_wave: WIDEST_WAVE.load(Ordering::Relaxed),
         epoch_splits: EPOCH_SPLITS.load(Ordering::Relaxed),
+        shadow: shadow::stats(),
     }
 }
 
@@ -676,10 +691,14 @@ pub(crate) fn position(target: impl FnOnce() -> u64, backlog: &Backlog) -> Posit
 
 /// Ask for `node` to fire in the settle in progress on this thread. Call it
 /// for every write that joins the settle; the node still fires once.
-pub(crate) fn schedule(node: Weak<dyn Node>, height: u64) {
+pub(crate) fn schedule(node: &Arc<dyn Node>, height: u64) {
+    if let Some(tickets) = ACTIVE.with_borrow(|active| active.as_ref().map(|active| active.tickets))
+    {
+        shadow::push(node.shadow(), tickets);
+    }
     request(Request {
         height,
-        node,
+        node: Arc::downgrade(node),
         raised: false,
     });
 }
@@ -820,6 +839,7 @@ fn drain(mut guard: Option<parking_lot::MutexGuard<'static, ()>>) {
             run_id: 0,
             epoch: None,
             waiters: Arc::default(),
+            tickets: shadow::Tickets::NONE,
             out: Outbox::default(),
         }));
         let panic = settle_queued();
@@ -973,10 +993,18 @@ fn fire_run(
             active.firing = None;
         }
     });
+    let mut next_ticket = None;
     for set in run {
+        let ticket = shadow::admit();
+        next_ticket = Some(ticket.saturating_add(1));
+        set_tickets(shadow::Tickets::one(ticket));
         for write in set.writes {
             write.apply();
         }
+    }
+    set_tickets(shadow::Tickets::NONE);
+    if let Some(next) = next_ticket {
+        shadow::seeded_through(next);
     }
     frontier.merge(take_outbox());
     let mut entries = Vec::new();
@@ -995,6 +1023,14 @@ fn fire_run(
             *first_panic = panic;
         }
     }
+}
+
+fn set_tickets(tickets: shadow::Tickets) {
+    ACTIVE.with_borrow_mut(|active| {
+        if let Some(active) = active.as_mut() {
+            active.tickets = tickets;
+        }
+    });
 }
 
 /// Fire `entries` in order on this thread. Returns the first panic.
@@ -1017,12 +1053,14 @@ fn fire_entries(entries: &[Entry]) -> Option<Box<dyn Any + Send>> {
             });
             continue;
         }
+        let tickets = shadow::fire(node.as_ref());
         ACTIVE.with_borrow_mut(|active| {
             if let Some(active) = active.as_mut() {
                 active.firing = Some(Stamp {
                     height: entry.height,
                     seq: entry.seq,
                 });
+                active.tickets = tickets;
             }
         });
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| node.fire()));

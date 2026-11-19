@@ -105,6 +105,8 @@ pub(crate) struct CellInner<T> {
     /// a stale entry, which costs one extra recompute, but never misses a live
     /// dependent, which would leave that dependent firing too early.
     pub(crate) dependents: Mutex<Vec<Weak<dyn Node>>>,
+    /// Shadow-ticket state; measurement only.
+    pub(crate) shadow: crate::settle::Shadow,
     /// Source location where this cell was created (via #[`track_caller`]).
     #[allow(dead_code)]
     pub(crate) caller: &'static Location<'static>,
@@ -178,6 +180,7 @@ impl<T: CellValue> Cell<T, CellMutable> {
             height_cache: std::sync::atomic::AtomicU64::new(0),
             height_epoch: std::sync::atomic::AtomicU64::new(1),
             dependents: Mutex::new(Vec::new()),
+            shadow: crate::settle::Shadow::default(),
             caller: Location::caller(),
         });
         Self {
@@ -364,6 +367,18 @@ impl<T: CellValue> Node for CellInner<T> {
         height
     }
 
+    fn shadow(&self) -> &crate::settle::Shadow {
+        &self.shadow
+    }
+
+    fn shadow_inputs(&self) -> Vec<Arc<dyn DepNode>> {
+        self.owned
+            .lock()
+            .values()
+            .map(|guard| Arc::clone(guard.source()))
+            .collect()
+    }
+
     fn claim(&self) -> bool {
         !self.queued.swap(true, Ordering::AcqRel)
     }
@@ -487,7 +502,7 @@ impl<T: CellValue> CellInner<T> {
         // A replaced value can own cells whose drop takes other cell locks.
         drop(displaced);
         let node: Arc<dyn Node> = self.clone();
-        crate::settle::schedule(Arc::downgrade(&node), self.node_height());
+        crate::settle::schedule(&node, self.node_height());
     }
 
     /// Put the pending values in the order a one-thread settle delivers
@@ -616,6 +631,10 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
         let mut seen = std::collections::HashSet::new();
         sources.retain(|source| seen.insert(source.id()));
         sources
+    }
+
+    fn shadow(&self) -> Option<&crate::settle::Shadow> {
+        Some(&self.inner.shadow)
     }
 
     fn height_cache(&self) -> Option<&std::sync::atomic::AtomicU64> {

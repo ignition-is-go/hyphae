@@ -229,6 +229,7 @@ fn pool_thread() {
             run_id: wave.run_id,
             epoch: wave.epoch,
             waiters: Arc::clone(&wave.waiters),
+            tickets: super::shadow::Tickets::NONE,
             out: Outbox::default(),
         }));
         wave.work();
