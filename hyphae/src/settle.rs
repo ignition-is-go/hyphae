@@ -29,6 +29,10 @@ use uuid::Uuid;
 
 use crate::traits::DepNode;
 
+mod wave;
+
+pub use wave::{set_wave_min, set_workers};
+
 /// Decides which event sets may share a settle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SettleKey {
@@ -217,8 +221,39 @@ static INPUT: SegQueue<EventSet> = SegQueue::new();
 static WAITING: Mutex<Vec<Arc<Waiter>>> = Mutex::new(Vec::new());
 static SETTLE: Mutex<()> = Mutex::new(());
 
+/// Which fire produced a value, for a node that must deliver the values of
+/// one settle in the order a single thread would have produced them.
+///
+/// Stamps order the fires of one settle: lower height first, then earlier
+/// arrival in the frontier. The order does not depend on which thread fired a
+/// node or when.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct Stamp {
+    height: u64,
+    seq: u64,
+}
+
+impl Stamp {
+    /// A value seeded from an event set, or written outside a settle.
+    pub(crate) const SEED: Self = Self { height: 0, seq: 0 };
+}
+
+/// The stamp of the node now firing on this thread, or [`Stamp::SEED`].
+// Read by the pending lists in `cell.rs` once they sort by it.
+#[allow(dead_code)]
+pub(crate) fn stamp() -> Stamp {
+    ACTIVE.with_borrow(|active| {
+        active
+            .as_ref()
+            .and_then(|active| active.firing)
+            .unwrap_or(Stamp::SEED)
+    })
+}
+
 struct Entry {
     height: u64,
+    /// Arrival order in the frontier. Starts at 1, so no entry's stamp
+    /// equals [`Stamp::SEED`].
     seq: u64,
     node: Weak<dyn Node>,
 }
@@ -242,15 +277,82 @@ impl Ord for Entry {
     }
 }
 
-/// The settle in progress on this thread.
-struct Active {
-    frontier: BinaryHeap<Entry>,
+/// The nodes waiting to fire in the settle in progress. Only the holder
+/// touches it.
+#[derive(Default)]
+struct Frontier {
+    heap: BinaryHeap<Entry>,
     seq: u64,
-    /// Height of the node now firing; `None` while a run is being seeded.
-    firing: Option<u64>,
+}
+
+impl Frontier {
+    fn push(&mut self, height: u64, node: Weak<dyn Node>) {
+        self.seq = self.seq.wrapping_add(1);
+        self.heap.push(Entry {
+            height,
+            seq: self.seq,
+            node,
+        });
+    }
+
+    /// Move every entry of the lowest height into `wave`, earliest arrival
+    /// first. False when the frontier is empty.
+    ///
+    /// A fire only schedules nodes above its own height, so the wave is
+    /// complete when it is popped.
+    fn pop_wave(&mut self, wave: &mut Vec<Entry>) -> bool {
+        wave.clear();
+        let Some(first) = self.heap.pop() else {
+            return false;
+        };
+        let height = first.height;
+        wave.push(first);
+        while self.heap.peek().is_some_and(|next| next.height == height) {
+            wave.extend(self.heap.pop());
+        }
+        true
+    }
+
+    /// Take in what a stretch of fires produced. Callers pass outboxes in
+    /// the order the fires would have run on one thread, which keeps `seq`
+    /// and the input queue independent of thread timing.
+    fn merge(&mut self, out: Outbox) {
+        for (height, node) in out.scheduled {
+            self.push(height, node);
+        }
+        for set in out.deferred {
+            INPUT.push(set);
+        }
+    }
+}
+
+/// What the fires on one thread produced since the outbox was last taken.
+#[derive(Default)]
+struct Outbox {
+    /// Nodes that received a write that joins the settle.
+    scheduled: Vec<(u64, Weak<dyn Node>)>,
+    /// Event sets that callbacks queued.
+    deferred: Vec<EventSet>,
+}
+
+/// This thread's part in the settle in progress: the holder's, or that of a
+/// pool thread firing part of a wave.
+struct Active {
+    /// The node now firing; `None` while a run is being seeded.
+    firing: Option<Stamp>,
     run_id: u64,
     /// The writers waiting on the run now settling.
-    waiters: Vec<Arc<Waiter>>,
+    waiters: Arc<[Arc<Waiter>]>,
+    out: Outbox,
+}
+
+fn take_outbox() -> Outbox {
+    ACTIVE.with_borrow_mut(|active| {
+        active
+            .as_mut()
+            .map(|active| std::mem::take(&mut active.out))
+            .unwrap_or_default()
+    })
 }
 
 struct Building {
@@ -372,7 +474,7 @@ pub(crate) fn position(target: impl FnOnce() -> u64) -> Position {
     };
     match firing {
         None => Position::Joins,
-        Some(firing) if target() > firing => Position::Joins,
+        Some(firing) if target() > firing.height => Position::Joins,
         Some(_) => Position::Queue,
     }
 }
@@ -381,12 +483,7 @@ pub(crate) fn position(target: impl FnOnce() -> u64) -> Position {
 pub(crate) fn schedule(node: Weak<dyn Node>, height: u64) {
     ACTIVE.with_borrow_mut(|active| {
         if let Some(active) = active.as_mut() {
-            active.seq = active.seq.wrapping_add(1);
-            active.frontier.push(Entry {
-                height,
-                seq: active.seq,
-                node,
-            });
+            active.out.scheduled.push((height, node));
         }
     });
 }
@@ -414,51 +511,80 @@ pub(crate) fn submit_write(key: SettleKey, write: Box<dyn Write>) {
     push(set);
 }
 
-fn push(mut set: EventSet) {
+/// Queue `set`, then settle it or wait for it as the thread's mode asks.
+fn push(set: EventSet) {
+    queue(set).finish();
+}
+
+/// An event set in the input queue whose writer has not yet settled it or
+/// waited on it. Dropping it leaves the set to some later settle.
+#[must_use = "call `finish`, or the writer returns before its write has settled"]
+pub(crate) struct Queued {
+    /// False when the thread never settles this set itself: it is firing a
+    /// node, or it used [`enqueue`].
+    settles: bool,
+    waiter: Option<Arc<Waiter>>,
+}
+
+impl Queued {
+    const LEFT_QUEUED: Self = Self {
+        settles: false,
+        waiter: None,
+    };
+
+    /// Settle the set if the lock is free, and sleep until it has settled
+    /// unless the thread used [`submit`] when it queued the set.
+    pub(crate) fn finish(self) {
+        if !self.settles {
+            return;
+        }
+        if let Some(guard) = SETTLE.try_lock() {
+            drain(Some(guard));
+        } else {
+            LOCK_MISSES.fetch_add(1, Ordering::Relaxed);
+            // The holder may have released since the failed try, in which
+            // case nobody is coming for this set.
+            drain(None);
+        }
+        // Whoever holds the lock re-checks the queue after releasing it, so
+        // some holder settles what this writer waits on and wakes it.
+        if let Some(waiter) = self.waiter
+            && let Some(payload) = waiter.wait()
+        {
+            std::panic::resume_unwind(payload);
+        }
+    }
+}
+
+fn queue(mut set: EventSet) -> Queued {
     EVENT_SETS.fetch_add(1, Ordering::Relaxed);
     if ACTIVE.with_borrow(Option::is_some) {
-        // Reentrant: this thread holds the lock, so it never waits. The set
-        // settles in this stint or a later one. A writer waiting on the
+        // Reentrant: this thread is firing a node, so it never waits. The
+        // set reaches the input queue when the holder merges this thread's
+        // outbox, and a later stint settles it. A writer waiting on the
         // settle in progress waits for this set too, so it wakes to the
         // settled result of its write and not to a half-finished chain.
         DEFERRED_WRITES.fetch_add(1, Ordering::Relaxed);
-        set.waiters = ACTIVE.with_borrow(|active| {
-            active
-                .as_ref()
-                .map(|active| active.waiters.clone())
-                .unwrap_or_default()
+        ACTIVE.with_borrow_mut(|active| {
+            if let Some(active) = active.as_mut() {
+                set.waiters = active.waiters.to_vec();
+                for waiter in &set.waiters {
+                    waiter.outstanding.fetch_add(1, Ordering::AcqRel);
+                }
+                active.out.deferred.push(set);
+            }
         });
-        for waiter in &set.waiters {
-            waiter.outstanding.fetch_add(1, Ordering::AcqRel);
-        }
-        INPUT.push(set);
-        return;
+        return Queued::LEFT_QUEUED;
     }
     let mode = MODE.get();
-    if mode == Mode::Enqueue {
-        INPUT.push(set);
-        return;
-    }
     // A stint is bounded, so even a writer that takes the lock can leave with
     // the sets its callbacks queued still unsettled. It waits for those too.
     let waiter = (mode == Mode::Wait).then(Waiter::new);
     set.waiters.extend(waiter.iter().cloned());
-    if let Some(guard) = SETTLE.try_lock() {
-        INPUT.push(set);
-        drain(Some(guard));
-    } else {
-        LOCK_MISSES.fetch_add(1, Ordering::Relaxed);
-        INPUT.push(set);
-        // The holder may have released between the failed try and the push,
-        // in which case nobody is coming for this set.
-        drain(None);
-    }
-    if let Some(waiter) = waiter {
-        // Whoever holds the lock re-checks the queue after releasing it, so
-        // some holder settles what this writer waits on and wakes it.
-        if let Some(payload) = waiter.wait() {
-            std::panic::resume_unwind(payload);
-        }
+    INPUT.push(set);
+    Queued {
+        settles: mode != Mode::Enqueue,
+        waiter,
     }
 }
 
@@ -474,11 +600,10 @@ fn drain(mut guard: Option<parking_lot::MutexGuard<'static, ()>>) {
         };
         let started = crate::platform::Instant::now();
         ACTIVE.set(Some(Active {
-            frontier: BinaryHeap::new(),
-            seq: 0,
             firing: None,
             run_id: 0,
-            waiters: Vec::new(),
+            waiters: Arc::default(),
+            out: Outbox::default(),
         }));
         let panic = settle_queued();
         ACTIVE.set(None);
@@ -520,6 +645,7 @@ fn drain(mut guard: Option<parking_lot::MutexGuard<'static, ()>>) {
 /// feedback the stint would never end.
 fn settle_queued() -> Option<Box<dyn Any + Send>> {
     let mut first_panic = None;
+    let mut frontier = Frontier::default();
     let mut run: Vec<EventSet> = Vec::new();
     let mut run_keys: FxHashSet<u64> = FxHashSet::default();
     let mut run_barrier = false;
@@ -528,7 +654,7 @@ fn settle_queued() -> Option<Box<dyn Any + Send>> {
         let conflicts = !run.is_empty()
             && (run_barrier || set.barrier || set.keys.iter().any(|key| run_keys.contains(key)));
         if conflicts {
-            settle_run(std::mem::take(&mut run), &mut first_panic);
+            settle_run(std::mem::take(&mut run), &mut frontier, &mut first_panic);
             run_keys.clear();
             run_barrier = false;
         }
@@ -537,7 +663,7 @@ fn settle_queued() -> Option<Box<dyn Any + Send>> {
         run.push(set);
     }
     if !run.is_empty() {
-        settle_run(run, &mut first_panic);
+        settle_run(run, &mut frontier, &mut first_panic);
     }
     first_panic
 }
@@ -547,7 +673,11 @@ fn settle_queued() -> Option<Box<dyn Any + Send>> {
 /// A panic in a callback belongs to the write that caused it. When every set
 /// in the run has a waiting writer, the first panic is re-raised on one of
 /// them; otherwise it is re-raised on this thread after the lock is released.
-fn settle_run(run: Vec<EventSet>, first_panic: &mut Option<Box<dyn Any + Send>>) {
+fn settle_run(
+    run: Vec<EventSet>,
+    frontier: &mut Frontier,
+    first_panic: &mut Option<Box<dyn Any + Send>>,
+) {
     let all_wait = run.iter().all(|set| !set.waiters.is_empty());
     let waiters: Vec<Arc<Waiter>> = run
         .iter()
@@ -564,11 +694,11 @@ fn settle_run(run: Vec<EventSet>, first_panic: &mut Option<Box<dyn Any + Send>>)
     }
     ACTIVE.with_borrow_mut(|active| {
         if let Some(active) = active.as_mut() {
-            active.waiters = distinct;
+            active.waiters = distinct.into();
         }
     });
     let mut panic = None;
-    fire_run(run, &mut panic);
+    fire_run(run, frontier, &mut panic);
     let mut panic = if all_wait || first_panic.is_some() {
         panic
     } else {
@@ -580,7 +710,11 @@ fn settle_run(run: Vec<EventSet>, first_panic: &mut Option<Box<dyn Any + Send>>)
     }
 }
 
-fn fire_run(run: Vec<EventSet>, first_panic: &mut Option<Box<dyn Any + Send>>) {
+fn fire_run(
+    run: Vec<EventSet>,
+    frontier: &mut Frontier,
+    first_panic: &mut Option<Box<dyn Any + Send>>,
+) {
     RUNS.fetch_add(1, Ordering::Relaxed);
     let run_id = RUN_ID.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
     ACTIVE.with_borrow_mut(|active| {
@@ -594,9 +728,28 @@ fn fire_run(run: Vec<EventSet>, first_panic: &mut Option<Box<dyn Any + Send>>) {
             write.apply();
         }
     }
-    loop {
-        let entry = ACTIVE.with_borrow_mut(|active| active.as_mut()?.frontier.pop());
-        let Some(entry) = entry else { break };
+    frontier.merge(take_outbox());
+    let mut entries = Vec::new();
+    while frontier.pop_wave(&mut entries) {
+        let panic = if let Some(workers) = wave::workers_for(entries.len()) {
+            wave::fire(std::mem::take(&mut entries), workers, frontier)
+        } else {
+            let panic = fire_entries(&entries);
+            frontier.merge(take_outbox());
+            panic
+        };
+        if first_panic.is_none() {
+            *first_panic = panic;
+        }
+    }
+}
+
+/// Fire `entries` in order on this thread. Returns the first panic.
+///
+/// What the fires schedule and queue stays in this thread's outbox.
+fn fire_entries(entries: &[Entry]) -> Option<Box<dyn Any + Send>> {
+    let mut first_panic = None;
+    for entry in entries {
         let Some(node) = entry.node.upgrade() else {
             continue;
         };
@@ -604,21 +757,25 @@ fn fire_run(run: Vec<EventSet>, first_panic: &mut Option<Box<dyn Any + Send>>) {
         // it at its real height so it still follows every dependency.
         let height = node.node_height();
         if height > entry.height {
-            schedule(entry.node, height);
+            schedule(entry.node.clone(), height);
             continue;
         }
         ACTIVE.with_borrow_mut(|active| {
             if let Some(active) = active.as_mut() {
-                active.firing = Some(entry.height);
+                active.firing = Some(Stamp {
+                    height: entry.height,
+                    seq: entry.seq,
+                });
             }
         });
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| node.fire()));
         if let Err(payload) = outcome
             && first_panic.is_none()
         {
-            *first_panic = Some(payload);
+            first_panic = Some(payload);
         }
     }
+    first_panic
 }
 
 /// Run `f` and submit every write it makes on this thread as one event set.
@@ -635,6 +792,26 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
 /// The event set never shares a settle with another event set that carries one
 /// of `keys`. `epoch` names the write; see [`Epoch`].
 pub fn batch_with<R>(keys: &[SettleKey], epoch: Option<Epoch>, f: impl FnOnce() -> R) -> R {
+    let (result, set) = collect(keys, epoch, f);
+    let submitted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if let Some(set) = set {
+            push(set);
+        }
+    }));
+    match (result, submitted) {
+        (Ok(value), Ok(())) => value,
+        // The caller's own panic is the one it can act on.
+        (Err(payload), _) | (Ok(_), Err(payload)) => std::panic::resume_unwind(payload),
+    }
+}
+
+/// Run `f` with a batch open on this thread. Returns the event set when this
+/// call opened the outermost batch and `f` wrote something.
+fn collect<R>(
+    keys: &[SettleKey],
+    epoch: Option<Epoch>,
+    f: impl FnOnce() -> R,
+) -> (std::thread::Result<R>, Option<EventSet>) {
     BUILDING.with_borrow_mut(|building| {
         let building = building.get_or_insert_with(|| Building {
             depth: 0,
@@ -664,19 +841,10 @@ pub fn batch_with<R>(keys: &[SettleKey], epoch: Option<Epoch>, f: impl FnOnce() 
         });
         if depth == 0 { building.take() } else { None }
     });
-    let submitted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if let Some(building) = closed
-            && !building.set.writes.is_empty()
-        {
-            push(building.set);
-        }
-    }));
-
-    match (result, submitted) {
-        (Ok(value), Ok(())) => value,
-        // The caller's own panic is the one it can act on.
-        (Err(payload), _) | (Ok(_), Err(payload)) => std::panic::resume_unwind(payload),
-    }
+    let set = closed
+        .map(|building| building.set)
+        .filter(|set| !set.writes.is_empty());
+    (result, set)
 }
 
 /// [`batch_with`] that never waits.
@@ -750,9 +918,37 @@ pub fn flush() {
 /// Unlike [`batch`], this does nothing during a settle: there each write is
 /// placed by its own height, so a derived collection that publishes from a
 /// callback still joins the settle in progress.
+// Goes when the collections queue through `atomic_queued`.
+#[allow(dead_code)]
 pub(crate) fn atomic<R>(f: impl FnOnce() -> R) -> R {
     let settling = ACTIVE.with_borrow(Option::is_some) && !BUILDING.with_borrow(Option::is_some);
     if settling { f() } else { batch(f) }
+}
+
+/// Group the writes `f` makes into one event set and queue it, for a
+/// mutation that touches several cells of one collection under a lock.
+///
+/// The caller releases its lock and then calls [`Queued::finish`], which
+/// settles the set or waits for it as a plain write would. No callback runs
+/// before that.
+///
+/// During a settle, and inside an open batch, `f` runs as it is and `finish`
+/// does nothing: each write of a settle is placed by its own height, so a
+/// derived collection that publishes from a callback still joins the settle
+/// in progress, and a batch keeps its writes.
+///
+/// If `f` panics, the writes it made stay queued for a later settle.
+#[allow(dead_code)]
+pub(crate) fn atomic_queued<R>(f: impl FnOnce() -> R) -> (R, Queued) {
+    if ACTIVE.with_borrow(Option::is_some) || BUILDING.with_borrow(Option::is_some) {
+        return (f(), Queued::LEFT_QUEUED);
+    }
+    let (result, set) = collect(&[], None, f);
+    let queued = set.map_or(Queued::LEFT_QUEUED, queue);
+    match result {
+        Ok(value) => (value, queued),
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
 }
 
 /// The node's height, from its cache when the cache is current.

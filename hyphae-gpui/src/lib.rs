@@ -31,10 +31,12 @@ pub use map::{CellMapEntity, MapEntry, ToGpuiMapEntity};
 ///
 /// A subscriber callback runs on whichever thread is delivering writes, and
 /// GPUI's test scheduler rejects a wake-up from any thread but its own. Two
-/// tests in one process could otherwise wake each other's scheduler.
+/// tests in one process could otherwise wake each other's scheduler. For the
+/// same reason the tests keep every callback off the settle pool.
 #[cfg(test)]
 pub(crate) fn test_serial() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    hyphae::settle::set_workers(0);
     LOCK.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }

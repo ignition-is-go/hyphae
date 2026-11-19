@@ -16,6 +16,8 @@ const ROUNDS: u64 = 40;
 
 #[test]
 fn a_submit_caller_settles_only_what_was_queued_when_it_took_the_lock() {
+    // The test tells the holders apart by the thread a callback runs on.
+    hyphae::settle::set_workers(0);
     let trigger = Cell::new(0u64);
     let feedback = Cell::new(0u64);
     let other = Cell::new(0u64);
