@@ -579,3 +579,178 @@ fn a_write_that_could_join_stays_behind_an_earlier_queued_write_to_its_cell() {
     let seen = seen.lock().clone();
     assert_eq!(seen.last(), Some(&2), "seen = {seen:?}");
 }
+
+/// A chain of `N` derived cells below `start`, each fed by the one before.
+fn chain<const N: usize>(
+    start: &Cell<u64, hyphae::CellMutable>,
+) -> [Cell<u64, hyphae::CellImmutable>; N] {
+    let mut previous: Option<Cell<u64, hyphae::CellImmutable>> = None;
+    std::array::from_fn(|_| {
+        let next = previous.as_ref().map_or_else(
+            || start.clone().map(|value| *value).materialize(),
+            |previous| previous.clone().map(|value| *value).materialize(),
+        );
+        previous = Some(next.clone());
+        next
+    })
+}
+
+/// Blocks the first fanout of `cell` that carries 1 until released.
+fn gate_on(
+    cell: &Cell<u64, hyphae::CellImmutable>,
+) -> (
+    mpsc::Receiver<()>,
+    mpsc::Sender<()>,
+    hyphae::SubscriptionGuard,
+) {
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let release_rx = Mutex::new(release_rx);
+    let guard = cell.subscribe(move |signal| {
+        if matches!(signal, Signal::Value(value) if **value == 1) {
+            let _ = entered_tx.send(());
+            let _ = release_rx.lock().recv_timeout(Duration::from_secs(10));
+        }
+    });
+    (entered_rx, release_tx, guard)
+}
+
+/// Wait until a writer has gone to sleep on a held settle since `before`.
+fn await_sleeping_writer(before: u64) {
+    let deadline = Instant::now().checked_add(Duration::from_secs(10));
+    while hyphae::settle::stats().lock_waits <= before
+        && deadline.is_some_and(|deadline| Instant::now() < deadline)
+    {
+        thread::yield_now();
+    }
+    // The writer pushes its set before it counts itself asleep.
+    thread::sleep(Duration::from_millis(50));
+}
+
+#[test]
+fn a_write_disjoint_from_a_run_in_flight_settles_before_that_run_ends() {
+    let start = Cell::new(0u64);
+    // Longer than an overtaking run may be, so this run is never one.
+    let cells: [_; 80] = chain(&start);
+    let probe = Cell::new(0u64);
+    let probed = probe.clone().map(|value| *value).materialize();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let returned = Arc::new(AtomicBool::new(false));
+
+    let (entered, release, _gate) = gate_on(&cells[0]);
+    let probe_log = log.clone();
+    let _probe_guard = probed.subscribe(move |signal| {
+        if matches!(signal, Signal::Value(value) if **value == 1) {
+            probe_log.lock().push("probe");
+        }
+    });
+    let middle_log = log.clone();
+    let middle_returned = returned.clone();
+    let _middle_guard = cells[40].subscribe(move |signal| {
+        if matches!(signal, Signal::Value(value) if **value == 1) {
+            let deadline = Instant::now().checked_add(Duration::from_secs(5));
+            while !middle_returned.load(Ordering::SeqCst)
+                && deadline.is_some_and(|deadline| Instant::now() < deadline)
+            {
+                thread::yield_now();
+            }
+            middle_log
+                .lock()
+                .push(if middle_returned.load(Ordering::SeqCst) {
+                    "middle after the probe writer returned"
+                } else {
+                    "middle with the probe writer still asleep"
+                });
+        }
+    });
+    let tail_log = log.clone();
+    let _tail_guard = cells[79].subscribe(move |signal| {
+        if matches!(signal, Signal::Value(value) if **value == 1) {
+            tail_log.lock().push("tail");
+        }
+    });
+
+    let holder = thread::spawn(move || start.set(1));
+    assert!(entered.recv_timeout(Duration::from_secs(10)).is_ok());
+    let before = hyphae::settle::stats().lock_waits;
+    let probe_returned = Arc::clone(&returned);
+    let probe_writer = thread::spawn(move || {
+        probe.set(1);
+        probe_returned.store(true, Ordering::SeqCst);
+    });
+    await_sleeping_writer(before);
+    let _ = release.send(());
+    assert!(holder.join().is_ok());
+    assert!(probe_writer.join().is_ok());
+
+    assert_eq!(
+        *log.lock(),
+        vec!["probe", "middle after the probe writer returned", "tail"]
+    );
+}
+
+#[test]
+fn a_write_whose_cone_meets_a_run_in_flight_waits_for_that_run() {
+    let start = Cell::new(0u64);
+    // Longer than an overtaking run may be, so this run is never one.
+    let cells: [_; 80] = chain(&start);
+    let other = Cell::new(0u64);
+    let joined = cells[79].clone().join(other.clone()).materialize();
+    let (seen, _seen_guard) = record(&joined);
+    let (entered, release, _gate) = gate_on(&cells[0]);
+
+    let holder = thread::spawn(move || start.set(1));
+    assert!(entered.recv_timeout(Duration::from_secs(10)).is_ok());
+    let before = hyphae::settle::stats().lock_waits;
+    let probe_writer = thread::spawn(move || other.set(1));
+    await_sleeping_writer(before);
+    let _ = release.send(());
+    assert!(holder.join().is_ok());
+    assert!(probe_writer.join().is_ok());
+
+    // The earlier write reaches the join first; overtaking would have
+    // delivered (0, 1) ahead of it.
+    assert_eq!(*seen.lock(), vec![(1, 0), (1, 1)]);
+}
+
+#[test]
+fn values_meeting_at_one_node_keep_the_one_thread_order_while_others_overtake() {
+    let left = Cell::new(0u64);
+    let right = Cell::new(0u64);
+    let merged = left
+        .clone()
+        .map(|value| *value)
+        .materialize()
+        .merge(right.clone().map(|value| *value).materialize())
+        .materialize();
+    let (seen, _guard) = record(&merged);
+    let done = AtomicBool::new(false);
+
+    thread::scope(|scope| {
+        // Unrelated writers whose sets can overtake the batches below.
+        for _ in 0..4 {
+            scope.spawn(|| {
+                let cell = Cell::new(0u64);
+                let derived = cell.clone().map(|value| value + 1).materialize();
+                let mut value = 0u64;
+                while !done.load(Ordering::SeqCst) {
+                    value += 1;
+                    cell.set(value);
+                    assert_eq!(derived.get(), value + 1);
+                }
+            });
+        }
+        for value in 1..=500u64 {
+            batch(|| {
+                left.set(value);
+                right.set(value + 1_000_000);
+            });
+        }
+        done.store(true, Ordering::SeqCst);
+    });
+
+    let expected: Vec<u64> = (1..=500u64)
+        .flat_map(|value| [value, value + 1_000_000])
+        .collect();
+    assert_eq!(*seen.lock(), expected);
+}

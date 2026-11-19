@@ -125,8 +125,13 @@ settling a callback's set inside the stint would mean settling every other
 thread's set ahead of it, and under sustained feedback the stint would never
 end.
 
+Between two waves the holder also pops what has arrived since, and settles
+ahead any of it that no earlier unsettled set can reach (section 13). Popped
+sets it does not settle ahead wait in `CARRY`, which the next stint takes
+before `INPUT`: they arrived before everything still there.
+
 If sets are queued when the stint ends, somebody must settle them. The holder
-asks one sleeping writer to take over and leaves. If no writer is asleep, it
+asks the sleeping writer that has waited longest to take over and leaves. If no writer is asleep, it
 yields and tries the lock again. It never wakes a thread that is not already
 waiting on its own write. This keeps one thread, in particular a thread that
 used `submit`, from settling for the whole process while a waiting writer can
@@ -369,12 +374,13 @@ of a few tens of milliseconds had to allow for that.
 | G1 Glitch-free settle | Height-ordered frontier. `Latest` on fan-in outputs |
 | G2 Batch atomicity | An event set is never split across runs. Collection diffs travel as one `Batch` |
 | G3 Last-write-wins | Removed, except `Latest` on input cells and fan-in outputs |
-| G4 Per-node write order | `INPUT` is arrival-ordered and runs settle in order. A pending list keeps arrival order. A deferred write goes to the tail of `INPUT`, behind every write made before it, and two deferred writes to one node keep their order. A write that joins the current settle lands behind the node's earlier pending values. A callback's write cannot join a settle ahead of an earlier callback write to the same node that is still queued: the node queues it behind that one (section 6) |
+| G4 Per-node write order | `INPUT` is arrival-ordered and runs settle in order, except that a set whose cone is disjoint from every earlier unsettled set's may settle ahead of them (section 13); no node then receives its values before an earlier set's. A pending list keeps arrival order. A deferred write goes to the tail of `INPUT`, behind every write made before it, and two deferred writes to one node keep their order. A write that joins the current settle lands behind the node's earlier pending values. A callback's write cannot join a settle ahead of an earlier callback write to the same node that is still queued: the node queues it behind that one (section 6) |
 | G5 Join consistency | One thread settles. A join output fires once, after its inputs |
 | G6 `Cell` replays, `Source` does not | `subscribe` is unchanged. It replays the stored value, which is the settled value. A `Source` stores none |
 | G7 Gap-free `subscribe_diffs` | The subscribe, snapshot, buffer, replay sequence is unchanged. Diffs reach the diff cell in write order and compose in that order |
 | G8 Terminal order | A terminal never combines with a value and the pending list keeps order |
 | G9 Convergence under concurrent writers | Every write passes through `INPUT` and one settle at a time, so two writers' fanouts cannot interleave |
+| Cross-node order | Bent by section 13. Writes to nodes with disjoint cones may be delivered out of arrival order: a later small write can settle while an earlier large run is between waves |
 
 ## 10. Where the envelope goes when the lock is split
 
@@ -421,6 +427,14 @@ nanoseconds the settle lock was held, the longest single hold, hand-overs,
 empty event sets queued by `flush`, waves fired, waves fired on pool threads,
 the most nodes in one wave, and epoch splits: the times an event set started
 a new run only because its epoch differed.
+
+Section 13 adds overtakes, cone escapes, early wakes, and the summed delay
+from a hand-over request to the woken writer starting to settle. For two
+classes of event set, `probe` (at most `PROBE_WRITES` writes) and `large`,
+it sums: the wait until the stint that held the lock at enqueue released it,
+the wait from that release to the set's own run, the queue length at push,
+the set's own run time and fanouts until its writers woke, its cone size when
+computed, and, per waiting writer, the feedback sets it then waited on.
 They are relaxed atomics and always on.
 
 ## 12. Parallel settling
@@ -565,3 +579,64 @@ enqueue-to-run latency, and longest hold:
 - After pieces 2 and 3: 8 and 16 elements with workers at 1, 4, 8, and 16.
 - After piece 5 and after piece 6: 2, 8, and 16 elements at the chosen
   setting.
+
+## 13. Overtaking and early wake
+
+Measured with waves on, a probe write waited behind about 25,800 unrelated
+fanouts of a tick: it queued behind the stint in progress, then behind the
+next stint's whole run, and its writer woke only when that run ended. This
+section shortens that path without a second settle lock.
+
+### Early wake
+
+Each event set of a run that has a waiting writer gets a tag bit: bit `i`
+for the `i`th such set, bit 63 for the rest. A frontier entry carries the
+bits of every set whose values reached it; a fire passes its entry's bits to
+the requests it makes, and a node already in the frontier gains the bits of
+a later request. After the seeds and after each wave, the writers of every
+bit that no entry carries wake. A set that writes nothing (`flush`) waits for
+the end of the run, since it waits for every set before it. Feedback still
+counts: a set a callback queues waits on the writers of the firing node's
+bits only, so read-your-writes holds.
+
+### Overtaking
+
+Between waves the holder pops what has arrived, up to 4,096 sets per stint.
+It settles a held set ahead, as its own run, when the set writes something,
+is not a barrier, shares no exclusive key with the run in flight or an
+earlier held set, and its cone is known, at most 64 nodes, and disjoint from
+the cone of the run in flight and of every earlier held set. The sets that
+qualify settle in arrival order, combined by the usual rules. An overtaking
+run does not itself let others overtake, which is why a large set never
+overtakes.
+
+A cone is the node and its dependents, transitively, from `node_dependents`.
+A `Source` now records its dependents too. Cones are cached by node address
+and dropped whenever any node gains a dependent.
+
+A cone follows dependency edges only. A callback that writes to a node it
+does not own, or an edge added mid-settle, reaches outside it. Two checks
+catch the result. A value of an overtaking run that reaches a node the
+suspended run holds stays there; its writers then wait for the end of the
+suspended run. A node the suspended run fires after an overtaking run fired
+it is counted. Both show in `cone_escapes`. The second is a real per-node
+order inversion that cannot be undone; the counter says how often the cone
+was wrong.
+
+### Hand-over
+
+A holder that leaves work queued asks the writer that has waited longest,
+whose set is likely at the head of the queue.
+
+### What changes for a caller
+
+| Guarantee | Under overtaking |
+| --- | --- |
+| G4 per-node write order | Kept while cones are complete: an overtaking set reaches no node an earlier unsettled set reaches. A callback edge outside the dependency graph can invert it; `cone_escapes` counts it |
+| Cross-node order | Bent. A later write to disjoint nodes can be delivered before an earlier one |
+| Read-your-writes for a waiting writer | Kept. A writer wakes when its set's values have fired, and still waits for feedback sets |
+| `flush` | Unchanged. It waits for the end of its run |
+| Combine order (section 5) | Unchanged. The stamps still order values within each run |
+| G2 batch atomicity | Unchanged. An event set is one run, ahead or not |
+| Panic routing | A panic goes to a writer still asleep at the end of the run, or to the holder. A writer woken early does not see it |
+

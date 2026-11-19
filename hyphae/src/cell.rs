@@ -572,6 +572,10 @@ where
             (self.write)(&mut |signal| cell.accept(signal, false, Order::Arrival));
         }
     }
+
+    fn node(&self) -> Option<Arc<dyn Node>> {
+        self.cell.upgrade().map(|cell| -> Arc<dyn Node> { cell })
+    }
 }
 
 /// A queued write to a cell. Holds the cell weakly: a cell that nothing else
@@ -589,6 +593,10 @@ impl<T: CellValue> crate::settle::Write for CellWrite<T> {
         if let Some(cell) = self.cell.upgrade() {
             cell.accept(self.signal, self.latest, Order::Arrival);
         }
+    }
+
+    fn node(&self) -> Option<Arc<dyn Node>> {
+        self.cell.upgrade().map(|cell| -> Arc<dyn Node> { cell })
     }
 }
 
@@ -643,6 +651,8 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
             return;
         }
         dependents.push(dependent);
+        drop(dependents);
+        crate::settle::edges_changed();
     }
 
     fn subscriber_count(&self) -> usize {

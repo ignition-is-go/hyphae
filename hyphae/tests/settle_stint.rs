@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use hyphae::{Cell, Gettable, Mutable, Signal, Watchable};
+use hyphae::{Cell, Gettable, Mutable, SettleKey, Signal, Watchable};
 use parking_lot::Mutex;
 
 const ROUNDS: u64 = 40;
@@ -38,11 +38,12 @@ fn a_submit_caller_settles_only_what_was_queued_when_it_took_the_lock() {
                 next_queued.send(()).ok();
             }
         });
-        // A writer that sleeps behind the submit caller's settle.
+        // A writer that sleeps behind the submit caller's settle. A barrier
+        // never overtakes, so it stays asleep until the queue reaches it.
         let slept_on = other.clone();
         scope.spawn(move || {
             sleeper_started.recv().ok();
-            slept_on.set(1);
+            hyphae::batch_with(&[SettleKey::Barrier], None, || slept_on.set(1));
         });
 
         let (log, target) = (ran_on.clone(), feedback.clone());

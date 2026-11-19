@@ -23,7 +23,7 @@ use std::{
 use parking_lot::{Condvar, Mutex};
 
 use super::{
-    ACTIVE, Active, Entry, Epoch, Frontier, Outbox, PARALLEL_WAVES, Waiter, fire_entries,
+    ACTIVE, Active, Entry, Epoch, Frontier, Groups, Outbox, PARALLEL_WAVES, fire_entries,
     take_outbox,
 };
 
@@ -96,7 +96,7 @@ struct Wave {
     entries: Vec<Entry>,
     run_id: u64,
     epoch: Option<Epoch>,
-    waiters: Arc<[Arc<Waiter>]>,
+    groups: Groups,
     /// Entries a thread claims at a time.
     chunk: usize,
     /// Index of the first unclaimed entry.
@@ -224,13 +224,11 @@ fn pool_thread() {
         if !wave.take_seat() {
             continue;
         }
-        ACTIVE.set(Some(Active {
-            firing: None,
-            run_id: wave.run_id,
-            epoch: wave.epoch,
-            waiters: Arc::clone(&wave.waiters),
-            out: Outbox::default(),
-        }));
+        ACTIVE.set(Some(Active::new(
+            wave.run_id,
+            wave.epoch,
+            Arc::clone(&wave.groups),
+        )));
         wave.work();
         ACTIVE.set(None);
     }
@@ -260,17 +258,17 @@ pub(super) fn fire(
         let chunks = len.div_ceil(chunk);
         (chunk, workers.min(chunks).saturating_sub(1))
     };
-    let (run_id, epoch, waiters) = ACTIVE.with_borrow(|active| {
+    let (run_id, epoch, groups) = ACTIVE.with_borrow(|active| {
         active.as_ref().map_or_else(
             || (0, None, Arc::default()),
-            |active| (active.run_id, active.epoch, Arc::clone(&active.waiters)),
+            |active| (active.run_id, active.epoch, Arc::clone(&active.groups)),
         )
     });
     let wave = Arc::new(Wave {
         entries,
         run_id,
         epoch,
-        waiters,
+        groups,
         chunk,
         next: AtomicUsize::new(0),
         seats: AtomicUsize::new(helpers),

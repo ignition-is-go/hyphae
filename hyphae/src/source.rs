@@ -63,6 +63,8 @@ pub(crate) struct SourceInner<T> {
     pub(crate) completed: AtomicBool,
     /// Events waiting for this source's turn in the settle in progress.
     pub(crate) pending: Mutex<Vec<Signal<T>>>,
+    /// The nodes that own a subscription to this source.
+    pub(crate) dependents: Mutex<Vec<Weak<dyn crate::settle::Node>>>,
     /// True while this source is in the settle frontier.
     pub(crate) queued: AtomicBool,
     /// The settle in which this source last fanned out.
@@ -130,6 +132,7 @@ impl<T: CellValue> Source<T> {
             owned: Mutex::new(FxHashMap::default()),
             completed: AtomicBool::new(false),
             pending: Mutex::new(Vec::new()),
+            dependents: Mutex::new(Vec::new()),
             queued: AtomicBool::new(false),
             fired_run: std::sync::atomic::AtomicU64::new(0),
             caller: Location::caller(),
@@ -262,6 +265,12 @@ impl<T: CellValue> crate::settle::Write for SourceWrite<T> {
         let node: Arc<dyn crate::settle::Node> = source;
         crate::settle::schedule(Arc::downgrade(&node), 0);
     }
+
+    fn node(&self) -> Option<Arc<dyn crate::settle::Node>> {
+        self.source
+            .upgrade()
+            .map(|source| -> Arc<dyn crate::settle::Node> { source })
+    }
 }
 
 impl<T: CellValue> crate::settle::Node for SourceInner<T> {
@@ -302,7 +311,9 @@ impl<T: CellValue> crate::settle::Node for SourceInner<T> {
     fn bump_height_epoch(&self) {}
 
     fn node_dependents(&self) -> Vec<Weak<dyn crate::settle::Node>> {
-        Vec::new()
+        let mut dependents = self.dependents.lock();
+        dependents.retain(|dependent| dependent.strong_count() > 0);
+        dependents.clone()
     }
 }
 
@@ -387,6 +398,21 @@ impl<T: Send + Sync> DepNode for Source<T> {
 
     fn owned_count(&self) -> usize {
         self.inner.owned.lock().len()
+    }
+
+    fn add_dependent(&self, dependent: Weak<dyn crate::settle::Node>) {
+        let mut dependents = self.inner.dependents.lock();
+        dependents.retain(|existing| existing.strong_count() > 0);
+        let address = dependent.as_ptr().cast::<()>();
+        if dependents
+            .iter()
+            .any(|existing| existing.as_ptr().cast::<()>() == address)
+        {
+            return;
+        }
+        dependents.push(dependent);
+        drop(dependents);
+        crate::settle::edges_changed();
     }
 }
 
