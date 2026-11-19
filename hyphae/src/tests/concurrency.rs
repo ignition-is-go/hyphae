@@ -1164,8 +1164,13 @@ fn barrage_cascade_updates() {
         assert!(handle.join().is_ok(), "cascade worker panicked");
     }
 
-    // Every update should cascade through
-    assert!(final_count.load(Ordering::Relaxed) > 1000);
+    // Sets of one cell that share a settle leave the last value, so the
+    // number of deliveries is not fixed. The chain must end consistent with
+    // its input.
+    assert!(final_count.load(Ordering::Relaxed) > 1);
+    let doubled = (level0.get() + 1) * 2;
+    let expected = u64::midpoint(doubled, 10);
+    assert_eq!(level5.get(), expected.wrapping_sub(5));
 }
 
 #[test]

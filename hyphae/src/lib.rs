@@ -168,8 +168,7 @@ pub(crate) mod platform;
 pub mod profiling;
 #[cfg(feature = "region-calibration")]
 pub mod region_calibration;
-#[cfg(feature = "scheduler")]
-pub mod scheduler;
+pub mod settle;
 pub mod signal;
 pub mod source;
 pub mod subscription;
@@ -200,8 +199,7 @@ pub use nested_map::NestedMap;
 pub use pipeline::{
     Definite, Empty, Materialize, Pipeline, PipelineShareExt, Seedness, SharedPipeline,
 };
-#[cfg(feature = "scheduler")]
-pub use scheduler::batch;
+pub use settle::{Epoch, SettleKey, SettleStats, batch, batch_with, enqueue, flush, submit};
 pub use signal::Signal;
 pub use source::{SampleOnSourceExt, Source, WeakSource};
 pub use subscription::SubscriptionGuard;

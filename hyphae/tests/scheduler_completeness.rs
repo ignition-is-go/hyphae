@@ -31,8 +31,7 @@ use std::{
 };
 
 use hyphae::{
-    Cell, CellMutable, MapExt, Materialize, Mutable, Signal, Watchable, batch, join_vec,
-    scheduler::no_coalesce,
+    Cell, CellMutable, MapExt, Materialize, Mutable, Signal, Source, Watchable, batch, join_vec,
 };
 
 /// The scheduler's tick queue is a single process-wide structure (see
@@ -51,7 +50,6 @@ fn scheduler_test_serial() -> parking_lot::MutexGuard<'static, ()> {
     // Force the wave-parallel drain path at test width: production defaults
     // the group threshold high (waves stay sequential at rest), so parallelism
     // tests must lower it to actually exercise concurrent same-height groups.
-    hyphae::scheduler::set_wave_threshold_for_test(4);
     SCHEDULER_TEST_LOCK.lock()
 }
 
@@ -66,15 +64,11 @@ fn no_op_is_dropped_or_stranded_under_sustained_contention() {
     // observed. On a plain coalescing cell, "some updates get last-write-wins
     // dropped" is correct behavior by design, not a bug, so it couldn't tell
     // "working as intended" apart from "silently stranded."
-    let sink = no_coalesce(|| Cell::<u64, CellMutable>::new(0));
+    let sink = Source::<u64>::new();
     let observed = Arc::new(AtomicU64::new(0));
     let obs = observed.clone();
-    let seen_first = Arc::new(AtomicBool::new(false));
-    let guard = sink.clone().lock().subscribe(move |sig| {
+    let guard = sink.subscribe(move |sig| {
         if matches!(sig, Signal::Value(_)) {
-            if !seen_first.swap(true, Ordering::SeqCst) {
-                return; // skip the initial subscribe-time replay
-            }
             obs.fetch_add(1, Ordering::SeqCst);
         }
     });
@@ -85,7 +79,7 @@ fn no_op_is_dropped_or_stranded_under_sustained_contention() {
             let sink = sink.clone();
             s.spawn(move || {
                 for i in 0..CONTENTION_OPS_PER_THREAD {
-                    batch(|| sink.set(u64::try_from(t).unwrap_or(u64::MAX) << 32 | i));
+                    batch(|| sink.emit(u64::try_from(t).unwrap_or(u64::MAX) << 32 | i));
                 }
             });
         }
@@ -116,7 +110,7 @@ fn joiner_batches_never_hang_under_sustained_pressure() {
     // either way it doesn't silently pass.
     let stop = Arc::new(AtomicBool::new(false));
     let bg_stop = stop.clone();
-    let bg_cell = no_coalesce(|| Cell::<u64, CellMutable>::new(0));
+    let bg_cell = Cell::<u64, CellMutable>::new(0);
     let bg_handle = {
         let bg_cell = bg_cell.clone();
         thread::spawn(move || {

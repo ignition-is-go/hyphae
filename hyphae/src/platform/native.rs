@@ -20,20 +20,9 @@ struct TimerEntry {
 /// Process-wide timer reactor: every [`spawn_interval`]/[`spawn_delayed`] call
 /// registers a [`TimerEntry`] here instead of spawning its own OS thread.
 ///
-/// This is load-bearing for hyphae's `scheduler` feature, not just a thread-
-/// count optimization. The scheduler's glitch-free coalescing/height-ordering
-/// (`crate::scheduler`) is a *thread-local* guarantee — it only holds for
-/// propagation that happens on one thread. Two timer-driven `Source`s that
-/// each spawned their own thread (the old per-call `thread::spawn` design)
-/// can fan out into a shared downstream cell concurrently from different
-/// threads, and nothing coordinates them: the "exactly once, glitch-free"
-/// guarantee each thread believes it owns silently doesn't hold at the
-/// convergence point, and depending on scheduling a genuine value change can
-/// be overwritten before any subscriber observes it. Running every interval
-/// and delayed timer off one reactor thread makes the thread-local guarantee
-/// a process-wide one for the entire timer-driven subgraph, closing that
-/// hole instead of relying on callers to avoid ever combining two
-/// independently-timed sources.
+/// One reactor thread fires every timer. Its ticks are queued for the settle
+/// core and never waited on, so a slow settle delays delivery but not the
+/// schedule.
 struct Reactor {
     entries: Mutex<Vec<TimerEntry>>,
     wake: Condvar,
@@ -69,8 +58,10 @@ fn run_reactor(reactor: &'static Reactor) -> ! {
     loop {
         let due = wait_for_due(reactor);
         for mut entry in due {
+            // The reactor must keep its schedule, so a tick's writes are
+            // queued for whichever thread is settling and never waited on.
             let keep = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                (entry.tick)(entry.count)
+                crate::settle::submit(&[], None, || (entry.tick)(entry.count))
             }))
             .unwrap_or(true);
             if !keep {

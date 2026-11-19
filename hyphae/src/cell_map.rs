@@ -272,6 +272,7 @@ where
         let point_name = map_name.map(|name| Arc::<str>::from(format!("{name}[{key:?}]")));
         loop {
             let candidate = Cell::new(current);
+            candidate.own(SubscriptionGuard::dependency(&self.inner.diffs_cell));
             if let Some(point_name) = &point_name {
                 drop(candidate.clone().with_name(point_name.clone()));
             }

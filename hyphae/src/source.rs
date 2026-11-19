@@ -61,13 +61,12 @@ pub(crate) struct SourceInner<T> {
     pub(crate) owned: Mutex<FxHashMap<Uuid, SubscriptionGuard>>,
     /// Whether this source has completed (no more values will be emitted).
     pub(crate) completed: AtomicBool,
-    /// Whether [`emit`](Source::emit)/[`complete`](Source::complete) wrap their
-    /// fan-out in a scheduler [`batch`](crate::batch), so one emit is one
-    /// coalesced propagation pass across all subscribers. Set via
-    /// [`Source::batched`]; default `false` (eager per-subscriber fan-out, the
-    /// documented hot path). Only meaningful under the `scheduler` feature.
-    #[cfg(feature = "scheduler")]
-    pub(crate) batched: AtomicBool,
+    /// Events waiting for this source's turn in the settle in progress.
+    pub(crate) pending: Mutex<Vec<Signal<T>>>,
+    /// True while this source is in the settle frontier.
+    pub(crate) queued: AtomicBool,
+    /// The settle in which this source last fanned out.
+    pub(crate) fired_run: std::sync::atomic::AtomicU64,
     /// Source location where this source was created (`#[track_caller]`).
     #[allow(dead_code)]
     pub(crate) caller: &'static Location<'static>,
@@ -130,8 +129,9 @@ impl<T: CellValue> Source<T> {
             subscribers: parking_lot::Mutex::new(Arc::new(Vec::new())),
             owned: Mutex::new(FxHashMap::default()),
             completed: AtomicBool::new(false),
-            #[cfg(feature = "scheduler")]
-            batched: AtomicBool::new(false),
+            pending: Mutex::new(Vec::new()),
+            queued: AtomicBool::new(false),
+            fired_run: std::sync::atomic::AtomicU64::new(0),
             caller: Location::caller(),
         });
         Self {
@@ -166,33 +166,6 @@ impl<T: CellValue> Source<T> {
     /// field, so this is a no-op.
     #[must_use]
     pub fn with_name(self, _name: impl Into<std::sync::Arc<str>>) -> Self {
-        self
-    }
-
-    /// Batch this source's fan-out: every [`emit`](Self::emit)/[`complete`](Self::complete)
-    /// wraps its subscriber-notification loop in a scheduler [`batch`](crate::batch),
-    /// so one emit is **one** coalesced propagation pass across all subscribers.
-    ///
-    /// Without this, each subscriber's callback cascades on its own, and a
-    /// downstream node fed by two of this source's subscribers at the same rate
-    /// re-fires once per subscriber (the arrivals land in separate propagation
-    /// passes, so nothing coalesces them). Batching the fan-out puts them in one
-    /// tick, so such a node settles once per emit, glitch-free. This is the
-    /// fan-out analogue of wrapping the emit call site in `batch` — but it works
-    /// even when subscribers each open their own `batch` (nested batches join the
-    /// outermost tick), which per-call-site batching cannot fix.
-    ///
-    /// Opt-in because `emit` is the documented high-rate hot path: a
-    /// single-subscriber source with no diamond gains nothing and would pay a
-    /// tick depth inc/dec + drain per emit. Turn it on for many-subscriber
-    /// fan-out sources (interval/clock timers feeding a wide reactive graph);
-    /// leave it off for point-to-point sources.
-    ///
-    /// Requires the `scheduler` feature (batching is meaningless without it).
-    #[cfg(feature = "scheduler")]
-    #[must_use]
-    pub fn batched(self) -> Self {
-        self.inner.batched.store(true, Ordering::Relaxed);
         self
     }
 
@@ -240,59 +213,94 @@ impl<T: CellValue> Source<T> {
         })
     }
 
-    /// Emit a value to all subscribers. Does **not** store the value — there
-    /// is no `.get()` on `Source`.
+    /// Emit a value to all subscribers. The value is not stored: there is no
+    /// `.get()` on `Source`.
     ///
-    /// This is the hot path. Compared to [`Cell::set`](crate::Cell::set) it
-    /// skips the `value: ArcSwap<T>` store and the associated `Debt::pay_all`
-    /// drop on the previous value. Useful when emission rate is high
-    /// (timers, clocks, ticks).
+    /// Each emit is its own event. Two emits on one source never share a
+    /// settle, so a subscriber sees every one, in order.
     pub fn emit(&self, value: T) {
-        if self.inner.completed.load(Ordering::SeqCst) {
-            return;
-        }
-        let arc_value = Arc::new(value);
-        let signal = Signal::Value(arc_value);
+        self.inner.write(Signal::Value(Arc::new(value)));
+    }
 
-        // Brief mutex acquire + Arc::clone snapshot, then iterate callbacks lock-free.
-        let subs = Arc::clone(&*self.inner.subscribers.lock());
-        // Subscriber callbacks must not panic — same contract as Cell::notify.
-        // When batched, the whole fan-out is one propagation pass so downstream
-        // diamonds coalesce; otherwise each subscriber cascades eagerly (default).
-        #[cfg(feature = "scheduler")]
-        if self.inner.batched.load(Ordering::Relaxed) {
-            crate::scheduler::batch(|| {
-                for (_id, sub) in subs.iter() {
-                    (sub.callback)(&signal);
-                }
-            });
+    /// Mark this source as completed. Later [`emit`](Self::emit) calls are
+    /// dropped.
+    pub fn complete(&self) {
+        self.inner.write(Signal::Complete);
+    }
+}
+
+impl<T: CellValue> SourceInner<T> {
+    fn write(self: &Arc<Self>, signal: Signal<T>) {
+        if self.completed.load(Ordering::SeqCst) {
             return;
         }
-        for (_id, sub) in subs.iter() {
-            (sub.callback)(&signal);
+        // A source has height 0, so a write made during a settle never joins
+        // it. Every emit goes through the input queue under the source's key.
+        let (high, low) = self.id.as_u64_pair();
+        let key = high ^ low;
+        crate::settle::submit_write(
+            crate::settle::SettleKey::Exclusive(key),
+            Box::new(SourceWrite {
+                source: Arc::downgrade(self),
+                signal,
+            }),
+        );
+    }
+}
+
+struct SourceWrite<T> {
+    source: Weak<SourceInner<T>>,
+    signal: Signal<T>,
+}
+
+impl<T: CellValue> crate::settle::Write for SourceWrite<T> {
+    fn apply(self: Box<Self>) {
+        let Some(source) = self.source.upgrade() else {
+            return;
+        };
+        source.pending.lock().push(self.signal);
+        if !source.queued.swap(true, Ordering::AcqRel) {
+            let node: Arc<dyn crate::settle::Node> = source;
+            crate::settle::schedule(Arc::downgrade(&node), 0);
+        }
+    }
+}
+
+impl<T: CellValue> crate::settle::Node for SourceInner<T> {
+    fn node_id(&self) -> Uuid {
+        self.id
+    }
+
+    fn node_height(&self) -> u64 {
+        0
+    }
+
+    fn fire(&self) {
+        let pending = std::mem::take(&mut *self.pending.lock());
+        self.queued.store(false, Ordering::Release);
+        for signal in pending {
+            let terminal = !matches!(signal, Signal::Value(_));
+            let already_complete = if terminal {
+                self.completed.swap(true, Ordering::SeqCst)
+            } else {
+                self.completed.load(Ordering::SeqCst)
+            };
+            if already_complete {
+                break;
+            }
+            crate::settle::record_fire(&self.fired_run);
+            // Callbacks run with the registry lock released.
+            let subscribers = Arc::clone(&*self.subscribers.lock());
+            for (_id, subscriber) in subscribers.iter() {
+                (subscriber.callback)(&signal);
+            }
         }
     }
 
-    /// Mark this source as completed. Subsequent [`emit`](Self::emit) calls
-    /// are dropped silently.
-    pub fn complete(&self) {
-        if self.inner.completed.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        let signal: Signal<T> = Signal::Complete;
-        let subs = Arc::clone(&*self.inner.subscribers.lock());
-        #[cfg(feature = "scheduler")]
-        if self.inner.batched.load(Ordering::Relaxed) {
-            crate::scheduler::batch(|| {
-                for (_id, sub) in subs.iter() {
-                    (sub.callback)(&signal);
-                }
-            });
-            return;
-        }
-        for (_id, sub) in subs.iter() {
-            (sub.callback)(&signal);
-        }
+    fn bump_height_epoch(&self) {}
+
+    fn node_dependents(&self) -> Vec<Weak<dyn crate::settle::Node>> {
+        Vec::new()
     }
 }
 

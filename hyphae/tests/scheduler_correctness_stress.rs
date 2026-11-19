@@ -17,10 +17,7 @@ use std::{sync::Arc, thread};
 
 use parking_lot::Mutex;
 
-use hyphae::{
-    Cell, CellMutable, JoinExt, MapExt, Materialize, Mutable, Signal, Watchable, batch,
-    scheduler::no_coalesce,
-};
+use hyphae::{Cell, CellMutable, JoinExt, MapExt, Materialize, Mutable, Signal, Watchable, batch};
 
 const THREADS: usize = 8;
 const ITERS: i64 = 4_000;
@@ -30,7 +27,6 @@ fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
     // Force the wave-parallel drain path at test width: production defaults
     // the group threshold high (waves stay sequential at rest), so parallelism
     // tests must lower it to actually exercise concurrent same-height groups.
-    hyphae::scheduler::set_wave_threshold_for_test(4);
     SCHEDULER_TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -75,7 +71,7 @@ fn independent_diamonds_and_accumulators_settle_correctly_under_contention() {
                 // An independent event-semantic accumulator on its own
                 // no_coalesce source: every set must survive (no LWW drop), so
                 // the sum is exact.
-                let ev = no_coalesce(|| Cell::<i64, CellMutable>::new(0));
+                let ev = Cell::<i64, CellMutable>::new(0);
                 let esink = acc.clone();
                 let g2 = ev.clone().lock().subscribe(move |sig| {
                     if let Signal::Value(v) = sig {

@@ -23,14 +23,13 @@ fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
     // Force the wave-parallel drain path at test width: production defaults
     // the group threshold high (waves stay sequential at rest), so parallelism
     // tests must lower it to actually exercise concurrent same-height groups.
-    hyphae::scheduler::set_wave_threshold_for_test(4);
     SCHEDULER_TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 #[test]
-fn pass_reports_a_synchronous_diamond_refire() {
+fn pass_reports_a_cell_that_fans_out_twice() {
     let _serial = scheduler_test_serial();
     // s ─┬─> a = s + 1 ─┐
     //    └─> b = s * 10 ┴─> sink = a + b
@@ -41,10 +40,12 @@ fn pass_reports_a_synchronous_diamond_refire() {
     let guard = sink.subscribe(|_| {});
     std::mem::forget(guard);
 
-    // One source change reaches `sink` via both legs, so it fans out twice —
-    // one coalesceable re-fire.
+    // One write settles the diamond once, so the sink fans out once per
+    // write. Two writes in one pass are two settles: every cell fans out
+    // twice, and the second is a re-fire within the pass.
     pass(|| {
         s.set(5);
+        s.set(6);
     });
     let report = take_report();
     assert!(report.is_some(), "a pass just completed");
@@ -52,7 +53,7 @@ fn pass_reports_a_synchronous_diamond_refire() {
 
     assert!(
         report.total_refires() >= 1,
-        "the diamond re-fires the sink; per_cell = {:?}",
+        "the second write re-fires the sink; per_cell = {:?}",
         report.per_cell
     );
     assert!(

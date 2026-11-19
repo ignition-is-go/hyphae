@@ -37,13 +37,10 @@ where
         let outer_complete = Arc::new(AtomicBool::new(false));
         let active_inners = Arc::new(AtomicUsize::new(1)); // Start with 1 for first_inner
         // One-shot guard so the terminal `Complete` fires exactly once. The
-        // outer's completion and the final inner's completion are distinct
-        // same-height cells that can run concurrently under the scheduler's
-        // wave-parallel drain, and both can observe the "outer done AND no active
-        // inners" condition — a non-atomic check-then-notify that would emit
-        // `Complete` twice (confirmed by repro). Whoever wins this swap emits;
-        // the other skips. (A lost completion is impossible — at least one side
-        // observes the final state — so exactly-once holds.)
+        // outer's completion and the final inner's completion can both observe
+        // "outer done and no active inners". Whoever wins this swap emits and
+        // the other skips. At least one side observes the final state, so the
+        // completion is never lost.
         let completed_emitted = Arc::new(AtomicBool::new(false));
 
         // Subscribe to first inner

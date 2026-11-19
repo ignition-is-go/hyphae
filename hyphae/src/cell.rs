@@ -13,6 +13,7 @@ use rustc_hash::FxHashMap;
 use uuid::Uuid;
 
 use crate::{
+    settle::Node,
     signal::Signal,
     subscription::SubscriptionGuard,
     traits::{CellValue, DepNode, Gettable, Mutable, Watchable, WatchableResult},
@@ -25,6 +26,24 @@ pub struct CellMutable;
 pub struct CellImmutable;
 
 /// The inner data of a Cell, wrapped in Arc for shared ownership.
+/// A single fanout longer than this is reported in debug builds.
+#[cfg(debug_assertions)]
+const SLOW_FANOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// What a value does when its cell already holds a pending value in the
+/// settle in progress.
+pub(crate) enum Combine<T> {
+    /// Both values are delivered, in order, even when both come from
+    /// `Mutable::set`.
+    Each,
+    /// The new value replaces the pending one. The cell fans out once.
+    Latest,
+    /// The new value is folded into the pending one and the cell fans out
+    /// once. The fold returns the new value when the two cannot be folded,
+    /// and then both are delivered.
+    Fold(fn(&mut Arc<T>, Arc<T>) -> Option<Arc<T>>),
+}
+
 pub(crate) struct CellInner<T> {
     pub(crate) id: Uuid,
     /// Infallible subscriber registry. See [`SubscriberRegistry`]: an id-keyed
@@ -55,41 +74,25 @@ pub(crate) struct CellInner<T> {
     /// The error, if any. Cold path — only written when the cell errors,
     /// read by error/subscribe paths.
     pub(crate) error: Mutex<Option<Arc<anyhow::Error>>>,
-    /// Scheduler height cache: packed `(epoch << 32) | height`. The scheduler
-    /// computes a cell's propagation height (`1 + max(dep.height)`) once per
-    /// topology epoch and caches it here, so a steady-state batch reads height
-    /// as a single atomic load instead of walking `deps()` every notify. `0`
-    /// means "never computed" (epoch 0 is never current). Invalidated lazily by
-    /// bumping the global topology epoch on any edge change.
-    #[cfg(feature = "scheduler")]
+    /// Deliveries waiting for this cell's turn in the settle in progress, in
+    /// arrival order. Empty between settles.
+    pub(crate) pending: Mutex<Vec<Signal<T>>>,
+    /// True while this cell is in the settle frontier.
+    pub(crate) queued: AtomicBool,
+    /// What a second value does to a pending one. Unset keeps both.
+    pub(crate) combine: std::sync::OnceLock<Combine<T>>,
+    /// The settle in which this cell last fanned out.
+    pub(crate) fired_run: std::sync::atomic::AtomicU64,
+    /// Height cache: packed `(height_epoch << 32) | height`. Valid while
+    /// `height_epoch` is unchanged; `0` means never computed.
     pub(crate) height_cache: std::sync::atomic::AtomicU64,
-    /// Scheduler coalescing policy. When `true`, the scheduler enqueues every
-    /// notify from this cell as a distinct height-ordered op instead of
-    /// last-write-wins coalescing them — preserving the event semantics
-    /// (scan/pairwise/merge, or a hand-rolled stateful `map`) that a dropped
-    /// intermediate would corrupt. Stamped at birth inside a
-    /// [`scheduler::no_coalesce`](crate::scheduler::no_coalesce) scope, or after
-    /// the fact via [`Cell::no_coalesce`]. Default `false` (coalesce), so the
-    /// behavior-cell majority gets the glitch-free win.
-    #[cfg(feature = "scheduler")]
-    pub(crate) no_coalesce: AtomicBool,
-    /// Per-node height epoch for localized cache invalidation. Bumped whenever
-    /// an edge change in this cell's transitive-dependency cone could change its
-    /// height; `height_cache` is tagged with the epoch it was computed under and
-    /// recomputed only when they differ. Starts at 1 so a zero-initialized
-    /// `height_cache` reads as stale. Replaces the old process-global topology
-    /// epoch (which flushed *every* cached height on any edge change — pathologically
-    /// costly during a topology-churning knit).
-    #[cfg(feature = "scheduler")]
+    /// Bumped when an edge change in this cell's dependency cone could change
+    /// its height. Starts at 1 so a zeroed `height_cache` reads as stale.
     pub(crate) height_epoch: std::sync::atomic::AtomicU64,
-    /// Weak back-edges to the cells whose height depends (transitively) on this
-    /// one — the invalidation cone walked when this cell's deps change (see
-    /// [`invalidate_height_cone`]). Weak so a dependent's death doesn't pin it
-    /// here; the walk prunes dead entries. May over-approximate (a stale entry
-    /// only causes a harmless extra recompute) but must never miss a live
-    /// dependent, or that dependent would keep a stale height (a glitch).
-    #[cfg(feature = "scheduler")]
-    pub(crate) height_dependents: Mutex<Vec<std::sync::Weak<dyn HeightInvalidate>>>,
+    /// Weak back-edges to the cells whose height depends on this one. May hold
+    /// a stale entry, which costs one extra recompute, but never misses a live
+    /// dependent, which would leave that dependent firing too early.
+    pub(crate) dependents: Mutex<Vec<Weak<dyn Node>>>,
     /// Source location where this cell was created (via #[`track_caller`]).
     #[allow(dead_code)]
     pub(crate) caller: &'static Location<'static>,
@@ -155,14 +158,13 @@ impl<T: CellValue> Cell<T, CellMutable> {
             completed: AtomicBool::new(false),
             errored: AtomicBool::new(false),
             error: Mutex::new(None),
-            #[cfg(feature = "scheduler")]
+            pending: Mutex::new(Vec::new()),
+            queued: AtomicBool::new(false),
+            combine: std::sync::OnceLock::new(),
+            fired_run: std::sync::atomic::AtomicU64::new(0),
             height_cache: std::sync::atomic::AtomicU64::new(0),
-            #[cfg(feature = "scheduler")]
-            no_coalesce: AtomicBool::new(crate::scheduler::birth_no_coalesce()),
-            #[cfg(feature = "scheduler")]
             height_epoch: std::sync::atomic::AtomicU64::new(1),
-            #[cfg(feature = "scheduler")]
-            height_dependents: Mutex::new(Vec::new()),
+            dependents: Mutex::new(Vec::new()),
             caller: Location::caller(),
         });
         Self {
@@ -255,22 +257,9 @@ impl<T, M> Cell<T, M> {
     /// what it is.
     pub fn own(&self, guard: SubscriptionGuard)
     where
-        T: Send + Sync + 'static,
+        T: CellValue,
     {
-        // Register this cell as a height-dependent of the guard's source (so a
-        // later edge change there invalidates our cached height), then invalidate
-        // our own height cone — our dependency set just changed. Localized: only
-        // this cell and its transitive dependents recompute, not the whole graph.
-        #[cfg(feature = "scheduler")]
-        {
-            let erased: Arc<dyn HeightInvalidate> = self.inner.clone();
-            let dep = Arc::downgrade(&erased);
-            guard.source().add_height_dependent(dep);
-        }
-        let previous = self.inner.owned.lock().insert(Uuid::new_v4(), guard);
-        drop(previous);
-        #[cfg(feature = "scheduler")]
-        invalidate_height_cone(self.inner.as_ref());
+        self.own_keyed(Uuid::new_v4(), guard);
     }
 
     /// Take ownership of a subscription guard with a stable key.
@@ -280,24 +269,18 @@ impl<T, M> Cell<T, M> {
     /// when switching to a new inner cell.
     pub fn own_keyed(&self, key: Uuid, guard: SubscriptionGuard)
     where
-        T: Send + Sync + 'static,
+        T: CellValue,
     {
-        // Register as a height-dependent of the new source before it moves into
-        // `owned`. The replaced guard's stale back-edge on the *old* source is
-        // left to be pruned lazily — a stale dependent only over-invalidates (a
-        // harmless extra recompute), never under-invalidates.
-        #[cfg(feature = "scheduler")]
-        {
-            let erased: Arc<dyn HeightInvalidate> = self.inner.clone();
-            let dep = Arc::downgrade(&erased);
-            guard.source().add_height_dependent(dep);
-        }
+        // Register as a dependent of the new source before the guard moves
+        // into `owned`. A replaced guard leaves a stale back-edge on its old
+        // source, which only over-invalidates.
+        let erased: Arc<dyn Node> = self.inner.clone();
+        guard.source().add_dependent(Arc::downgrade(&erased));
         let previous = self.inner.owned.lock().insert(key, guard);
         drop(previous);
-        // switch_map rewiring changed our dep set: invalidate our height cone
-        // (this cell + its transitive dependents), not the whole process.
-        #[cfg(feature = "scheduler")]
-        invalidate_height_cone(self.inner.as_ref());
+        // The dependency set changed, so this cell's height and the height of
+        // everything above it may have changed.
+        crate::settle::invalidate_height_cone(self.inner.as_ref());
     }
 }
 
@@ -305,92 +288,165 @@ impl<T, M> Cell<T, M> {
 // DepNode implementation for Cell - enables type-erased dependency traversal
 // ============================================================================
 
-#[cfg(feature = "scheduler")]
-impl<T, M> Cell<T, M> {
-    /// Opt this cell out of the scheduler's last-write-wins coalescing.
-    ///
-    /// Under [`batch`](crate::batch), a coalescing cell keeps only its final
-    /// value per tick — correct for behavior operators (map/filter/join/
-    /// `switch_map`), but it silently drops intermediates for event operators
-    /// (scan/pairwise/merge/buffer/zip) and hand-rolled stateful maps, whose
-    /// result depends on seeing every emission. Marking such a cell
-    /// `no_coalesce` makes the scheduler enqueue each of its notifies as a
-    /// distinct height-ordered op — every intermediate preserved, still drained
-    /// in height order (so it reads settled inputs; deferral is glitch-free, only
-    /// the last-write-wins *drop* is unsafe for these).
-    ///
-    /// For an event-semantic *subgraph*, prefer
-    /// [`scheduler::no_coalesce`](crate::scheduler::no_coalesce), which stamps
-    /// every cell born inside it — including the sources upstream of the
-    /// operator, where coalescing would otherwise starve it before its inputs
-    /// ever reach it. This builder is the single-cell escape hatch for sites
-    /// where wrapping construction is awkward.
+impl<T: CellValue, M> Cell<T, M> {
+    /// Make this cell keep only the last value it receives in a settle, so it
+    /// fans out once. For the output of a fan-in operator, where each input's
+    /// callback emits the full combined state.
     #[must_use]
-    pub fn no_coalesce(self) -> Self {
-        self.inner.no_coalesce.store(true, Ordering::Relaxed);
+    pub(crate) fn combine_latest(self) -> Self {
+        let _ = self.inner.combine.set(Combine::Latest);
+        self
+    }
+
+    /// Make this cell fold each value it receives in a settle into the pending
+    /// one, so it fans out once with the folded value.
+    #[must_use]
+    pub(crate) fn combine_with(self, fold: fn(&mut Arc<T>, Arc<T>) -> Option<Arc<T>>) -> Self {
+        let _ = self.inner.combine.set(Combine::Fold(fold));
+        self
+    }
+
+    /// Make this cell deliver every value it receives, including values
+    /// written through `Mutable::set`. For a cell that carries events.
+    #[must_use]
+    pub(crate) fn combine_each(self) -> Self {
+        let _ = self.inner.combine.set(Combine::Each);
         self
     }
 }
 
-/// Type-erased handle to a node participating in localized height-cache
-/// invalidation. Implemented on the stable `Arc<CellInner<T>>` (not the ephemeral
-/// `Cell` handle that `DepNode` rides), so a `Weak<dyn HeightInvalidate>` can name
-/// a specific cell for its lifetime — the identity the dependency back-edges need
-/// and `DepNode` can't provide.
-///
-/// `pub` only because it appears in the (public) `DepNode::add_height_dependent`
-/// signature; it is an internal scheduler detail, not stable API.
-#[doc(hidden)]
-#[cfg(feature = "scheduler")]
-pub trait HeightInvalidate: Send + Sync {
-    fn hi_id(&self) -> Uuid;
-    /// Advance this node's height epoch, marking its cached height stale.
-    fn hi_bump_epoch(&self);
-    /// Snapshot the live dependents (pruning dead weaks) for the cone walk.
-    fn hi_dependents(&self) -> Vec<std::sync::Weak<dyn HeightInvalidate>>;
-}
-
-#[cfg(feature = "scheduler")]
-impl<T: Send + Sync> HeightInvalidate for CellInner<T> {
-    fn hi_id(&self) -> Uuid {
+impl<T: CellValue> Node for CellInner<T> {
+    fn node_id(&self) -> Uuid {
         self.id
     }
-    fn hi_bump_epoch(&self) {
+
+    fn node_height(&self) -> u64 {
+        let epoch = u32::try_from(self.height_epoch.load(Ordering::Relaxed)).unwrap_or(u32::MAX);
+        let packed = self.height_cache.load(Ordering::Relaxed);
+        if u32::try_from(packed >> 32).unwrap_or(u32::MAX) == epoch {
+            return packed & 0xFFFF_FFFF;
+        }
+        let sources: Vec<_> = self
+            .owned
+            .lock()
+            .values()
+            .map(|guard| Arc::clone(guard.source()))
+            .collect();
+        let height = sources.iter().fold(0u64, |height, source| {
+            height.max(crate::settle::height(source.as_ref()).saturating_add(1))
+        });
+        self.height_cache
+            .store((u64::from(epoch) << 32) | height, Ordering::Relaxed);
+        height
+    }
+
+    fn fire(&self) {
+        let pending = std::mem::take(&mut *self.pending.lock());
+        self.queued.store(false, Ordering::Release);
+        for signal in pending {
+            if self.completed.load(Ordering::SeqCst) || self.errored.load(Ordering::SeqCst) {
+                break;
+            }
+            self.write_value(&signal);
+            crate::settle::record_fire(&self.fired_run);
+            #[cfg(debug_assertions)]
+            let started = crate::platform::Instant::now();
+            self.fanout(&signal);
+            // Every writer in the process queues behind this fanout. Name the
+            // cell when one takes long enough to look like a hang.
+            #[cfg(debug_assertions)]
+            if started.elapsed() > SLOW_FANOUT {
+                log::warn!(
+                    "hyphae: one fanout of the cell created at {} held the settle for {:?}; \
+                     a subscriber that blocks or computes for long delays every write in the process",
+                    self.caller,
+                    started.elapsed()
+                );
+            }
+        }
+    }
+
+    fn bump_height_epoch(&self) {
         self.height_epoch.fetch_add(1, Ordering::Relaxed);
     }
-    fn hi_dependents(&self) -> Vec<std::sync::Weak<dyn HeightInvalidate>> {
-        let mut g = self.height_dependents.lock();
-        // Amortized prune: a dropped dependent leaves a dead weak; sweep them on
-        // read. NOTE: this bounds the vec to the live dependent set only because
-        // `add_height_dependent` also rejects duplicates — retain alone cannot
-        // remove a repeat registration of a still-live dependent (rship lv-c065).
-        g.retain(|w| w.strong_count() > 0);
-        g.clone()
+
+    fn node_dependents(&self) -> Vec<Weak<dyn Node>> {
+        let mut dependents = self.dependents.lock();
+        dependents.retain(|dependent| dependent.strong_count() > 0);
+        dependents.clone()
     }
 }
 
-/// Invalidate the height cache of `start` and every node whose height depends
-/// (transitively) on it — the downstream cone. Called when `start`'s dependency
-/// set changes (`own`/`own_keyed`), so exactly the heights that could have moved
-/// are recomputed on their next read, leaving unrelated (and already-settled)
-/// subgraphs cached.
-///
-/// Bounds/safety: the visited set breaks cycles and de-dups diamonds; dead weaks
-/// (a dependent dropped concurrently — e.g. a `switch_map` inner being torn down
-/// in the same wave that invalidates it) upgrade to `None` and are skipped. The
-/// walk may over-invalidate (a stale weak still upgrades until pruned → one extra
-/// recompute) but never under-invalidates a live dependent.
-#[cfg(feature = "scheduler")]
-pub(crate) fn invalidate_height_cone(start: &dyn HeightInvalidate) {
-    start.hi_bump_epoch();
-    let mut visited = std::collections::HashSet::new();
-    visited.insert(start.hi_id());
-    let mut stack = start.hi_dependents();
-    while let Some(weak) = stack.pop() {
-        let Some(node) = weak.upgrade() else { continue };
-        if visited.insert(node.hi_id()) {
-            node.hi_bump_epoch();
-            stack.extend(node.hi_dependents());
+impl<T: CellValue> CellInner<T> {
+    /// Route one signal: into the settle in progress when this cell has not
+    /// had its turn there, otherwise through the input queue.
+    ///
+    /// `latest` applies only to a queued write: `Mutable::set` passes `true`,
+    /// so sets of one cell that share a settle leave the last value.
+    pub(crate) fn write(self: &Arc<Self>, signal: Signal<T>, latest: bool) {
+        if self.completed.load(Ordering::SeqCst) || self.errored.load(Ordering::SeqCst) {
+            return;
+        }
+        match crate::settle::position(|| self.node_height()) {
+            crate::settle::Position::Joins => self.accept(signal, false),
+            crate::settle::Position::Queue => crate::settle::submit_write(
+                crate::settle::SettleKey::Shared,
+                Box::new(CellWrite {
+                    cell: Arc::downgrade(self),
+                    signal,
+                    latest,
+                }),
+            ),
+        }
+    }
+
+    /// Add `signal` to this cell's pending list and put the cell in the
+    /// frontier. Only the thread that holds the settle lock calls this.
+    fn accept(self: &Arc<Self>, signal: Signal<T>, latest: bool) {
+        let displaced = {
+            let mut pending = self.pending.lock();
+            match (pending.last_mut(), signal) {
+                (Some(Signal::Value(held)), Signal::Value(next)) => match self.combine.get() {
+                    Some(Combine::Fold(fold)) => {
+                        if let Some(next) = fold(held, next) {
+                            pending.push(Signal::Value(next));
+                        }
+                        None
+                    }
+                    Some(Combine::Latest) => Some(std::mem::replace(held, next)),
+                    None if latest => Some(std::mem::replace(held, next)),
+                    Some(Combine::Each) | None => {
+                        pending.push(Signal::Value(next));
+                        None
+                    }
+                },
+                (_, signal) => {
+                    pending.push(signal);
+                    None
+                }
+            }
+        };
+        // A replaced value can own cells whose drop takes other cell locks.
+        drop(displaced);
+        if !self.queued.swap(true, Ordering::AcqRel) {
+            let node: Arc<dyn Node> = self.clone();
+            crate::settle::schedule(Arc::downgrade(&node), self.node_height());
+        }
+    }
+}
+
+/// A queued write to a cell. Holds the cell weakly: a cell that nothing else
+/// holds has no subscriber left to tell, so its write is dropped.
+struct CellWrite<T> {
+    cell: Weak<CellInner<T>>,
+    signal: Signal<T>,
+    latest: bool,
+}
+
+impl<T: CellValue> crate::settle::Write for CellWrite<T> {
+    fn apply(self: Box<Self>) {
+        if let Some(cell) = self.cell.upgrade() {
+            cell.accept(self.signal, self.latest);
         }
     }
 }
@@ -421,43 +477,31 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
         sources
     }
 
-    #[cfg(feature = "scheduler")]
     fn height_cache(&self) -> Option<&std::sync::atomic::AtomicU64> {
         Some(&self.inner.height_cache)
     }
 
-    #[cfg(feature = "scheduler")]
     fn height_epoch(&self) -> Option<&std::sync::atomic::AtomicU64> {
         Some(&self.inner.height_epoch)
     }
 
-    #[cfg(feature = "scheduler")]
-    fn add_height_dependent(&self, dep: std::sync::Weak<dyn HeightInvalidate>) {
-        let mut deps = self.inner.height_dependents.lock();
-        // Prune dead entries, then register only if this dependent isn't already
-        // here. Both steps are load-bearing: `own`/`own_keyed` re-register the
-        // SAME (source, dependent) pair on every `switch_map` re-knit whose
-        // closure returns a CACHED cell (myko memoizes report/query cells, so
-        // the "new" inner cell is usually the same live one). An unguarded push
-        // therefore grew this Vec without bound at 16 bytes per re-knit —
-        // measured at ~7.5k re-knits/s in the rship server, and quadratic in
-        // allocator churn on top, because `hi_dependents` clones the whole Vec
-        // on every invalidation. `retain(strong_count > 0)` alone did NOT bound
-        // it: it only drops dependents that have DIED, never duplicates of a
-        // live one. (rship lv-c065)
-        deps.retain(|w| w.strong_count() > 0);
-        // Compare data addresses, not `Weak::ptr_eq`: these are trait-object
-        // weaks and vtable identity is not guaranteed across coercion sites.
-        let new_addr = dep.as_ptr().cast::<()>();
-        if deps.iter().any(|w| w.as_ptr().cast::<()>() == new_addr) {
+    fn add_dependent(&self, dependent: Weak<dyn Node>) {
+        let mut dependents = self.inner.dependents.lock();
+        // Prune dead entries, then register only a dependent that is not
+        // already here. A `switch_map` whose closure returns a cached cell
+        // re-registers the same pair on every rewire; without the duplicate
+        // check this list grew without bound.
+        dependents.retain(|existing| existing.strong_count() > 0);
+        // Compare data addresses: vtable identity is not guaranteed for
+        // trait-object weaks coerced at different sites.
+        let address = dependent.as_ptr().cast::<()>();
+        if dependents
+            .iter()
+            .any(|existing| existing.as_ptr().cast::<()>() == address)
+        {
             return;
         }
-        deps.push(dep);
-    }
-
-    #[cfg(feature = "scheduler")]
-    fn no_coalesce(&self) -> bool {
-        self.inner.no_coalesce.load(Ordering::Relaxed)
+        dependents.push(dependent);
     }
 
     fn subscriber_count(&self) -> usize {
@@ -483,108 +527,45 @@ impl<T: CellValue> Cell<T, CellImmutable> {
 }
 
 impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
-    /// Emit a signal to all subscribers.
+    /// Deliver a signal to this cell: store it and tell every subscriber.
     ///
-    /// This is the unified notification mechanism for values, completion, and errors.
-    ///
-    /// Under the `profiling` feature the propagation boundaries
-    /// ([`notify`](Self::notify)/[`write_value`](Self::write_value)/[`fanout`](Self::fanout))
-    /// are `#[inline(never)]` so sampling profilers resolve them as distinct
-    /// frames instead of folding the whole cascade into one `eq`/`notify`
-    /// symbol. This costs a call on the hot path, so it is opt-in.
+    /// The delivery goes through the settle core. It is complete when this
+    /// returns unless another thread is settling, in which case that thread
+    /// completes it. Called from a subscriber callback, it joins the settle in
+    /// progress when this cell depends on the cell whose callback is running,
+    /// and otherwise runs in a later settle.
     #[doc(hidden)]
-    #[cfg_attr(feature = "profiling", inline(never))]
     pub fn notify(&self, signal: Signal<T>) {
-        // Don't emit anything after completion or error
-        if self.inner.completed.load(Ordering::SeqCst) || self.inner.errored.load(Ordering::SeqCst)
-        {
-            return;
-        }
-
-        // Opt-in scheduler interception. Inside a `batch` (never in the
-        // default build, never on the synchronous path) this defers the
-        // value-settle + fanout into the height-ordered tick queue and returns;
-        // the drain runs them in order at the batch boundary. One thread-local
-        // bool load when the feature is on but no batch is open.
-        #[cfg(feature = "scheduler")]
-        if crate::scheduler::tick_active() {
-            // Weak: the queued op must not be what keeps this cell alive. If
-            // its source is rewritten before the op runs, the rewrite reaches
-            // the cell through the op's reference and queues a fresh op that
-            // holds it again, so a cell nobody uses any more never drops, never
-            // unsubscribes, and keeps recomputing for as long as the queue
-            // stays busy. A cell with no other holder has no subscribers left
-            // to tell, so skipping its op changes nothing observable.
-            let cell = self.downgrade();
-            // A terminal signal must not coalesce over a value it follows (an
-            // emit-then-complete operator would otherwise lose its final value
-            // under `batch`) — see [`crate::scheduler::enqueue`].
-            let terminal = !matches!(signal, Signal::Value(_));
-            let signal = signal;
-            let dependency: &dyn crate::traits::DepNode = self;
-            crate::scheduler::enqueue(
-                self.inner.id,
-                dependency,
-                terminal,
-                Box::new(move || {
-                    if let Some(cell) = cell.upgrade() {
-                        cell.write_value(&signal);
-                        cell.fanout(&signal);
-                    }
-                }),
-            );
-            return;
-        }
-
-        // Two phases, split so the (opt-in) scheduler can settle a cell's value
-        // in height order *before* running its fanout — glitch-free coalescing —
-        // and so sampling profilers resolve the value-write and the fanout as
-        // distinct symbols instead of one folded `notify`. Outside a scheduler
-        // batch (the default, and always on wasm) they run back-to-back: the
-        // exact synchronous eager-push path, with no behavioral change.
-        self.write_value(&signal);
-        self.fanout(&signal);
-        // `notify` owns its signal because scheduler-enabled builds may move it
-        // into the deferred tick closure. End the synchronous signal lifetime
-        // explicitly as well so feature-minimal dependent builds preserve the
-        // same ownership contract.
-        drop(signal);
+        self.inner.write(signal, false);
     }
+}
 
-    /// Settle this cell's current value — or its terminal completed/errored
-    /// state — from `signal`. Brief mutex work only; runs no subscriber fanout.
+impl<T: CellValue> CellInner<T> {
+    /// Store this cell's current value, or its completed or errored state.
     #[cfg_attr(feature = "profiling", inline(never))]
     fn write_value(&self, signal: &Signal<T>) {
         match signal {
-            Signal::Value(arc_value) => {
-                // `Mutex<Arc<T>>` write: brief lock, swap the Arc, drop lock.
-                // The previous Arc drops inline at the end of this scope —
-                // `Arc::drop` is just a refcount decrement (and dealloc when
-                // it hits zero), no `arc_swap::Debt::pay_all` reader-slot
-                // scan. Readers that grabbed an earlier Arc keep it alive
-                // via their own clone until they're done.
-                *self.inner.value.lock() = arc_value.clone();
+            Signal::Value(value) => {
+                let previous = std::mem::replace(&mut *self.value.lock(), value.clone());
+                drop(previous);
             }
             Signal::Complete => {
-                self.inner.completed.store(true, Ordering::SeqCst);
+                self.completed.store(true, Ordering::SeqCst);
             }
             Signal::Error(err) => {
-                self.inner.errored.store(true, Ordering::SeqCst);
-                *self.inner.error.lock() = Some(err.clone());
+                self.errored.store(true, Ordering::SeqCst);
+                *self.error.lock() = Some(err.clone());
             }
         }
     }
 
-    /// Fan `signal` out to this cell's subscribers. The value is assumed already
-    /// settled by [`write_value`]; callbacks run with no internal lock held.
+    /// Fan `signal` out to this cell's subscribers. Callbacks run with no
+    /// internal lock held.
     #[cfg_attr(feature = "profiling", inline(never))]
     fn fanout(&self, signal: &Signal<T>) {
-        // Tally this emit against the active measurement pass (if any). One per
-        // fanout: synchronously this counts every re-fire; under `batch` the
-        // coalesced cell fanouts once, so the same counter shows the collapse.
-        // Pure measurement — compiles to nothing without `profiling`.
+        // One tally per fanout against the active measurement pass, if any.
         #[cfg(feature = "profiling")]
-        crate::profiling::record_fire(self.inner.id);
+        crate::profiling::record_fire(self.id);
 
         // A `tracing` span per fanout so span-based profilers (`tracing-flame`,
         // `tracing-tracy`) get one entry per cell emit, tagged with the cell's
@@ -594,8 +575,8 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         #[cfg(feature = "profiling")]
         let _fanout_span = ::tracing::trace_span!(
             "hyphae.fanout",
-            cell.id = %self.inner.id,
-            cell.name = { self.inner.name.lock().clone() }.as_deref().unwrap_or(""),
+            cell.id = %self.id,
+            cell.name = { self.name.lock().clone() }.as_deref().unwrap_or(""),
         )
         .entered();
 
@@ -609,7 +590,7 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         // the lock — it may hold the last ref to an unsubscribed subscriber
         // whose drop cascades into upstream cell drops.
         let subs = {
-            let (subs, old_snapshot) = self.inner.subscribers.lock().snapshot();
+            let (subs, old_snapshot) = self.subscribers.lock().snapshot();
             drop(old_snapshot);
             subs
         };
@@ -629,7 +610,7 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         // channel instead of `panic!`.
         // Same snapshot pattern as `subscribers` above.
         let result_subs = {
-            let (result_subs, old_snapshot) = self.inner.result_subscribers.lock().snapshot();
+            let (result_subs, old_snapshot) = self.result_subscribers.lock().snapshot();
             drop(old_snapshot);
             result_subs
         };
@@ -639,7 +620,7 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
                 log::error!(
                     "hyphae: fallible subscriber {} on cell {} returned error: {}",
                     subscriber_id,
-                    self.inner.id,
+                    self.id,
                     err
                 );
             }
@@ -795,7 +776,7 @@ impl<T: CellValue, U: Send + Sync + 'static> WatchableResult<T> for Cell<T, U> {
 
 impl<T: CellValue> Mutable<T> for Cell<T, CellMutable> {
     fn set(&self, value: T) {
-        self.notify(Signal::value(value)); // Wraps in Arc
+        self.inner.write(Signal::value(value), true);
     }
 
     fn complete(&self) {
@@ -815,8 +796,8 @@ impl<T> Drop for CellInner<T> {
     fn drop(&mut self) {}
 }
 
-#[cfg(all(test, feature = "scheduler"))]
-mod height_dependents_tests {
+#[cfg(test)]
+mod dependents_tests {
     use crate::{Cell, Materialize, Mutable, SwitchMapExt, Watchable};
 
     /// Re-owning the SAME live source must not grow the source's
@@ -837,7 +818,7 @@ mod height_dependents_tests {
             owner.own_keyed(key, guard);
         }
 
-        let len = source.inner.height_dependents.lock().len();
+        let len = source.inner.dependents.lock().len();
         assert_eq!(
             len, 1,
             "same (source, dependent) pair re-owned 1000x should register once, got {len}"
@@ -854,7 +835,7 @@ mod height_dependents_tests {
             owner.own(source.subscribe(|_| {}));
         }
 
-        let len = source.inner.height_dependents.lock().len();
+        let len = source.inner.dependents.lock().len();
         assert_eq!(len, 5, "each distinct dependent must register exactly once");
     }
 
@@ -871,7 +852,7 @@ mod height_dependents_tests {
         let owner2 = Cell::new(0i32);
         owner2.own(source.subscribe(|_| {}));
 
-        let len = source.inner.height_dependents.lock().len();
+        let len = source.inner.dependents.lock().len();
         assert_eq!(len, 1, "dropped dependent should not linger, got {len}");
     }
 
@@ -893,7 +874,7 @@ mod height_dependents_tests {
             outer.set(i);
         }
 
-        let len = shared_inner.inner.height_dependents.lock().len();
+        let len = shared_inner.inner.dependents.lock().len();
         assert!(
             len <= 2,
             "switch_map re-knit onto a cached inner cell grew dependents to {len}"
@@ -921,7 +902,7 @@ mod owned_guard_tests {
             ::tracing::subscriber::with_default(
                 ::tracing::subscriber::NoSubscriber::default(),
                 || {
-                    sender.fanout(&Signal::value(1));
+                    sender.inner.fanout(&Signal::value(1));
                 },
             );
             let _ = done.send(());

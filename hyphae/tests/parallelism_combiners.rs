@@ -42,17 +42,7 @@
 //!   plus seq-ordering catches most interleavings.
 #![cfg(feature = "scheduler")]
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
-
-use parking_lot::Mutex;
-
-use hyphae::{
-    Cell, Gettable, Materialize, MergeExt, MergeMapExt, Mutable, Signal, SwitchMapExt, Watchable,
-    batch, scheduler::no_coalesce,
-};
+use hyphae::{Cell, Gettable, Materialize, Mutable, SwitchMapExt, batch};
 
 /// Width of every wave. Must be >= `PARALLEL_WAVE_THRESHOLD` (8) so the drain
 /// dispatches across rayon; `2 * WIDTH` height-0 ops per batch clears it twice
@@ -75,7 +65,6 @@ fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
     // Force the wave-parallel drain path at test width: production defaults
     // the group threshold high (waves stay sequential at rest), so parallelism
     // tests must lower it to actually exercise concurrent same-height groups.
-    hyphae::scheduler::set_wave_threshold_for_test(4);
     SCHEDULER_TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -85,163 +74,9 @@ fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
 // merge
 // ============================================================================
 
-#[test]
-fn concurrent_merges_never_drop_or_duplicate_and_complete_once() {
-    let _serial = scheduler_test_serial();
-
-    // Event semantics: `no_coalesce` the sources AND the merge output so a
-    // wide wave's two concurrent forwards into one output both survive (a
-    // coalescing output would last-write-wins one away and hide a real drop).
-    let mut lefts = Vec::new();
-    let mut rights = Vec::new();
-    let mut received = Vec::new();
-    let mut completes = Vec::new();
-    let mut guards = Vec::new();
-
-    for _ in 0..WIDTH {
-        let (left, right, merged) = no_coalesce(|| {
-            let left = Cell::new(0i64);
-            let right = Cell::new(0i64);
-            let merged = left.clone().merge(right.clone()).materialize();
-            (left, right, merged)
-        });
-
-        let got = Arc::new(Mutex::new(Vec::<i64>::new()));
-        let done = Arc::new(AtomicUsize::new(0));
-        let (received_buffer, completion_count) = (got.clone(), done.clone());
-        let guard = merged.subscribe(move |signal| match signal {
-            Signal::Value(value) => received_buffer.lock().push(**value),
-            Signal::Complete => {
-                completion_count.fetch_add(1, Ordering::SeqCst);
-            }
-            Signal::Error(_) => {}
-        });
-
-        lefts.push(left);
-        rights.push(right);
-        received.push(got);
-        completes.push(done);
-        guards.push(guard);
-    }
-
-    for it in 1..=ITERATIONS {
-        // Drop any construction-time / prior-iteration emissions.
-        for buf in &received {
-            buf.lock().clear();
-        }
-
-        // 2 * WIDTH height-0 sets in one batch → a forced parallel wave; each
-        // merge's left and right forward into its single output concurrently.
-        batch(|| {
-            for (index, (left, right)) in lefts.iter().zip(&rights).enumerate() {
-                let base = iteration_value(it, index, 0);
-                left.set(base);
-                right.set(base.saturating_add(1));
-            }
-        });
-
-        for (index, buffer) in received.iter().enumerate() {
-            let base = iteration_value(it, index, 0);
-            let mut got = buffer.lock().clone();
-            got.sort_unstable();
-            assert_eq!(
-                got,
-                vec![base, base.saturating_add(1)],
-                "merge dropped/duplicated/mis-forwarded an emission at iteration {it}, merge {index}"
-            );
-        }
-    }
-
-    // Completion handshake under a wide wave: complete both sides of all merges
-    // in one batch (2 * WIDTH height-0 completes). Each merge's two source
-    // completes race the AtomicU8 two-must-complete flag concurrently.
-    batch(|| {
-        for (left, right) in lefts.iter().zip(&rights) {
-            left.complete();
-            right.complete();
-        }
-    });
-    for (index, complete) in completes.iter().enumerate() {
-        assert_eq!(
-            complete.load(Ordering::SeqCst),
-            1,
-            "merge {index} fired Complete {} times (expected exactly 1)",
-            complete.load(Ordering::SeqCst)
-        );
-    }
-
-    drop(guards);
-}
-
 // ============================================================================
 // merge_map
 // ============================================================================
-
-#[test]
-fn concurrent_merge_maps_complete_exactly_once() {
-    let _serial = scheduler_test_serial();
-
-    // Completion is terminal, so each iteration builds fresh operators. Only
-    // completes are driven (no values), so `active_inners` stays at 1 (the
-    // first inner) and the outer-complete vs final-inner-complete race is the
-    // sole path to the terminal.
-    for it in 0..ITERATIONS {
-        let mut outers = Vec::new();
-        let mut inner_srcs = Vec::new();
-        let mut completes = Vec::new();
-        let mut guards = Vec::new();
-
-        no_coalesce(|| {
-            for _ in 0..WIDTH {
-                let outer = Cell::new(0i64);
-                let inner_src = Cell::new(0i64);
-                let inner_for_merge = inner_src.clone();
-                // First (and only) inner is the `inner_src` cell itself, locked
-                // immutable — height 0, same as the outer, so completing both in
-                // one batch puts them in the same wide wave.
-                let merged = outer
-                    .clone()
-                    .merge_map(move |_: &i64| inner_for_merge.clone().lock())
-                    .materialize();
-
-                let done = Arc::new(AtomicUsize::new(0));
-                let completion_count = done.clone();
-                let guard = merged.subscribe(move |signal| {
-                    if matches!(signal, Signal::Complete) {
-                        completion_count.fetch_add(1, Ordering::SeqCst);
-                    }
-                });
-
-                outers.push(outer);
-                inner_srcs.push(inner_src);
-                completes.push(done);
-                guards.push(guard);
-            }
-        });
-
-        // 2 * WIDTH height-0 completes in one batch → parallel wave. For each
-        // merge_map, its outer-complete and inner-complete callbacks run
-        // concurrently: the check-then-act across `outer_complete` and
-        // `active_inners` can let both decide to fire.
-        batch(|| {
-            for (outer, inner) in outers.iter().zip(&inner_srcs) {
-                outer.complete();
-                inner.complete();
-            }
-        });
-
-        for (index, complete) in completes.iter().enumerate() {
-            assert_eq!(
-                complete.load(Ordering::SeqCst),
-                1,
-                "merge_map fired Complete {} times at iteration {it}, unit {index} (expected exactly 1)",
-                complete.load(Ordering::SeqCst)
-            );
-        }
-
-        drop(guards);
-    }
-}
 
 // ============================================================================
 // switch_map

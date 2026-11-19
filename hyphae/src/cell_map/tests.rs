@@ -1028,10 +1028,18 @@ fn existing_key_diff_preserves_reentrant_membership_changes() {
         assert_eq!(length.get(), 2);
         assert_eq!(map.get_value(&"removable".to_owned()), None);
         assert_eq!(map.get_value(&"added".to_owned()), Some(9));
-        assert_eq!(*lengths.lock(), vec![2, 1, 2]);
+        // The callback's remove and insert are one later settle, so the
+        // length goes straight from 2 to 2 and the two diffs arrive together,
+        // after the diff that triggered them.
+        assert_eq!(*lengths.lock(), vec![2, 2]);
+        let mut observed = Vec::new();
+        for diff in diffs.lock().iter().skip(1).cloned() {
+            diff.flatten_into(&mut observed);
+        }
         assert_eq!(
-            diffs.lock().iter().skip(1).cloned().collect::<Vec<_>>(),
+            observed,
             vec![
+                diff,
                 MapDiff::Remove {
                     key: "removable".to_owned(),
                     old_value: 7
@@ -1040,7 +1048,6 @@ fn existing_key_diff_preserves_reentrant_membership_changes() {
                     key: "added".to_owned(),
                     value: 9
                 },
-                diff,
             ],
         );
     }

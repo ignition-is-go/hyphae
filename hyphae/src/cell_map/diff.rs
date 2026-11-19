@@ -33,6 +33,39 @@ impl<K, V> MapDiff<K, V> {
         }
     }
 
+    /// Fold `next` into `held` so one notification carries both, in order.
+    /// Returns `next` when either is an `Initial` snapshot, which is never
+    /// placed inside a batch.
+    pub(crate) fn compose(
+        held: &mut std::sync::Arc<Self>,
+        next: std::sync::Arc<Self>,
+    ) -> Option<std::sync::Arc<Self>>
+    where
+        K: Clone,
+        V: Clone,
+    {
+        if matches!(**held, Self::Initial { .. }) || matches!(*next, Self::Initial { .. }) {
+            return Some(next);
+        }
+        let next = std::sync::Arc::unwrap_or_clone(next);
+        let held = std::sync::Arc::make_mut(held);
+        if let Self::Batch { changes } = held {
+            next.flatten_into(changes);
+        } else {
+            let first = std::mem::replace(
+                held,
+                Self::Batch {
+                    changes: Vec::new(),
+                },
+            );
+            if let Self::Batch { changes } = held {
+                changes.push(first);
+                next.flatten_into(changes);
+            }
+        }
+        None
+    }
+
     pub(crate) fn visit_leaves<'a>(&'a self, visit: &mut impl FnMut(&'a Self)) {
         match self {
             Self::Batch { changes } => {

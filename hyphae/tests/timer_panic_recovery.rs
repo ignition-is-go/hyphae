@@ -14,8 +14,6 @@ use hyphae::{Signal, interval_precise_with_elapsed_source};
 #[allow(clippy::panic)]
 fn interval_resumes_after_subscriber_panics() {
     let source = interval_precise_with_elapsed_source(Duration::from_millis(10));
-    #[cfg(feature = "scheduler")]
-    let source = source.batched();
     let panicked = AtomicBool::new(false);
     let (panic_tx, panic_rx) = mpsc::channel();
     let _panicking = source.subscribe(move |signal| {

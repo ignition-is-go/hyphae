@@ -11,8 +11,8 @@ use std::{
 };
 
 use hyphae::{
-    Cell, CellMap, Gettable, MapExt, MapQuery, Materialize, Mutable, ProjectCellExt, ScanExt,
-    Signal, Source, Watchable, batch, join_vec,
+    Cell, CellMap, Gettable, MapExt, MapQuery, Materialize, Mutable, ProjectCellExt, Signal,
+    Source, Watchable, batch, join_vec,
 };
 
 #[derive(Clone)]
@@ -235,26 +235,20 @@ fn wide_diamond(cfg: &Config) -> Samples {
     samples
 }
 
-fn event_no_coalesce(cfg: &Config) -> Samples {
+fn event_burst(cfg: &Config) -> Samples {
     let mut samples = Samples::default();
     for iteration in 0..cfg.iterations {
         let start = Instant::now();
-        let (source, count) = hyphae::scheduler::no_coalesce(|| {
-            let source = Cell::new(0_u64);
-            let count = source
-                .clone()
-                .scan(0_u64, |n, _| n.wrapping_add(1))
-                .materialize();
-            (source, count)
-        });
+        let source = Source::<u64>::new();
+        let total = Arc::new(AtomicU64::new(0));
         let hits = Arc::new(AtomicU64::new(0));
-        let hit_counter = hits.clone();
-        let guard = count.subscribe(move |signal| {
+        let (running_total, hit_counter) = (total.clone(), hits.clone());
+        let guard = source.subscribe(move |signal| {
             if matches!(signal, Signal::Value(_)) {
+                running_total.fetch_add(1, Ordering::Relaxed);
                 hit_counter.fetch_add(1, Ordering::Relaxed);
             }
         });
-        hits.store(0, Ordering::Relaxed);
         samples.setup.push(start.elapsed());
 
         let size = usize_to_u64(cfg.size);
@@ -262,21 +256,16 @@ fn event_no_coalesce(cfg: &Config) -> Samples {
         let start = Instant::now();
         batch(|| {
             for offset in 0..cfg.size {
-                source.set(base.wrapping_add(usize_to_u64(offset)).wrapping_add(1));
+                source.emit(base.wrapping_add(usize_to_u64(offset)).wrapping_add(1));
             }
         });
-        let output = count.get();
+        let output = total.load(Ordering::Relaxed);
         samples.operation.push(start.elapsed());
-        assert_eq!(output, size.wrapping_add(1), "scan lost an input event");
-        assert_eq!(
-            hits.load(Ordering::Relaxed),
-            size,
-            "observer lost a scan output"
-        );
+        assert_eq!(output, size, "an event of the burst was lost");
+        assert_eq!(hits.load(Ordering::Relaxed), size, "observer lost an event");
 
         let start = Instant::now();
         drop(guard);
-        drop(count);
         drop(source);
         samples.teardown.push(start.elapsed());
     }
@@ -383,7 +372,7 @@ fn main() -> Result<(), String> {
         Command::Run(cfg) => cfg,
         Command::Help => {
             println!(
-                "usage: runtime_baseline [--workload all|lifecycle|deep_chain|wide_diamond|event_no_coalesce|source_fanout|project_cell_churn] [--size N] [--iterations N] [--warmup N]"
+                "usage: runtime_baseline [--workload all|lifecycle|deep_chain|wide_diamond|event_burst|source_fanout|project_cell_churn] [--size N] [--iterations N] [--warmup N]"
             );
             return Ok(());
         }
@@ -392,7 +381,7 @@ fn main() -> Result<(), String> {
         ("lifecycle", lifecycle),
         ("deep_chain", deep_chain),
         ("wide_diamond", wide_diamond),
-        ("event_no_coalesce", event_no_coalesce),
+        ("event_burst", event_burst),
         ("source_fanout", source_fanout),
         ("project_cell_churn", project_cell_churn),
     ];

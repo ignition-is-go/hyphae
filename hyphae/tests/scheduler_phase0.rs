@@ -30,7 +30,6 @@ fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
     // Force the wave-parallel drain path at test width: production defaults
     // the group threshold high (waves stay sequential at rest), so parallelism
     // tests must lower it to actually exercise concurrent same-height groups.
-    hyphae::scheduler::set_wave_threshold_for_test(4);
     SCHEDULER_TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -95,14 +94,14 @@ fn diamond_synchronous_solves_twice_batched_once() {
         .materialize();
     let last = record_last(&result);
 
-    // Synchronous: the shared source reaches the sink via both diamond legs,
-    // so the sink re-solves twice for one source change.
+    // A bare set is one settle: both legs settle before the join fires, so
+    // the sink solves once.
     solve_count.store(0, Ordering::SeqCst);
     source.set(5);
     assert_eq!(
         solve_count.load(Ordering::SeqCst),
-        2,
-        "synchronous diamond re-solves once per leg"
+        1,
+        "a bare set solves the diamond once"
     );
     assert_eq!(
         *last

@@ -165,6 +165,7 @@ mod tests {
 
     #[gpui::test]
     fn updates_only_the_affected_entry_state(cx: &mut TestAppContext) {
+        let _serial = crate::test_serial();
         let map = CellMap::<u32, String>::new();
         map.insert(1, "one".into());
         map.insert(2, "two".into());
@@ -200,6 +201,7 @@ mod tests {
 
     #[gpui::test]
     fn removal_clears_the_existing_key_entity(cx: &mut TestAppContext) {
+        let _serial = crate::test_serial();
         let map = CellMap::<u32, String>::new();
         map.insert(1, "one".into());
         let entity = cx.update(|cx| map.to_gpui_map_entity(cx));

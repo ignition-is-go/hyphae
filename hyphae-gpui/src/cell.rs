@@ -198,6 +198,7 @@ mod tests {
 
     #[gpui::test]
     fn observation_helper_delivers_values(cx: &mut TestAppContext) {
+        let _serial = crate::test_serial();
         let cell = Cell::new(3_u32);
         let bridged = cx.update(|cx| cell.to_gpui_entity(cx));
         let observer = cx.update(|cx| {
@@ -221,6 +222,7 @@ mod tests {
 
     #[gpui::test]
     fn synchronous_seed_initializes_without_waiting_for_the_driver(cx: &mut TestAppContext) {
+        let _serial = crate::test_serial();
         let cell = Cell::new(1_u32);
         let entity = cx.update(|cx| cell.to_gpui_entity(cx));
         assert_eq!(

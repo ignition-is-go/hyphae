@@ -26,3 +26,15 @@ mod map;
 
 pub use cell::{CellEntity, CellEntityStatus, ObserveCellEntityExt, ToGpuiEntity};
 pub use map::{CellMapEntity, MapEntry, ToGpuiMapEntity};
+
+/// Runs the adapter tests one at a time.
+///
+/// A subscriber callback runs on whichever thread is delivering writes, and
+/// GPUI's test scheduler rejects a wake-up from any thread but its own. Two
+/// tests in one process could otherwise wake each other's scheduler.
+#[cfg(test)]
+pub(crate) fn test_serial() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}

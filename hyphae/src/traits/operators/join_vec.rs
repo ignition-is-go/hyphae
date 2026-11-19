@@ -37,7 +37,9 @@ where
             .map(|source| source.initial().clone())
             .collect::<Vec<_>>();
         let latest = Arc::new(Mutex::new(initial.clone()));
-        let derived = Cell::<Vec<T>, CellMutable>::new(initial);
+        // Each source emits the full vector, so the last one in a settle holds
+        // every settled source and the join fires once.
+        let derived = Cell::<Vec<T>, CellMutable>::new(initial).combine_latest();
         let completed = Arc::new(AtomicUsize::new(0));
         let count = self.sources.len();
         for (index, source) in prepared.into_iter().enumerate() {
@@ -47,12 +49,15 @@ where
             let source_callback: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
                 Arc::new(move |signal| match signal {
                     Signal::Value(value) => {
-                        let mut latest = latest.lock();
-                        if let Some(slot) = latest.get_mut(index) {
-                            *slot = value.as_ref().clone();
-                        }
+                        let joined = {
+                            let mut latest = latest.lock();
+                            if let Some(slot) = latest.get_mut(index) {
+                                *slot = value.as_ref().clone();
+                            }
+                            latest.clone()
+                        };
                         if let Some(derived) = weak.upgrade() {
-                            derived.notify(Signal::value(latest.clone()));
+                            derived.notify(Signal::value(joined));
                         }
                     }
                     Signal::Complete

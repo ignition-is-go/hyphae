@@ -116,7 +116,10 @@ where
         let outer_prepared = prepare_install(&self.source);
         let first_inner = (self.f)(outer_prepared.initial());
         let first_prepared = prepare_install(&first_inner);
-        let cell = Cell::<U, CellMutable>::new(first_prepared.initial().clone());
+        // The output holds the current inner's value. When the old inner fires
+        // and the outer switches in one settle, only the new inner's value is
+        // the settled one.
+        let cell = Cell::<U, CellMutable>::new(first_prepared.initial().clone()).combine_latest();
 
         // Stable key for the inner subscription guard so switch_map replaces (not accumulates)
         let inner_guard_key = Uuid::new_v4();
@@ -126,19 +129,10 @@ where
         let state = Arc::new(AtomicU64::new(0)); // gen 0, both incomplete
 
         // Serializes a switch (generation bump, in the outer handler) against a
-        // still-live old inner's guard-check-then-emit. Under the scheduler's
-        // wave-parallel drain the selector and an old inner are distinct
-        // same-height cells that can run concurrently; without this an old inner
-        // can read the current generation, pass its staleness guard, then have
-        // its now-stale value win the output's last-write-wins coalescing slot
-        // over the just-switched-in inner's value (a lost switch, confirmed by
-        // repro). Holding this lock across {gen-check + emit} in an inner and
-        // across the {gen-bump} in the selector makes the two mutually exclusive:
-        // an old inner either emits fully before the switch (its value precedes
-        // the new inner's seed, so the new one still wins the slot) or observes
-        // the bumped generation and is rejected. The new inner is subscribed
-        // *after* the lock is released, so its synchronous seed can't re-enter
-        // (and deadlock on) this same lock.
+        // still-live old inner's guard-check-then-emit. A settle runs on one
+        // thread, but a subscribe-time replay runs on the subscribing thread,
+        // so the two can still meet. The new inner is subscribed after the
+        // lock is released, so its seed cannot re-enter this lock.
         let switch_lock = Arc::new(Mutex::new(()));
         // Source callbacks may run concurrently. Serializing complete re-knits
         // ensures an older installation can never return after a newer one and

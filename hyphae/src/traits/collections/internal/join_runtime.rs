@@ -102,15 +102,9 @@ where
             );
             let changes = recompute_impacted(&mut state, &mut scratch, compute_rows.as_ref());
             state.scratch = scratch;
-            // Emit while STILL holding `state`, not after dropping it. Under the
-            // scheduler's wave-parallel drain the left and right sinks can run on
-            // two threads at once; each reads the sibling's rows under this lock
-            // to build `changes`, so the emit must land under the same lock too.
-            // Otherwise two concurrent sibling emits touching one output key can
-            // reorder vs their lock order and last-write-wins a stale combined
-            // row into the output map — the CellMap analogue of the join.rs
-            // torn-value bug. Holding it across the emit makes emit order == lock
-            // order, so whichever side observed the freshest sibling emits last.
+            // `state` is only this runtime's storage. Emitting queues the
+            // output diff for the settle in progress and runs nothing
+            // downstream, so holding the guard across it is harmless.
             emit_changes(sink.as_ref(), changes);
             drop(state);
         }
@@ -135,15 +129,9 @@ where
             );
             let changes = recompute_impacted(&mut state, &mut scratch, compute_rows.as_ref());
             state.scratch = scratch;
-            // Emit while STILL holding `state`, not after dropping it. Under the
-            // scheduler's wave-parallel drain the left and right sinks can run on
-            // two threads at once; each reads the sibling's rows under this lock
-            // to build `changes`, so the emit must land under the same lock too.
-            // Otherwise two concurrent sibling emits touching one output key can
-            // reorder vs their lock order and last-write-wins a stale combined
-            // row into the output map — the CellMap analogue of the join.rs
-            // torn-value bug. Holding it across the emit makes emit order == lock
-            // order, so whichever side observed the freshest sibling emits last.
+            // `state` is only this runtime's storage. Emitting queues the
+            // output diff for the settle in progress and runs nothing
+            // downstream, so holding the guard across it is harmless.
             emit_changes(sink.as_ref(), changes);
             drop(state);
         }

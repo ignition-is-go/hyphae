@@ -16,10 +16,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
-use hyphae::{
-    Cell, CellMutable, MapExt, Materialize, Mutable, Signal, Watchable, batch,
-    scheduler::no_coalesce,
-};
+use hyphae::{Cell, MapExt, Materialize, Mutable, Signal, Source, Watchable, batch};
 use parking_lot::Mutex;
 
 static SCHEDULER_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -30,7 +27,6 @@ fn scheduler_test_serial() -> parking_lot::MutexGuard<'static, ()> {
     // Force the wave-parallel drain path at test width: production defaults
     // the group threshold high (waves stay sequential at rest), so parallelism
     // tests must lower it to actually exercise concurrent same-height groups.
-    hyphae::scheduler::set_wave_threshold_for_test(4);
     SCHEDULER_TEST_LOCK.lock()
 }
 
@@ -43,17 +39,13 @@ fn reentrant_batch_from_inside_a_parallel_wave_never_hangs_and_drops_nothing() {
     // on `s`), so they settle in one parallel wave.
     let s = Cell::new(0i64);
 
-    // `target` is no_coalesce so we can assert an exact survival count — every
-    // reentrant set must reach it, none last-write-wins-dropped or stranded.
-    let target = no_coalesce(|| Cell::<i64, CellMutable>::new(0));
+    // `target` is a source, so every reentrant emit is its own event and an
+    // exact count can be asserted: none combined, none stranded.
+    let target = Source::<i64>::new();
     let observed = Arc::new(AtomicU64::new(0));
     let obs = observed.clone();
-    let seen_first = Arc::new(AtomicBool::new(false));
-    let g_target = target.clone().lock().subscribe(move |sig| {
+    let g_target = target.subscribe(move |sig| {
         if matches!(sig, Signal::Value(_)) {
-            if !seen_first.swap(true, Ordering::SeqCst) {
-                return; // skip subscribe-time replay
-            }
             obs.fetch_add(1, Ordering::SeqCst);
         }
     });
@@ -75,7 +67,7 @@ fn reentrant_batch_from_inside_a_parallel_wave_never_hangs_and_drops_nothing() {
                     return;
                 }
                 let val = **v;
-                batch(|| t.set(val));
+                batch(|| t.emit(val));
             }
         });
         // Keep both the mapped cell and its subscription alive for the run.

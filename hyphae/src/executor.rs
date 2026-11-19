@@ -1,7 +1,7 @@
 //! Shared native worker pool for coarse Hyphae runtime work.
 //!
-//! This module exists only with the `scheduler` feature. Scheduler waves and
-//! eligible compiled join regions use one lazily constructed, dedicated Rayon
+//! This module exists only with the `scheduler` feature. Eligible compiled
+//! join regions use one lazily constructed, dedicated Rayon
 //! pool rather than the process-global pool or independent pools. Wasm never
 //! constructs it, and map queries without `scheduler` compile a sequential
 //! path. Native configuration checks `HYPHAE_WORKER_THREADS` first, then the

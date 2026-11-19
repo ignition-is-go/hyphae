@@ -42,15 +42,15 @@
 #![cfg(feature = "scheduler")]
 use std::sync::{
     Arc,
-    atomic::{AtomicI64, AtomicUsize, Ordering},
+    atomic::{AtomicI64, Ordering},
 };
 
 use parking_lot::Mutex;
 
 use hyphae::{
-    Cell, CellImmutable, CellMutable, DedupedExt, DistinctExt, DistinctUntilChangedByExt,
-    FilterExt, Gettable, MapErrExt, MapExt, MapOkExt, Materialize, Mutable, ScanExt, Signal,
-    StateTransitionExt, TapExt, TryMapExt, Watchable, batch, scheduler::no_coalesce,
+    Cell, CellImmutable, DedupedExt, DistinctExt, DistinctUntilChangedByExt, FilterExt, Gettable,
+    MapErrExt, MapExt, MapOkExt, Materialize, Mutable, ScanExt, StateTransitionExt, TapExt,
+    TryMapExt, batch,
 };
 
 /// The scheduler's tick queue is a single process-wide structure, so tests
@@ -63,7 +63,6 @@ fn scheduler_test_serial() -> parking_lot::MutexGuard<'static, ()> {
     // Force the wave-parallel drain path at test width: production defaults
     // the group threshold high (waves stay sequential at rest), so parallelism
     // tests must lower it to actually exercise concurrent same-height groups.
-    hyphae::scheduler::set_wave_threshold_for_test(4);
     SCHEDULER_TEST_LOCK.lock()
 }
 
@@ -77,12 +76,6 @@ fn index_value(index: usize) -> i64 {
 const N_B: usize = 16;
 /// Template-B iteration count — enough to shake out wave nondeterminism.
 const ITERS_B: i64 = 2_000;
-
-/// Template-C burst width: 32 `no_coalesce` events per batch, well over the
-/// parallel-wave threshold.
-const N_C: i64 = 32;
-/// Template-C iteration count.
-const ITERS_C: usize = 2_000;
 
 // ---------------------------------------------------------------------------
 // Template B — wide independent wave, exact per-instance settle (expect PASS)
@@ -481,134 +474,3 @@ fn map_err_wide_wave_settles_each_instance_correctly() {
 // ---------------------------------------------------------------------------
 // Template C — event order under no_coalesce parallel wave (expect FAIL)
 // ---------------------------------------------------------------------------
-
-/// Drive `src` with the in-order burst `1,2,...,N_C` in one batch, `ITERS_C`
-/// times, and assert `derived` delivered those events one-at-a-time and in
-/// arrival order. `src` and `derived` must both have been built inside a
-/// `no_coalesce` scope so neither the source events nor the operator's
-/// per-event emissions are last-write-wins-coalesced away.
-///
-/// This is the confirmed-bug detector: once the burst crosses the parallel
-/// wave threshold, the wave dispatches the events across rayon, so both the
-/// order assert and the "never concurrent with itself" assert are expected to
-/// fail until the scheduler makes `no_coalesce` waves order-preserving.
-/// (`in_flight` / order detector copied from `scheduler_no_coalesce_wave_order.rs`.)
-fn assert_ordered_event_delivery(
-    label: &str,
-    src: &Cell<i64, CellMutable>,
-    derived: &Cell<i64, CellImmutable>,
-) {
-    let received: Arc<Mutex<Vec<i64>>> = Arc::new(Mutex::new(Vec::new()));
-    let in_flight = Arc::new(AtomicUsize::new(0));
-    let max_in_flight = Arc::new(AtomicUsize::new(0));
-
-    let r = received.clone();
-    let inf = in_flight;
-    let maxf = max_in_flight.clone();
-    let guard = derived.subscribe(move |sig| {
-        if let Signal::Value(v) = sig {
-            // If the same subscriber runs concurrently with itself, in_flight
-            // climbs above 1.
-            let cur = inf.fetch_add(1, Ordering::SeqCst).saturating_add(1);
-            maxf.fetch_max(cur, Ordering::SeqCst);
-            // Widen the window so a genuine overlap is actually observed.
-            for _ in 0..64 {
-                std::hint::spin_loop();
-            }
-            r.lock().push(**v);
-            inf.fetch_sub(1, Ordering::SeqCst);
-        }
-    });
-
-    let expected: Vec<i64> = (1..=N_C).collect();
-    for it in 0..ITERS_C {
-        received.lock().clear();
-        batch(|| {
-            for i in 1..=N_C {
-                src.set(i);
-            }
-        });
-        let got = received.lock().clone();
-        assert_eq!(
-            got.len(),
-            usize::try_from(N_C).unwrap_or(usize::MAX),
-            "{label} iter {it}: a no_coalesce event was dropped/coalesced"
-        );
-        assert_eq!(
-            got, expected,
-            "{label} iter {it}: no_coalesce events delivered OUT OF ORDER under a parallel wave"
-        );
-    }
-
-    std::mem::forget(guard);
-    let peak = max_in_flight.load(Ordering::SeqCst);
-    assert_eq!(
-        peak, 1,
-        "{label}: derived event subscriber ran concurrently with itself (peak in-flight = {peak})"
-    );
-}
-
-#[test]
-fn scan_event_order_under_parallel_wave_regression() {
-    let _serial = scheduler_test_serial();
-    let (src, derived) = no_coalesce(|| {
-        let src = Cell::<i64, CellMutable>::new(0);
-        // Pass-through fold: emits each arriving input, so the delivered
-        // sequence *is* the arrival order the scan closure processed events in.
-        let derived = src.clone().scan(0i64, |_acc, x| *x).materialize();
-        (src, derived)
-    });
-    assert_ordered_event_delivery("scan", &src, &derived);
-}
-
-#[test]
-fn distinct_until_changed_by_event_order_under_parallel_wave_regression() {
-    let _serial = scheduler_test_serial();
-    let (src, derived) = no_coalesce(|| {
-        let src = Cell::<i64, CellMutable>::new(0);
-        // Inputs 1..=N_C are all distinct, so every event passes the (==)
-        // comparator; the delivered sequence is exactly the arrival order.
-        let derived = src
-            .clone()
-            .distinct_until_changed_by(|a, b| a == b)
-            .materialize();
-        (src, derived)
-    });
-    assert_ordered_event_delivery("distinct_until_changed_by", &src, &derived);
-}
-
-#[test]
-fn deduped_event_order_under_parallel_wave_regression() {
-    let _serial = scheduler_test_serial();
-    let (src, derived) = no_coalesce(|| {
-        let src = Cell::<i64, CellMutable>::new(0);
-        // Distinct inputs -> every event passes deduped; delivered sequence is
-        // the arrival order.
-        let derived = src.clone().deduped().materialize();
-        (src, derived)
-    });
-    assert_ordered_event_delivery("deduped", &src, &derived);
-}
-
-#[test]
-fn state_transition_event_order_under_parallel_wave_regression() {
-    let _serial = scheduler_test_serial();
-    let (src, derived) = no_coalesce(|| {
-        let src = Cell::<i64, CellMutable>::new(0);
-        // A cyclic state machine: (0->1->2->...->N_C->1) with every step
-        // defined and emitting its target value. Driven in order 1,2,...,N_C
-        // each batch, it emits exactly 1,2,...,N_C; the cycle edge (N_C->1)
-        // keeps that true across batches even though the state persists.
-        let derived: Cell<i64, CellImmutable> = src
-            .clone()
-            .state_transition(|sm| {
-                for k in 0..N_C {
-                    sm.on(k, k + 1, move |_, to| *to);
-                }
-                sm.on(N_C, 1i64, move |_, to| *to);
-            })
-            .materialize();
-        (src, derived)
-    });
-    assert_ordered_event_delivery("state_transition", &src, &derived);
-}

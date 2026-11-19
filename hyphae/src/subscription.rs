@@ -50,10 +50,9 @@ impl DepNode for CompositeDepNode {
         self.sources.clone()
     }
 
-    #[cfg(feature = "scheduler")]
-    fn add_height_dependent(&self, dep: std::sync::Weak<dyn crate::cell::HeightInvalidate>) {
+    fn add_dependent(&self, dependent: std::sync::Weak<dyn crate::settle::Node>) {
         for source in &self.sources {
-            source.add_height_dependent(dep.clone());
+            source.add_dependent(dependent.clone());
         }
     }
 }
@@ -76,6 +75,20 @@ impl SubscriptionGuard {
     /// Unlike `new`, this does not require a real cell source — useful for
     /// cleanup actions (e.g., sending unsubscribe messages) that should be
     /// tied to a cell's lifetime via `cell.own()`.
+    /// A guard that only records `source` as a dependency of whatever owns
+    /// it. It holds no subscription.
+    pub(crate) fn dependency_on(source: &Arc<dyn DepNode>) -> Self {
+        Self::new(Uuid::new_v4(), Arc::clone(source), || {})
+    }
+
+    /// [`dependency_on`](Self::dependency_on) for a cell.
+    pub(crate) fn dependency<T: crate::traits::CellValue, M: Send + Sync + 'static>(
+        cell: &crate::Cell<T, M>,
+    ) -> Self {
+        let source: Arc<dyn DepNode> = Arc::new(cell.clone());
+        Self::dependency_on(&source)
+    }
+
     pub fn from_callback(callback: impl FnMut() + Send + Sync + 'static) -> Self {
         let id = Uuid::new_v4();
         log::trace!("SubscriptionGuard::from_callback created id={id}");

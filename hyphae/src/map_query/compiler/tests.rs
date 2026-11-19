@@ -356,7 +356,9 @@ fn differently_typed_roots_share_one_fifo_transaction_gate() {
     let first_thread = first.clone();
     let active = std::thread::spawn(move || first_thread.insert(1, 10));
     assert!(entered_rx.recv().is_ok());
-    second.insert("two".to_owned(), 20);
+    // The first fanout is blocked inside a settle, so this write must not wait
+    // for it.
+    crate::settle::submit(&[], None, || second.insert("two".to_owned(), 20));
     assert_eq!(
         *observed
             .lock()
@@ -365,6 +367,7 @@ fn differently_typed_roots_share_one_fifo_transaction_gate() {
     );
     assert!(release_tx.send(()).is_ok());
     assert!(active.join().is_ok());
+    crate::settle::flush();
     assert_eq!(
         *observed
             .lock()
