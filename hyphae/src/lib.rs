@@ -160,6 +160,7 @@ pub mod clock;
 pub mod constructors;
 #[cfg(feature = "scheduler")]
 pub(crate) mod executor;
+pub mod family;
 pub mod map_query;
 pub mod nested_map;
 pub mod pipeline;
@@ -193,6 +194,9 @@ pub use clock::{Clock, IntervalTickSource, MonotonicClock, Tick, TickGuard, Tick
 pub use constructors::{
     IntervalTick, from_iter_with_delay, interval, interval_precise, interval_precise_source,
     interval_precise_with_elapsed, interval_precise_with_elapsed_source, interval_source,
+};
+pub use family::{
+    Family, FamilyRow, KeyedFamily, Lease, LookupExt, LookupKey, LookupSetExt, family,
 };
 pub use map_query::{MapQuery, MapQueryShareExt, SharedMapQuery};
 pub use nested_map::NestedMap;
