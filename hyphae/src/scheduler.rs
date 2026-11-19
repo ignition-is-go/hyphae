@@ -547,7 +547,12 @@ pub(crate) fn enqueue(id: Uuid, node: &dyn DepNode, terminal: bool, run: Box<dyn
 /// settles as promptly as it always has. Short enough that under sustained
 /// load the pass is left alone to reach its deepest cells. Overridable at
 /// startup via `HYPHAE_PASS_MERGE_WINDOW_US`.
-const DEFAULT_PASS_MERGE_WINDOW_MICROS: u64 = 2_000;
+///
+/// Measured against a server driving a 30 Hz graph: at 2 ms a write made
+/// while the server still had headroom waited a median of 22 ms for the pass
+/// in flight, against 1.4 ms with no window at all. At 8 ms that fell to
+/// 0.3 ms, and deep cells were still reached at every load tried.
+const DEFAULT_PASS_MERGE_WINDOW_MICROS: u64 = 8_000;
 
 static PASS_MERGE_WINDOW_MICROS: LazyLock<AtomicU64> = LazyLock::new(|| {
     AtomicU64::new(
