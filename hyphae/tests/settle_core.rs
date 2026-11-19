@@ -553,3 +553,29 @@ fn a_map_built_inside_a_settle_keeps_a_row_update_from_that_settle() {
     // ends with.
     assert_eq!(observed, Some((Some(50), vec![("a".to_string(), 50)])));
 }
+
+#[test]
+fn a_write_that_could_join_stays_behind_an_earlier_queued_write_to_its_cell() {
+    let trigger = Cell::new(0u64);
+    let other = Cell::new(0u64);
+    let target = Cell::new(0u64);
+    let (seen, _seen_guard) = record(&target);
+    let written = target.clone();
+    let _guard = trigger.subscribe(move |signal| {
+        if !matches!(signal, Signal::Value(value) if **value == 1) {
+            return;
+        }
+        // An input cell, so this write waits for a later settle.
+        written.set(1);
+        // The cell gains a dependency and rises above the firing node, so
+        // by height alone the next write would join this settle.
+        written.own(other.subscribe(|_| {}));
+        written.set(2);
+    });
+
+    trigger.set(1);
+
+    assert_eq!(target.get(), 2);
+    let seen = seen.lock().clone();
+    assert_eq!(seen.last(), Some(&2), "seen = {seen:?}");
+}

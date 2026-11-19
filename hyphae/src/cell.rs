@@ -89,6 +89,8 @@ pub(crate) struct CellInner<T> {
     pub(crate) pending: Mutex<Vec<(Stamp, Signal<T>)>>,
     /// True while this cell is in the settle frontier.
     pub(crate) queued: AtomicBool,
+    /// Writes to this cell that a callback queued and no settle has seeded.
+    pub(crate) backlog: crate::settle::Backlog,
     /// What a second value does to a pending one. Unset keeps both.
     pub(crate) combine: std::sync::OnceLock<Combine<T>>,
     /// The settle in which this cell last fanned out.
@@ -170,6 +172,7 @@ impl<T: CellValue> Cell<T, CellMutable> {
             error: Mutex::new(None),
             pending: Mutex::new(Vec::new()),
             queued: AtomicBool::new(false),
+            backlog: crate::settle::Backlog::default(),
             combine: std::sync::OnceLock::new(),
             fired_run: std::sync::atomic::AtomicU64::new(0),
             height_cache: std::sync::atomic::AtomicU64::new(0),
@@ -419,7 +422,7 @@ impl<T: CellValue> CellInner<T> {
         if self.completed.load(Ordering::SeqCst) || self.errored.load(Ordering::SeqCst) {
             return;
         }
-        match crate::settle::position(|| self.node_height()) {
+        match crate::settle::position(|| self.node_height(), &self.backlog) {
             crate::settle::Position::Joins => {
                 self.accept(
                     signal,
@@ -427,12 +430,13 @@ impl<T: CellValue> CellInner<T> {
                     if state { Order::Arrival } else { Order::Settle },
                 );
             }
-            crate::settle::Position::Queue => crate::settle::submit_write(
+            crate::settle::Position::Queue(backlogged) => crate::settle::submit_write(
                 crate::settle::SettleKey::Shared,
                 Box::new(CellWrite {
                     cell: Arc::downgrade(self),
                     signal,
                     latest: state,
+                    _backlogged: backlogged,
                 }),
             ),
         }
@@ -534,15 +538,16 @@ impl<T: CellValue> CellInner<T> {
         if self.completed.load(Ordering::SeqCst) || self.errored.load(Ordering::SeqCst) {
             return;
         }
-        match crate::settle::position(|| self.node_height()) {
+        match crate::settle::position(|| self.node_height(), &self.backlog) {
             crate::settle::Position::Joins => {
                 write(&mut |signal| self.accept(signal, false, Order::Arrival));
             }
-            crate::settle::Position::Queue => crate::settle::submit_write(
+            crate::settle::Position::Queue(backlogged) => crate::settle::submit_write(
                 crate::settle::SettleKey::Shared,
                 Box::new(DeferredWrite {
                     cell: Arc::downgrade(self),
                     write,
+                    _backlogged: backlogged,
                 }),
             ),
         }
@@ -553,6 +558,8 @@ impl<T: CellValue> CellInner<T> {
 struct DeferredWrite<T, F> {
     cell: Weak<CellInner<T>>,
     write: F,
+    /// Dropped after `apply` has seeded the write.
+    _backlogged: Option<crate::settle::Backlogged>,
 }
 
 impl<T, F> crate::settle::Write for DeferredWrite<T, F>
@@ -573,6 +580,8 @@ struct CellWrite<T> {
     cell: Weak<CellInner<T>>,
     signal: Signal<T>,
     latest: bool,
+    /// Dropped after `apply` has seeded the write.
+    _backlogged: Option<crate::settle::Backlogged>,
 }
 
 impl<T: CellValue> crate::settle::Write for CellWrite<T> {

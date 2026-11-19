@@ -297,6 +297,8 @@ Collections: a `CellMap` mutation is one event set. `CellMap::own` records the
 guard's source as a dependency of the diff cell, and the length cell and each
 key cell depend on the diff cell. A derived map therefore sits above its
 inputs, and what it publishes from a callback joins the settle in progress.
+A materialized map is built holding the rows its roots replay; the replay
+publishes no diff.
 
 ## 6. Reentrancy rule
 
@@ -312,6 +314,13 @@ of the node now firing and `t` the height of the target.
 - **A `batch`, `batch_with`, `submit`, or `enqueue` opened inside a settle**
   becomes one new event set at the tail of `INPUT`, whatever the heights of
   its writes. Its writes stay together.
+- **A node with a queued write queues the next one too.** While a write that
+  a callback queued for a node has not been seeded, a later write to that
+  node from a callback goes to the tail of `INPUT` as well, even when
+  `t > h`. Heights are not fixed: a node that gains a dependency rises. A
+  cell written at height 0 and then given a dependency in the same settle
+  would otherwise take its second write into the current settle, ahead of
+  the first. Each node counts its queued callback writes for this.
 
 The rule depends on structure, not on which method made the write. A derived
 collection that publishes through `insert` and a hand-written operator that
@@ -360,7 +369,7 @@ of a few tens of milliseconds had to allow for that.
 | G1 Glitch-free settle | Height-ordered frontier. `Latest` on fan-in outputs |
 | G2 Batch atomicity | An event set is never split across runs. Collection diffs travel as one `Batch` |
 | G3 Last-write-wins | Removed, except `Latest` on input cells and fan-in outputs |
-| G4 Per-node write order | `INPUT` is arrival-ordered and runs settle in order. A pending list keeps arrival order. A deferred write goes to the tail of `INPUT`, behind every write made before it, and two deferred writes to one node keep their order. A write that joins the current settle lands behind the node's earlier pending values. A node cannot receive a joined write after a deferred one in the same settle: joining needs `t > h`, deferring needs `t <= h`, and `h` never decreases within a settle |
+| G4 Per-node write order | `INPUT` is arrival-ordered and runs settle in order. A pending list keeps arrival order. A deferred write goes to the tail of `INPUT`, behind every write made before it, and two deferred writes to one node keep their order. A write that joins the current settle lands behind the node's earlier pending values. A callback's write cannot join a settle ahead of an earlier callback write to the same node that is still queued: the node queues it behind that one (section 6) |
 | G5 Join consistency | One thread settles. A join output fires once, after its inputs |
 | G6 `Cell` replays, `Source` does not | `subscribe` is unchanged. It replays the stored value, which is the settled value. A `Source` stores none |
 | G7 Gap-free `subscribe_diffs` | The subscribe, snapshot, buffer, replay sequence is unchanged. Diffs reach the diff cell in write order and compose in that order |

@@ -17,7 +17,7 @@ use std::{
     collections::BinaryHeap,
     num::NonZeroU64,
     sync::{
-        Arc, LazyLock, Weak,
+        Arc, LazyLock, OnceLock, Weak,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -612,28 +612,65 @@ pub fn is_settling() -> bool {
 pub(crate) enum Position {
     /// It joins the settle in progress on this thread.
     Joins,
-    /// It must go through the input queue.
-    Queue,
+    /// It must go through the input queue. The write keeps the guard, if
+    /// any, until a settle seeds it.
+    Queue(Option<Backlogged>),
+}
+
+/// The writes to one node that a callback queued and no settle has seeded
+/// yet.
+///
+/// While there is one, a later write to the node from a callback is queued
+/// behind it, even when the node's height would let it join the settle. A
+/// node that gains a dependency rises, so a write that had to wait can be
+/// followed by one that could join, and the second would be delivered first.
+#[derive(Default)]
+pub(crate) struct Backlog(OnceLock<Arc<AtomicU64>>);
+
+impl Backlog {
+    fn is_empty(&self) -> bool {
+        self.0
+            .get()
+            .is_none_or(|writes| writes.load(Ordering::Acquire) == 0)
+    }
+
+    fn add(&self) -> Backlogged {
+        let writes = Arc::clone(self.0.get_or_init(Arc::default));
+        writes.fetch_add(1, Ordering::AcqRel);
+        Backlogged(writes)
+    }
+}
+
+/// One write in a [`Backlog`]. It leaves when it is dropped: after a settle
+/// has seeded the write, or with a write that is never seeded.
+pub(crate) struct Backlogged(Arc<AtomicU64>);
+
+impl Drop for Backlogged {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 /// Decide whether a write to a node of height `target` joins the settle in
 /// progress on this thread.
 ///
-/// It joins when a run is being seeded, or when the target is strictly higher
-/// than the node now firing, so the target has not fired yet in this settle.
-/// A write inside a [`batch`] never joins: the batch keeps its writes together.
-pub(crate) fn position(target: impl FnOnce() -> u64) -> Position {
-    if BUILDING.with_borrow(Option::is_some) {
-        return Position::Queue;
-    }
+/// It joins when a run is being seeded. From a callback it joins when the
+/// target is strictly higher than the node now firing, so the target has not
+/// fired yet in this settle, and no earlier write to the target is still
+/// queued in `backlog`. A write inside a [`batch`] never joins: the batch
+/// keeps its writes together.
+pub(crate) fn position(target: impl FnOnce() -> u64, backlog: &Backlog) -> Position {
     let Some(firing) = ACTIVE.with_borrow(|active| active.as_ref().map(|active| active.firing))
     else {
-        return Position::Queue;
+        return Position::Queue(None);
     };
+    if BUILDING.with_borrow(Option::is_some) {
+        return Position::Queue(Some(backlog.add()));
+    }
     match firing {
         None => Position::Joins,
-        Some(firing) if target() > firing.height => Position::Joins,
-        Some(_) => Position::Queue,
+        Some(firing) if backlog.is_empty() && target() > firing.height => Position::Joins,
+        Some(_) => Position::Queue(Some(backlog.add())),
     }
 }
 
