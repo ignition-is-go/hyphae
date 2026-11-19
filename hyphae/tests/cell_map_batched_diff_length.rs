@@ -44,13 +44,10 @@ fn single_diff_length_uses_membership_changes_when_cell_writes_are_deferred() {
     });
     assert_eq!(length.get(), 0);
     assert!(entries.get().is_empty());
-    // The diffs of one batch reach the subscriber as one composed batch, in
-    // write order.
-    let expected = vec![
-        MapDiff::Initial {
-            entries: Vec::new(),
-        },
-        MapDiff::Batch { changes },
-    ];
+    // The batch leaves the map as the subscriber holds it, so it tells
+    // nothing.
+    let expected = vec![MapDiff::Initial {
+        entries: Vec::new(),
+    }];
     assert_eq!(*diffs.lock(), expected);
 }

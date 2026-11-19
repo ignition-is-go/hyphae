@@ -26,10 +26,11 @@ use crate::{
 mod diff;
 mod mutation;
 mod projection;
+mod publish;
 
 pub use diff::MapDiff;
-pub(crate) use mutation::write_in_order;
 use projection::{EntryProjection, KeyProjection, ProjectionOwner, ValueProjection};
+pub(crate) use publish::{InFlight, WriteOrder, joins_settle, write_in_order};
 
 struct PointCellSlot<V: CellValue> {
     state: Mutex<PointCellState<V>>,
@@ -108,9 +109,9 @@ where
     key_cell_slots: AtomicUsize,
     /// Mutation counter driving amortized pruning of dead `key_cells` weaks.
     prune_ops: AtomicUsize,
-    /// Held from a mutation of `data` until its diff is queued, so diffs
-    /// are queued in the order the mutations happened.
-    pub(crate) write_order: parking_lot::ReentrantMutex<()>,
+    /// The write lock, and the keys whose stored value subscribers have not
+    /// been told. See the `publish` module.
+    pub(crate) write_order: WriteOrder<K, V>,
     /// Cell for diff notifications.
     pub(crate) diffs_cell: Cell<MapDiff<K, V>, CellMutable>,
     /// Cell for length.
@@ -248,6 +249,17 @@ where
         }
     }
 
+    /// What subscribers hold for `key`: the stored value, or the value they
+    /// were last told while a change to the key waits to be published. A key
+    /// cell starts here, so that it and the diffs describe one state.
+    fn told(&self, key: &K) -> Option<V> {
+        let told = InFlight::told(&self.inner.write_order.lock(), key).map(|held| held.0);
+        // The stored value is cloned with the write lock released. A change
+        // that lands in between marks the key's slot, and the caller reads
+        // again.
+        told.unwrap_or_else(|| self.inner.data.get(key).map(|entry| entry.value().clone()))
+    }
+
     /// Build an observable pipeline for a specific key.
     ///
     /// Materializing produces a `Cell<Option<V>>` that updates whenever the
@@ -271,7 +283,7 @@ where
         if let Some(cached) = cached {
             return cached.lock();
         }
-        let mut current = self.inner.data.get(key).map(|entry| entry.value().clone());
+        let mut current = self.told(key);
         let map_name = self.inner.name.lock().clone();
         let point_name = map_name.map(|name| Arc::<str>::from(format!("{name}[{key:?}]")));
         loop {
@@ -291,7 +303,7 @@ where
                 return cached.lock();
             }
             revision = next_revision;
-            current = self.inner.data.get(key).map(|entry| entry.value().clone());
+            current = self.told(key);
         }
     }
 

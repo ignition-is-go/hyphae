@@ -976,10 +976,27 @@ fn single_diff_upserts_and_overwrites_preserve_length_and_notifications() {
     }
     assert_eq!(*lengths.lock(), vec![0, 1, 0]);
     assert_eq!(*key_values.lock(), vec![None, Some(5), Some(6), None]);
-    let mut expected = vec![MapDiff::Initial {
-        entries: Vec::new(),
-    }];
-    expected.extend(changes);
+    // A diff applied from outside a settle is told as the step from what
+    // subscribers hold to what is stored, whatever the applied diff claimed.
+    let key = || "key".to_owned();
+    let expected = vec![
+        MapDiff::Initial {
+            entries: Vec::new(),
+        },
+        MapDiff::Insert {
+            key: key(),
+            value: 5,
+        },
+        MapDiff::Update {
+            key: key(),
+            old_value: 5,
+            new_value: 6,
+        },
+        MapDiff::Remove {
+            key: key(),
+            old_value: 6,
+        },
+    ];
     assert_eq!(*diffs.lock(), expected);
 }
 
@@ -1024,14 +1041,14 @@ fn existing_key_diff_preserves_reentrant_membership_changes() {
                 new_value: 2,
             }
         };
-        map.apply_diff_owned(diff.clone());
+        map.apply_diff_owned(diff);
         assert_eq!(length.get(), 2);
         assert_eq!(map.get_value(&"removable".to_owned()), None);
         assert_eq!(map.get_value(&"added".to_owned()), Some(9));
         // The callback's remove and insert are one later settle, so the
-        // length goes straight from 2 to 2 and the two diffs arrive together,
-        // after the diff that triggered them.
-        assert_eq!(*lengths.lock(), vec![2, 2]);
+        // length stays 2 and is not written again, and the two diffs arrive
+        // together, after the diff that triggered them.
+        assert_eq!(*lengths.lock(), vec![2]);
         let mut observed = Vec::new();
         for diff in diffs.lock().iter().skip(1).cloned() {
             diff.flatten_into(&mut observed);
@@ -1039,7 +1056,13 @@ fn existing_key_diff_preserves_reentrant_membership_changes() {
         assert_eq!(
             observed,
             vec![
-                diff,
+                // Told as the step the stored value took, for the overwrite
+                // too.
+                MapDiff::Update {
+                    key: "watched".to_owned(),
+                    old_value: 1,
+                    new_value: 2,
+                },
                 MapDiff::Remove {
                     key: "removable".to_owned(),
                     old_value: 7

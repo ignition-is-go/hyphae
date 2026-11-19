@@ -137,26 +137,20 @@ fn diffs_of_one_settle_compose_into_one_batch_in_order() {
         map.insert("a", 1);
         map.insert("a", 2);
         map.insert("b", 3);
-        map.remove(&"a");
+        map.insert("c", 4);
+        map.remove(&"c");
     });
 
     let diffs = diffs.lock().clone();
     assert_eq!(diffs.len(), 2, "an initial snapshot, then one notification");
+    // One diff per key, from what the subscriber held to what is stored:
+    // the first value of "a" is not told, and "c" is not told at all.
     assert_eq!(
         diffs.get(1),
         Some(&MapDiff::Batch {
             changes: vec![
-                MapDiff::Insert { key: "a", value: 1 },
-                MapDiff::Update {
-                    key: "a",
-                    old_value: 1,
-                    new_value: 2
-                },
+                MapDiff::Insert { key: "a", value: 2 },
                 MapDiff::Insert { key: "b", value: 3 },
-                MapDiff::Remove {
-                    key: "a",
-                    old_value: 2
-                },
             ],
         })
     );

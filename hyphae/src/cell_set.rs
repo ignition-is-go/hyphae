@@ -2,12 +2,13 @@
 //!
 //! `CellSet` wraps a concurrent `HashSet` where membership changes can be observed.
 
-use std::{hash::Hash, marker::PhantomData, sync::Arc};
+use std::{cell::RefCell, hash::Hash, marker::PhantomData, sync::Arc};
 
 use dashmap::DashSet;
 
 use crate::{
     cell::{Cell, CellImmutable, CellMutable, WeakCell},
+    cell_map::{InFlight, WriteOrder, joins_settle, write_in_order},
     pipeline::{Definite, Materialize},
     signal::Signal,
     traits::{CellValue, Gettable, Mutable, Watchable},
@@ -34,9 +35,10 @@ where
     diffs_cell: Cell<Option<SetDiff<T>>, CellMutable>,
     /// Cell for length.
     len_cell: Cell<usize, CellMutable>,
-    /// Held from a mutation of `data` until its diff is queued, so diffs
-    /// are queued in the order the mutations happened.
-    write_order: parking_lot::ReentrantMutex<()>,
+    /// The write lock, and the values whose membership subscribers have not
+    /// been told. A value they hold as a member is recorded as `Some(())`.
+    /// See the `publish` module of `cell_map`.
+    write_order: WriteOrder<T, ()>,
 }
 
 /// A reactive `HashSet` with membership observability.
@@ -84,7 +86,7 @@ where
                 membership_cells: dashmap::DashMap::new(),
                 diffs_cell,
                 len_cell: Cell::new(0),
-                write_order: parking_lot::ReentrantMutex::new(()),
+                write_order: InFlight::new(0),
             }),
             _marker: PhantomData,
         }
@@ -92,41 +94,112 @@ where
 
     /// Insert a value, returning true if it was newly inserted.
     pub fn insert(&self, value: T) -> bool {
-        crate::cell_map::write_in_order(&self.inner.write_order, || {
+        write_in_order(&self.inner.write_order, |flight| {
             let is_new = self.inner.data.insert(value.clone());
-
-            if is_new {
-                // Notify membership observers (O(1))
-                if let Some(cell) = self.observed_membership_cell(&value) {
-                    cell.set(true);
-                }
-                self.inner.diffs_cell.set(Some(SetDiff::Insert(value)));
-                self.inner.len_cell.set(self.inner.data.len());
+            if !is_new {
+                return false;
             }
-
-            is_new
+            InFlight::resize(flight, false, true);
+            if self.publishes_later(flight, &value, false) {
+                return true;
+            }
+            // Notify membership observers (O(1))
+            if let Some(cell) = self.observed_membership_cell(&value) {
+                cell.set(true);
+            }
+            self.inner.diffs_cell.set(Some(SetDiff::Insert(value)));
+            self.tell_len(flight);
+            true
         })
     }
 
     /// Remove a value, returning true if it was present.
     pub fn remove(&self, value: &T) -> bool {
-        crate::cell_map::write_in_order(&self.inner.write_order, || {
+        write_in_order(&self.inner.write_order, |flight| {
             let was_present = self.inner.data.remove(value).is_some();
-
-            if was_present {
-                self.inner
-                    .diffs_cell
-                    .set(Some(SetDiff::Remove(value.clone())));
-                self.inner.len_cell.set(self.inner.data.len());
-
-                // Notify membership observers (O(1))
-                if let Some(cell) = self.observed_membership_cell(value) {
-                    cell.set(false);
-                }
+            if !was_present {
+                return false;
             }
+            InFlight::resize(flight, true, false);
+            if self.publishes_later(flight, value, true) {
+                return true;
+            }
+            self.inner
+                .diffs_cell
+                .set(Some(SetDiff::Remove(value.clone())));
+            self.tell_len(flight);
 
-            was_present
+            // Notify membership observers (O(1))
+            if let Some(cell) = self.observed_membership_cell(value) {
+                cell.set(false);
+            }
+            true
         })
+    }
+
+    /// Decide how a change of `value`'s membership reaches subscribers.
+    ///
+    /// False when the change joins the settle in progress and no earlier
+    /// change of `value` waits to be published: the caller writes the diff
+    /// now. Otherwise this queues a publish request and returns true.
+    /// `was_member` is the membership before the change.
+    fn publishes_later(
+        &self,
+        flight: &RefCell<InFlight<T, ()>>,
+        value: &T,
+        was_member: bool,
+    ) -> bool {
+        if joins_settle(&self.inner.diffs_cell) && !flight.borrow().holds(value) {
+            return false;
+        }
+        let pass = InFlight::begin(flight);
+        InFlight::touch(flight, pass, value, was_member.then_some(&()));
+        crate::settle::submit_write(
+            crate::settle::SettleKey::Shared,
+            Box::new(Publish {
+                set: Arc::downgrade(&self.inner),
+                value: value.clone(),
+            }),
+        );
+        true
+    }
+
+    fn tell_len(&self, flight: &RefCell<InFlight<T, ()>>) {
+        if let Some(len) = InFlight::tell_len(flight) {
+            self.inner.len_cell.set(len);
+        }
+    }
+
+    /// Tell subscribers whether `value` is stored, if they hold otherwise.
+    /// A settle calls this while it seeds a run.
+    fn publish(&self, value: T) {
+        let order = self.inner.write_order.lock();
+        if !joins_settle(&self.inner.diffs_cell) {
+            // The settling thread has a batch of its own open, so a diff
+            // written now would wait there and arrive behind later ones. The
+            // request waits there instead.
+            crate::settle::submit_write(
+                crate::settle::SettleKey::Shared,
+                Box::new(Publish {
+                    set: Arc::downgrade(&self.inner),
+                    value,
+                }),
+            );
+            return;
+        }
+        let live = self.inner.data.contains(&value).then_some(());
+        if InFlight::land(&order, &value, live.as_ref()).is_some() {
+            let member = live.is_some();
+            if let Some(cell) = self.observed_membership_cell(&value) {
+                cell.set(member);
+            }
+            self.inner.diffs_cell.set(Some(if member {
+                SetDiff::Insert(value)
+            } else {
+                SetDiff::Remove(value)
+            }));
+        }
+        self.tell_len(&order);
     }
 
     // The shard guard is released before the cell is written.
@@ -141,6 +214,31 @@ where
         CellSet {
             inner: self.inner,
             _marker: PhantomData,
+        }
+    }
+}
+
+/// A queued request to tell a set's subscribers whether `value` is stored.
+/// Holds the set weakly: a set that nothing else holds has nobody to tell.
+struct Publish<T>
+where
+    T: Hash + Eq + CellValue,
+{
+    set: std::sync::Weak<CellSetInner<T>>,
+    value: T,
+}
+
+impl<T> crate::settle::Write for Publish<T>
+where
+    T: Hash + Eq + CellValue,
+{
+    fn apply(self: Box<Self>) {
+        if let Some(inner) = self.set.upgrade() {
+            CellSet {
+                inner,
+                _marker: PhantomData::<CellMutable>,
+            }
+            .publish(self.value);
         }
     }
 }
@@ -172,13 +270,24 @@ where
             return cell.lock();
         }
 
-        // Create new cell with current membership status
-        let is_member = self.inner.data.contains(value);
+        // The cell starts at what subscribers hold, which is the stored
+        // membership unless a change of this value waits to be published.
+        // Under the write lock no mutation or publish runs between the read
+        // and the caching of the cell.
+        let order = self.inner.write_order.lock();
+        if let Some(weak) = self.inner.membership_cells.get(value)
+            && let Some(cell) = weak.upgrade()
+        {
+            return cell.lock();
+        }
+        let is_member = InFlight::told(&order, value)
+            .map_or_else(|| self.inner.data.contains(value), |held| held.0.is_some());
         let cell = Cell::new(is_member);
         let weak = cell.downgrade();
 
         // Cache it
         self.inner.membership_cells.insert(value.clone(), weak);
+        drop(order);
 
         cell.lock()
     }
