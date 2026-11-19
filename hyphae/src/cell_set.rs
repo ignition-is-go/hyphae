@@ -34,6 +34,9 @@ where
     diffs_cell: Cell<Option<SetDiff<T>>, CellMutable>,
     /// Cell for length.
     len_cell: Cell<usize, CellMutable>,
+    /// Held from a mutation of `data` until its diff is queued, so diffs
+    /// are queued in the order the mutations happened.
+    write_order: parking_lot::ReentrantMutex<()>,
 }
 
 /// A reactive `HashSet` with membership observability.
@@ -81,6 +84,7 @@ where
                 membership_cells: dashmap::DashMap::new(),
                 diffs_cell,
                 len_cell: Cell::new(0),
+                write_order: parking_lot::ReentrantMutex::new(()),
             }),
             _marker: PhantomData,
         }
@@ -88,44 +92,47 @@ where
 
     /// Insert a value, returning true if it was newly inserted.
     pub fn insert(&self, value: T) -> bool {
-        let is_new = self.inner.data.insert(value.clone());
+        crate::cell_map::write_in_order(&self.inner.write_order, || {
+            let is_new = self.inner.data.insert(value.clone());
 
-        if is_new {
-            // Notify membership observers (O(1))
-            if let Some(weak) = self.inner.membership_cells.get(&value)
-                && let Some(cell) = weak.upgrade()
-            {
-                cell.set(true);
+            if is_new {
+                // Notify membership observers (O(1))
+                if let Some(cell) = self.observed_membership_cell(&value) {
+                    cell.set(true);
+                }
+                self.inner.diffs_cell.set(Some(SetDiff::Insert(value)));
+                self.inner.len_cell.set(self.inner.data.len());
             }
-            self.inner.diffs_cell.set(Some(SetDiff::Insert(value)));
-            self.inner.len_cell.set(self.inner.data.len());
-        }
 
-        is_new
+            is_new
+        })
     }
 
     /// Remove a value, returning true if it was present.
     pub fn remove(&self, value: &T) -> bool {
-        let was_present = self.inner.data.remove(value).is_some();
+        crate::cell_map::write_in_order(&self.inner.write_order, || {
+            let was_present = self.inner.data.remove(value).is_some();
 
-        if was_present {
-            // Emit diff (O(1) - just notifies subscribers)
-            self.inner
-                .diffs_cell
-                .set(Some(SetDiff::Remove(value.clone())));
+            if was_present {
+                self.inner
+                    .diffs_cell
+                    .set(Some(SetDiff::Remove(value.clone())));
+                self.inner.len_cell.set(self.inner.data.len());
 
-            // Update len (O(1))
-            self.inner.len_cell.set(self.inner.data.len());
-
-            // Notify membership observers (O(1))
-            if let Some(weak) = self.inner.membership_cells.get(value)
-                && let Some(cell) = weak.upgrade()
-            {
-                cell.set(false);
+                // Notify membership observers (O(1))
+                if let Some(cell) = self.observed_membership_cell(value) {
+                    cell.set(false);
+                }
             }
-        }
 
-        was_present
+            was_present
+        })
+    }
+
+    // The shard guard is released before the cell is written.
+    fn observed_membership_cell(&self, value: &T) -> Option<Cell<bool, CellMutable>> {
+        let weak = self.inner.membership_cells.get(value)?.value().clone();
+        weak.upgrade()
     }
 
     /// Lock the set to prevent further mutations.

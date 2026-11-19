@@ -910,19 +910,6 @@ pub fn flush() {
     });
 }
 
-/// Group the writes `f` makes into one event set, for a mutation that touches
-/// several cells of one collection.
-///
-/// Unlike [`batch`], this does nothing during a settle: there each write is
-/// placed by its own height, so a derived collection that publishes from a
-/// callback still joins the settle in progress.
-// Goes when the collections queue through `atomic_queued`.
-#[allow(dead_code)]
-pub(crate) fn atomic<R>(f: impl FnOnce() -> R) -> R {
-    let settling = ACTIVE.with_borrow(Option::is_some) && !BUILDING.with_borrow(Option::is_some);
-    if settling { f() } else { batch(f) }
-}
-
 /// Group the writes `f` makes into one event set and queue it, for a
 /// mutation that touches several cells of one collection under a lock.
 ///
@@ -936,7 +923,6 @@ pub(crate) fn atomic<R>(f: impl FnOnce() -> R) -> R {
 /// in progress, and a batch keeps its writes.
 ///
 /// If `f` panics, the writes it made stay queued for a later settle.
-#[allow(dead_code)]
 pub(crate) fn atomic_queued<R>(f: impl FnOnce() -> R) -> (R, Queued) {
     if ACTIVE.with_borrow(Option::is_some) || BUILDING.with_borrow(Option::is_some) {
         return (f(), Queued::LEFT_QUEUED);

@@ -17,6 +17,29 @@ use crate::{
     traits::{CellValue, Mutable},
 };
 
+/// Run one collection mutation so that its writes are queued in the order
+/// the mutations happened.
+///
+/// `write` changes the stored data and writes the diff. `order` is held from
+/// the change until the diff is in a pending list or in the input queue, and
+/// no subscriber runs meanwhile. Two writers of one collection therefore
+/// cannot queue their diffs in the opposite order to their changes, and a
+/// subscriber that replays the diffs ends with the stored data.
+///
+/// Inside a batch the writes join the batch, which is queued when it closes.
+/// Two threads that each change one collection inside a batch are ordered by
+/// when their batches close.
+///
+/// The lock is reentrant because one mutation can be built from another:
+/// `apply_diff_owned` applies a batch through `apply_batch`.
+pub fn write_in_order<R>(order: &parking_lot::ReentrantMutex<()>, write: impl FnOnce() -> R) -> R {
+    let held = order.lock();
+    let (result, queued) = crate::settle::atomic_queued(write);
+    drop(held);
+    queued.finish();
+    result
+}
+
 impl<K, V> CellMap<K, V, CellMutable>
 where
     K: Hash + Eq + CellValue,
@@ -56,6 +79,7 @@ where
         Self {
             inner: Arc::new(CellMapInner {
                 data,
+                write_order: parking_lot::ReentrantMutex::new(()),
                 key_cells: OnceLock::new(),
                 key_cell_slots: AtomicUsize::new(0),
                 prune_ops: AtomicUsize::new(0),
@@ -156,7 +180,7 @@ where
 
     /// Insert a key-value pair, returning the old value if present.
     pub fn insert(&self, key: K, value: V) -> Option<V> {
-        crate::settle::atomic(|| {
+        write_in_order(&self.inner.write_order, || {
             self.maybe_prune_key_cells();
             let old = self.inner.data.insert(key.clone(), value.clone());
 
@@ -189,7 +213,7 @@ where
 
     /// Insert multiple key-value pairs and emit a single batch diff.
     pub fn insert_many(&self, entries: Vec<(K, V)>) {
-        crate::settle::atomic(|| {
+        write_in_order(&self.inner.write_order, || {
             if entries.is_empty() {
                 return;
             }
@@ -231,7 +255,7 @@ where
 
     /// Remove a key, returning the old value if present.
     pub fn remove(&self, key: &K) -> Option<V> {
-        crate::settle::atomic(|| {
+        write_in_order(&self.inner.write_order, || {
             self.maybe_prune_key_cells();
             let removed = self.inner.data.remove(key);
 
@@ -260,7 +284,7 @@ where
 
     /// Remove multiple keys and emit a single batch diff.
     pub fn remove_many(&self, keys: Vec<K>) {
-        crate::settle::atomic(|| {
+        write_in_order(&self.inner.write_order, || {
             if keys.is_empty() {
                 return;
             }
@@ -304,7 +328,7 @@ where
     /// Emits `MapDiff::Batch` with the actual changes so downstream
     /// subscribers see one atomic replacement instead of N individual diffs.
     pub fn replace_all(&self, entries: Vec<(K, V)>) {
-        crate::settle::atomic(|| {
+        write_in_order(&self.inner.write_order, || {
             self.maybe_prune_key_cells();
             let previous_len = self.inner.data.len();
             let new_keys: std::collections::HashSet<&K> = entries.iter().map(|(k, _)| k).collect();
@@ -370,7 +394,7 @@ where
     /// own the diff (one upstream clone is unavoidable when the source
     /// hands out `&diff`).
     pub fn apply_diff_owned(&self, diff: MapDiff<K, V>) {
-        crate::settle::atomic(|| {
+        write_in_order(&self.inner.write_order, || {
             if let MapDiff::Batch { changes } = diff {
                 self.apply_batch(changes);
                 return;
@@ -444,7 +468,7 @@ where
 
     /// Apply a batch of diffs and emit them as one `MapDiff::Batch`.
     pub fn apply_batch(&self, changes: Vec<MapDiff<K, V>>) {
-        crate::settle::atomic(|| {
+        write_in_order(&self.inner.write_order, || {
             fn apply_one<K, V>(
                 map: &CellMap<K, V, CellMutable>,
                 diff: MapDiff<K, V>,

@@ -28,6 +28,7 @@ mod mutation;
 mod projection;
 
 pub use diff::MapDiff;
+pub(crate) use mutation::write_in_order;
 use projection::{EntryProjection, KeyProjection, ProjectionOwner, ValueProjection};
 
 struct PointCellSlot<V: CellValue> {
@@ -107,6 +108,9 @@ where
     key_cell_slots: AtomicUsize,
     /// Mutation counter driving amortized pruning of dead `key_cells` weaks.
     prune_ops: AtomicUsize,
+    /// Held from a mutation of `data` until its diff is queued, so diffs
+    /// are queued in the order the mutations happened.
+    pub(crate) write_order: parking_lot::ReentrantMutex<()>,
     /// Cell for diff notifications.
     pub(crate) diffs_cell: Cell<MapDiff<K, V>, CellMutable>,
     /// Cell for length.
