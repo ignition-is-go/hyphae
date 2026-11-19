@@ -1,24 +1,25 @@
-//! Within-pass re-fire measurement — sizing how much of a propagation is
-//! redundant re-fire, and thus coalesceable, **without changing any behavior**.
+//! Counts how often each cell fans out while a pass is open.
 //!
-//! A *pass* is one logical propagation boundary. For the motivating case
-//! (rship's server-side fanout) that is one store-diff / `EventBatch`
-//! application: wrap it in [`pass`], and while that scope is on the stack every
-//! cell **fanout** — one per emit — is tallied by cell id. A cell that fans out
-//! more than once in a single pass is *re-firing*: in a glitch-free coalesced
-//! world it would emit once with its settled value, so every fire past the
-//! first is coalesceable.
+//! A *pass* is a stretch of work whose propagation you want to size, such as
+//! one store diff or one `EventBatch`. Wrap it in [`pass`]. Until the pass
+//! closes, every cell fanout in the process is counted by cell id, on
+//! whichever thread settles it. [`take_report`] returns the counts.
 //!
-//! This is pure measurement on the synchronous path — it defers, coalesces, and
-//! reorders nothing. Two ways to use it:
+//! A cell that holds state fans out once per settle, so a count above one
+//! means the pass took more than one settle to reach that cell. Two `set` calls are two
+//! settles, and a callback that writes back into an input starts another.
+//! Wrap the same writes in [`batch`](crate::batch) and they share a settle:
+//! the count drops to one. The report therefore sizes what batching the
+//! writes of a pass would save.
 //!
-//! - On today's synchronous build, [`pass`] reports the full re-fire count —
-//!   direct proof of the coalesceable fraction before you adopt [`batch`].
-//! - Run the *same* pass with [`batch`] active and each cell's count collapses
-//!   toward 1: that is the coalescing landing, measured the same way, so the
-//!   two numbers are directly comparable (an A/B on one metric).
+//! The count is process-wide. A fanout that another thread's write causes
+//! while a pass is open is counted too, and passes open on two threads share
+//! one tally and one report. Measure with one pass at a time. A write made
+//! with [`submit`](crate::submit) or [`enqueue`](crate::enqueue) can settle
+//! after the pass has closed and then goes uncounted.
 //!
-//! Gated behind `profiling`; compiles to nothing otherwise.
+//! Counting changes no behavior. The module exists only with the `profiling`
+//! feature.
 //!
 //! ```
 //! use hyphae::{Cell, MapExt, Materialize, Mutable, Watchable};
@@ -37,35 +38,27 @@
 //! drop(guard);
 //! ```
 
-use std::cell::RefCell;
+use std::sync::atomic::{AtomicBool, Ordering};
 
+use parking_lot::Mutex;
 use rustc_hash::FxHashMap;
 use uuid::Uuid;
 
-thread_local! {
-    static PASS: RefCell<PassState> = RefCell::new(PassState::new());
-}
+/// True while a pass is open, so a fanout outside a pass costs one load.
+static OPEN: AtomicBool = AtomicBool::new(false);
+static PASS: Mutex<PassState> = Mutex::new(PassState {
+    depth: 0,
+    fires: None,
+    last: None,
+});
 
-/// Per-thread pass state: the reentrancy depth, the in-flight per-cell tally,
-/// and the most recently sealed report.
 struct PassState {
-    /// Reentrancy depth. `> 0` means a pass is active and fanouts are tallied;
-    /// nested [`pass`] calls join the outermost pass.
+    /// Passes now open, on any thread. They share the tally.
     depth: u32,
     /// `cell id -> fanouts so far this pass`.
-    fires: FxHashMap<Uuid, u32>,
-    /// The report sealed at the last outermost pass exit, until taken.
+    fires: Option<FxHashMap<Uuid, u32>>,
+    /// The report sealed when the last open pass closed, until taken.
     last: Option<PassReport>,
-}
-
-impl PassState {
-    fn new() -> Self {
-        Self {
-            depth: 0,
-            fires: FxHashMap::default(),
-            last: None,
-        }
-    }
 }
 
 /// Per-cell fanout tally for one completed [`pass`].
@@ -84,14 +77,13 @@ struct PassGuard;
 
 impl Drop for PassGuard {
     fn drop(&mut self) {
-        PASS.with(|p| {
-            let mut p = p.borrow_mut();
-            p.depth = p.depth.saturating_sub(1);
-            if p.depth == 0 {
-                let per_cell = p.fires.drain().collect();
-                p.last = Some(PassReport { per_cell });
-            }
-        });
+        let mut state = PASS.lock();
+        state.depth = state.depth.saturating_sub(1);
+        if state.depth == 0 {
+            OPEN.store(false, Ordering::Release);
+            let per_cell = state.fires.take().into_iter().flatten().collect();
+            state.last = Some(PassReport { per_cell });
+        }
     }
 }
 
@@ -134,7 +126,7 @@ impl PassReport {
 
     /// Coalesceable fraction: `total_refires / total_fires`, in `0.0..=1.0`
     /// (`0.0` when nothing fired). The share of this pass's fanouts that a
-    /// glitch-free coalesced drain would eliminate.
+    /// single settle would eliminate.
     #[must_use]
     pub fn coalesceable_fraction(&self) -> f64 {
         fn u64_to_f64(value: u64) -> f64 {
@@ -152,46 +144,42 @@ impl PassReport {
     }
 }
 
-/// Run `f` as one measured pass, tallying every cell fanout that happens inside
-/// it. Retrieve the tally with [`take_report`] after `f` returns.
+/// Run `f` as one measured pass, counting every cell fanout that happens
+/// until it returns. Retrieve the counts with [`take_report`].
 ///
-/// Returns `f`'s value untouched. Nested calls join the outermost pass — only
-/// the outermost resets the tally on entry and seals the [`PassReport`] on exit
-/// (including on unwind), so a panic inside `f` still leaves a clean slate.
-///
-/// This measures whatever fanouts occur, so it composes with [`batch`]: wrap
-/// `pass(|| batch(|| ..))` (or the reverse) and the report reflects the
-/// coalesced fanout count.
+/// Returns `f`'s value untouched. A call made while another pass is open, on
+/// this thread or another, joins that pass: the counts start when the first
+/// one opens, and the [`PassReport`] is sealed when the last one closes,
+/// including on unwind.
 pub fn pass<R>(f: impl FnOnce() -> R) -> R {
-    PASS.with(|p| {
-        let mut p = p.borrow_mut();
-        p.depth = p.depth.saturating_add(1);
-        if p.depth == 1 {
-            p.fires.clear();
-        }
-    });
+    let mut state = PASS.lock();
+    state.depth = state.depth.saturating_add(1);
+    if state.depth == 1 {
+        state.fires = Some(FxHashMap::default());
+        OPEN.store(true, Ordering::Release);
+    }
+    drop(state);
     // The guard seals the report and restores depth even if `f` unwinds.
     let _guard = PassGuard;
     f()
 }
 
-/// Take the most recently completed pass's report, if one has been sealed since
-/// the last take. The read clears it, so a second call returns `None` until the
-/// next [`pass`] completes.
+/// Take the report of the most recently completed pass, if one has been
+/// sealed since the last take. The read clears it, so a second call returns
+/// `None` until the next [`pass`] completes.
 #[must_use]
 pub fn take_report() -> Option<PassReport> {
-    PASS.with(|p| p.borrow_mut().last.take())
+    PASS.lock().last.take()
 }
 
-/// Tally one fanout for `id` when a pass is active. Called from `Cell::fanout`;
-/// a no-op (one thread-local borrow and a depth check) outside a pass.
+/// Count one fanout of `id` when a pass is open. Called from `Cell::fanout`.
 #[inline]
 pub(crate) fn record_fire(id: Uuid) {
-    PASS.with(|p| {
-        let mut p = p.borrow_mut();
-        if p.depth > 0 {
-            let count = p.fires.entry(id).or_insert(0);
-            *count = count.saturating_add(1);
-        }
-    });
+    if !OPEN.load(Ordering::Acquire) {
+        return;
+    }
+    if let Some(fires) = PASS.lock().fires.as_mut() {
+        let count = fires.entry(id).or_insert(0);
+        *count = count.saturating_add(1);
+    }
 }
