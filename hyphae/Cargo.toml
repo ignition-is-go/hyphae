@@ -70,6 +70,7 @@ tasks = ["fmt", "check", "check-wasm", "check-wasm-features", "build", "test", "
 [dev-dependencies]
 criterion = "0.5"
 seq-macro = "0.3"
+loom = "0.7"
 
 [[bench]]
 name = "latency"

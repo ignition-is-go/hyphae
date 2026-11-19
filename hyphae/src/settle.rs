@@ -29,6 +29,7 @@ use uuid::Uuid;
 
 use crate::traits::DepNode;
 
+mod sched;
 mod wave;
 
 pub use wave::{set_wave_min, set_workers};
