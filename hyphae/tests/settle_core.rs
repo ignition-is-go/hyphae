@@ -35,8 +35,8 @@ fn record<T: hyphae::CellValue>(
     (seen, guard)
 }
 
-/// A subscriber that blocks the settle it runs in until released, so a test
-/// can queue event sets behind a held settle lock.
+/// A subscriber that blocks the barrier settle it runs in until released, so
+/// a test can queue event sets behind it.
 struct HeldSettle {
     gate: Cell<u64, hyphae::CellMutable>,
     release: mpsc::Sender<()>,
@@ -57,7 +57,10 @@ impl HeldSettle {
             }
         });
         let writer = gate.clone();
-        let holder = thread::spawn(move || writer.set(1));
+        // A barrier, so every later write waits for it whatever it touches.
+        let holder = thread::spawn(move || {
+            batch_with(&[SettleKey::Barrier], None, || writer.set(1));
+        });
         assert!(
             entered_rx.recv_timeout(Duration::from_secs(10)).is_ok(),
             "the holding settle must start"

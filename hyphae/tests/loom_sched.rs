@@ -11,7 +11,12 @@
 //!   that run was last written by a run still settling;
 //! - no deadlock: every thread ends and every admitted run finishes.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::significant_drop_tightening
+)]
 
 #[path = "../src/settle/sched.rs"]
 #[allow(dead_code, unreachable_pub)]
@@ -52,7 +57,9 @@ impl World {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             sched: Mutex::new((Sched::default(), Vec::new(), Vec::new())),
-            nodes: (0..NODES).map(|_| Mutex::new(NodeState::default())).collect(),
+            nodes: (0..NODES)
+                .map(|_| Mutex::new(NodeState::default()))
+                .collect(),
             changed: Condvar::new(),
         })
     }
@@ -138,7 +145,10 @@ impl World {
             state.holder
         );
         if let Some(last) = state.served.last() {
-            assert!(*last <= ticket, "node {node} served run {ticket} after run {last}");
+            assert!(
+                *last <= ticket,
+                "node {node} served run {ticket} after run {last}"
+            );
         }
         state.holder = Some(ticket);
         state.served.push(ticket);

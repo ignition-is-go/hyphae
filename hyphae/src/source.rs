@@ -67,6 +67,9 @@ pub(crate) struct SourceInner<T> {
     pub(crate) queued: AtomicBool,
     /// The settle in which this source last fanned out.
     pub(crate) fired_run: std::sync::atomic::AtomicU64,
+    /// The cells that own a subscription to this source: the first step of
+    /// the forward cone a run reserves.
+    pub(crate) dependents: Mutex<Vec<Weak<dyn crate::settle::Node>>>,
     /// Source location where this source was created (`#[track_caller]`).
     #[allow(dead_code)]
     pub(crate) caller: &'static Location<'static>,
@@ -131,6 +134,7 @@ impl<T: CellValue> Source<T> {
             completed: AtomicBool::new(false),
             pending: Mutex::new(Vec::new()),
             queued: AtomicBool::new(false),
+            dependents: Mutex::new(Vec::new()),
             fired_run: std::sync::atomic::AtomicU64::new(0),
             caller: Location::caller(),
         });
@@ -254,6 +258,11 @@ struct SourceWrite<T> {
 }
 
 impl<T: CellValue> crate::settle::Write for SourceWrite<T> {
+    fn node(&self) -> Option<Arc<dyn crate::settle::Node>> {
+        let source: Arc<dyn crate::settle::Node> = self.source.upgrade()?;
+        Some(source)
+    }
+
     fn apply(self: Box<Self>) {
         let Some(source) = self.source.upgrade() else {
             return;
@@ -302,7 +311,9 @@ impl<T: CellValue> crate::settle::Node for SourceInner<T> {
     fn bump_height_epoch(&self) {}
 
     fn node_dependents(&self) -> Vec<Weak<dyn crate::settle::Node>> {
-        Vec::new()
+        let mut dependents = self.dependents.lock();
+        dependents.retain(|dependent| dependent.strong_count() > 0);
+        dependents.clone()
     }
 }
 
@@ -387,6 +398,18 @@ impl<T: Send + Sync> DepNode for Source<T> {
 
     fn owned_count(&self) -> usize {
         self.inner.owned.lock().len()
+    }
+
+    fn add_dependent(&self, dependent: Weak<dyn crate::settle::Node>) {
+        let mut dependents = self.inner.dependents.lock();
+        dependents.retain(|existing| existing.strong_count() > 0);
+        let address = dependent.as_ptr().cast::<()>();
+        if !dependents
+            .iter()
+            .any(|existing| existing.as_ptr().cast::<()>() == address)
+        {
+            dependents.push(dependent);
+        }
     }
 }
 

@@ -30,6 +30,8 @@ use uuid::Uuid;
 use crate::traits::DepNode;
 
 mod sched;
+
+use sched::{Escape, Sched, Ticket};
 mod wave;
 
 pub use wave::{set_wave_min, set_workers};
@@ -191,6 +193,9 @@ pub trait Node: Send + Sync {
 
 /// One typed write, queued until a settle seeds it.
 pub(crate) trait Write: Send {
+    /// The node the write targets, where the run's cone starts. `None` when
+    /// the node is gone.
+    fn node(&self) -> Option<Arc<dyn Node>>;
     fn apply(self: Box<Self>);
 }
 
@@ -272,8 +277,7 @@ impl Waiter {
                 // Always settle once after being asked, even if this
                 // writer's own set finished meanwhile: the holder that asked
                 // has already left.
-                let outcome =
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drain(None)));
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(drain));
                 if let Err(payload) = outcome
                     && drive_panic.is_none()
                 {
@@ -324,7 +328,58 @@ impl EventSet {
 static INPUT: SegQueue<EventSet> = SegQueue::new();
 /// The writers now asleep in [`Waiter::wait`].
 static WAITING: Mutex<Vec<Arc<Waiter>>> = Mutex::new(Vec::new());
-static SETTLE: Mutex<()> = Mutex::new(());
+
+/// The run scheduler and the runs it has admitted but not started.
+struct Runs {
+    sched: Sched<Uuid>,
+    admitted: FxHashMap<Ticket, Admitted>,
+    /// The forward cone of each write target, valid while no edge has been
+    /// added since `cones_at`.
+    cones: FxHashMap<Uuid, Arc<[Uuid]>>,
+    cones_at: u64,
+}
+
+struct Admitted {
+    sets: Vec<EventSet>,
+    reserved: Arc<Reserved>,
+}
+
+/// What one run may touch, shared with every thread that fires its nodes.
+pub(crate) struct Reserved {
+    ticket: Ticket,
+    /// A barrier settles alone and may touch any node.
+    barrier: bool,
+    cone: FxHashSet<Uuid>,
+    /// Nodes the run reached outside its cone and was given.
+    escaped: Mutex<FxHashSet<Uuid>>,
+}
+
+impl Reserved {
+    fn holds(&self, node: Uuid) -> bool {
+        self.barrier || self.cone.contains(&node) || self.escaped.lock().contains(&node)
+    }
+}
+
+static RUN_SCHED: LazyLock<Mutex<Runs>> = LazyLock::new(|| {
+    Mutex::new(Runs {
+        sched: Sched::default(),
+        admitted: FxHashMap::default(),
+        cones: FxHashMap::default(),
+        cones_at: 0,
+    })
+});
+/// Counts edges added to the graph, so a cached cone knows it is stale.
+static EDGES: AtomicU64 = AtomicU64::new(0);
+
+/// A node gained a dependent. Cones cached before this miss the new edge.
+pub(crate) fn edge_added() {
+    EDGES.fetch_add(1, Ordering::Release);
+}
+
+/// Exclusive keys stand in lines too, under ids no node has.
+const fn key_id(key: u64) -> Uuid {
+    Uuid::from_u64_pair(0x6879_7068_6165_6b79, key)
+}
 
 /// Which fire produced a value, for a node that must deliver the values of
 /// one settle in the order a single thread would have produced them.
@@ -470,6 +525,8 @@ struct Active {
     epoch: Option<Epoch>,
     /// The writers waiting on the run now settling.
     waiters: Arc<[Arc<Waiter>]>,
+    /// The nodes the run now settling has reserved.
+    reserved: Option<Arc<Reserved>>,
     out: Outbox,
 }
 
@@ -541,6 +598,12 @@ pub struct SettleStats {
     /// Times an event set started a new settle only because its epoch
     /// differed from the one before it.
     pub epoch_splits: u64,
+    /// Writes that would have joined a node outside their run's reserved
+    /// cone.
+    pub cone_escapes: u64,
+    /// Cone escapes that another run held or was owed first, so the write
+    /// went to a later run.
+    pub deferred_escapes: u64,
 }
 
 static EVENT_SETS: AtomicU64 = AtomicU64::new(0);
@@ -558,6 +621,8 @@ static WAVES: AtomicU64 = AtomicU64::new(0);
 static PARALLEL_WAVES: AtomicU64 = AtomicU64::new(0);
 static WIDEST_WAVE: AtomicU64 = AtomicU64::new(0);
 static EPOCH_SPLITS: AtomicU64 = AtomicU64::new(0);
+static CONE_ESCAPES: AtomicU64 = AtomicU64::new(0);
+static DEFERRED_ESCAPES: AtomicU64 = AtomicU64::new(0);
 
 /// Read the process-wide settle counters.
 #[must_use]
@@ -578,6 +643,8 @@ pub fn stats() -> SettleStats {
         parallel_waves: PARALLEL_WAVES.load(Ordering::Relaxed),
         widest_wave: WIDEST_WAVE.load(Ordering::Relaxed),
         epoch_splits: EPOCH_SPLITS.load(Ordering::Relaxed),
+        cone_escapes: CONE_ESCAPES.load(Ordering::Relaxed),
+        deferred_escapes: DEFERRED_ESCAPES.load(Ordering::Relaxed),
     }
 }
 
@@ -660,18 +727,41 @@ impl Drop for Backlogged {
 /// fired yet in this settle, and no earlier write to the target is still
 /// queued in `backlog`. A write inside a [`batch`] never joins: the batch
 /// keeps its writes together.
-pub(crate) fn position(target: impl FnOnce() -> u64, backlog: &Backlog) -> Position {
-    let Some(firing) = ACTIVE.with_borrow(|active| active.as_ref().map(|active| active.firing))
-    else {
+///
+/// A write that would join a node outside the run's reserved cone is a cone
+/// escape. It joins only when the scheduler gives the run that node (section
+/// 13); otherwise it is queued like a write to a node that has fired.
+pub(crate) fn position(node: Uuid, target: impl FnOnce() -> u64, backlog: &Backlog) -> Position {
+    let Some((firing, reserved)) = ACTIVE.with_borrow(|active| {
+        active
+            .as_ref()
+            .map(|active| (active.firing, active.reserved.clone()))
+    }) else {
         return Position::Queue(None);
     };
     if BUILDING.with_borrow(Option::is_some) {
         return Position::Queue(Some(backlog.add()));
     }
-    match firing {
-        None => Position::Joins,
-        Some(firing) if backlog.is_empty() && target() > firing.height => Position::Joins,
-        Some(_) => Position::Queue(Some(backlog.add())),
+    let joins = firing.is_none_or(|firing| backlog.is_empty() && target() > firing.height);
+    if !joins {
+        return Position::Queue(Some(backlog.add()));
+    }
+    match reserved {
+        Some(reserved) if !reserved.holds(node) => {
+            CONE_ESCAPES.fetch_add(1, Ordering::Relaxed);
+            let escape = RUN_SCHED.lock().sched.escape(reserved.ticket, node);
+            match escape {
+                Escape::Take => {
+                    reserved.escaped.lock().insert(node);
+                    Position::Joins
+                }
+                Escape::Defer => {
+                    DEFERRED_ESCAPES.fetch_add(1, Ordering::Relaxed);
+                    Position::Queue(Some(backlog.add()))
+                }
+            }
+        }
+        _ => Position::Joins,
     }
 }
 
@@ -744,22 +834,16 @@ impl Queued {
         waiter: None,
     };
 
-    /// Settle the set if the lock is free, and sleep until it has settled
+    /// Settle the runs that are ready, and sleep until the set has settled
     /// unless the thread used [`submit`] when it queued the set.
     pub(crate) fn finish(self) {
         if !self.settles {
             return;
         }
-        if let Some(guard) = SETTLE.try_lock() {
-            drain(Some(guard));
-        } else {
-            LOCK_MISSES.fetch_add(1, Ordering::Relaxed);
-            // The holder may have released since the failed try, in which
-            // case nobody is coming for this set.
-            drain(None);
-        }
-        // Whoever holds the lock re-checks the queue after releasing it, so
-        // some holder settles what this writer waits on and wakes it.
+        drain();
+        // A run that is not ready waits behind a run in flight. The thread
+        // that finishes that run starts or hands over what it unblocks, so
+        // some thread settles what this writer waits on and wakes it.
         if let Some(waiter) = self.waiter
             && let Some(payload) = waiter.wait()
         {
@@ -805,98 +889,214 @@ fn queue(mut set: EventSet) -> Queued {
     }
 }
 
-/// Settle until the input queue is empty, starting with `guard` when the
-/// caller already holds the lock. Returns when another thread holds the lock:
-/// that thread re-checks the queue after it releases, so nothing queued is
-/// stranded.
-fn drain(mut guard: Option<parking_lot::MutexGuard<'static, ()>>) {
+/// Admit what is queued, then settle ready runs until none that was admitted
+/// before this call is left. Runs admitted later go to a sleeping writer if
+/// there is one; otherwise this thread keeps going.
+///
+/// Returns when no run is ready. A run that is not ready waits behind a run in
+/// flight, and the thread that finishes that run comes back here, so nothing
+/// admitted is stranded.
+fn drain() {
     let mut first_panic: Option<Box<dyn Any + Send>> = None;
+    let mut bound = admit_queued();
+    let mut settled_any = false;
     loop {
-        let Some(held) = guard.take().or_else(|| SETTLE.try_lock()) else {
-            break;
+        let mut handed = false;
+        let next = {
+            let mut runs = RUN_SCHED.lock();
+            let ticket = runs.sched.start_before(bound);
+            let admitted = ticket.and_then(|ticket| runs.admitted.remove(&ticket));
+            let spare = runs.sched.ready();
+            drop(runs);
+            // Runs that may settle beside this one go to sleeping writers.
+            for _ in 0..spare {
+                if !hand_over() {
+                    break;
+                }
+                handed = true;
+            }
+            admitted
         };
-        let started = crate::platform::Instant::now();
-        ACTIVE.set(Some(Active {
-            firing: None,
-            run_id: 0,
-            epoch: None,
-            waiters: Arc::default(),
-            out: Outbox::default(),
-        }));
-        let panic = settle_queued();
-        ACTIVE.set(None);
-        let nanos = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        SETTLE_NANOS.fetch_add(nanos, Ordering::Relaxed);
-        MAX_HOLD_NANOS.fetch_max(nanos, Ordering::Relaxed);
-        drop(held);
-        if first_panic.is_none() {
-            first_panic = panic;
+        if let Some(admitted) = next {
+            settled_any = true;
+            let panic = settle_admitted(admitted);
+            if first_panic.is_none() {
+                first_panic = panic;
+            }
+            continue;
         }
-        // A stint is bounded, and a writer may have pushed after the last pop
-        // and missed the lock before the release above. Either way nobody
-        // else is coming for what is queued, unless a sleeping writer takes
-        // over. Handing over keeps one thread from settling for everyone.
-        if INPUT.is_empty() {
+        if !settled_any {
+            LOCK_MISSES.fetch_add(1, Ordering::Relaxed);
+        }
+        let ready = RUN_SCHED.lock().sched.ready();
+        if ready == 0 && INPUT.is_empty() {
             break;
         }
-        let handed_over = {
-            let waiting = WAITING.lock();
-            waiting.iter().any(|waiter| waiter.ask_to_drive())
-        };
-        if handed_over {
-            HANDOVERS.fetch_add(1, Ordering::Relaxed);
+        // Work that arrived after this call began. Handing it over keeps one
+        // thread from settling for everyone.
+        if handed || hand_over() {
             break;
         }
         std::thread::yield_now();
+        bound = admit_queued();
     }
     if let Some(payload) = first_panic {
         std::panic::resume_unwind(payload);
     }
 }
 
-/// Settle one stint: the event sets queued when the stint began, split into
-/// runs and settled in order.
+/// Ask one sleeping writer to settle. False when none is asleep.
+fn hand_over() -> bool {
+    let handed = WAITING.lock().iter().any(|waiter| waiter.ask_to_drive());
+    if handed {
+        HANDOVERS.fetch_add(1, Ordering::Relaxed);
+    }
+    handed
+}
+
+/// Settle one started run on this thread, then leave its lines.
+fn settle_admitted(admitted: Admitted) -> Option<Box<dyn Any + Send>> {
+    let started = crate::platform::Instant::now();
+    let ticket = admitted.reserved.ticket;
+    ACTIVE.set(Some(Active {
+        firing: None,
+        run_id: 0,
+        epoch: None,
+        waiters: Arc::default(),
+        reserved: Some(admitted.reserved),
+        out: Outbox::default(),
+    }));
+    let mut panic = None;
+    settle_run(admitted.sets, &mut Frontier::default(), &mut panic);
+    ACTIVE.set(None);
+    RUN_SCHED.lock().sched.finish(ticket);
+    let nanos = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+    SETTLE_NANOS.fetch_add(nanos, Ordering::Relaxed);
+    MAX_HOLD_NANOS.fetch_max(nanos, Ordering::Relaxed);
+    panic
+}
+
+/// Pop every queued event set and admit it. Returns the ticket after the last
+/// one given.
 ///
-/// The bound holds whatever the callbacks queue. `INPUT` is one arrival-ordered
-/// queue, so settling a callback's set inside the stint would mean settling
-/// every other thread's set that arrived before it, and under sustained
-/// feedback the stint would never end.
-fn settle_queued() -> Option<Box<dyn Any + Send>> {
-    let mut first_panic = None;
-    let mut frontier = Frontier::default();
-    let mut run: Vec<EventSet> = Vec::new();
-    let mut run_keys: FxHashSet<u64> = FxHashSet::default();
-    let mut run_barrier = false;
-    let mut run_epoch: Option<Option<Epoch>> = None;
-    for _ in 0..INPUT.len() {
-        let Some(set) = INPUT.pop() else { break };
-        let conflicts = !run.is_empty()
-            && (run_barrier || set.barrier || set.keys.iter().any(|key| run_keys.contains(key)));
-        // A run has one epoch, so that `current_epoch` names one write. An
-        // empty set, which `flush` queues, writes nothing and fits any run.
-        let writes = !set.writes.is_empty();
-        let other_epoch = writes && run_epoch.is_some_and(|epoch| epoch != set.epoch);
+/// A set joins the youngest run that stands in a line of its cone, when that
+/// run has not started, the split rules of section 3 allow it, and no younger
+/// run stands in or has served any node of the set's cone. That is the same
+/// as having admitted the run with the set in it, so sets queued behind a busy
+/// cone still combine. A set with a disjoint cone gets a run of its own that
+/// can settle at the same time. An empty set, which `flush` queues, goes in a
+/// run of empty sets that starts after every older run has finished.
+fn admit_queued() -> Ticket {
+    let mut runs = RUN_SCHED.lock();
+    let edges = EDGES.load(Ordering::Acquire);
+    if runs.cones_at != edges {
+        runs.cones.clear();
+        runs.cones_at = edges;
+    }
+    while let Some(set) = INPUT.pop() {
+        admit(&mut runs, set);
+    }
+    runs.sched.next_ticket()
+}
+
+fn admit(runs: &mut Runs, set: EventSet) {
+    let writes = !set.writes.is_empty();
+    let barrier = set.barrier;
+    let cone = if barrier || !writes {
+        FxHashSet::default()
+    } else {
+        cone_of(runs, &set)
+    };
+    // Fences combine with a fence just before them; a write joins the
+    // youngest run that stands in a line of its cone.
+    let candidate = if writes {
+        runs.sched.youngest_in(&cone)
+    } else {
+        Some(runs.sched.next_ticket().wrapping_sub(1))
+    };
+    if !barrier
+        && let Some(candidate) = candidate
+        && let Some(open) = runs.admitted.get(&candidate)
+    {
+        let reserved = &open.reserved;
+        let open_epoch = open
+            .sets
+            .iter()
+            .find(|set| !set.writes.is_empty())
+            .map(|set| set.epoch);
+        let open_fence = open_epoch.is_none();
+        let conflicts = reserved.barrier
+            || open_fence == writes
+            || set
+                .keys
+                .iter()
+                .any(|key| reserved.cone.contains(&key_id(*key)));
+        // A run has one epoch, so that `current_epoch` names one write.
+        let other_epoch = open_epoch.is_some_and(|epoch| writes && epoch != set.epoch);
         if other_epoch && !conflicts {
             EPOCH_SPLITS.fetch_add(1, Ordering::Relaxed);
         }
-        let conflicts = conflicts || other_epoch;
-        if conflicts {
-            settle_run(std::mem::take(&mut run), &mut frontier, &mut first_panic);
-            run_keys.clear();
-            run_barrier = false;
-            run_epoch = None;
+        let keys: Vec<Uuid> = cone.iter().copied().collect();
+        if !conflicts && !other_epoch && (!writes || runs.sched.extend(candidate, &keys)) {
+            if let Some(open) = runs.admitted.get_mut(&candidate) {
+                if let Some(reserved) = Arc::get_mut(&mut open.reserved) {
+                    reserved.cone.extend(keys);
+                }
+                open.sets.push(set);
+            }
+            return;
         }
-        if writes {
-            run_epoch = Some(set.epoch);
+    }
+    let ticket = if writes {
+        runs.sched.admit(cone.iter().copied(), barrier)
+    } else {
+        runs.sched.admit_fence()
+    };
+    runs.admitted.insert(
+        ticket,
+        Admitted {
+            sets: vec![set],
+            reserved: Arc::new(Reserved {
+                ticket,
+                barrier,
+                cone,
+                escaped: Mutex::default(),
+            }),
+        },
+    );
+}
+
+/// The nodes `set` may reach, and its exclusive keys.
+fn cone_of(runs: &mut Runs, set: &EventSet) -> FxHashSet<Uuid> {
+    let mut cone: FxHashSet<Uuid> = set.keys.iter().map(|key| key_id(*key)).collect();
+    for write in &set.writes {
+        let Some(node) = write.node() else { continue };
+        let id = node.node_id();
+        if cone.contains(&id) {
+            continue;
         }
-        run_barrier |= set.barrier;
-        run_keys.extend(set.keys.iter().copied());
-        run.push(set);
+        let reach = runs
+            .cones
+            .entry(id)
+            .or_insert_with(|| forward_cone(node.as_ref()))
+            .clone();
+        cone.extend(reach.iter().copied());
     }
-    if !run.is_empty() {
-        settle_run(run, &mut frontier, &mut first_panic);
+    cone
+}
+
+/// `start` and every node whose height depends on it.
+fn forward_cone(start: &dyn Node) -> Arc<[Uuid]> {
+    let mut seen = FxHashSet::default();
+    seen.insert(start.node_id());
+    let mut stack = start.node_dependents();
+    while let Some(weak) = stack.pop() {
+        let Some(node) = weak.upgrade() else { continue };
+        if seen.insert(node.node_id()) {
+            stack.extend(node.node_dependents());
+        }
     }
-    first_panic
+    seen.into_iter().collect()
 }
 
 /// Settle one run and tell the writers that wait on it.

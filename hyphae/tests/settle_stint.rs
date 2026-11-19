@@ -42,7 +42,8 @@ fn a_submit_caller_settles_only_what_was_queued_when_it_took_the_lock() {
         let slept_on = other.clone();
         scope.spawn(move || {
             sleeper_started.recv().ok();
-            slept_on.set(1);
+            // A barrier waits for the run in flight, so this writer sleeps.
+            hyphae::batch_with(&[hyphae::SettleKey::Barrier], None, || slept_on.set(1));
         });
 
         let (log, target) = (ran_on.clone(), feedback.clone());

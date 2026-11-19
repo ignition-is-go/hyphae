@@ -23,7 +23,7 @@ use std::{
 use parking_lot::{Condvar, Mutex};
 
 use super::{
-    ACTIVE, Active, Entry, Epoch, Frontier, Outbox, PARALLEL_WAVES, Waiter, fire_entries,
+    ACTIVE, Active, Entry, Epoch, Frontier, Outbox, PARALLEL_WAVES, Reserved, Waiter, fire_entries,
     take_outbox,
 };
 
@@ -97,6 +97,7 @@ struct Wave {
     run_id: u64,
     epoch: Option<Epoch>,
     waiters: Arc<[Arc<Waiter>]>,
+    reserved: Option<Arc<Reserved>>,
     /// Entries a thread claims at a time.
     chunk: usize,
     /// Index of the first unclaimed entry.
@@ -166,18 +167,20 @@ impl Wave {
     }
 }
 
-#[derive(Default)]
+/// Waves that may still take a pool thread. Runs with disjoint cones settle
+/// at the same time, so several waves can be posted at once.
 struct Posted {
-    wave: Option<Arc<Wave>>,
-    /// Counts posts, so a thread joins each wave at most once.
-    serial: u64,
+    waves: Vec<Arc<Wave>>,
     threads: usize,
+    /// Pool threads firing a wave. A callback can block, so a new wave
+    /// gets threads of its own rather than waiting for a busy one.
+    busy: usize,
 }
 
 static POSTED: Mutex<Posted> = Mutex::new(Posted {
-    wave: None,
-    serial: 0,
+    waves: Vec::new(),
     threads: 0,
+    busy: 0,
 });
 static WAKE: Condvar = Condvar::new();
 
@@ -185,7 +188,8 @@ static WAKE: Condvar = Condvar::new();
 /// when the pool has no thread.
 fn post(wave: &Arc<Wave>, helpers: usize) -> bool {
     let mut posted = POSTED.lock();
-    while posted.threads < helpers {
+    let wanted = posted.busy.saturating_add(helpers).min(MAX_WORKERS);
+    while posted.threads < wanted {
         let spawned = std::thread::Builder::new()
             .name(format!("hyphae-settle-{}", posted.threads))
             .spawn(pool_thread);
@@ -198,8 +202,7 @@ fn post(wave: &Arc<Wave>, helpers: usize) -> bool {
     if posted.threads == 0 {
         return false;
     }
-    posted.wave = Some(Arc::clone(wave));
-    posted.serial = posted.serial.wrapping_add(1);
+    posted.waves.push(Arc::clone(wave));
     drop(posted);
     for _ in 0..helpers {
         WAKE.notify_one();
@@ -208,31 +211,28 @@ fn post(wave: &Arc<Wave>, helpers: usize) -> bool {
 }
 
 fn pool_thread() {
-    let mut joined = 0u64;
     loop {
         let mut posted = POSTED.lock();
         let wave = loop {
-            if posted.serial != joined
-                && let Some(wave) = posted.wave.clone()
-            {
-                joined = posted.serial;
-                break wave;
+            if let Some(wave) = posted.waves.iter().find(|wave| wave.take_seat()) {
+                break Arc::clone(wave);
             }
             WAKE.wait(&mut posted);
         };
+        posted.busy = posted.busy.saturating_add(1);
         drop(posted);
-        if !wave.take_seat() {
-            continue;
-        }
         ACTIVE.set(Some(Active {
             firing: None,
             run_id: wave.run_id,
             epoch: wave.epoch,
             waiters: Arc::clone(&wave.waiters),
+            reserved: wave.reserved.clone(),
             out: Outbox::default(),
         }));
         wave.work();
         ACTIVE.set(None);
+        let mut posted = POSTED.lock();
+        posted.busy = posted.busy.saturating_sub(1);
     }
 }
 
@@ -260,10 +260,17 @@ pub(super) fn fire(
         let chunks = len.div_ceil(chunk);
         (chunk, workers.min(chunks).saturating_sub(1))
     };
-    let (run_id, epoch, waiters) = ACTIVE.with_borrow(|active| {
+    let (run_id, epoch, waiters, reserved) = ACTIVE.with_borrow(|active| {
         active.as_ref().map_or_else(
-            || (0, None, Arc::default()),
-            |active| (active.run_id, active.epoch, Arc::clone(&active.waiters)),
+            || (0, None, Arc::default(), None),
+            |active| {
+                (
+                    active.run_id,
+                    active.epoch,
+                    Arc::clone(&active.waiters),
+                    active.reserved.clone(),
+                )
+            },
         )
     });
     let wave = Arc::new(Wave {
@@ -271,6 +278,7 @@ pub(super) fn fire(
         run_id,
         epoch,
         waiters,
+        reserved,
         chunk,
         next: AtomicUsize::new(0),
         seats: AtomicUsize::new(helpers),
@@ -284,7 +292,10 @@ pub(super) fn fire(
         wave.work();
     }
     wave.wait();
-    POSTED.lock().wave = None;
+    POSTED
+        .lock()
+        .waves
+        .retain(|posted| !Arc::ptr_eq(posted, &wave));
 
     let mut stretches = std::mem::take(&mut *wave.stretches.lock());
     stretches.sort_unstable_by_key(|stretch| stretch.start);

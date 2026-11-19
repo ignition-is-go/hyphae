@@ -50,6 +50,10 @@ fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
 #[test]
 fn independent_intervals_share_one_reactor_thread() {
     let _serial = scheduler_test_serial();
+    // Callbacks run on the reactor only when it settles their writes itself.
+    // Runs of the two disjoint intervals may otherwise settle on pool
+    // threads side by side.
+    let workers = hyphae::settle::set_workers(0);
     let fast = interval_source(Duration::from_millis(5));
     let slow = interval_source(Duration::from_millis(9));
 
@@ -82,6 +86,7 @@ fn independent_intervals_share_one_reactor_thread() {
     let distinct: std::collections::HashSet<_> = seen.iter().copied().collect();
     let distinct_len = distinct.len();
     drop(seen);
+    hyphae::settle::set_workers(workers);
     assert_eq!(
         distinct_len, 1,
         "interval callbacks fired from {distinct_len} distinct threads, expected 1 (shared reactor): {distinct:?}"

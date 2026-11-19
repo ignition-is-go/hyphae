@@ -42,6 +42,8 @@ struct Slot<K> {
     /// Lines in which another ticket stands at the front.
     blocked: usize,
     barrier: bool,
+    /// Touches no node and starts once every older run has finished.
+    fence: bool,
     started: bool,
 }
 
@@ -51,6 +53,7 @@ pub struct Sched<K> {
     runs: BTreeMap<Ticket, Slot<K>>,
     ready: BTreeSet<Ticket>,
     barriers: BTreeSet<Ticket>,
+    fences: BTreeSet<Ticket>,
     /// The youngest ticket each node has served, kept while some live run
     /// is older. A run that escapes into a node a younger run has already
     /// left must not be served there after it.
@@ -65,6 +68,7 @@ impl<K: Copy + Eq + Hash> Default for Sched<K> {
             runs: BTreeMap::new(),
             ready: BTreeSet::new(),
             barriers: BTreeSet::new(),
+            fences: BTreeSet::new(),
             served: FxHashMap::default(),
         }
     }
@@ -81,6 +85,7 @@ impl<K: Copy + Eq + Hash> Sched<K> {
             keys: Vec::new(),
             blocked: 0,
             barrier,
+            fence: false,
             started: false,
         };
         for key in keys {
@@ -102,9 +107,96 @@ impl<K: Copy + Eq + Hash> Sched<K> {
         ticket
     }
 
+    /// The youngest ticket standing in any of the lines of `keys`.
+    pub fn youngest_in<'a>(&self, keys: impl IntoIterator<Item = &'a K>) -> Option<Ticket>
+    where
+        K: 'a,
+    {
+        keys.into_iter()
+            .filter_map(|key| self.lines.get(key).and_then(|line| line.back().copied()))
+            .max()
+    }
+
+    /// Stand a run that has not started in more lines, as if it had been
+    /// admitted with `keys`. That is safe only when no younger run stands in
+    /// those lines or has served those nodes, and no younger barrier or fence
+    /// is live; otherwise nothing changes and the result is false.
+    pub fn extend(&mut self, ticket: Ticket, keys: &[K]) -> bool {
+        let Some(slot) = self.runs.get(&ticket) else {
+            return false;
+        };
+        if slot.started || slot.barrier || slot.fence {
+            return false;
+        }
+        let younger_alone = self
+            .barriers
+            .last()
+            .is_some_and(|barrier| *barrier > ticket)
+            || self.fences.last().is_some_and(|fence| *fence > ticket);
+        let younger_here = keys.iter().any(|key| {
+            self.lines
+                .get(key)
+                .and_then(VecDeque::back)
+                .is_some_and(|back| *back > ticket)
+                || self.served.get(key).is_some_and(|served| *served > ticket)
+        });
+        if younger_alone || younger_here {
+            return false;
+        }
+        let Some(slot) = self.runs.get_mut(&ticket) else {
+            return false;
+        };
+        for key in keys {
+            let line = self.lines.entry(*key).or_default();
+            if line.back() == Some(&ticket) {
+                continue;
+            }
+            if !line.is_empty() {
+                slot.blocked = slot.blocked.saturating_add(1);
+                self.ready.remove(&ticket);
+            }
+            line.push_back(ticket);
+            slot.keys.push(*key);
+        }
+        true
+    }
+
+    /// Admit a run that touches no node and starts once every older run has
+    /// finished, without holding back younger ones. `flush` waits on one.
+    pub fn admit_fence(&mut self) -> Ticket {
+        let ticket = self.next;
+        self.next = self.next.wrapping_add(1);
+        self.runs.insert(
+            ticket,
+            Slot {
+                keys: Vec::new(),
+                blocked: 0,
+                barrier: false,
+                fence: true,
+                started: false,
+            },
+        );
+        self.fences.insert(ticket);
+        self.refresh(ticket);
+        ticket
+    }
+
+    /// The ticket the next run will take.
+    pub const fn next_ticket(&self) -> Ticket {
+        self.next
+    }
+
     /// Start the oldest run that may start now.
+    #[allow(dead_code, reason = "the loom model drives the scheduler through it")]
     pub fn start(&mut self) -> Option<Ticket> {
-        let ticket = self.ready.pop_first()?;
+        self.start_before(Ticket::MAX)
+    }
+
+    /// Start the oldest run that may start now if its ticket is below
+    /// `bound`.
+    pub fn start_before(&mut self, bound: Ticket) -> Option<Ticket> {
+        let ticket = *self.ready.first().filter(|ticket| **ticket < bound)?;
+        self.ready.remove(&ticket);
         if let Some(slot) = self.runs.get_mut(&ticket) {
             slot.started = true;
         }
@@ -117,6 +209,7 @@ impl<K: Copy + Eq + Hash> Sched<K> {
     }
 
     /// Runs admitted and not finished.
+    #[allow(dead_code, reason = "the loom model drives the scheduler through it")]
     pub fn live(&self) -> usize {
         self.runs.len()
     }
@@ -161,7 +254,11 @@ impl<K: Copy + Eq + Hash> Sched<K> {
             let Some(line) = self.lines.get_mut(&key) else {
                 continue;
             };
-            debug_assert_eq!(line.front(), Some(&ticket), "a run left a line it did not head");
+            debug_assert_eq!(
+                line.front(),
+                Some(&ticket),
+                "a run left a line it did not head"
+            );
             line.pop_front();
             self.served.insert(key, ticket);
             match line.front().copied() {
@@ -180,11 +277,17 @@ impl<K: Copy + Eq + Hash> Sched<K> {
         if slot.barrier {
             self.barriers.remove(&ticket);
         }
+        if slot.fence {
+            self.fences.remove(&ticket);
+        }
         // The oldest live run may now be a barrier with nothing left before
         // it, and a finished barrier frees the runs behind it.
         let behind = self.barriers.first().copied().unwrap_or(Ticket::MAX);
         let candidates: Vec<Ticket> = if slot.barrier {
-            self.runs.range(..=behind).map(|(ticket, _)| *ticket).collect()
+            self.runs
+                .range(..=behind)
+                .map(|(ticket, _)| *ticket)
+                .collect()
         } else {
             self.runs.keys().next().copied().into_iter().collect()
         };
@@ -202,9 +305,13 @@ impl<K: Copy + Eq + Hash> Sched<K> {
         let Some(slot) = self.runs.get(&ticket) else {
             return;
         };
-        let older_barrier = self.barriers.first().is_some_and(|barrier| *barrier < ticket);
+        let older_barrier = self
+            .barriers
+            .first()
+            .is_some_and(|barrier| *barrier < ticket);
         let oldest = self.runs.keys().next() == Some(&ticket);
-        if !slot.started && slot.blocked == 0 && !older_barrier && (!slot.barrier || oldest) {
+        let alone = slot.barrier || slot.fence;
+        if !slot.started && slot.blocked == 0 && !older_barrier && (!alone || oldest) {
             self.ready.insert(ticket);
         }
     }

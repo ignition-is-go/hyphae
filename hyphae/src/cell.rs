@@ -289,6 +289,7 @@ impl<T, M> Cell<T, M> {
         // source, which only over-invalidates.
         let erased: Arc<dyn Node> = self.inner.clone();
         guard.source().add_dependent(Arc::downgrade(&erased));
+        crate::settle::edge_added();
         // A source below this cell cannot raise its height. A replaced guard
         // can only lower it, and a height that is too high still orders this
         // cell after every dependency.
@@ -422,7 +423,7 @@ impl<T: CellValue> CellInner<T> {
         if self.completed.load(Ordering::SeqCst) || self.errored.load(Ordering::SeqCst) {
             return;
         }
-        match crate::settle::position(|| self.node_height(), &self.backlog) {
+        match crate::settle::position(self.id, || self.node_height(), &self.backlog) {
             crate::settle::Position::Joins => {
                 self.accept(
                     signal,
@@ -538,7 +539,7 @@ impl<T: CellValue> CellInner<T> {
         if self.completed.load(Ordering::SeqCst) || self.errored.load(Ordering::SeqCst) {
             return;
         }
-        match crate::settle::position(|| self.node_height(), &self.backlog) {
+        match crate::settle::position(self.id, || self.node_height(), &self.backlog) {
             crate::settle::Position::Joins => {
                 write(&mut |signal| self.accept(signal, false, Order::Arrival));
             }
@@ -567,6 +568,11 @@ where
     T: CellValue,
     F: FnOnce(&mut dyn FnMut(Signal<T>)) + Send + 'static,
 {
+    fn node(&self) -> Option<Arc<dyn Node>> {
+        let cell: Arc<dyn Node> = self.cell.upgrade()?;
+        Some(cell)
+    }
+
     fn apply(self: Box<Self>) {
         if let Some(cell) = self.cell.upgrade() {
             (self.write)(&mut |signal| cell.accept(signal, false, Order::Arrival));
@@ -585,6 +591,11 @@ struct CellWrite<T> {
 }
 
 impl<T: CellValue> crate::settle::Write for CellWrite<T> {
+    fn node(&self) -> Option<Arc<dyn Node>> {
+        let cell: Arc<dyn Node> = self.cell.upgrade()?;
+        Some(cell)
+    }
+
     fn apply(self: Box<Self>) {
         if let Some(cell) = self.cell.upgrade() {
             cell.accept(self.signal, self.latest, Order::Arrival);

@@ -5,13 +5,17 @@ This document specifies how a write reaches subscribers. The implementation is
 behavior tests are in `hyphae/tests/settle_core.rs`.
 
 Section 9 maps each ordering guarantee to the rule that keeps it. Section 10
-says where the delivery envelope goes if the settle lock is ever split.
+says where the delivery envelope goes if a write is ever split across runs.
+Section 13 describes the run scheduler that replaced the one settle lock:
+runs reserve the nodes they can reach, and runs with disjoint reservations
+settle at the same time.
 
 ## 1. What this replaced
 
 | Removed | Replaced by |
 | --- | --- |
-| Process-wide `TICK` mutex queue, `depth`/`draining` gate, height-wave drain | Input queue plus one settle lock (section 3) |
+| Process-wide `TICK` mutex queue, `depth`/`draining` gate, height-wave drain | Input queue plus a run scheduler (sections 3 and 13) |
+| One settle lock, `SETTLE`, held for a whole stint | Runs that reserve their forward cones in arrival order (section 13) |
 | Boxed `(write_value, fanout)` closures keyed by cell id | A typed pending list inside each node (section 4) |
 | Last-write-wins coalescing of every notify | A combine rule per node (section 5) |
 | `no_coalesce` scope, `Cell::no_coalesce`, `DepNode::no_coalesce` | Nothing. No notify is dropped by default |
@@ -71,7 +75,7 @@ pub fn is_settling() -> bool;            // this thread is delivering a set
 impl Epoch { pub fn scoped(finished: impl FnOnce() + Send + 'static) -> EpochScope; }
 
 static INPUT: SegQueue<EventSet>;        // arrival-ordered, lock-free
-static SETTLE: Mutex<()>;                // taken only with try_lock
+static RUN_SCHED: Mutex<Runs>;           // tickets, node lines, admitted runs
 static WAITING: Mutex<Vec<Arc<Waiter>>>; // writers asleep until settled
 thread_local! { ACTIVE, BUILDING, MODE }
 ```
@@ -116,6 +120,10 @@ the holder, and `submit` there would deadlock against itself when it becomes
 the holder. `flush` waits until everything queued before it has settled.
 
 ### Stints and hand-over
+
+Section 13 replaced the settle lock. "Holder" below now means a thread that
+is settling a run, and "stint" means one call of `drain`: the runs admitted
+when it began. The bound and the hand-over rules are unchanged.
 
 A holder settles the event sets that were queued when it took the lock. Then
 it releases the lock. The bound has no exception. A set that a callback queues
@@ -338,11 +346,12 @@ A callback never waits, so a feedback write cannot deadlock the holder.
 - A write through `set`, `emit`, a collection mutation, or `batch` is settled
   when it returns, including the feedback it caused.
 - Inside a batch, a read sees the value from before the batch.
-- A subscriber callback runs on whichever thread holds the settle lock, or
-  on a settle pool thread when waves are on (section 12). It is not always
-  the writer's thread.
-- A callback that blocks or computes for long delays every write in the
-  process until it returns. Debug builds log a warning that names the cell
+- A subscriber callback runs on whichever thread settles its run, or on a
+  settle pool thread when waves are on (section 12). It is not always the
+  writer's thread. Callbacks of runs with disjoint cones run at the same time
+  on different threads (section 13).
+- A callback that blocks or computes for long delays every write whose cone
+  shares a node with its run, and every barrier, until it returns. Debug builds log a warning that names the cell
   when one fanout holds the settle for more than a second.
 - A panic in a callback does not stop the settle. When every event set of the
   run has a sleeping writer, the first panic is re-raised on one of them.
@@ -374,7 +383,7 @@ of a few tens of milliseconds had to allow for that.
 | G6 `Cell` replays, `Source` does not | `subscribe` is unchanged. It replays the stored value, which is the settled value. A `Source` stores none |
 | G7 Gap-free `subscribe_diffs` | The subscribe, snapshot, buffer, replay sequence is unchanged. Diffs reach the diff cell in write order and compose in that order |
 | G8 Terminal order | A terminal never combines with a value and the pending list keeps order |
-| G9 Convergence under concurrent writers | Every write passes through `INPUT` and one settle at a time, so two writers' fanouts cannot interleave |
+| G9 Convergence under concurrent writers | Every write passes through `INPUT` and takes a ticket. Fanouts that share a node never interleave: a node serves one run at a time, in ticket order (section 13). Fanouts of runs with disjoint cones run at the same time |
 
 ## 10. Where the envelope goes when the lock is split
 
@@ -419,8 +428,11 @@ submitted, runs settled, fanouts, duplicate fanouts (a node that fanned out
 more than once in one run), lock misses, lock waits, deferred writes, and
 nanoseconds the settle lock was held, the longest single hold, hand-overs,
 empty event sets queued by `flush`, waves fired, waves fired on pool threads,
-the most nodes in one wave, and epoch splits: the times an event set started
-a new run only because its epoch differed.
+the most nodes in one wave, epoch splits: the times an event set started
+a new run only because its epoch differed, cone escapes: writes that would
+join a node outside their run's reservation, and deferred escapes: the cone
+escapes that went to a later run. "Lock misses" now counts drains that found
+no run they could start, and "hold" is the time one run took.
 They are relaxed atomics and always on.
 
 ## 12. Parallel settling
@@ -552,6 +564,7 @@ defines the switches the others test against.
 | 4 | myko clean under foreign threads: fix `typed_projection`, `compute_or_cache`, and whatever piece 1's mode finds | `myko/libs/myko/core/src/server/context.rs`, `core/query/`, `core/graph.rs` | myko serial and parallel suites with piece 1's mode on |
 | 5 | rship clean under foreign threads | `rship/libs/entities/` crates that subscribe | the crate suites of unit B with piece 1's mode on |
 | 6 | Tuning: threshold and worker count from the harness | harness only | below |
+| 7 | Run scheduler (option 1 of the probe RTT design): runs reserve forward cones in arrival order and disjoint runs settle at the same time; replaces `SETTLE`. Section 13 | `hyphae/src/settle.rs`, new `hyphae/src/settle/sched.rs`, `settle/wave.rs` (several waves posted at once), `cell.rs` and `source.rs` (write targets, source dependents, edge counter), new `hyphae/tests/loom_sched.rs` and `hyphae/tests/settle_reserve.rs` | loom model; hyphae suite with `WORKERS` at 0, 1 and 8 |
 
 Pieces 3, 4, and 5 need only piece 1. Piece 2 needs piece 1. Piece 6 needs
 all.
@@ -565,3 +578,120 @@ enqueue-to-run latency, and longest hold:
 - After pieces 2 and 3: 8 and 16 elements with workers at 1, 4, 8, and 16.
 - After piece 5 and after piece 6: 2, 8, and 16 elements at the chosen
   setting.
+
+## 13. Run scheduler
+
+### What it replaced
+
+One settle lock let a single thread settle at a time. Under load one timer
+tick fires about 25,800 nodes, and a probe write that touches one node waited
+for all of them. The scheduler lets a run start as soon as no older run that
+shares a node with it is still settling.
+
+### Tickets and lines
+
+```rust
+struct Sched<K> {                         // settle/sched.rs, no locks inside
+    next: Ticket,                         // arrival order
+    lines: FxHashMap<K, VecDeque<Ticket>>,// per node, oldest first
+    runs: BTreeMap<Ticket, Slot<K>>,      // admitted, not finished
+    ready: BTreeSet<Ticket>,
+    barriers: BTreeSet<Ticket>,
+    served: FxHashMap<K, Ticket>,         // youngest ticket each node served
+}
+```
+
+- **Admit.** A writer that queued a set pops every set in `INPUT` under
+  `RUN_SCHED` and admits it. The pop order is arrival order, so tickets are
+  too. A run's cone is the forward cone of each write target, walked through
+  `node_dependents`, plus one id per exclusive key. Cones are cached per
+  target and dropped when any edge is added. A source records the cells that
+  own a subscription to it, so its cone is not just itself.
+- **Combining.** A set joins the youngest run that stands in a line of its
+  cone, when that run has not started and the split rules of section 3 allow
+  it. No younger ticket may stand in, or have served, any node of the set's
+  cone, and no younger barrier or fence may be live. Joining is then the same
+  as having admitted the run with the set in it. Sets queued behind a busy cone still combine. A set
+  with a disjoint cone gets its own run so that it can settle beside the
+  others.
+- **Start.** A run is ready when it heads every line it stands in, no older
+  barrier is live, and, for a barrier or a fence, it is the oldest live run.
+  A barrier reserves nothing and holds back every younger run. A fence is a
+  run of empty sets from `flush`: it touches no node and holds back nothing.
+- **Finish.** A run leaves each line it heads and records its ticket in
+  `served` for each node. The next ticket in a line may become ready.
+- **Who settles.** `drain` admits, then starts ready runs whose ticket is
+  below the bound taken when it began. Extra ready runs go to sleeping
+  writers through the existing hand-over, so writers settle disjoint runs in
+  parallel. Each run has its own frontier, `ACTIVE`, waiters, and epoch;
+  waves inside a run still use the pool, which now takes several posted
+  waves at once and starts a thread for a wave when every pool thread is
+  busy.
+
+### Cone escapes
+
+A run can reach a node outside its cone: a subscriber writes to a cell that
+does not own a subscription to the firing node, or an edge appears during
+the run (`switch_map`, map-query rows). `position` checks the target against
+the run's reservation before a write joins. On a miss it asks the scheduler:
+
+| The node's line, and `served` | Answer |
+| --- | --- |
+| `served` holds a younger ticket | Defer. A younger run has already been served there |
+| An older ticket heads the line | Defer. That run is owed the node first |
+| A younger ticket that has started heads the line | Defer. It holds the node now |
+| Empty, or only younger tickets that have not started | Take. The run moves to the front of the line, and the displaced run waits for it |
+
+A deferred escape is queued like a write with `t <= h` (section 6): it goes
+to the tail of `INPUT`, takes a later ticket, and enters the node's backlog,
+so a later callback write to that node stays behind it. `stats()` counts
+`cone_escapes` and `deferred_escapes`.
+
+A run never waits once it has started, so the escape rule cannot deadlock.
+
+### Why the guarantees hold
+
+The model in `hyphae/tests/loom_sched.rs` runs the code in
+`settle/sched.rs` under loom, with writer threads that admit runs and settle
+whatever is ready. It explores every interleaving of three scenarios: two
+runs and an escaping run that meet at a join, two runs that escape into each
+other's nodes, and a barrier between ordinary runs. It checks:
+
+- **Per-node ticket order (G4).** Every node serves runs in increasing
+  ticket order. A reserved node serves its line front to back. An escape
+  takes a node only when nothing younger has been served there or holds it,
+  and nothing older is owed it. The first version of the escape rule, without
+  `served`, failed this check: a run took a node that a younger run had
+  already served and left.
+- **Fanouts that share a node never interleave.** At most one run holds a
+  node at a time.
+- **Glitch-free joins (G1, G5).** When a join fires in a run, no input that
+  the run reserved was last written by a run still settling. Inside a run the
+  frontier stays height-ordered, so the join fires after every input the run
+  writes.
+- **No deadlock.** Every thread ends and every admitted run finishes. A run
+  waits only before it starts, and only on older tickets, and a started run
+  never waits on the scheduler.
+
+### What changes for a caller
+
+- Two writes with disjoint cones settle at the same time on their writers'
+  threads. A test that held one settle to queue unrelated writes behind it
+  now holds a barrier.
+- A write that would have joined a run through an edge the cone walk cannot
+  see can settle in a later run when another run holds the node. It is
+  delivered once and in order, but a join downstream can fire once for each
+  run instead of once.
+- `flush` waits for every run admitted before it, not only for the runs in
+  one stint.
+
+### Open risks
+
+- A cone is an over-approximation from `dependents`. Stale back-edges left by
+  `switch_map` re-knits make cones larger and runs more serial, not wrong.
+- Admission walks the cone under `RUN_SCHED`. The cache makes a repeated
+  target cheap, but each added edge clears the whole cache. Under heavy
+  rewiring the walk of the 25,800-node tick cone repeats.
+- If the measured cones overlap as much as section 12 found (one connected
+  component), the probe still waits for the tick. The scheduler removes the
+  wait only for writes whose cones miss the tick's.
