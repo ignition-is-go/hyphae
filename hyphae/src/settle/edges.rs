@@ -8,9 +8,9 @@
 //! today's core, every write that joins without an edge, so the edge can be
 //! declared where the written node is built.
 //!
-//! `HYPHAE_EDGE_CHECK=panic` panics on such a write, `warn` logs it once per
-//! pair of creation sites. Unset, the check is off. Release builds compile
-//! none of it. A write that is meant to start a new ticket says so with
+//! In debug builds the check panics on such a write. `HYPHAE_EDGE_CHECK=warn`
+//! logs it once per pair of creation sites instead, and `off` disables it.
+//! Release builds compile none of it. A write that is meant to start a new ticket says so with
 //! [`new_ticket`].
 
 /// Run `f`, whose writes from a callback are meant to become their own
@@ -55,9 +55,9 @@ mod imp {
 
     static MODE: LazyLock<Mode> =
         LazyLock::new(|| match std::env::var("HYPHAE_EDGE_CHECK").as_deref() {
-            Ok("panic") => Mode::Panic,
+            Ok("off") => Mode::Off,
             Ok("warn") => Mode::Warn,
-            _ => Mode::Off,
+            _ => Mode::Panic,
         });
 
     static WARNED: LazyLock<Mutex<FxHashSet<(usize, usize)>>> = LazyLock::new(Mutex::default);

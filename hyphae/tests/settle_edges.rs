@@ -6,11 +6,6 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use hyphae::{Cell, Gettable, MapExt, Materialize, Mutable, Watchable, settle};
 
-fn check_on() {
-    // SAFETY: set before any thread of this binary reads the environment.
-    unsafe { std::env::set_var("HYPHAE_EDGE_CHECK", "panic") };
-}
-
 /// A cell above height 0 that `trigger`'s callbacks can write.
 fn raised_target() -> (
     Cell<i32, hyphae::CellMutable>,
@@ -24,8 +19,6 @@ fn raised_target() -> (
 
 #[test]
 fn undeclared_callback_write_trips_and_marked_one_does_not() {
-    check_on();
-
     let (_below, target) = raised_target();
     let trigger = Cell::new(0);
     let _guard = trigger.subscribe(move |signal| {

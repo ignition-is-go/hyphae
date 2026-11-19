@@ -387,7 +387,9 @@ estimates.
    core.
 2. **Declare the internal edges** (about 150 lines): `cell_map.rs:214`, the
    collection diff and length cells, and myko projections. Check: opt1's
-   escape hook reports no internal escapes.
+   escape hook reports no internal escapes. Done: debug builds now panic on
+   an undeclared joined write (`docs/settle-core.md`, section 6, edge
+   check), and the hyphae and myko suites pass with it on.
 3. **Shadow tickets** (about 300 lines). Assign tickets, keep per-node `p` and
    watermarks next to today's settle, and assert per-node order. Count how
    many ancestor reads each join's watermark pull needs. Check: the harness
