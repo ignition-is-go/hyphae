@@ -393,6 +393,46 @@ fn a_feedback_write_settles_before_the_writer_returns() {
 }
 
 #[test]
+fn a_long_feedback_chain_behind_a_waiting_writer_stays_cheap() {
+    // Each link writes the next cell twice from its callback, so every
+    // generation queues two event sets that wait on the same sleeping writer.
+    const LINKS: usize = 28;
+    let cells: Vec<_> = (0..=LINKS).map(|_| Cell::new(0u64)).collect();
+    let _guards: Vec<_> = cells
+        .iter()
+        .zip(cells.iter().skip(1))
+        .map(|(cell, next)| {
+            let next = next.clone();
+            cell.subscribe(move |signal| {
+                if matches!(signal, Signal::Value(value) if **value == 1) {
+                    next.set(1);
+                    next.set(1);
+                }
+            })
+        })
+        .collect();
+
+    let held = HeldSettle::start();
+    let first = cells.first().cloned();
+    let writer = thread::spawn(move || first.iter().for_each(|cell| cell.set(1)));
+    thread::sleep(Duration::from_millis(200));
+    let started = Instant::now();
+    held.release();
+    assert!(writer.join().is_ok());
+    let elapsed = started.elapsed();
+
+    assert_eq!(
+        cells.last().map(Gettable::get),
+        Some(1),
+        "the writer wakes to the settled chain"
+    );
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "the chain cost grew with its length: {elapsed:?}"
+    );
+}
+
+#[test]
 fn writing_under_a_lock_a_subscriber_needs_does_not_deadlock() {
     // The hazard: a writer holds `lock` across a write, and a subscriber that
     // another thread is running needs `lock`. A waiting write would deadlock.

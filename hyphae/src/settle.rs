@@ -573,9 +573,18 @@ fn settle_run(run: Vec<EventSet>, first_panic: &mut Option<Box<dyn Any + Send>>)
         .iter()
         .flat_map(|set| set.waiters.iter().cloned())
         .collect();
+    // A set that a callback queues waits on each writer of this run once,
+    // however many sets of the run that writer waits on. Without this a
+    // feedback chain multiplies the list at every link.
+    let mut distinct: Vec<Arc<Waiter>> = Vec::new();
+    for waiter in &waiters {
+        if !distinct.iter().any(|seen| Arc::ptr_eq(seen, waiter)) {
+            distinct.push(waiter.clone());
+        }
+    }
     ACTIVE.with_borrow_mut(|active| {
         if let Some(active) = active.as_mut() {
-            active.waiters.clone_from(&waiters);
+            active.waiters = distinct;
         }
     });
     let mut panic = None;
