@@ -26,13 +26,27 @@ where
     #[track_caller]
     #[must_use]
     pub fn new() -> Self {
-        let diffs_cell = Cell::new(MapDiff::Initial {
-            entries: Vec::new(),
-        });
+        Self::from_entries(Vec::new())
+    }
+
+    /// Create a `CellMap` that already holds `entries`.
+    ///
+    /// Nothing can observe a map before it exists, so this makes no write and
+    /// takes no part in a settle. Use it instead of `new` followed by a write
+    /// when the caller holds a lock that a subscriber callback also takes.
+    #[track_caller]
+    #[must_use]
+    pub fn from_entries(entries: Vec<(K, V)>) -> Self {
+        let data = DashMap::new();
+        for (key, value) in &entries {
+            data.insert(key.clone(), value.clone());
+        }
+        let len = data.len();
+        let diffs_cell = Cell::new(MapDiff::Initial { entries });
         // Diffs are events: a subscriber that accumulates them must see every
         // one, in order. Diffs that arrive in one settle compose into one batch.
         let diffs_cell = diffs_cell.combine_with(MapDiff::compose);
-        let len_cell = Cell::new(0);
+        let len_cell = Cell::new(len);
         // The length and each key cell are written beside the diff cell, so
         // they take their height from it.
         len_cell.own(SubscriptionGuard::dependency(&diffs_cell));
@@ -41,7 +55,7 @@ where
 
         Self {
             inner: Arc::new(CellMapInner {
-                data: DashMap::new(),
+                data,
                 key_cells: OnceLock::new(),
                 key_cell_slots: AtomicUsize::new(0),
                 prune_ops: AtomicUsize::new(0),

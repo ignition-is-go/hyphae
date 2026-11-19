@@ -300,6 +300,25 @@ fn submit_returns_while_another_thread_holds_the_settle() {
 }
 
 #[test]
+fn a_map_built_from_entries_is_ready_while_another_thread_holds_the_settle() {
+    let held = HeldSettle::start();
+
+    let map = CellMap::from_entries(vec![("a", 1u64), ("b", 2u64)]);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sink = seen.clone();
+    let _guard = map.subscribe_diffs(move |diff| sink.lock().push(diff.clone()));
+
+    assert_eq!(map.get_value(&"a"), Some(1));
+    let replayed = seen.lock().clone();
+    held.release();
+    assert_eq!(map.len().materialize().get(), 2);
+    assert!(
+        matches!(replayed.as_slice(), [MapDiff::Initial { entries }] if entries.len() == 2),
+        "expected one initial snapshot of both entries, got {replayed:?}"
+    );
+}
+
+#[test]
 fn a_waiting_writer_reads_its_own_write_back() {
     let cells: Vec<_> = (0..8).map(|_| Cell::new(0u64)).collect();
     thread::scope(|scope| {
