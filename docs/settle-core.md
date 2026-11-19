@@ -67,6 +67,8 @@ pub fn enqueue<R>(keys: &[SettleKey], epoch: Option<Epoch>, f: impl FnOnce() -> 
 pub fn flush();
 pub fn stats() -> SettleStats;
 pub fn current_epoch() -> Option<Epoch>;
+pub fn is_settling() -> bool;            // this thread is delivering a set
+impl Epoch { pub fn scoped(finished: impl FnOnce() + Send + 'static) -> EpochScope; }
 
 static INPUT: SegQueue<EventSet>;        // arrival-ordered, lock-free
 static SETTLE: Mutex<()>;                // taken only with try_lock
@@ -154,6 +156,16 @@ keeps the epoch of the write that started it. A caller uses this to
 recognize what a write caused without keeping state in a thread-local,
 which a callback on another thread would not see. Event sets without an
 epoch combine exactly as they did before epochs were read.
+
+The writes of an epoch can settle after their writer has returned: `submit`
+leaves them queued, and feedback takes further runs. `Epoch::scoped`
+allocates an epoch with a callback and returns a scope. The callback runs
+once, when the scope has been dropped and every event set that carries the
+epoch has settled: a batch still collecting writes, queued sets, and the
+sets that callbacks queued under it. It runs on the thread that drops
+the scope or on the thread that settles the last set. There it runs after
+the run, with no epoch, and a write it makes is queued. A caller keeps its
+per-epoch state until then.
 
 Runs settle in order, so arrival order is preserved across runs. A hash
 collision between two keys can only cause an extra split.

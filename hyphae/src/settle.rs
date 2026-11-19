@@ -17,14 +17,14 @@ use std::{
     collections::BinaryHeap,
     num::NonZeroU64,
     sync::{
-        Arc, Weak,
+        Arc, LazyLock, Weak,
         atomic::{AtomicU64, Ordering},
     },
 };
 
 use crossbeam::queue::SegQueue;
 use parking_lot::Mutex;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use uuid::Uuid;
 
 use crate::traits::DepNode;
@@ -56,18 +56,116 @@ pub enum SettleKey {
 ///
 /// An event set with an epoch shares a settle only with event sets of the
 /// same epoch. Event sets without one combine with each other as before.
+///
+/// The writes of an epoch can settle after the writer has returned: a
+/// [`submit`] leaves them queued, and feedback takes further settles. A
+/// writer that keeps state for an epoch allocates it with [`Epoch::scoped`]
+/// to learn when the epoch is finished.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Epoch(NonZeroU64);
 
 static NEXT_EPOCH: AtomicU64 = AtomicU64::new(1);
 
+/// Set in an epoch from [`Epoch::scoped`], so that every other epoch skips
+/// the scope table.
+const SCOPED: u64 = 1 << 63;
+
 impl Epoch {
     /// Allocate an epoch that no other call has returned.
     #[must_use]
     pub fn next() -> Self {
-        let raw = NEXT_EPOCH.fetch_add(1, Ordering::Relaxed);
+        let raw = NEXT_EPOCH.fetch_add(1, Ordering::Relaxed) & !SCOPED;
         Self(NonZeroU64::new(raw).unwrap_or(NonZeroU64::MIN))
     }
+
+    /// Allocate an epoch and call `finished` once it is over.
+    ///
+    /// The epoch is over when the returned scope has been dropped and every
+    /// event set that carries the epoch has settled. That includes a batch
+    /// that is still collecting writes, and the event sets that callbacks
+    /// queued while one of its sets was delivered. After that, [`current_epoch`] never returns it again unless
+    /// a caller attaches it to a new write.
+    ///
+    /// `finished` runs once, on the thread that drops the scope or on the
+    /// thread that settles the last event set. On a settling thread it is a
+    /// callback like a subscriber's: it must not block, [`current_epoch`]
+    /// returns `None` in it, and a write it makes is queued for a later
+    /// settle.
+    pub fn scoped(finished: impl FnOnce() + Send + 'static) -> EpochScope {
+        let epoch = Self(Self::next().0 | SCOPED);
+        SCOPES.lock().insert(
+            epoch,
+            Scope {
+                carriers: 1,
+                finished: Box::new(finished),
+            },
+        );
+        EpochScope(epoch)
+    }
+}
+
+/// Keeps an epoch from [`Epoch::scoped`] open. Drop it when the writer has
+/// made its last write under the epoch.
+#[must_use = "dropping the scope lets the epoch finish"]
+#[derive(Debug)]
+pub struct EpochScope(Epoch);
+
+impl EpochScope {
+    /// The epoch to attach to writes.
+    #[must_use]
+    pub const fn epoch(&self) -> Epoch {
+        self.0
+    }
+}
+
+impl Drop for EpochScope {
+    fn drop(&mut self) {
+        let Some(finished) = release(self.0, 1) else {
+            return;
+        };
+        if std::thread::panicking() {
+            // A second panic would abort the process.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(finished));
+        } else {
+            finished();
+        }
+    }
+}
+
+struct Scope {
+    /// The scope handle, plus every event set that carries the epoch and
+    /// has not settled.
+    carriers: u64,
+    finished: Box<dyn FnOnce() + Send>,
+}
+
+static SCOPES: LazyLock<Mutex<FxHashMap<Epoch, Scope>>> = LazyLock::new(Mutex::default);
+
+/// Count one more event set that carries `epoch`: one being collected,
+/// queued, or settling.
+fn carry(epoch: Option<Epoch>) {
+    if let Some(epoch) = epoch
+        && epoch.0.get() & SCOPED != 0
+        && let Some(scope) = SCOPES.lock().get_mut(&epoch)
+    {
+        scope.carriers = scope.carriers.saturating_add(1);
+    }
+}
+
+/// Take `carriers` off `epoch`. Returns its callback when none is left.
+fn release(epoch: Epoch, carriers: u64) -> Option<Box<dyn FnOnce() + Send>> {
+    if epoch.0.get() & SCOPED == 0 {
+        return None;
+    }
+    let mut scopes = SCOPES.lock();
+    let scope = scopes.get_mut(&epoch)?;
+    scope.carriers = scope.carriers.saturating_sub(carriers);
+    if scope.carriers > 0 {
+        return None;
+    }
+    let scope = scopes.remove(&epoch);
+    drop(scopes);
+    scope.map(|scope| scope.finished)
 }
 
 /// A node as the frontier and the dependent edges see it.
@@ -242,6 +340,12 @@ pub(crate) struct Stamp {
 impl Stamp {
     /// A value seeded from an event set, or written outside a settle.
     pub(crate) const SEED: Self = Self { height: 0, seq: 0 };
+    /// Above every node. A write made under it never joins the run, whose
+    /// frontier is already empty.
+    const AFTER_RUN: Self = Self {
+        height: u64::MAX,
+        seq: 0,
+    };
 }
 
 /// The stamp of the node now firing on this thread, or [`Stamp::SEED`].
@@ -496,6 +600,14 @@ pub fn current_epoch() -> Option<Epoch> {
     ACTIVE.with_borrow(|active| active.as_ref().and_then(|active| active.epoch))
 }
 
+/// True on a thread that is delivering an event set: inside a subscriber
+/// callback, on the holder or on a settle pool thread. A write made there is
+/// placed by the reentrancy rule and never waits.
+#[must_use]
+pub fn is_settling() -> bool {
+    ACTIVE.with_borrow(Option::is_some)
+}
+
 /// Where a write made right now belongs.
 pub(crate) enum Position {
     /// It joins the settle in progress on this thread.
@@ -629,7 +741,11 @@ fn queue(mut set: EventSet) -> Queued {
         DEFERRED_WRITES.fetch_add(1, Ordering::Relaxed);
         ACTIVE.with_borrow_mut(|active| {
             if let Some(active) = active.as_mut() {
-                set.epoch = set.epoch.or(active.epoch);
+                // An empty set writes nothing, so it has no cause to name.
+                if set.epoch.is_none() && !set.writes.is_empty() {
+                    set.epoch = active.epoch;
+                    carry(set.epoch);
+                }
                 set.waiters = active.waiters.to_vec();
                 for waiter in &set.waiters {
                     waiter.outstanding.fetch_add(1, Ordering::AcqRel);
@@ -770,6 +886,7 @@ fn settle_run(
         }
     }
     let epoch = run.iter().find_map(|set| set.epoch);
+    let carriers = run.iter().filter(|set| set.epoch.is_some()).count();
     ACTIVE.with_borrow_mut(|active| {
         if let Some(active) = active.as_mut() {
             active.epoch = epoch;
@@ -778,6 +895,23 @@ fn settle_run(
     });
     let mut panic = None;
     fire_run(run, frontier, &mut panic);
+    if let Some(epoch) = epoch
+        && let Some(finished) = release(epoch, u64::try_from(carriers).unwrap_or(u64::MAX))
+    {
+        ACTIVE.with_borrow_mut(|active| {
+            if let Some(active) = active.as_mut() {
+                active.epoch = None;
+                active.firing = Some(Stamp::AFTER_RUN);
+            }
+        });
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(finished));
+        frontier.merge(take_outbox());
+        if let Err(payload) = outcome
+            && panic.is_none()
+        {
+            panic = Some(payload);
+        }
+    }
     let mut panic = if all_wait || first_panic.is_some() {
         panic
     } else {
@@ -915,6 +1049,9 @@ fn collect<R>(
         }
         if building.set.epoch.is_none() {
             building.set.epoch = epoch;
+            // Counted from here and not from the push: the writer may drop
+            // its scope while an outer batch is still collecting this set.
+            carry(epoch);
         }
     });
 
@@ -927,9 +1064,17 @@ fn collect<R>(
         });
         if depth == 0 { building.take() } else { None }
     });
-    let set = closed
-        .map(|building| building.set)
-        .filter(|set| !set.writes.is_empty());
+    let set = closed.map(|building| building.set);
+    let set = match set {
+        Some(set) if set.writes.is_empty() => {
+            // Never queued, so no settle will release it.
+            if let Some(finished) = set.epoch.and_then(|epoch| release(epoch, 1)) {
+                finished();
+            }
+            None
+        }
+        set => set,
+    };
     (result, set)
 }
 

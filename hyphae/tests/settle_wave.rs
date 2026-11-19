@@ -15,7 +15,7 @@ use std::{
 
 use hyphae::{
     Cell, CellImmutable, CellMutable, Epoch, Gettable, MapExt, Materialize, MergeExt, Mutable,
-    Signal, Source, SubscriptionGuard, Watchable, batch_with, enqueue, flush, settle,
+    Signal, Source, SubscriptionGuard, Watchable, batch_with, enqueue, flush, settle, submit,
 };
 use parking_lot::{Mutex, MutexGuard};
 
@@ -356,4 +356,127 @@ fn event_sets_share_a_settle_only_within_one_epoch() {
         vec![(5, Some(first)), (6, Some(second))]
     );
     assert_eq!(settle::stats().epoch_splits, splits.saturating_add(1));
+}
+
+#[test]
+fn a_scoped_epoch_finishes_after_its_scope_and_its_last_event_set() {
+    let _turn = with_workers(4);
+    let root = Cell::new(0u64);
+    let feedback = Cell::new(0u64);
+    let finished = Arc::new(AtomicBool::new(false));
+    let leaves = leaves(&root, 8);
+    let _guards: Vec<_> = leaves
+        .iter()
+        .map(|leaf| {
+            let feedback = feedback.clone();
+            on_change(leaf, move |value| feedback.set(*value))
+        })
+        .collect();
+    let (flag, early) = (finished.clone(), Arc::new(AtomicBool::new(false)));
+    let saw_early = early.clone();
+    let _feedback_guard = on_change(&feedback, move |_| {
+        if flag.load(Ordering::SeqCst) {
+            saw_early.store(true, Ordering::SeqCst);
+        }
+    });
+
+    // The scope outlives the event sets.
+    let flag = finished.clone();
+    let scope = Epoch::scoped(move || flag.store(true, Ordering::SeqCst));
+    batch_with(&[], Some(scope.epoch()), || root.set(1));
+    assert!(!finished.load(Ordering::SeqCst), "the scope is still held");
+    drop(scope);
+    assert!(finished.load(Ordering::SeqCst));
+    assert!(
+        !early.load(Ordering::SeqCst),
+        "the feedback of the write settled before the epoch finished"
+    );
+
+    // The event sets outlive the scope.
+    finished.store(false, Ordering::SeqCst);
+    let flag = finished.clone();
+    let scope = Epoch::scoped(move || flag.store(true, Ordering::SeqCst));
+    enqueue(&[], Some(scope.epoch()), || root.set(2));
+    drop(scope);
+    assert!(!finished.load(Ordering::SeqCst), "a set is still queued");
+    flush();
+    assert!(finished.load(Ordering::SeqCst));
+    assert!(!early.load(Ordering::SeqCst));
+}
+
+#[test]
+fn a_scoped_epoch_outlives_a_scope_dropped_inside_an_outer_batch() {
+    let _turn = with_workers(4);
+    let root = Cell::new(0u64);
+    let feedback = Cell::new(0u64);
+    let finished = Arc::new(AtomicBool::new(false));
+    let early = Arc::new(AtomicBool::new(false));
+    let leaves = leaves(&root, 8);
+    let _guards: Vec<_> = leaves
+        .iter()
+        .map(|leaf| {
+            let feedback = feedback.clone();
+            on_change(leaf, move |value| feedback.set(*value))
+        })
+        .collect();
+    let (flag, saw_early) = (finished.clone(), early.clone());
+    let _feedback_guard = on_change(&feedback, move |_| {
+        if flag.load(Ordering::SeqCst) {
+            saw_early.store(true, Ordering::SeqCst);
+        }
+    });
+
+    let flag = finished.clone();
+    submit(&[], None, || {
+        let scope = Epoch::scoped(move || flag.store(true, Ordering::SeqCst));
+        batch_with(&[], Some(scope.epoch()), || root.set(1));
+        drop(scope);
+        assert!(
+            !finished.load(Ordering::SeqCst),
+            "the outer batch still holds the write"
+        );
+    });
+    flush();
+    assert!(finished.load(Ordering::SeqCst));
+    assert!(
+        !early.load(Ordering::SeqCst),
+        "the feedback of the write settled before the epoch finished"
+    );
+
+    // A batch that wrote nothing is never queued and holds nothing open.
+    finished.store(false, Ordering::SeqCst);
+    let flag = finished.clone();
+    let scope = Epoch::scoped(move || flag.store(true, Ordering::SeqCst));
+    batch_with(&[], Some(scope.epoch()), || {});
+    drop(scope);
+    assert!(finished.load(Ordering::SeqCst));
+}
+
+#[test]
+fn a_thread_knows_whether_it_is_delivering_a_write() {
+    let _turn = with_workers(4);
+    let root = Cell::new(0u64);
+    let leaves = leaves(&root, 8);
+    let inside = Arc::new(Mutex::new(Vec::new()));
+    let _guards: Vec<_> = leaves
+        .iter()
+        .map(|leaf| {
+            let inside = inside.clone();
+            on_change(leaf, move |_| inside.lock().push(settle::is_settling()))
+        })
+        .collect();
+
+    assert!(!settle::is_settling());
+    root.set(1);
+    assert_eq!(*inside.lock(), vec![true; 8]);
+    assert!(!settle::is_settling());
+}
+
+#[test]
+fn a_switch_setter_returns_the_value_it_replaced() {
+    let _turn = with_workers(3);
+    assert_eq!(settle::set_workers(5), 3);
+    assert_eq!(settle::set_workers(0), 5);
+    assert_eq!(settle::set_wave_min(7), 1);
+    assert_eq!(settle::set_wave_min(1), 7);
 }

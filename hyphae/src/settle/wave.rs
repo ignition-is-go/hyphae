@@ -64,18 +64,20 @@ fn env_usize(key: &str) -> Option<usize> {
     parsed
 }
 
-/// Override `HYPHAE_SETTLE_WAVE_MIN` for the whole process. For tests.
+/// Override `HYPHAE_SETTLE_WAVE_MIN` for the whole process and return the
+/// value it had. For tests.
 #[doc(hidden)]
-pub fn set_wave_min(nodes: usize) {
-    SWITCHES.wave_min.store(nodes.max(1), Ordering::Relaxed);
+pub fn set_wave_min(nodes: usize) -> usize {
+    SWITCHES.wave_min.swap(nodes.max(1), Ordering::Relaxed)
 }
 
-/// Override `HYPHAE_SETTLE_WORKERS` for the whole process. For tests.
+/// Override `HYPHAE_SETTLE_WORKERS` for the whole process and return the
+/// value it had. For tests.
 #[doc(hidden)]
-pub fn set_workers(threads: usize) {
+pub fn set_workers(threads: usize) -> usize {
     SWITCHES
         .workers
-        .store(threads.min(MAX_WORKERS), Ordering::Relaxed);
+        .swap(threads.min(MAX_WORKERS), Ordering::Relaxed)
 }
 
 /// The number of threads that fire a wave of `len` nodes, or `None` when the
