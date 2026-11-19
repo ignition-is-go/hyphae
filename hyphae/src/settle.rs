@@ -1,10 +1,11 @@
 //! The settle core: how a write reaches subscribers.
 //!
 //! A writer pushes an event set to a lock-free input queue and tries to take
-//! the one settle lock. The thread that takes it pops every queued event set,
-//! combines them into runs, and delivers each run in one height-ordered pass
-//! (a settle). A thread that fails to take the lock returns at once; the
-//! holder delivers its event set. No writer waits on another.
+//! the one settle lock. The thread that takes it pops the event sets queued at
+//! that moment, combines them into runs, and delivers each run in one
+//! height-ordered pass (a settle). A thread that fails to take the lock leaves
+//! its event set to the holder, and sleeps until it has settled unless it
+//! used `submit` or `enqueue`.
 //!
 //! The specification, including the reentrancy rule and the argument for each
 //! ordering guarantee, is in `docs/settle-core.md`.
@@ -93,8 +94,6 @@ struct EventSet {
     /// submitted it, or, for a set a callback wrote during a settle, the
     /// writers that were waiting on that settle.
     waiters: Vec<Arc<Waiter>>,
-    /// Written by a callback during a settle on the holder's own thread.
-    reentrant: bool,
 }
 
 /// Lets a writer that lost the settle lock sleep until the holder has settled
@@ -147,7 +146,14 @@ impl Waiter {
             ACTIVE.with_borrow(Option::is_none),
             "the settle holder must never wait on its own settle"
         );
+        {
+            let mut state = self.state.lock();
+            if state.done {
+                return state.panic.take();
+            }
+        }
         WAITING.lock().push(Arc::clone(self));
+        LOCK_WAITS.fetch_add(1, Ordering::Relaxed);
         let mut drive_panic = None;
         let mut state = self.state.lock();
         loop {
@@ -245,8 +251,6 @@ struct Active {
     run_id: u64,
     /// The writers waiting on the run now settling.
     waiters: Vec<Arc<Waiter>>,
-    /// Sets this holder's callbacks have queued and it has not yet popped.
-    reentrant_queued: usize,
 }
 
 struct Building {
@@ -287,7 +291,7 @@ pub struct SettleStats {
     pub duplicate_fires: u64,
     /// Submissions that found the settle lock held.
     pub lock_misses: u64,
-    /// Submissions that then slept until the holder settled them.
+    /// Writers that slept until a holder had settled what they waited on.
     pub lock_waits: u64,
     /// Writes made during a settle that became a later event set.
     pub deferred_writes: u64,
@@ -405,7 +409,6 @@ pub(crate) fn submit_write(key: SettleKey, write: Box<dyn Write>) {
         epoch: None,
         writes: vec![write],
         waiters: Vec::new(),
-        reentrant: false,
     };
     set.add_key(key);
     push(set);
@@ -414,19 +417,15 @@ pub(crate) fn submit_write(key: SettleKey, write: Box<dyn Write>) {
 fn push(mut set: EventSet) {
     EVENT_SETS.fetch_add(1, Ordering::Relaxed);
     if ACTIVE.with_borrow(Option::is_some) {
-        // Reentrant: this thread holds the lock and pops the set after the
-        // settle in progress. It never waits. A writer waiting on that settle
-        // waits for this set too, so it wakes to the settled result of its
-        // write and not to a half-finished chain.
+        // Reentrant: this thread holds the lock, so it never waits. The set
+        // settles in this stint or a later one. A writer waiting on the
+        // settle in progress waits for this set too, so it wakes to the
+        // settled result of its write and not to a half-finished chain.
         DEFERRED_WRITES.fetch_add(1, Ordering::Relaxed);
-        set.reentrant = true;
-        set.waiters = ACTIVE.with_borrow_mut(|active| {
+        set.waiters = ACTIVE.with_borrow(|active| {
             active
-                .as_mut()
-                .map(|active| {
-                    active.reentrant_queued = active.reentrant_queued.saturating_add(1);
-                    active.waiters.clone()
-                })
+                .as_ref()
+                .map(|active| active.waiters.clone())
                 .unwrap_or_default()
         });
         for waiter in &set.waiters {
@@ -440,22 +439,23 @@ fn push(mut set: EventSet) {
         INPUT.push(set);
         return;
     }
+    // A stint is bounded, so even a writer that takes the lock can leave with
+    // the sets its callbacks queued still unsettled. It waits for those too.
+    let waiter = (mode == Mode::Wait).then(Waiter::new);
+    set.waiters.extend(waiter.iter().cloned());
     if let Some(guard) = SETTLE.try_lock() {
         INPUT.push(set);
         drain(Some(guard));
-        return;
+    } else {
+        LOCK_MISSES.fetch_add(1, Ordering::Relaxed);
+        INPUT.push(set);
+        // The holder may have released between the failed try and the push,
+        // in which case nobody is coming for this set.
+        drain(None);
     }
-    LOCK_MISSES.fetch_add(1, Ordering::Relaxed);
-    let waiter = (mode == Mode::Wait).then(Waiter::new);
-    set.waiters.extend(waiter.iter().cloned());
-    INPUT.push(set);
-    // The holder may have released between the failed try and the push, in
-    // which case nobody is coming for this set.
-    drain(None);
     if let Some(waiter) = waiter {
-        // The lock was held after the push, and a holder re-checks the queue
-        // after it releases, so some holder settles this set and wakes us.
-        LOCK_WAITS.fetch_add(1, Ordering::Relaxed);
+        // Whoever holds the lock re-checks the queue after releasing it, so
+        // some holder settles what this writer waits on and wakes it.
         if let Some(payload) = waiter.wait() {
             std::panic::resume_unwind(payload);
         }
@@ -479,7 +479,6 @@ fn drain(mut guard: Option<parking_lot::MutexGuard<'static, ()>>) {
             firing: None,
             run_id: 0,
             waiters: Vec::new(),
-            reentrant_queued: 0,
         }));
         let panic = settle_queued();
         ACTIVE.set(None);
@@ -512,42 +511,20 @@ fn drain(mut guard: Option<parking_lot::MutexGuard<'static, ()>>) {
     }
 }
 
-/// Settle one stint: the event sets queued when the stint began, plus every
-/// set this holder's own callbacks queue, split into runs and settled in
-/// order. The second part is what keeps a feedback write inside the lock hold
-/// that caused it.
+/// Settle one stint: the event sets queued when the stint began, split into
+/// runs and settled in order.
+///
+/// The bound holds whatever the callbacks queue. `INPUT` is one arrival-ordered
+/// queue, so settling a callback's set inside the stint would mean settling
+/// every other thread's set that arrived before it, and under sustained
+/// feedback the stint would never end.
 fn settle_queued() -> Option<Box<dyn Any + Send>> {
     let mut first_panic = None;
-    let mut budget = INPUT.len();
     let mut run: Vec<EventSet> = Vec::new();
     let mut run_keys: FxHashSet<u64> = FxHashSet::default();
     let mut run_barrier = false;
-    loop {
-        let reentrant_queued = ACTIVE
-            .with_borrow(|active| active.as_ref().map_or(0, |active| active.reentrant_queued));
-        let next = if budget > 0 || reentrant_queued > 0 {
-            INPUT.pop()
-        } else {
-            None
-        };
-        let Some(set) = next else {
-            if run.is_empty() {
-                break;
-            }
-            // Settling the last run can queue more reentrant sets.
-            settle_run(std::mem::take(&mut run), &mut first_panic);
-            run_keys.clear();
-            run_barrier = false;
-            continue;
-        };
-        budget = budget.saturating_sub(1);
-        if set.reentrant {
-            ACTIVE.with_borrow_mut(|active| {
-                if let Some(active) = active.as_mut() {
-                    active.reentrant_queued = active.reentrant_queued.saturating_sub(1);
-                }
-            });
-        }
+    for _ in 0..INPUT.len() {
+        let Some(set) = INPUT.pop() else { break };
         let conflicts = !run.is_empty()
             && (run_barrier || set.barrier || set.keys.iter().any(|key| run_keys.contains(key)));
         if conflicts {
@@ -558,6 +535,9 @@ fn settle_queued() -> Option<Box<dyn Any + Send>> {
         run_barrier |= set.barrier;
         run_keys.extend(set.keys.iter().copied());
         run.push(set);
+    }
+    if !run.is_empty() {
+        settle_run(run, &mut first_panic);
     }
     first_panic
 }
@@ -664,7 +644,6 @@ pub fn batch_with<R>(keys: &[SettleKey], epoch: Option<Epoch>, f: impl FnOnce() 
                 epoch: None,
                 writes: Vec::new(),
                 waiters: Vec::new(),
-                reentrant: false,
             },
         });
         building.depth = building.depth.saturating_add(1);
@@ -762,7 +741,6 @@ pub fn flush() {
         epoch: None,
         writes: Vec::new(),
         waiters: Vec::new(),
-        reentrant: false,
     });
 }
 

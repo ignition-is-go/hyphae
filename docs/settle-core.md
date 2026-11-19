@@ -74,8 +74,10 @@ while a thread is inside a batch and collects its writes.
 
 A writer pushes its event set to `INPUT` and tries the lock.
 
-- **The try succeeds.** The writer is the holder. It settles a stint and
-  returns with its own write delivered.
+- **The try succeeds.** The writer is the holder. It settles a stint. A
+  `submit` caller then returns. Any other writer returns once its own set and
+  the sets its callbacks queued have settled, which can mean sleeping while
+  another holder settles the rest.
 - **The try fails.** What happens next depends on the entry point:
 
 | Entry point | When the lock is held by another thread |
@@ -101,14 +103,22 @@ the holder. `flush` waits until everything queued before it has settled.
 
 ### Stints and hand-over
 
-A holder settles the event sets that were queued when it took the lock, plus
-every set its own callbacks queue. Then it releases the lock.
+A holder settles the event sets that were queued when it took the lock. Then
+it releases the lock. The bound has no exception. A set that a callback queues
+during the stint stays in `INPUT`, behind every set that arrived before it,
+and a later stint settles it. `INPUT` is one arrival-ordered queue, so
+settling a callback's set inside the stint would mean settling every other
+thread's set ahead of it, and under sustained feedback the stint would never
+end.
 
-If sets arrived meanwhile, somebody must settle them. The holder asks one
-sleeping writer to take over and leaves. If no writer is asleep, it yields and
-tries the lock again. It never wakes a thread that is not already waiting on
-its own write. This keeps one thread, in particular a thread that used
-`submit`, from settling for the whole process while others keep writing.
+If sets are queued when the stint ends, somebody must settle them. The holder
+asks one sleeping writer to take over and leaves. If no writer is asleep, it
+yields and tries the lock again. It never wakes a thread that is not already
+waiting on its own write. This keeps one thread, in particular a thread that
+used `submit`, from settling for the whole process while a waiting writer can
+do it. When every other writer uses `submit`, nobody is asleep, and the holder
+keeps settling until the queue is empty or another writer takes the lock in
+the gap between two stints.
 
 Nothing is stranded: a holder checks the queue after it releases, a writer
 that lost the try pushes and then tries once more, and a writer that was asked
@@ -232,9 +242,9 @@ of the node now firing and `t` the height of the target.
 - **`t > h`: the write joins the current settle.** The target has not fired in
   this settle, so it fires after every node below it. This is how operators
   propagate.
-- **`t <= h`: the write becomes a new event set at the tail of `INPUT`.** The
-  holder settles it in a later run of the same stint, before it releases the
-  lock.
+- **`t <= h`: the write becomes a new event set at the tail of `INPUT`.** A
+  later stint settles it, on this holder or on the next one. Every writer that
+  waits on the current run waits on this set too.
 - **A `batch`, `batch_with`, `submit`, or `enqueue` opened inside a settle**
   becomes one new event set at the tail of `INPUT`, whatever the heights of
   its writes. Its writes stay together.
