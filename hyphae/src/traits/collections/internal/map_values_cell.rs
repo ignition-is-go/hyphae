@@ -24,7 +24,8 @@ enum MapValuesEvent<K, V, U> {
 struct MapValuesRow<U> {
     token: Arc<()>,
     value: U,
-    guard: Option<SubscriptionGuard>,
+    /// Key of the row's inner subscription in `MapValuesRuntime::inner`.
+    guard: Option<uuid::Uuid>,
 }
 
 struct MapValuesQueue<K, V, U> {
@@ -43,6 +44,10 @@ where
     mapper: Arc<F>,
     queue: Mutex<MapValuesQueue<K, V, U>>,
     sink: crate::map_query::BoxedMapDiffSink<K, U>,
+    /// Owns every row's inner subscription and is never written. The output
+    /// depends on it, so the output sits above every inner cell and a row
+    /// update joins the settle that fired the inner cell.
+    inner: crate::Cell<(), crate::CellMutable>,
     marker: PhantomData<fn(V) -> W>,
 }
 
@@ -70,7 +75,7 @@ where
         changes: Option<&mut Vec<MapDiff<K, U>>>,
     ) {
         let prior = rows.remove(key).map(|row| {
-            drop(row.guard);
+            self.release(row.guard);
             row.value
         });
         let inner_cell = (self.mapper)(key, value);
@@ -111,7 +116,15 @@ where
             }
         });
         if let Some(row) = rows.get_mut(key) {
-            row.guard = Some(sub_guard);
+            let guard_key = uuid::Uuid::new_v4();
+            self.inner.own_keyed(guard_key, sub_guard);
+            row.guard = Some(guard_key);
+        }
+    }
+
+    fn release(&self, guard: Option<uuid::Uuid>) {
+        if let Some(guard_key) = guard {
+            self.inner.release_owned(guard_key);
         }
     }
 
@@ -122,7 +135,7 @@ where
         changes: Option<&mut Vec<MapDiff<K, U>>>,
     ) {
         if let Some(row) = rows.remove(key) {
-            drop(row.guard);
+            self.release(row.guard);
             self.emit(
                 MapDiff::Remove {
                     key: key.clone(),
@@ -251,13 +264,17 @@ where
             idle_rows: Some(HashMap::new()),
         }),
         sink,
+        inner: crate::Cell::new(()),
         marker: PhantomData,
     });
+    let inner = SubscriptionGuard::dependency(&runtime.inner);
     let upstream_sink = move |diff: &MapDiff<K, V>| {
         runtime.enqueue(MapValuesEvent::Source(diff.clone()));
     };
 
-    crate::map_query::compile_runtime_into(source, cx, Arc::new(upstream_sink))
+    let mut guards = crate::map_query::compile_runtime_into(source, cx, Arc::new(upstream_sink));
+    guards.push(inner);
+    guards
 }
 
 #[cfg(test)]

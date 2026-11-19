@@ -11,8 +11,9 @@ use std::{
 };
 
 use hyphae::{
-    Cell, CellMap, Epoch, Gettable, JoinExt, MapDiff, MapExt, Materialize, MergeExt, Mutable,
-    SettleKey, Signal, Source, Watchable, batch, batch_with, enqueue, flush, submit,
+    Cell, CellMap, Epoch, Gettable, JoinExt, MapDiff, MapExt, MapQuery, Materialize, MergeExt,
+    Mutable, ProjectCellExt, SettleKey, Signal, Source, Watchable, batch, batch_with, enqueue,
+    flush, submit,
 };
 use parking_lot::Mutex;
 
@@ -474,4 +475,38 @@ fn writing_under_a_lock_a_subscriber_needs_does_not_deadlock() {
     }
     let settled = *lock.lock();
     assert_eq!(settled, cell.get());
+}
+
+#[test]
+fn a_row_update_from_a_per_row_cell_joins_the_settle_that_fired_the_cell() {
+    let rows = CellMap::<String, i64>::new();
+    let weights = CellMap::<String, i64>::new();
+    let offset = Cell::new(0i64);
+    rows.insert("a".to_string(), 10);
+    weights.insert("a".to_string(), 2);
+
+    let per_row = weights.clone();
+    let projected = rows
+        .project_cell(move |key, value| {
+            let (key, value) = (key.clone(), *value);
+            per_row
+                .get(&key)
+                .map(move |weight| weight.map(|weight| (key.clone(), value * weight)))
+                .materialize()
+        })
+        .materialize();
+    let joined = projected
+        .get(&"a".to_string())
+        .materialize()
+        .join(offset.clone())
+        .materialize();
+    let (seen, _guard) = record(&joined);
+
+    batch(|| {
+        weights.insert("a".to_string(), 5);
+        offset.set(1);
+    });
+
+    // One delivery, never the new offset beside the row's old value.
+    assert_eq!(*seen.lock(), vec![(Some(50), 1)]);
 }

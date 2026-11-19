@@ -276,11 +276,22 @@ impl<T, M> Cell<T, M> {
         // source, which only over-invalidates.
         let erased: Arc<dyn Node> = self.inner.clone();
         guard.source().add_dependent(Arc::downgrade(&erased));
+        // A source below this cell cannot raise its height. A replaced guard
+        // can only lower it, and a height that is too high still orders this
+        // cell after every dependency.
+        let raises = crate::settle::height(guard.source().as_ref())
+            >= Node::node_height(self.inner.as_ref());
         let previous = self.inner.owned.lock().insert(key, guard);
         drop(previous);
-        // The dependency set changed, so this cell's height and the height of
-        // everything above it may have changed.
-        crate::settle::invalidate_height_cone(self.inner.as_ref());
+        if raises {
+            crate::settle::invalidate_height_cone(self.inner.as_ref());
+        }
+    }
+
+    /// Drop the guard that [`own_keyed`](Self::own_keyed) stored under `key`.
+    pub(crate) fn release_owned(&self, key: Uuid) {
+        let released = self.inner.owned.lock().remove(&key);
+        drop(released);
     }
 }
 
