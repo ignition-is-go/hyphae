@@ -74,6 +74,9 @@ pub trait Node: Send + Sync {
     fn node_id(&self) -> Uuid;
     /// `1 + max(height of each dependency)`; an input is 0.
     fn node_height(&self) -> u64;
+    /// Take this node's one place in the frontier. False when it already
+    /// has one. The node gives the place up when it fires.
+    fn claim(&self) -> bool;
     /// Deliver everything pending on this node.
     fn fire(&self);
     /// Mark this node's cached height stale.
@@ -314,9 +317,15 @@ impl Frontier {
     /// Take in what a stretch of fires produced. Callers pass outboxes in
     /// the order the fires would have run on one thread, which keeps `seq`
     /// and the input queue independent of thread timing.
+    ///
+    /// A node enters at its first write in that order. The thread that
+    /// wrote to it first in time may be a later one, so the claim is made
+    /// here and not by the writer.
     fn merge(&mut self, out: Outbox) {
-        for (height, node) in out.scheduled {
-            self.push(height, node);
+        for request in out.scheduled {
+            if request.raised || request.node.upgrade().is_some_and(|node| node.claim()) {
+                self.push(request.height, request.node);
+            }
         }
         for set in out.deferred {
             INPUT.push(set);
@@ -327,10 +336,20 @@ impl Frontier {
 /// What the fires on one thread produced since the outbox was last taken.
 #[derive(Default)]
 struct Outbox {
-    /// Nodes that received a write that joins the settle.
-    scheduled: Vec<(u64, Weak<dyn Node>)>,
+    /// One request per write that joined the settle, in write order. A
+    /// node can appear many times.
+    scheduled: Vec<Request>,
     /// Event sets that callbacks queued.
     deferred: Vec<EventSet>,
+}
+
+/// A request to put `node` in the frontier at `height`.
+struct Request {
+    height: u64,
+    node: Weak<dyn Node>,
+    /// The node was popped at a height it has since outgrown. It still
+    /// holds its place in the frontier, so it goes back without a claim.
+    raised: bool,
 }
 
 /// This thread's part in the settle in progress: the holder's, or that of a
@@ -403,6 +422,12 @@ pub struct SettleStats {
     pub handovers: u64,
     /// Empty event sets that [`flush`] queued to wait behind earlier ones.
     pub flush_sets: u64,
+    /// Waves fired. A wave is the nodes of one height in one settle.
+    pub waves: u64,
+    /// Waves fired on pool threads.
+    pub parallel_waves: u64,
+    /// The most nodes in one wave.
+    pub widest_wave: u64,
 }
 
 static EVENT_SETS: AtomicU64 = AtomicU64::new(0);
@@ -416,6 +441,9 @@ static SETTLE_NANOS: AtomicU64 = AtomicU64::new(0);
 static MAX_HOLD_NANOS: AtomicU64 = AtomicU64::new(0);
 static HANDOVERS: AtomicU64 = AtomicU64::new(0);
 static FLUSH_SETS: AtomicU64 = AtomicU64::new(0);
+static WAVES: AtomicU64 = AtomicU64::new(0);
+static PARALLEL_WAVES: AtomicU64 = AtomicU64::new(0);
+static WIDEST_WAVE: AtomicU64 = AtomicU64::new(0);
 
 /// Read the process-wide settle counters.
 #[must_use]
@@ -432,6 +460,9 @@ pub fn stats() -> SettleStats {
         max_hold_nanos: MAX_HOLD_NANOS.load(Ordering::Relaxed),
         handovers: HANDOVERS.load(Ordering::Relaxed),
         flush_sets: FLUSH_SETS.load(Ordering::Relaxed),
+        waves: WAVES.load(Ordering::Relaxed),
+        parallel_waves: PARALLEL_WAVES.load(Ordering::Relaxed),
+        widest_wave: WIDEST_WAVE.load(Ordering::Relaxed),
     }
 }
 
@@ -477,11 +508,27 @@ pub(crate) fn position(target: impl FnOnce() -> u64) -> Position {
     }
 }
 
-/// Put `node` in the frontier of the settle in progress on this thread.
+/// Ask for `node` to fire in the settle in progress on this thread. Call it
+/// for every write that joins the settle; the node still fires once.
 pub(crate) fn schedule(node: Weak<dyn Node>, height: u64) {
+    request(Request {
+        height,
+        node,
+        raised: false,
+    });
+}
+
+fn request(request: Request) {
     ACTIVE.with_borrow_mut(|active| {
         if let Some(active) = active.as_mut() {
-            active.out.scheduled.push((height, node));
+            let scheduled = &mut active.out.scheduled;
+            // One fanout often writes many values to one target.
+            let repeats = scheduled
+                .last()
+                .is_some_and(|last| !last.raised && last.node.ptr_eq(&request.node));
+            if request.raised || !repeats {
+                scheduled.push(request);
+            }
         }
     });
 }
@@ -729,6 +776,9 @@ fn fire_run(
     frontier.merge(take_outbox());
     let mut entries = Vec::new();
     while frontier.pop_wave(&mut entries) {
+        WAVES.fetch_add(1, Ordering::Relaxed);
+        let width = u64::try_from(entries.len()).unwrap_or(u64::MAX);
+        WIDEST_WAVE.fetch_max(width, Ordering::Relaxed);
         let panic = if let Some(workers) = wave::workers_for(entries.len()) {
             wave::fire(std::mem::take(&mut entries), workers, frontier)
         } else {
@@ -755,7 +805,11 @@ fn fire_entries(entries: &[Entry]) -> Option<Box<dyn Any + Send>> {
         // it at its real height so it still follows every dependency.
         let height = node.node_height();
         if height > entry.height {
-            schedule(entry.node.clone(), height);
+            request(Request {
+                height,
+                node: entry.node.clone(),
+                raised: true,
+            });
             continue;
         }
         ACTIVE.with_borrow_mut(|active| {

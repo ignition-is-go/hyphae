@@ -73,9 +73,13 @@ static WAITING: Mutex<Vec<Arc<Waiter>>>; // writers asleep until settled
 thread_local! { ACTIVE, BUILDING, MODE }
 ```
 
-`ACTIVE` exists only on the holder and carries the frontier, the height of the
-node now firing, and the writers waiting on the current run. `BUILDING` exists
-while a thread is inside a batch and collects its writes.
+`ACTIVE` exists on a thread while it fires nodes: on the holder for its whole
+stint, and on a settle pool thread while it fires part of a wave (section 12).
+It carries the node now firing, the run id, the writers waiting on the current
+run, and an outbox: the nodes that the thread's fires scheduled and the event
+sets they queued. The holder alone owns the frontier and merges outboxes into
+it. `BUILDING` exists while a thread is inside a batch and collects its
+writes.
 
 ### How a write ends
 
@@ -158,6 +162,7 @@ sets of one `Cell` may.
 pub trait Node: Send + Sync {            // doc(hidden)
     fn node_id(&self) -> Uuid;
     fn node_height(&self) -> u64;
+    fn claim(&self) -> bool;             // take the one frontier place
     fn fire(&self);                      // deliver everything pending
     fn bump_height_epoch(&self);
     fn node_dependents(&self) -> Vec<Weak<dyn Node>>;
@@ -167,7 +172,7 @@ struct CellInner<T> {
     // id, subscribers, result_subscribers, value, name, owned, completed,
     // errored, error, caller: unchanged
     pending: Mutex<Vec<Signal<T>>>,      // empty between settles
-    queued: AtomicBool,                  // in the frontier
+    queued: AtomicBool,                  // holds a frontier place
     combine: OnceLock<Combine<T>>,
     fired_run: AtomicU64,                // feeds the duplicate-fire counter
     height_cache: AtomicU64,
@@ -300,8 +305,9 @@ A callback never waits, so a feedback write cannot deadlock the holder.
 - A write through `set`, `emit`, a collection mutation, or `batch` is settled
   when it returns, including the feedback it caused.
 - Inside a batch, a read sees the value from before the batch.
-- A subscriber callback runs on whichever thread holds the settle lock. It is
-  not always the writer's thread.
+- A subscriber callback runs on whichever thread holds the settle lock, or
+  on a settle pool thread when waves are on (section 12). It is not always
+  the writer's thread.
 - A callback that blocks or computes for long delays every write in the
   process until it returns. Debug builds log a warning that names the cell
   when one fanout holds the settle for more than a second.
@@ -378,11 +384,12 @@ that reach a `Latest` node if that walk shows up in a profile.
 `settle::stats()` returns process-wide totals since start: event sets
 submitted, runs settled, fanouts, duplicate fanouts (a node that fanned out
 more than once in one run), lock misses, lock waits, deferred writes, and
-nanoseconds the settle lock was held, the longest single hold, hand-overs, and
-empty event sets queued by `flush`.
+nanoseconds the settle lock was held, the longest single hold, hand-overs,
+empty event sets queued by `flush`, waves fired, waves fired on pool threads,
+and the most nodes in one wave.
 They are relaxed atomics and always on.
 
-## 12. Parallel settling (proposal, not built)
+## 12. Parallel settling
 
 ### What was measured
 
@@ -412,23 +419,49 @@ each other, so a settle can fire them at the same time and still fire every
 node after all of its dependencies.
 
 - **Wave.** The holder pops every frontier entry of the lowest height. That
-  list is a wave. A wave below a threshold fires on the holder as today.
-- **Workers.** A larger wave is split into chunks that a fixed pool claims
-  through one atomic index. The holder works too. The settle moves to the
-  next height when the wave is done. The settle lock, the input queue, runs,
-  stints, and waiters do not change.
-- **Worker context.** Each worker gets the run's `ACTIVE` view: the firing
-  height, the run id, and the waiter list. The reentrancy rule of section 6
-  is evaluated on the worker exactly as on the holder.
+  list is a wave. A fire schedules only nodes above its own height, so the
+  wave is complete when it is popped.
+- **Switches.** `HYPHAE_SETTLE_WORKERS` is the number of threads that fire a
+  wave. `HYPHAE_SETTLE_WAVE_MIN` is the smallest wave that leaves the holder;
+  the default is 64. Both are read once. `settle::set_workers` and
+  `settle::set_wave_min` override them for tests.
+
+  | `HYPHAE_SETTLE_WORKERS` | A wave of at least `WAVE_MIN` nodes |
+  | --- | --- |
+  | 0, the default | Fires on the holder. So does every smaller wave, at any setting |
+  | 1 | Fires on one pool thread while the holder waits. With `WAVE_MIN=1` every callback runs off the writer's thread, one at a time. This is the mode that exposes a thread-affine callback or a lock held across a write without any concurrency |
+  | n, 2 or more | Fires on n threads. The holder is one of them. A wave of one node fires on the holder |
+
+- **Workers.** The wave is split into chunks that the threads claim through
+  one atomic index: eight chunks per thread, 256 nodes at most, so a thread
+  that drew cheap nodes takes over part of a slow thread's share. The settle
+  moves to the next height when every node of the wave has fired. The settle
+  lock, the input queue, runs, stints, and waiters do not change.
+- **Pool.** The pool threads are plain threads named `hyphae-settle-N`,
+  started on first use. They are not the Rayon pool of `executor.rs`. A
+  Rayon thread that blocks inside a callback, as a parallel join region does,
+  runs other queued jobs on the same stack. A second node would then fire
+  inside the first node's callback and under its locks.
+- **Worker context.** Each pool thread gets its own `ACTIVE` for the wave:
+  the node now firing, the run id, the waiter list, and an outbox. The
+  reentrancy rule of section 6 is evaluated on the worker exactly as on the
+  holder, and a callback there never waits.
 - **A write that joins the settle** goes to the target's pending list under
-  the target's own lock, as today, and the target enters the frontier once,
-  guarded by its `queued` flag. Workers collect frontier entries locally. The
-  holder merges them after the wave in wave order, so the next wave's order
-  does not depend on thread timing.
-- **A write that is deferred** is buffered per firing node and appended to
-  `INPUT` after the wave in wave order. Deferred sets therefore reach `INPUT`
-  in the order a single thread would have produced.
-- **Panics.** Caught per node as today. The first in wave order is kept.
+  the target's own lock, and leaves a request for the target in the firing
+  thread's outbox. After the wave the holder walks the outboxes chunk by
+  chunk in wave order. The first request for a node claims its `queued` flag
+  and enters the frontier with the next `seq`; later requests find the flag
+  taken. A node therefore enters the frontier at its first write in the
+  order of one thread, although a later node of the wave may have written to
+  it first in time. The next wave's order, and every stamp (section 5), is
+  the same as on one thread. A node gives the flag up when it fires.
+- **A write that is deferred** goes to the same outbox. The holder appends
+  the event sets to `INPUT` in wave order. Deferred sets therefore reach
+  `INPUT` in the order a single thread would have produced.
+- **Panics.** Caught per node. The first in wave order is kept, whichever
+  thread panicked first.
+- **A wave on the holder** uses the same path with one outbox, merged after
+  the wave.
 
 ### What changes for a caller
 

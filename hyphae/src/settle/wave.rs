@@ -22,10 +22,16 @@ use std::{
 
 use parking_lot::{Condvar, Mutex};
 
-use super::{ACTIVE, Active, Entry, Frontier, Outbox, Waiter, fire_entries, take_outbox};
+use super::{
+    ACTIVE, Active, Entry, Frontier, Outbox, PARALLEL_WAVES, Waiter, fire_entries, take_outbox,
+};
 
 const DEFAULT_WAVE_MIN: usize = 64;
 const MAX_WORKERS: usize = 256;
+/// Chunks per thread in a wave. More than one lets a thread that drew cheap
+/// nodes take over part of a slow thread's share.
+const CHUNKS_PER_WORKER: usize = 8;
+const MAX_CHUNK: usize = 256;
 
 struct Switches {
     wave_min: AtomicUsize,
@@ -78,8 +84,8 @@ pub(super) fn workers_for(len: usize) -> Option<usize> {
     if workers == 0 || len < SWITCHES.wave_min.load(Ordering::Relaxed) {
         return None;
     }
-    // Until concurrent waves land, a wave fires on one pool thread.
-    Some(workers.min(1))
+    // Several workers include the holder, which fires a lone node itself.
+    (workers == 1 || len > 1).then_some(workers)
 }
 
 /// One wave while it fires.
@@ -237,11 +243,17 @@ pub(super) fn fire(
     workers: usize,
     frontier: &mut Frontier,
 ) -> Option<Box<dyn Any + Send>> {
+    PARALLEL_WAVES.fetch_add(1, Ordering::Relaxed);
     let len = entries.len();
-    let helpers = if workers == 1 {
-        1
+    let (chunk, helpers) = if workers == 1 {
+        (len, 1)
     } else {
-        workers.saturating_sub(1)
+        let chunk = len
+            .checked_div(workers.saturating_mul(CHUNKS_PER_WORKER))
+            .unwrap_or(1)
+            .clamp(1, MAX_CHUNK);
+        let chunks = len.div_ceil(chunk);
+        (chunk, workers.min(chunks).saturating_sub(1))
     };
     let (run_id, waiters) = ACTIVE.with_borrow(|active| {
         active.as_ref().map_or_else(
@@ -253,7 +265,7 @@ pub(super) fn fire(
         entries,
         run_id,
         waiters,
-        chunk: len,
+        chunk,
         next: AtomicUsize::new(0),
         seats: AtomicUsize::new(helpers),
         unfired: AtomicUsize::new(len),

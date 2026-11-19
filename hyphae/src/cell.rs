@@ -361,6 +361,10 @@ impl<T: CellValue> Node for CellInner<T> {
         height
     }
 
+    fn claim(&self) -> bool {
+        !self.queued.swap(true, Ordering::AcqRel)
+    }
+
     fn fire(&self) {
         // Cleared before the take: a write that joins while this cell fires
         // must schedule it again, or its value stays pending. The cost is one
@@ -478,10 +482,8 @@ impl<T: CellValue> CellInner<T> {
         };
         // A replaced value can own cells whose drop takes other cell locks.
         drop(displaced);
-        if !self.queued.swap(true, Ordering::AcqRel) {
-            let node: Arc<dyn Node> = self.clone();
-            crate::settle::schedule(Arc::downgrade(&node), self.node_height());
-        }
+        let node: Arc<dyn Node> = self.clone();
+        crate::settle::schedule(Arc::downgrade(&node), self.node_height());
     }
 
     /// Put the pending values in the order a one-thread settle delivers

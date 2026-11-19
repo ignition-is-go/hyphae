@@ -259,10 +259,8 @@ impl<T: CellValue> crate::settle::Write for SourceWrite<T> {
             return;
         };
         source.pending.lock().push(self.signal);
-        if !source.queued.swap(true, Ordering::AcqRel) {
-            let node: Arc<dyn crate::settle::Node> = source;
-            crate::settle::schedule(Arc::downgrade(&node), 0);
-        }
+        let node: Arc<dyn crate::settle::Node> = source;
+        crate::settle::schedule(Arc::downgrade(&node), 0);
     }
 }
 
@@ -275,9 +273,13 @@ impl<T: CellValue> crate::settle::Node for SourceInner<T> {
         0
     }
 
+    fn claim(&self) -> bool {
+        !self.queued.swap(true, Ordering::AcqRel)
+    }
+
     fn fire(&self) {
-        let pending = std::mem::take(&mut *self.pending.lock());
         self.queued.store(false, Ordering::Release);
+        let pending = std::mem::take(&mut *self.pending.lock());
         for signal in pending {
             let terminal = !matches!(signal, Signal::Value(_));
             let already_complete = if terminal {
