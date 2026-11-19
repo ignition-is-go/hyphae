@@ -19,18 +19,25 @@ says where the delivery envelope goes if the settle lock is ever split.
 | Wave-parallel drain, `WAVE_THRESHOLD`, `set_wave_threshold_for_test` | Nothing. One thread runs a settle |
 | The eager path that ran each thread's write on that thread when no batch was open | Nothing. The settle core is the only propagation path, with or without the `scheduler` feature |
 
-`join` and `join_vec` still keep their latest inputs behind a mutex, but they
-release it before they notify, and a notify inside a settle only queues. No
-lock spans downstream work.
+`join` and `join_vec` still keep their latest inputs behind a mutex. Inside a
+settle they push the combined value to the output's pending list while they
+hold it, and the push runs no subscriber. Outside a settle they queue a write
+that reads the mutex when it is applied. No lock spans downstream work or a
+waiting write.
 
 The `scheduler` Cargo feature keeps its name. It now gates only `clock` and the
 worker pool that map-query join regions use for their own computation.
 
-Kept: the per-query FIFO gate in `map_query/compiler/dispatch.rs`. A settle
-already serializes root fanouts that come from writes. The gate still does
-two things the settle lock does not: it orders a subscribe-time replay, which
-runs on the subscribing thread outside any settle, against a fanout from a
-settle, and it queues a root change that a sink makes during that replay.
+Kept: the per-query FIFO gate in `map_query/compiler/dispatch.rs`. Every
+entry into the sinks of one compiled query passes it: each root fanout, and
+each per-row update of `map_values_cell` and `project_cell`. One thread at a
+time runs a query's sinks, and an event that arrives meanwhile runs behind it
+on that thread. The gate orders a subscribe-time replay, which runs on the
+subscribing thread outside any settle, against a fanout from a settle. It
+queues a root change that a sink makes during that replay. It also keeps two
+nodes of one height, which fire at the same time (section 12), from running
+one stateful sink on two threads. The gate serializes one query, not the
+process.
 
 ## 2. Vocabulary
 
@@ -200,13 +207,41 @@ enum Combine<T> {
 | --- | --- | --- |
 | A `Cell` written through `Mutable::set`, when the write goes through the input queue: from outside a settle, or deferred from a callback (section 6) | `Latest` | State. Queued sets of one cell that share a settle leave the last value |
 | A `Cell` written through `notify`, or through `set` from a callback whose write joins the settle in progress | `Each` | The operator may carry events. Nothing is dropped |
-| The output of `join`, `join_vec`, and `switch_map` | `Latest` | Each input's callback emits the full combined state, so the last one holds every settled input. This is the glitch-free join |
-| `CellMap` diff cell | `Fold(MapDiff::compose)` | Diffs of one settle become one `MapDiff::Batch`, in write order. None is dropped |
+| The output of `join`, `join_vec`, and `switch_map` | `Latest` | Each input's callback pushes the full combined state under the operator's state lock, so the last push holds every settled input. This is the glitch-free join |
+| The funnel cell inside `merge`, `zip`, and `take_until` | `Each` | Both sources push their signals into one cell, and the operator's logic runs when that cell fires. See "Order within a pending list" |
+| `CellMap` diff cell | `Fold(MapDiff::compose)` | Diffs of one settle become one `MapDiff::Batch`, in mutation order. None is dropped. The fold runs when the cell fires |
 | `CellSet` diff cell | `Each` | `SetDiff` has no batch form |
 | `Source` | Each | Events |
 
 A terminal signal never combines with a value. `Latest` and `Fold` touch only a
 trailing value, so a value followed by `Complete` keeps both, in that order.
+
+### Order within a pending list
+
+Nodes of one height can fire at the same time (section 12), so values from
+two nodes can reach a third in either order. Each pending value carries a
+stamp: the height and frontier position of the node that pushed it. Stamps
+order the fires of one settle the way one thread would have run them.
+
+- **An event, written with `notify`,** is delivered in stamp order. The cell
+  sorts its pending list when it fires. Values that one node pushed share a
+  stamp and keep their arrival order. This covers `merge`, `zip`,
+  `take_until`, and any operator that forwards with `notify`.
+- **State, written with `Mutable::set`,** keeps its arrival position. The
+  writer changed its own state before it wrote, and the values must follow
+  that order. A `CellMap` or `CellSet` holds a lock from the change of its
+  data until the diff is in a pending list or in the input queue, so diffs
+  are queued in mutation order and a subscriber that replays them ends with
+  the stored data. This holds for two threads outside a settle as well. When
+  two nodes of one height write one key in one settle, which write is last is
+  not specified. Inside a `batch` the diff is queued when the batch closes,
+  so two threads that write one collection inside batches are ordered by
+  when their batches close.
+- **A terminal signal** keeps its arrival position too. Its writer ends the
+  stream after the values it has seen, so no value that arrived before it is
+  delivered after it.
+- **A `Latest` cell** keeps arrival order. Its writers push under their state
+  lock, so the last arrival holds the most.
 
 `MapDiff::compose` appends to a pending `Batch`, flattening a nested one.
 Otherwise the pending diff becomes `Batch { changes: [pending, next] }`. An
@@ -404,14 +439,18 @@ node after all of its dependencies.
   writer took the lock. The rule of section 8 loses its exception: a lock
   held across any write deadlocks if a callback takes it. A reentrant lock
   does not help.
-- Within one settle, the order in which two nodes of equal height reach a
-  shared target is not specified. Per source, order is kept.
+- Within one settle, two nodes of equal height reach a shared target in an
+  order that depends on timing. The target delivers events in the order of a
+  one-thread settle all the same (section 5). State writes keep arrival
+  order.
 
 | Guarantee | Under waves |
 | --- | --- |
-| G1, G5 glitch-free joins | Kept by height order. A `Latest` fan-in must push its combined value while it holds its own state lock, so the last push carries every settled input. `join`, `join_vec`, and `switch_map` release that lock before they notify today and must change |
+| G1, G5 glitch-free joins | Kept by height order. A `Latest` fan-in pushes its combined value while it holds its own state lock, so the last push carries every settled input. `join`, `join_vec`, and `switch_map` do this |
 | G2 batch atomicity | Unchanged. An event set is still one run |
-| G4 per-node write order | Kept per source. Between two sources of equal height it is unspecified inside one settle. This touches `merge` and a `CellMap` that two equal-height sources write under one key |
+| G4 per-node write order | Kept. Events from two sources of equal height are delivered in the order of a one-thread settle, by the stamp on each pending value (section 5). `merge`, `zip`, and `take_until` run their logic in that order, on one thread. Collection diffs are delivered in mutation order. Which of two equal-height nodes writes one `CellMap` key last is unspecified; the diffs still match the stored data |
+| G7 gap-free `subscribe_diffs` | Kept. A collection queues each diff while it holds its write-order lock, so diffs compose in mutation order |
+| One compiled map query | One thread at a time runs its sinks. Root fanouts and per-row updates pass one gate |
 | Read-your-writes for a waiting writer | Unchanged. The waiter counts sets, not threads |
 | Feedback ordering | Kept by the per-node buffer and the wave-order append |
 | G9 convergence | Unchanged |
@@ -431,7 +470,7 @@ result converges, and the extra fire shows in `duplicate_fires`.
    `typed_map_from_any_item_with_typed_id` makes a waiting write.
 3. Whether unspecified order between equal-height sources is acceptable for
    `merge`. The alternative is a sequence stamp per pending value, sorted at
-   fire.
+   fire. Ruled: the stamp. Section 5 describes it.
 
 ### Pieces
 
