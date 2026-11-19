@@ -29,7 +29,11 @@
 //! materialized leaf) for as long as you want the shared work to run.
 
 use parking_lot::Mutex;
-use std::{collections::HashMap, hash::Hash, sync::Arc};
+use std::{
+    collections::HashMap,
+    hash::Hash,
+    sync::{Arc, Weak},
+};
 
 use uuid::Uuid;
 
@@ -37,9 +41,59 @@ use super::properties::{ByMapKey, ExactlyOne, PlanProperties};
 use crate::{
     cell_map::MapDiff,
     map_query::{BoxedMapDiffSink, BuildQueryRuntime, MapQuery},
+    settle::Node,
     subscription::SubscriptionGuard,
-    traits::CellValue,
+    traits::{CellValue, DepNode},
 };
+
+/// A consumer's view of the share point as a dependency: the upstream roots.
+struct ShareDepNode<K, V>
+where
+    K: CellValue + Hash + Eq,
+    V: CellValue,
+{
+    id: Uuid,
+    inner: Weak<SharedMapQueryInner<K, V>>,
+}
+
+impl<K, V> DepNode for ShareDepNode<K, V>
+where
+    K: CellValue + Hash + Eq,
+    V: CellValue,
+{
+    fn id(&self) -> Uuid {
+        self.id
+    }
+
+    fn name(&self) -> Option<String> {
+        Some("shared_map_query".to_string())
+    }
+
+    fn deps(&self) -> Vec<Arc<dyn DepNode>> {
+        self.inner.upgrade().map_or_else(Vec::new, |inner| {
+            inner
+                .upstream_guards
+                .lock()
+                .iter()
+                .map(|guard| Arc::clone(guard.source()))
+                .collect()
+        })
+    }
+
+    fn add_dependent(&self, dependent: Weak<dyn Node>) {
+        let Some(inner) = self.inner.upgrade() else {
+            return;
+        };
+        {
+            let mut dependents = inner.dependents.lock();
+            dependents.retain(|existing| existing.strong_count() > 0);
+            dependents.push(dependent.clone());
+        }
+        for guard in inner.upstream_guards.lock().iter() {
+            guard.source().add_dependent(dependent.clone());
+        }
+    }
+}
 
 type DiffSubscriber<K, V> = Arc<dyn Fn(&MapDiff<K, V>) + Send + Sync>;
 
@@ -66,6 +120,10 @@ where
     /// Held subscriptions on the upstream plan once installed. Released when
     /// the last shared subscriber drops.
     upstream_guards: Mutex<Vec<SubscriptionGuard>>,
+    /// The nodes the fanout writes: each consumer's input cell. Every
+    /// upstream root gets an edge to each, including roots installed after
+    /// the consumer.
+    dependents: Mutex<Vec<Weak<dyn Node>>>,
     /// In-memory snapshot of the joined / projected state. Applied on every
     /// diff so a late-binding subscriber can be replayed an Initial without
     /// re-running the upstream plan.
@@ -83,6 +141,18 @@ where
     K: CellValue + Hash + Eq,
     V: CellValue,
 {
+    /// Keep `guards` as upstream subscriptions, with an edge from each of
+    /// their sources to every consumer.
+    fn add_upstream(&self, guards: Vec<SubscriptionGuard>) {
+        let dependents = self.dependents.lock().clone();
+        for guard in &guards {
+            for dependent in &dependents {
+                guard.source().add_dependent(dependent.clone());
+            }
+        }
+        self.upstream_guards.lock().extend(guards);
+    }
+
     fn add_subscriber(&self, id: Uuid, cb: DiffSubscriber<K, V>) {
         // Swap-and-defer: see Cell::subscribe.
         let _old = {
@@ -179,6 +249,7 @@ where
             inner: Arc::new(SharedMapQueryInner {
                 upstream: Mutex::new(Some(upstream)),
                 upstream_guards: Mutex::new(Vec::new()),
+                dependents: Mutex::new(Vec::new()),
                 state: Mutex::new(HashMap::new()),
                 subscribers: parking_lot::Mutex::new(Arc::new(Vec::new())),
             }),
@@ -233,9 +304,7 @@ where
             });
             let activation_start = cx.activation_count();
             let guards = install_fn(cx, fanout);
-            let mut slot = self.inner.upstream_guards.lock();
-            slot.extend(guards);
-            drop(slot);
+            self.inner.add_upstream(guards);
 
             // Root activation is deliberately deferred until the entire outer
             // plan has compiled. Preserve share ownership by wrapping the
@@ -251,7 +320,7 @@ where
                         .flat_map(|activate| activate())
                         .collect();
                     if let Some(inner) = weak.upgrade() {
-                        inner.upstream_guards.lock().extend(guards);
+                        inner.add_upstream(guards);
                     }
                     Vec::new()
                 }));
@@ -273,7 +342,11 @@ where
         // Guard whose Drop removes this subscriber and, if last, releases all
         // upstream guards.
         let inner = Arc::clone(&self.inner);
-        vec![SubscriptionGuard::from_callback(move || {
+        let source: Arc<dyn DepNode> = Arc::new(ShareDepNode {
+            id,
+            inner: Arc::downgrade(&self.inner),
+        });
+        vec![SubscriptionGuard::new(id, source, move || {
             let remaining = inner.remove_subscriber(id);
             if remaining == 0 {
                 // Drain upstream guards outside any other lock: dropping a

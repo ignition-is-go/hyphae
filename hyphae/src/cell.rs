@@ -287,8 +287,7 @@ impl<T, M> Cell<T, M> {
         // Register as a dependent of the new source before the guard moves
         // into `owned`. A replaced guard leaves a stale back-edge on its old
         // source, which only over-invalidates.
-        let erased: Arc<dyn Node> = self.inner.clone();
-        guard.source().add_dependent(Arc::downgrade(&erased));
+        self.declare_source(guard.source());
         // A source below this cell cannot raise its height. A replaced guard
         // can only lower it, and a height that is too high still orders this
         // cell after every dependency.
@@ -299,6 +298,18 @@ impl<T, M> Cell<T, M> {
         if raises {
             crate::settle::invalidate_height_cone(self.inner.as_ref());
         }
+    }
+
+    /// Declare the edge from `source` to this cell before subscribing to it,
+    /// so that no write from `source` reaches this cell without the edge.
+    /// [`own_keyed`](Self::own_keyed) declares it too; declaring twice is a
+    /// no-op.
+    pub(crate) fn declare_source(&self, source: &Arc<dyn DepNode>)
+    where
+        T: CellValue,
+    {
+        let erased: Arc<dyn Node> = self.inner.clone();
+        source.add_dependent(Arc::downgrade(&erased));
     }
 
     /// Drop the guard that [`own_keyed`](Self::own_keyed) stored under `key`.
@@ -407,6 +418,10 @@ impl<T: CellValue> Node for CellInner<T> {
         dependents.retain(|dependent| dependent.strong_count() > 0);
         dependents.clone()
     }
+
+    fn node_caller(&self) -> Option<&'static std::panic::Location<'static>> {
+        Some(self.caller)
+    }
 }
 
 impl<T: CellValue> CellInner<T> {
@@ -422,7 +437,7 @@ impl<T: CellValue> CellInner<T> {
         if self.completed.load(Ordering::SeqCst) || self.errored.load(Ordering::SeqCst) {
             return;
         }
-        match crate::settle::position(|| self.node_height(), &self.backlog) {
+        match crate::settle::position(self.as_ref(), &self.backlog) {
             crate::settle::Position::Joins => {
                 self.accept(
                     signal,
@@ -538,7 +553,7 @@ impl<T: CellValue> CellInner<T> {
         if self.completed.load(Ordering::SeqCst) || self.errored.load(Ordering::SeqCst) {
             return;
         }
-        match crate::settle::position(|| self.node_height(), &self.backlog) {
+        match crate::settle::position(self.as_ref(), &self.backlog) {
             crate::settle::Position::Joins => {
                 write(&mut |signal| self.accept(signal, false, Order::Arrival));
             }
