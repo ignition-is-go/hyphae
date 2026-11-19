@@ -346,3 +346,116 @@ more than once in one run), lock misses, lock waits, deferred writes, and
 nanoseconds the settle lock was held, the longest single hold, hand-overs, and
 empty event sets queued by `flush`.
 They are relaxed atomics and always on.
+
+## 12. Parallel settling (proposal, not built)
+
+### What was measured
+
+The load harness at 8 elements per scene, after the fixes of sections 3
+and 5 (`.audit/logs/cones-e8.txt`, one run, with the cone dump on):
+
+- A run is one of two things. Half of all runs fire 1 node. One run per
+  timer tick fires about 25,800 nodes. The tick is one event set, and
+  everything it reaches settles in one height-ordered pass.
+- That one pass takes longer than the 33 ms tick period, so ticks are
+  skipped and executors see 8 to 9 updates a second out of 30. The input
+  queue is empty meanwhile (backlog peak 1).
+- **Lanes over event sets with disjoint cones gain nothing.** If a run locked
+  the nodes it fires and runs with a common node were serial, the speedup
+  bound is 1.00 to 1.01, with or without the 1,024 hottest nodes cut out as
+  boundaries. The work is inside single runs, not spread over many.
+  An earlier census on v3.1.12 found the same shape from the other side: 90%
+  of live server cells are one connected component.
+- **Firing the nodes of one height concurrently gains nearly linearly.**
+  With unit cost per fire, the bound is 1.98, 3.87, 7.41, and 13.79 at 2, 4,
+  8, and 16 threads.
+
+### Design: wave-parallel settle
+
+Heights already give the partition. Two nodes of equal height never depend on
+each other, so a settle can fire them at the same time and still fire every
+node after all of its dependencies.
+
+- **Wave.** The holder pops every frontier entry of the lowest height. That
+  list is a wave. A wave below a threshold fires on the holder as today.
+- **Workers.** A larger wave is split into chunks that a fixed pool claims
+  through one atomic index. The holder works too. The settle moves to the
+  next height when the wave is done. The settle lock, the input queue, runs,
+  stints, and waiters do not change.
+- **Worker context.** Each worker gets the run's `ACTIVE` view: the firing
+  height, the run id, and the waiter list. The reentrancy rule of section 6
+  is evaluated on the worker exactly as on the holder.
+- **A write that joins the settle** goes to the target's pending list under
+  the target's own lock, as today, and the target enters the frontier once,
+  guarded by its `queued` flag. Workers collect frontier entries locally. The
+  holder merges them after the wave in wave order, so the next wave's order
+  does not depend on thread timing.
+- **A write that is deferred** is buffered per firing node and appended to
+  `INPUT` after the wave in wave order. Deferred sets therefore reach `INPUT`
+  in the order a single thread would have produced.
+- **Panics.** Caught per node as today. The first in wave order is kept.
+
+### What changes for a caller
+
+- Callbacks of different nodes can run at the same time, on pool threads.
+  Callbacks of one node never overlap. v3.1.12 behaved this way above its
+  wave threshold.
+- A callback can run on a thread that is not the writer's even when the
+  writer took the lock. The rule of section 8 loses its exception: a lock
+  held across any write deadlocks if a callback takes it. A reentrant lock
+  does not help.
+- Within one settle, the order in which two nodes of equal height reach a
+  shared target is not specified. Per source, order is kept.
+
+| Guarantee | Under waves |
+| --- | --- |
+| G1, G5 glitch-free joins | Kept by height order. A `Latest` fan-in must push its combined value while it holds its own state lock, so the last push carries every settled input. `join`, `join_vec`, and `switch_map` release that lock before they notify today and must change |
+| G2 batch atomicity | Unchanged. An event set is still one run |
+| G4 per-node write order | Kept per source. Between two sources of equal height it is unspecified inside one settle. This touches `merge` and a `CellMap` that two equal-height sources write under one key |
+| Read-your-writes for a waiting writer | Unchanged. The waiter counts sets, not threads |
+| Feedback ordering | Kept by the per-node buffer and the wave-order append |
+| G9 convergence | Unchanged |
+
+A rewire during a wave can raise the height of a node that another worker is
+already firing. That node then fires again when its new dependency fires. The
+result converges, and the extra fire shows in `duplicate_fires`.
+
+### Open points that need a ruling
+
+1. Waves replace the lanes that were asked for. The measurement above is the
+   reason.
+2. Concurrent callbacks are a contract change. myko and rship must be clean
+   of locks held across writes before waves can be on by default. One such
+   site is known and blocks the harness at this load today:
+   `MykoServerContext::typed_projection` holds a cache shard while
+   `typed_map_from_any_item_with_typed_id` makes a waiting write.
+3. Whether unspecified order between equal-height sources is acceptable for
+   `merge`. The alternative is a sequence stamp per pending value, sorted at
+   fire.
+
+### Pieces
+
+Each piece has one owner and its own files. Piece 1 lands first because it
+defines the switches the others test against.
+
+| # | Piece | Files | Check |
+| --- | --- | --- | --- |
+| 1 | Switches and foreign-thread mode: `HYPHAE_SETTLE_WAVE_MIN`, `HYPHAE_SETTLE_WORKERS`, and matching test setters. With `WAVE_MIN=1` and one worker, every node fires on a pool thread, one at a time. No concurrency yet, but every thread-affine callback and every lock held across a write shows up | `hyphae/src/settle.rs`, `hyphae/src/executor.rs` (the rayon pool behind `worker_pool()` already exists under the `scheduler` feature) | hyphae suite in both modes |
+| 2 | Concurrent waves: chunk claiming, worker `ACTIVE`, frontier merge, deferred-set buffer, panic order, counters (waves, parallel waves, widest wave) | `hyphae/src/settle.rs`, new `hyphae/src/settle/wave.rs`, new `hyphae/tests/settle_wave.rs` | new tests; hyphae suite with `WAVE_MIN=1 WORKERS=8`, 3 runs |
+| 3 | Operators under waves: `Latest` fan-ins push under their state lock; audit `merge`, `MapDiff::compose`, the map-values queue, and the map-query FIFO gate | `hyphae/src/traits/operators/`, `hyphae/src/traits/collections/internal/`, `hyphae/src/map_query/compiler/dispatch.rs` | operator and map-query tests with `WAVE_MIN=1 WORKERS=8` |
+| 4 | myko clean under foreign threads: fix `typed_projection`, `compute_or_cache`, and whatever piece 1's mode finds | `myko/libs/myko/core/src/server/context.rs`, `core/query/`, `core/graph.rs` | myko serial and parallel suites with piece 1's mode on |
+| 5 | rship clean under foreign threads | `rship/libs/entities/` crates that subscribe | the crate suites of unit B with piece 1's mode on |
+| 6 | Tuning: threshold and worker count from the harness | harness only | below |
+
+Pieces 3, 4, and 5 need only piece 1. Piece 2 needs piece 1. Piece 6 needs
+all.
+
+Harness after each piece, new core against baseline, interleaved, 5 runs a
+side, reporting RTT p50 and p99, delivered callbacks per second, backlog,
+enqueue-to-run latency, and longest hold:
+
+- After piece 4: 2 and 8 elements per scene with waves off. This is the first
+  clean 8-element number; setup deadlocks 2 runs in 2 without it.
+- After pieces 2 and 3: 8 and 16 elements with workers at 1, 4, 8, and 16.
+- After piece 5 and after piece 6: 2, 8, and 16 elements at the chosen
+  setting.
