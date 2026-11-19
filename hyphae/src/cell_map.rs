@@ -195,6 +195,8 @@ where
             drop(cell.clone().with_name(format!("{map_name}::{name}")));
         }
 
+        let declared: Arc<dyn crate::traits::DepNode> = Arc::new(source.clone());
+        cell.declare_source(&declared);
         let weak_cell = cell.downgrade();
         let map_keepalive = self.inner.clone();
         let skip_replay = matches!(replay, OutputReplay::Skip).then(|| AtomicBool::new(true));

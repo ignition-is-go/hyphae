@@ -5,6 +5,7 @@ use std::{
         atomic::{AtomicU8, Ordering},
     },
 };
+use uuid::Uuid;
 
 use parking_lot::Mutex;
 
@@ -76,8 +77,7 @@ where
                     }
                 }
             });
-        let left_guard = left_prepared.activate(&left_callback);
-        derived.own(left_guard);
+        left_prepared.activate_owned(&derived, Uuid::new_v4(), &left_callback);
 
         let right_weak = derived.downgrade();
         let right_callback: Arc<dyn Fn(&Signal<U>) + Send + Sync> =
@@ -106,8 +106,7 @@ where
                     }
                 }
             });
-        let right_guard = right_prepared.activate(&right_callback);
-        derived.own(right_guard);
+        right_prepared.activate_owned(&derived, Uuid::new_v4(), &right_callback);
 
         derived.subscribe(move |signal| callback(signal))
     }
