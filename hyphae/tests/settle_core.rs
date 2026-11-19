@@ -510,3 +510,46 @@ fn a_row_update_from_a_per_row_cell_joins_the_settle_that_fired_the_cell() {
     // One delivery, never the new offset beside the row's old value.
     assert_eq!(*seen.lock(), vec![(Some(50), 1)]);
 }
+
+#[test]
+fn a_map_built_inside_a_settle_keeps_a_row_update_from_that_settle() {
+    let trigger = Cell::new(false);
+    let weight = Cell::new(2i64);
+    // Two operators above `weight`, so the row cell fires after the callback
+    // of `trigger` has built the map from the row's old value.
+    let row_weight = weight.clone().map(|weight| *weight).materialize();
+    let row_weight = row_weight.map(|weight| *weight).materialize();
+
+    let built = Arc::new(Mutex::new(None));
+    let slot = built.clone();
+    let _guard = trigger.subscribe(move |signal| {
+        if !matches!(signal, Signal::Value(value) if **value) {
+            return;
+        }
+        let row_weight = row_weight.clone();
+        let projected = CellMap::<String, i64>::from_entries(vec![("a".to_string(), 10i64)])
+            .project_cell(move |key, value| {
+                let (key, value) = (key.clone(), *value);
+                row_weight
+                    .clone()
+                    .map(move |weight| Some((key.clone(), value * weight)))
+                    .materialize()
+            })
+            .materialize();
+        let entries = projected.entries().materialize();
+        *slot.lock() = Some((projected, entries));
+    });
+
+    batch(|| {
+        weight.set(5);
+        trigger.set(true);
+    });
+
+    let observed = built
+        .lock()
+        .take()
+        .map(|(projected, entries)| (projected.get_value(&"a".to_string()), entries.get()));
+    // The stored row, then what a subscriber that replays the map's diffs
+    // ends with.
+    assert_eq!(observed, Some((Some(50), vec![("a".to_string(), 50)])));
+}

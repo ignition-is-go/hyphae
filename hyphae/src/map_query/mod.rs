@@ -40,7 +40,9 @@
 //! The materialized output owns the installed root guards while the final sink
 //! holds the output weakly. Dropping the output tears down the installation.
 
-use std::{hash::Hash, marker::PhantomData, sync::Arc};
+use std::{collections::HashMap, hash::Hash, marker::PhantomData, sync::Arc};
+
+use parking_lot::Mutex;
 
 use crate::{
     cell::{CellImmutable, CellMutable},
@@ -234,13 +236,22 @@ pub trait MapQuery: CompileQuery<Self::Key, Self::Value> + properties::PlanPrope
     /// on a materialized map, never on a plan. The returned map owns all root
     /// guards; dropping it tears the installation down. Publication caused by
     /// a source mutation is synchronously settled before that mutation returns.
+    /// The rows that the roots replay during installation are stored without
+    /// a write, so the map is complete when this returns, inside a settle too.
     #[track_caller]
     fn materialize(self) -> CellMap<Self::Key, Self::Value, CellImmutable> {
-        let output = CellMap::<Self::Key, Self::Value, CellMutable>::new();
-        let weak = Arc::downgrade(&output.inner);
+        let target = Arc::new(Mutex::new(MaterializeTarget::Building(HashMap::new())));
 
+        let sink_target = Arc::clone(&target);
         let sink = move |diff: &MapDiff<Self::Key, Self::Value>| {
-            let Some(inner) = weak.upgrade() else {
+            let inner = match &mut *sink_target.lock() {
+                MaterializeTarget::Building(rows) => {
+                    apply_diff_to_rows(rows, diff);
+                    return;
+                }
+                MaterializeTarget::Built(output) => output.upgrade(),
+            };
+            let Some(inner) = inner else {
                 return;
             };
             let out: CellMap<Self::Key, Self::Value, CellMutable> = CellMap {
@@ -256,9 +267,66 @@ pub trait MapQuery: CompileQuery<Self::Key, Self::Value> + properties::PlanPrope
         let mut cx = compiler::CompileContext::default();
         let runtime = self.compile(&mut cx);
         let guards = runtime.install_roots(&mut cx, Arc::new(sink));
+        let mut target = target.lock();
+        let entries = match &mut *target {
+            MaterializeTarget::Building(rows) => rows.drain().collect(),
+            MaterializeTarget::Built(_) => Vec::new(),
+        };
+        let output = CellMap::<Self::Key, Self::Value, CellMutable>::from_entries(entries);
+        // The output owns its guards before the sink can reach it, so its
+        // first diff is already placed above every dependency.
         for g in guards {
             output.own(g);
         }
+        *target = MaterializeTarget::Built(Arc::downgrade(&output.inner));
+        drop(target);
         output.lock()
+    }
+}
+
+/// Where the sink of [`MapQuery::materialize`] puts a diff.
+enum MaterializeTarget<K, V>
+where
+    K: CellValue + Hash + Eq,
+    V: CellValue,
+{
+    /// The roots are being installed. Nothing can observe the output yet, so
+    /// the rows they replay are collected here and the output is built
+    /// holding them. Publishing them as diffs would be wrong inside a settle:
+    /// the output has no dependency yet, so the diffs would wait for a later
+    /// settle, behind an update that joins this one once the output owns its
+    /// guards.
+    Building(HashMap<K, V>),
+    Built(std::sync::Weak<crate::cell_map::CellMapInner<K, V>>),
+}
+
+/// Apply `diff` to a plain copy of a map's rows.
+pub(crate) fn apply_diff_to_rows<K, V>(rows: &mut HashMap<K, V>, diff: &MapDiff<K, V>)
+where
+    K: Clone + Hash + Eq,
+    V: Clone,
+{
+    match diff {
+        MapDiff::Initial { entries } => {
+            rows.clear();
+            rows.reserve(entries.len());
+            for (key, value) in entries {
+                rows.insert(key.clone(), value.clone());
+            }
+        }
+        MapDiff::Insert { key, value } => {
+            rows.insert(key.clone(), value.clone());
+        }
+        MapDiff::Remove { key, .. } => {
+            rows.remove(key);
+        }
+        MapDiff::Update { key, new_value, .. } => {
+            rows.insert(key.clone(), new_value.clone());
+        }
+        MapDiff::Batch { changes } => {
+            for change in changes {
+                apply_diff_to_rows(rows, change);
+            }
+        }
     }
 }

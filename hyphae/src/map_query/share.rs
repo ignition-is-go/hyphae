@@ -114,33 +114,7 @@ where
     /// install sees a consistent state.
     fn apply_diff(&self, diff: &MapDiff<K, V>) {
         let mut state = self.state.lock();
-        Self::apply_diff_into(&mut state, diff);
-    }
-
-    fn apply_diff_into(state: &mut HashMap<K, V>, diff: &MapDiff<K, V>) {
-        match diff {
-            MapDiff::Initial { entries } => {
-                state.clear();
-                state.reserve(entries.len());
-                for (k, v) in entries {
-                    state.insert(k.clone(), v.clone());
-                }
-            }
-            MapDiff::Insert { key, value } => {
-                state.insert(key.clone(), value.clone());
-            }
-            MapDiff::Remove { key, .. } => {
-                state.remove(key);
-            }
-            MapDiff::Update { key, new_value, .. } => {
-                state.insert(key.clone(), new_value.clone());
-            }
-            MapDiff::Batch { changes } => {
-                for c in changes {
-                    Self::apply_diff_into(state, c);
-                }
-            }
-        }
+        super::apply_diff_to_rows(&mut state, diff);
     }
 
     fn snapshot_initial(&self) -> MapDiff<K, V> {
