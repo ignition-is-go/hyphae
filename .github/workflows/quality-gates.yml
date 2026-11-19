@@ -35,6 +35,7 @@ jobs:
           compiler-cache-secret-key: ${{ secrets.CI_CACHE_SECRET_KEY }}
 
           cache-save-if: ${{ env.CI_NATIVE_CACHE_CONFIGURED != 'true' }}
+          cache-targets: ${{ env.CI_NATIVE_CACHE_CONFIGURED != 'true' }}
       - name: Set up Cargo Flux and ROSE cache
         uses: ignition-is-go/cargo-flux@ae2ffa5f4420add3ab3c98665a4b5c0374bf2a5b
         with:
