@@ -238,8 +238,8 @@ enum Combine<T> {
 | A `Cell` written through `notify`, or through `set` from a callback whose write joins the settle in progress | `Each` | The operator may carry events. Nothing is dropped |
 | The output of `join`, `join_vec`, and `switch_map` | `Latest` | Each input's callback pushes the full combined state under the operator's state lock, so the last push holds every settled input. This is the glitch-free join |
 | The funnel cell inside `merge`, `zip`, and `take_until` | `Each` | Both sources push their signals into one cell, and the operator's logic runs when that cell fires. See "Order within a pending list" |
-| `CellMap` diff cell | `Fold(MapDiff::compose)` | Diffs of one settle become one `MapDiff::Batch`, in mutation order. None is dropped. The fold runs when the cell fires |
-| `CellSet` diff cell | `Each` | `SetDiff` has no batch form |
+| `CellMap` diff cell | `Fold(MapDiff::compose)` | Diffs of one settle become one `MapDiff::Batch`. The stream is consistent and ends at the stored data: each diff starts from what subscribers hold. A mutation made outside a settle is told as one diff per key per event set. See "Collection diffs". The fold runs when the cell fires |
+| `CellSet` diff cell | `Each` | `SetDiff` has no batch form. The stream is consistent and ends at the stored data, as for `CellMap` |
 | `Source` | Each | Events |
 
 A terminal signal never combines with a value. `Latest` and `Fold` touch only a
@@ -258,19 +258,80 @@ order the fires of one settle the way one thread would have run them.
   `take_until`, and any operator that forwards with `notify`.
 - **State, written with `Mutable::set`,** keeps its arrival position. The
   writer changed its own state before it wrote, and the values must follow
-  that order. A `CellMap` or `CellSet` holds a lock from the change of its
-  data until the diff is in a pending list or in the input queue, so diffs
-  are queued in mutation order and a subscriber that replays them ends with
-  the stored data. This holds for two threads outside a settle as well. When
-  two nodes of one height write one key in one settle, which write is last is
-  not specified. Inside a `batch` the diff is queued when the batch closes,
-  so two threads that write one collection inside batches are ordered by
-  when their batches close.
+  that order. The diffs of a `CellMap` or `CellSet` are state of this kind.
+  "Collection diffs" says how they are ordered.
 - **A terminal signal** keeps its arrival position too. Its writer ends the
   stream after the values it has seen, so no value that arrived before it is
   delivered after it.
 - **A `Latest` cell** keeps arrival order. Its writers push under their state
   lock, so the last arrival holds the most.
+
+### Collection diffs
+
+A `CellMap` or `CellSet` has one write lock. A mutation holds it from the
+change of the stored data until its writes are in a pending list or in the
+input queue. A settle holds it while it applies a publish request. No
+subscriber runs under it, and no thread waits for a settle while it holds it.
+The implementation is `hyphae/src/cell_map/publish.rs`.
+
+How a mutation tells subscribers depends on whether it joins a settle.
+
+- **It joins the settle in progress.** The diff cell has not fired in this
+  settle (section 6). The mutation writes the key cells, the diff, and the
+  length at once. These diffs are in mutation order. When two nodes of one
+  height write one key in one settle, which write is last is not specified.
+- **It does not join.** This is every mutation from outside a settle,
+  including one inside `batch`, `submit`, or `enqueue`, and a mutation from
+  a callback whose diff cell has already fired. The mutation changes the
+  stored data and queues no diff. For each key it changes, the collection
+  records the value subscribers were last told, and the mutation adds one
+  publish request for those keys to the thread's event set. When a settle
+  seeds the request, the collection emits, for each key, the diff from the
+  value subscribers were told to the value now stored. It then writes the key
+  cell and the length from the stored data.
+- **It joins, but changes a key that has a publish request queued.** It
+  queues a publish request too. A diff written at once would start from the
+  stored value, which subscribers do not hold yet.
+
+An event set reaches the input queue when it closes, which can be after
+another thread's later mutation. A diff built at mutation time would then
+arrive out of order. A publish request carries no values, so the order in
+which requests arrive does not matter.
+
+A thread can settle while it has a batch of its own open: it called `flush`
+inside the batch. A write it makes then waits in that batch. A publish
+request that such a thread seeds therefore tells nothing yet. It moves into
+the thread's batch and is applied when that batch settles.
+
+A subscriber can rely on this:
+
+1. Every diff starts from what the subscriber holds. The `old_value` of an
+   `Update` or `Remove` is the value it was last told, an `Insert` names a key
+   it does not hold, and a `SetDiff` changes the membership it holds.
+2. Once every queued event set has settled, the subscriber holds the stored
+   data, and so do the key cells and the length.
+
+A subscriber cannot rely on one diff per mutation, for a mutation that does
+not join a settle:
+
+- One event set tells one diff per key. Values in between are not told. An
+  insert and a remove of one key in one `batch` tell nothing.
+- A diff can carry another thread's later change to the key. That thread's
+  request then tells nothing for the key.
+- A diff applied with `apply_diff_owned` or `apply_batch` is told as the step
+  the stored data took. An `Insert` over an existing key is told as an
+  `Update`, and a `Remove` of an absent key tells nothing.
+- A mutation that emits `MapDiff::Initial` still does. The entries are the
+  ones stored when the request is applied.
+
+A key cell or a membership cell created while a change to its key waits to be
+published starts at the value subscribers were told, so the cell and the
+diffs describe one state. The length is written only when it differs from
+the length last written.
+
+The cost for a mutation that does not join a settle is one hash insert and
+one lookup per changed key. A mutation that joins pays one check that no key
+has a request queued.
 
 `MapDiff::compose` appends to a pending `Batch`, flattening a nested one.
 Otherwise the pending diff becomes `Batch { changes: [pending, next] }`. An
@@ -293,7 +354,8 @@ event that passes through `join`, `join_vec`, or `switch_map` survives only if
 no other value of the same output shares its settle. Give such events an
 exclusive key so that each one settles alone.
 
-Collections: a `CellMap` mutation is one event set. `CellMap::own` records the
+Collections: a `CellMap` mutation from outside a settle is one event set that
+holds one publish request ("Collection diffs"). `CellMap::own` records the
 guard's source as a dependency of the diff cell, and the length cell and each
 key cell depend on the diff cell. A derived map therefore sits above its
 inputs, and what it publishes from a callback joins the settle in progress.
