@@ -239,8 +239,6 @@ impl Stamp {
 }
 
 /// The stamp of the node now firing on this thread, or [`Stamp::SEED`].
-// Read by the pending lists in `cell.rs` once they sort by it.
-#[allow(dead_code)]
 pub(crate) fn stamp() -> Stamp {
     ACTIVE.with_borrow(|active| {
         active

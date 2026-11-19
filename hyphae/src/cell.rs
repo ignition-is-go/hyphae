@@ -13,7 +13,7 @@ use rustc_hash::FxHashMap;
 use uuid::Uuid;
 
 use crate::{
-    settle::Node,
+    settle::{Node, Stamp, stamp},
     signal::Signal,
     subscription::SubscriptionGuard,
     traits::{CellValue, DepNode, Gettable, Mutable, Watchable, WatchableResult},
@@ -42,6 +42,16 @@ pub(crate) enum Combine<T> {
     /// once. The fold returns the new value when the two cannot be folded,
     /// and then both are delivered.
     Fold(fn(&mut Arc<T>, Arc<T>) -> Option<Arc<T>>),
+}
+
+/// Where a value that joins a settle goes in its cell's pending list.
+#[derive(Clone, Copy)]
+enum Order {
+    /// Behind everything that arrived before it. For state: the writer
+    /// changed its own state first, and the values must follow that order.
+    Arrival,
+    /// Where a one-thread settle would have delivered it. For events.
+    Settle,
 }
 
 pub(crate) struct CellInner<T> {
@@ -76,7 +86,7 @@ pub(crate) struct CellInner<T> {
     pub(crate) error: Mutex<Option<Arc<anyhow::Error>>>,
     /// Deliveries waiting for this cell's turn in the settle in progress, in
     /// arrival order. Empty between settles.
-    pub(crate) pending: Mutex<Vec<Signal<T>>>,
+    pub(crate) pending: Mutex<Vec<(Stamp, Signal<T>)>>,
     /// True while this cell is in the settle frontier.
     pub(crate) queued: AtomicBool,
     /// What a second value does to a pending one. Unset keeps both.
@@ -352,8 +362,12 @@ impl<T: CellValue> Node for CellInner<T> {
     }
 
     fn fire(&self) {
-        let pending = std::mem::take(&mut *self.pending.lock());
+        // Cleared before the take: a write that joins while this cell fires
+        // must schedule it again, or its value stays pending. The cost is one
+        // empty fire when the write lands between the two lines.
         self.queued.store(false, Ordering::Release);
+        let pending = std::mem::take(&mut *self.pending.lock());
+        let pending = self.in_settle_order(pending);
         for signal in pending {
             if self.completed.load(Ordering::SeqCst) || self.errored.load(Ordering::SeqCst) {
                 break;
@@ -392,47 +406,72 @@ impl<T: CellValue> CellInner<T> {
     /// Route one signal: into the settle in progress when this cell has not
     /// had its turn there, otherwise through the input queue.
     ///
-    /// `latest` applies only to a queued write: `Mutable::set` passes `true`,
-    /// so sets of one cell that share a settle leave the last value.
-    pub(crate) fn write(self: &Arc<Self>, signal: Signal<T>, latest: bool) {
+    /// `state` is `true` for `Mutable::set` and `false` for `notify`. Queued
+    /// sets of one cell that share a settle leave the last value. A set that
+    /// joins a settle keeps its arrival position, because its writer decides
+    /// the order of its own state. A notify is an event and takes the
+    /// position a one-thread settle would have given it.
+    pub(crate) fn write(self: &Arc<Self>, signal: Signal<T>, state: bool) {
         if self.completed.load(Ordering::SeqCst) || self.errored.load(Ordering::SeqCst) {
             return;
         }
         match crate::settle::position(|| self.node_height()) {
-            crate::settle::Position::Joins => self.accept(signal, false),
+            crate::settle::Position::Joins => {
+                self.accept(
+                    signal,
+                    false,
+                    if state { Order::Arrival } else { Order::Settle },
+                );
+            }
             crate::settle::Position::Queue => crate::settle::submit_write(
                 crate::settle::SettleKey::Shared,
                 Box::new(CellWrite {
                     cell: Arc::downgrade(self),
                     signal,
-                    latest,
+                    latest: state,
                 }),
             ),
         }
     }
 
     /// Add `signal` to this cell's pending list and put the cell in the
-    /// frontier. Only the thread that holds the settle lock calls this.
-    fn accept(self: &Arc<Self>, signal: Signal<T>, latest: bool) {
+    /// frontier. Only a thread that is settling calls this.
+    fn accept(self: &Arc<Self>, signal: Signal<T>, latest: bool, order: Order) {
+        self.accept_stamped(stamp(), signal, latest, order);
+    }
+
+    fn accept_stamped(
+        self: &Arc<Self>,
+        stamp: Stamp,
+        signal: Signal<T>,
+        latest: bool,
+        order: Order,
+    ) {
+        let latest = match self.combine.get() {
+            Some(Combine::Latest) => true,
+            Some(Combine::Each | Combine::Fold(_)) => false,
+            None => latest,
+        };
         let displaced = {
             let mut pending = self.pending.lock();
             match (pending.last_mut(), signal) {
-                (Some(Signal::Value(held)), Signal::Value(next)) => match self.combine.get() {
-                    Some(Combine::Fold(fold)) => {
-                        if let Some(next) = fold(held, next) {
-                            pending.push(Signal::Value(next));
-                        }
-                        None
-                    }
-                    Some(Combine::Latest) => Some(std::mem::replace(held, next)),
-                    None if latest => Some(std::mem::replace(held, next)),
-                    Some(Combine::Each) | None => {
-                        pending.push(Signal::Value(next));
-                        None
-                    }
-                },
-                (_, signal) => {
-                    pending.push(signal);
+                // The last arrival wins whatever its stamp: a fan-in pushes
+                // under its state lock, so a later push holds more.
+                (Some((_, Signal::Value(held))), Signal::Value(next)) if latest => {
+                    Some(std::mem::replace(held, next))
+                }
+                (last, signal) => {
+                    // A terminal ends the stream after what its writer has
+                    // seen, so it stays behind every value already here.
+                    let order = match signal {
+                        Signal::Value(_) => order,
+                        Signal::Complete | Signal::Error(_) => Order::Arrival,
+                    };
+                    let stamp = match (order, last) {
+                        (Order::Arrival, Some((last, _))) => stamp.max(*last),
+                        _ => stamp,
+                    };
+                    pending.push((stamp, signal));
                     None
                 }
             }
@@ -442,6 +481,86 @@ impl<T: CellValue> CellInner<T> {
         if !self.queued.swap(true, Ordering::AcqRel) {
             let node: Arc<dyn Node> = self.clone();
             crate::settle::schedule(Arc::downgrade(&node), self.node_height());
+        }
+    }
+
+    /// Put the pending values in the order a one-thread settle delivers
+    /// them, then fold them when this cell folds.
+    ///
+    /// Nodes of one height fire at the same time, so their values reach this
+    /// cell in any order. The stamp restores the order. Values that one node
+    /// pushed share a stamp and keep their arrival order. A value pushed with
+    /// [`Order::Arrival`] never moves ahead of a value that arrived before it.
+    /// A `Latest` cell keeps arrival order.
+    fn in_settle_order(&self, mut pending: Vec<(Stamp, Signal<T>)>) -> Vec<Signal<T>> {
+        let combine = self.combine.get();
+        if !matches!(combine, Some(Combine::Latest))
+            && !pending.is_sorted_by_key(|(stamp, _)| *stamp)
+        {
+            pending.sort_by_key(|(stamp, _)| *stamp);
+        }
+        let signals = pending.into_iter().map(|(_, signal)| signal);
+        let Some(Combine::Fold(fold)) = combine else {
+            return signals.collect();
+        };
+        let mut folded: Vec<Signal<T>> = Vec::new();
+        for signal in signals {
+            match (folded.last_mut(), signal) {
+                (Some(Signal::Value(held)), Signal::Value(next)) => {
+                    if let Some(next) = fold(held, next) {
+                        folded.push(Signal::Value(next));
+                    }
+                }
+                (_, signal) => folded.push(signal),
+            }
+        }
+        folded
+    }
+
+    /// Run `write` at the point this cell takes a value: now when the cell
+    /// joins the settle in progress, otherwise when a later settle is seeded.
+    ///
+    /// For a fan-in that must read its state and push the result as one step
+    /// under its state lock. `write` takes that lock itself and calls the
+    /// sink while it holds it. A queued write holds no lock while its writer
+    /// waits, and reads the state when it is applied, so it cannot carry a
+    /// snapshot older than a value already delivered.
+    pub(crate) fn write_with(
+        self: &Arc<Self>,
+        write: impl FnOnce(&mut dyn FnMut(Signal<T>)) + Send + 'static,
+    ) {
+        if self.completed.load(Ordering::SeqCst) || self.errored.load(Ordering::SeqCst) {
+            return;
+        }
+        match crate::settle::position(|| self.node_height()) {
+            crate::settle::Position::Joins => {
+                write(&mut |signal| self.accept(signal, false, Order::Arrival));
+            }
+            crate::settle::Position::Queue => crate::settle::submit_write(
+                crate::settle::SettleKey::Shared,
+                Box::new(DeferredWrite {
+                    cell: Arc::downgrade(self),
+                    write,
+                }),
+            ),
+        }
+    }
+}
+
+/// A queued [`CellInner::write_with`].
+struct DeferredWrite<T, F> {
+    cell: Weak<CellInner<T>>,
+    write: F,
+}
+
+impl<T, F> crate::settle::Write for DeferredWrite<T, F>
+where
+    T: CellValue,
+    F: FnOnce(&mut dyn FnMut(Signal<T>)) + Send + 'static,
+{
+    fn apply(self: Box<Self>) {
+        if let Some(cell) = self.cell.upgrade() {
+            (self.write)(&mut |signal| cell.accept(signal, false, Order::Arrival));
         }
     }
 }
@@ -457,7 +576,7 @@ struct CellWrite<T> {
 impl<T: CellValue> crate::settle::Write for CellWrite<T> {
     fn apply(self: Box<Self>) {
         if let Some(cell) = self.cell.upgrade() {
-            cell.accept(self.signal, self.latest);
+            cell.accept(self.signal, self.latest, Order::Arrival);
         }
     }
 }
@@ -548,6 +667,14 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
     #[doc(hidden)]
     pub fn notify(&self, signal: Signal<T>) {
         self.inner.write(signal, false);
+    }
+
+    /// See [`CellInner::write_with`].
+    pub(crate) fn write_with(
+        &self,
+        write: impl FnOnce(&mut dyn FnMut(Signal<T>)) + Send + 'static,
+    ) {
+        self.inner.write_with(write);
     }
 }
 

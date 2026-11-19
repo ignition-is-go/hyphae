@@ -41,8 +41,9 @@ where
             right_prepared.initial().clone(),
         );
         let latest = Arc::new(Mutex::new(initial.clone()));
-        // Each side emits the full pair, so the last one in a settle holds both
-        // settled sides and the join fires once.
+        // Each side pushes the full pair while it holds `latest`, so the last
+        // push in a settle holds both settled sides and the join fires once.
+        // The two sides can fire at the same time.
         let derived = Cell::<(T, U), CellMutable>::new(initial).combine_latest();
         let completed = Arc::new(AtomicU8::new(0));
 
@@ -52,13 +53,14 @@ where
         let left_callback: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
             Arc::new(move |signal| match signal {
                 Signal::Value(value) => {
-                    let pair = {
-                        let mut latest = left_latest.lock();
-                        latest.0 = value.as_ref().clone();
-                        latest.clone()
-                    };
                     if let Some(derived) = left_weak.upgrade() {
-                        derived.notify(Signal::value(pair));
+                        let latest = left_latest.clone();
+                        let value = value.clone();
+                        derived.write_with(move |push| {
+                            let mut latest = latest.lock();
+                            latest.0 = value.as_ref().clone();
+                            push(Signal::value(latest.clone()));
+                        });
                     }
                 }
                 Signal::Complete => {
@@ -81,13 +83,14 @@ where
         let right_callback: Arc<dyn Fn(&Signal<U>) + Send + Sync> =
             Arc::new(move |signal| match signal {
                 Signal::Value(value) => {
-                    let pair = {
-                        let mut latest = latest.lock();
-                        latest.1 = value.as_ref().clone();
-                        latest.clone()
-                    };
                     if let Some(derived) = right_weak.upgrade() {
-                        derived.notify(Signal::value(pair));
+                        let latest = latest.clone();
+                        let value = value.clone();
+                        derived.write_with(move |push| {
+                            let mut latest = latest.lock();
+                            latest.1 = value.as_ref().clone();
+                            push(Signal::value(latest.clone()));
+                        });
                     }
                 }
                 Signal::Complete => {

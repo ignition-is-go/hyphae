@@ -78,20 +78,22 @@ fn inner_callback<U: CellValue>(
     generation: u64,
 ) -> Arc<dyn Fn(&Signal<U>) + Send + Sync> {
     Arc::new(move |signal| {
-        let _switch = switch_lock.lock();
-        if state.load(Ordering::SeqCst) & GEN_MASK != generation {
-            return;
-        }
-        if let Some(cell) = weak.upgrade() {
-            match signal {
-                Signal::Value(_) => cell.notify(signal.clone()),
-                Signal::Complete if mark_inner_complete(&state, generation) => {
-                    cell.notify(Signal::Complete);
-                }
-                Signal::Complete => {}
-                Signal::Error(error) => cell.notify(Signal::Error(error.clone())),
+        let Some(cell) = weak.upgrade() else { return };
+        let signal = signal.clone();
+        let state = Arc::clone(&state);
+        let switch_lock = Arc::clone(&switch_lock);
+        // The generation check and the push are one step under `switch_lock`,
+        // so a value of the old inner never lands behind the new inner's.
+        cell.write_with(move |push| {
+            let _switch = switch_lock.lock();
+            if state.load(Ordering::SeqCst) & GEN_MASK != generation {
+                return;
             }
-        }
+            match signal {
+                Signal::Complete if !mark_inner_complete(&state, generation) => {}
+                signal => push(signal),
+            }
+        });
     })
 }
 
@@ -129,10 +131,11 @@ where
         let state = Arc::new(AtomicU64::new(0)); // gen 0, both incomplete
 
         // Serializes a switch (generation bump, in the outer handler) against a
-        // still-live old inner's guard-check-then-emit. A settle runs on one
-        // thread, but a subscribe-time replay runs on the subscribing thread,
-        // so the two can still meet. The new inner is subscribed after the
-        // lock is released, so its seed cannot re-enter this lock.
+        // still-live old inner's guard-check-then-emit. The outer and an
+        // inner of the same height fire at the same time, and a
+        // subscribe-time replay runs on the subscribing thread. The new inner
+        // is subscribed after the lock is released, so its seed cannot
+        // re-enter this lock.
         let switch_lock = Arc::new(Mutex::new(()));
         // Source callbacks may run concurrently. Serializing complete re-knits
         // ensures an older installation can never return after a newer one and
@@ -185,10 +188,15 @@ where
                     // Publish the prepared inner's freshest current value before
                     // activating delivery of anything that arrived afterward.
                     {
-                        let _switch = switch_lock_outer.lock();
-                        if state_for_outer.load(Ordering::SeqCst) & GEN_MASK == my_gen {
-                            c.notify(Signal::value(prepared.initial().clone()));
-                        }
+                        let initial = prepared.initial().clone();
+                        let state = Arc::clone(&state_for_outer);
+                        let switch_lock = Arc::clone(&switch_lock_outer);
+                        c.write_with(move |push| {
+                            let _switch = switch_lock.lock();
+                            if state.load(Ordering::SeqCst) & GEN_MASK == my_gen {
+                                push(Signal::value(initial));
+                            }
+                        });
                     }
                     let value_callback = inner_callback(
                         weak.clone(),
