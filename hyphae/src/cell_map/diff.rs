@@ -66,6 +66,24 @@ impl<K, V> MapDiff<K, V> {
         None
     }
 
+    /// Undo this diff on `held`, which holds the entries after it.
+    pub(crate) fn undo(&self, held: &mut std::collections::HashMap<K, V>)
+    where
+        K: std::hash::Hash + Eq + Clone,
+        V: Clone,
+    {
+        match self {
+            Self::Insert { key, .. } => {
+                held.remove(key);
+            }
+            Self::Remove { key, old_value } | Self::Update { key, old_value, .. } => {
+                held.insert(key.clone(), old_value.clone());
+            }
+            Self::Batch { changes } => changes.iter().rev().for_each(|change| change.undo(held)),
+            Self::Initial { .. } => {}
+        }
+    }
+
     pub(crate) fn visit_leaves<'a>(&'a self, visit: &mut impl FnMut(&'a Self)) {
         match self {
             Self::Batch { changes } => {

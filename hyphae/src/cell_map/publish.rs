@@ -103,6 +103,19 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq> InFlight<K, V> {
         }
     }
 
+    /// What subscribers hold, given `stored`, the entries stored now: the
+    /// stored entries, with each key that waits to be published at the value
+    /// subscribers were last told.
+    pub fn held(&self, stored: impl Iterator<Item = (K, V)>) -> Vec<(K, V)> {
+        let mut held: Vec<(K, V)> = stored.filter(|(key, _)| !self.holds(key)).collect();
+        held.extend(
+            self.keys
+                .iter()
+                .filter_map(|(key, told)| Some((key.clone(), told.value.clone()?))),
+        );
+        held
+    }
+
     /// Start one mutation. The result names it in [`touch`](Self::touch).
     pub fn begin(flight: &RefCell<Self>) -> u64 {
         let mut flight = flight.borrow_mut();

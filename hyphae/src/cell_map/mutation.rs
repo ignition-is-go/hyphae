@@ -120,14 +120,14 @@ where
         let changes = std::mem::take(&mut self.changes);
         match &mut self.later {
             None if changes.is_empty() => {}
-            None => self.map.inner.diffs_cell.set(MapDiff::Batch { changes }),
+            None => self.map.tell(MapDiff::Batch { changes }),
             Some(later) => later.shape = later.shape.max_with(Shape::Batch),
         }
     }
 
     fn emit(&mut self, shape: Shape, diff: impl FnOnce() -> MapDiff<K, V>) {
         match &mut self.later {
-            None => self.map.inner.diffs_cell.set(diff()),
+            None => self.map.tell(diff()),
             Some(later) => later.shape = later.shape.max_with(shape),
         }
     }
@@ -271,6 +271,7 @@ where
                 key_cells: OnceLock::new(),
                 key_cell_slots: AtomicUsize::new(0),
                 prune_ops: AtomicUsize::new(0),
+                untold: Mutex::new(Vec::new()),
                 diffs_cell,
                 len_cell,
                 owned: Mutex::new(Vec::new()),
@@ -715,7 +716,7 @@ where
             Shape::Batch | Shape::One => changes.pop(),
         };
         if let Some(diff) = diff {
-            self.inner.diffs_cell.set(diff);
+            self.tell(diff);
         }
         if let Some(len) = InFlight::tell_len(&flight) {
             self.inner.len_cell.set(len);

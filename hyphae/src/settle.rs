@@ -349,6 +349,12 @@ impl NodeCore {
         Ok(())
     }
 
+    /// `p(n)`: the last ticket this node fired, or `None` before the first.
+    pub(crate) fn processed(&self) -> Option<u64> {
+        let processed = self.pending.lock().processed;
+        (processed != NONE).then_some(processed)
+    }
+
     fn can_join(&self, ticket: u64) -> bool {
         self.pending
             .lock()
@@ -549,7 +555,7 @@ thread_local! {
 }
 
 /// The ticket this thread is delivering, if any.
-fn current_ticket() -> Option<u64> {
+pub(crate) fn current_ticket() -> Option<u64> {
     CTX.with_borrow(|ctx| match ctx {
         Some(Ctx::Seeding { ticket, .. }) => Some(*ticket),
         Some(Ctx::Firing(firing)) => Some(firing.ticket),

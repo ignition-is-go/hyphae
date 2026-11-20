@@ -112,6 +112,9 @@ where
     /// The write lock, and the keys whose stored value subscribers have not
     /// been told. See the `publish` module.
     pub(crate) write_order: WriteOrder<K, V>,
+    /// The diffs written to `diffs_cell` that it may not have told yet, with
+    /// the ticket each joined. See [`CellMap::tell`].
+    pub(crate) untold: Mutex<Vec<(u64, Arc<MapDiff<K, V>>)>>,
     /// Cell for diff notifications.
     pub(crate) diffs_cell: Cell<MapDiff<K, V>, CellMutable>,
     /// Cell for length.
@@ -406,6 +409,33 @@ where
         }
     }
 
+    /// Write `diff` to the diff cell, for a mutation that joins the ticket
+    /// this thread delivers, and log it until the cell has told it.
+    pub(crate) fn tell(&self, diff: MapDiff<K, V>) {
+        let diff = Arc::new(diff);
+        if let Some(ticket) = crate::settle::current_ticket() {
+            let mut untold = self.untold_log();
+            untold.push((ticket, Arc::clone(&diff)));
+        }
+        self.inner.diffs_cell.inner.write(Signal::Value(diff), true);
+    }
+
+    /// The logged diffs the diff cell has not told, oldest first. Told ones
+    /// are dropped from the log here.
+    fn untold(&self) -> Vec<Arc<MapDiff<K, V>>> {
+        self.untold_log()
+            .iter()
+            .map(|(_, diff)| Arc::clone(diff))
+            .collect()
+    }
+
+    fn untold_log(&self) -> parking_lot::MutexGuard<'_, Vec<(u64, Arc<MapDiff<K, V>>)>> {
+        let told = self.inner.diffs_cell.inner.core.processed();
+        let mut untold = self.inner.untold.lock();
+        untold.retain(|(ticket, _)| told.is_none_or(|told| *ticket > told));
+        untold
+    }
+
     /// Get a point-in-time snapshot of all entries (non-reactive).
     ///
     /// Unlike `entries()`, this does NOT create a Cell or subscribe to changes.
@@ -489,12 +519,34 @@ where
             callback_for_diffs(diff.as_ref());
         });
 
-        let entries: Vec<(K, V)> = self
-            .inner
-            .data
-            .iter()
-            .map(|r| (r.key().clone(), r.value().clone()))
-            .collect();
+        // The snapshot is what subscribers hold. A change that waits to be
+        // published, or whose diff waits in the diff cell, reaches this
+        // subscriber as a diff, so it must not be in the snapshot as well.
+        let entries = {
+            let order = self.inner.write_order.lock();
+            let mut held: std::collections::HashMap<K, V> = order
+                .borrow()
+                .held(
+                    self.inner
+                        .data
+                        .iter()
+                        .map(|r| (r.key().clone(), r.value().clone())),
+                )
+                .into_iter()
+                .collect();
+            let untold = self.untold();
+            // An `Initial` replaces what the subscriber holds, so only the
+            // diffs after the last one need undoing.
+            let undone = untold
+                .iter()
+                .rev()
+                .take_while(|diff| !matches!(***diff, MapDiff::Initial { .. }));
+            for diff in undone {
+                diff.undo(&mut held);
+            }
+            drop(order);
+            held.into_iter().collect::<Vec<_>>()
+        };
         callback(&MapDiff::Initial { entries });
         loop {
             let queued = {

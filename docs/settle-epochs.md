@@ -583,7 +583,9 @@ estimates.
    core.
 2. **Declare the internal edges** (about 150 lines): `cell_map.rs:214`, the
    collection diff and length cells, and myko projections. Check: opt1's
-   escape hook reports no internal escapes.
+   escape hook reports no internal escapes. Done: debug builds now panic on
+   an undeclared joined write (`docs/settle-core.md`, section 6, edge
+   check), and the hyphae and myko suites pass with it on.
 3. **Shadow tickets** (done: `epoch-shadow` 7466369). The pull walk failed
    its gate. Next, add quiet certificates to the shadow and measure the seed
    hit rate and invalidation lengths (section 4). This is the new gate.

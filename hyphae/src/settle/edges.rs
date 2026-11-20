@@ -1,9 +1,10 @@
 //! Diagnostics for writes that cannot join their ticket, and the marker for
 //! writes that are meant to start a new one.
 //!
-//! `HYPHAE_EDGE_CHECK=panic` panics on a callback write with no declared
-//! edge and on an owned subscription that cannot be bound to its owner.
-//! `warn` logs each once per creation site. Writes along an edge declared
+//! The check panics on a callback write with no declared edge and on an
+//! owned subscription that cannot be bound to its owner.
+//! `HYPHAE_EDGE_CHECK=warn` logs each once per creation site instead, and
+//! `off` disables it. Writes along an edge declared
 //! during a ticket (a late edge) are logged once per site in either mode.
 
 use std::{
@@ -26,9 +27,9 @@ enum Mode {
 
 static MODE: LazyLock<Mode> =
     LazyLock::new(|| match std::env::var("HYPHAE_EDGE_CHECK").as_deref() {
-        Ok("panic") => Mode::Panic,
+        Ok("off") => Mode::Off,
         Ok("warn") => Mode::Warn,
-        _ => Mode::Off,
+        _ => Mode::Panic,
     });
 
 static WARNED: LazyLock<Mutex<FxHashSet<(u8, usize)>>> = LazyLock::new(Mutex::default);

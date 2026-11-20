@@ -2054,6 +2054,7 @@ dependencies = [
  "futures-core",
  "getrandom 0.3.4",
  "gloo-timers",
+ "indexmap",
  "log",
  "loom",
  "parking_lot",
