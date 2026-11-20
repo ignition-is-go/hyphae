@@ -131,7 +131,7 @@ impl<T: CellValue> Source<T> {
             owned: Mutex::new(FxHashMap::default()),
             dependents: Mutex::new(Vec::new()),
             completed: AtomicBool::new(false),
-            core: crate::settle::NodeCore::new_arc(),
+            core: crate::settle::NodeCore::new_arc(std::panic::Location::caller()),
             outs: Mutex::new(Vec::new()),
             caller: Location::caller(),
         });

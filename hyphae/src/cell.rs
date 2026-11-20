@@ -222,7 +222,7 @@ impl<T: CellValue> Cell<T, CellMutable> {
             completed: AtomicBool::new(false),
             errored: AtomicBool::new(false),
             error: Mutex::new(None),
-            core: NodeCore::new_arc(),
+            core: NodeCore::new_arc(Location::caller()),
             outs: Mutex::new(Vec::new()),
             history: Mutex::new(History {
                 ticket: 0,

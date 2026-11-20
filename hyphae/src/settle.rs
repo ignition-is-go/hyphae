@@ -291,7 +291,21 @@ pub struct NodeCore {
 }
 
 impl NodeCore {
-    pub(crate) fn new_arc() -> Arc<Self> {
+    /// A node created at `caller`. Debug builds check the lifecycle rule:
+    /// see [`edges::lifecycle`].
+    pub(crate) fn new_arc(caller: &'static Location<'static>) -> Arc<Self> {
+        #[cfg(debug_assertions)]
+        if ROW_BUILD.with_borrow(Option::is_none) {
+            // The node whose fire runs the callback that builds this one.
+            let during = CTX.with_borrow(|ctx| match ctx {
+                Some(Ctx::Firing(firing)) => Some(firing.core.caller.get().copied()),
+                Some(Ctx::Seeding { .. }) => Some(None),
+                _ => None,
+            });
+            if let Some(during) = during {
+                edges::lifecycle(caller, during);
+            }
+        }
         let core = Arc::new(Self {
             seq: NODE_SEQ.fetch_add(1, Ordering::Relaxed),
             pending: Mutex::new(Pending {
@@ -307,7 +321,7 @@ impl NodeCore {
             gated: Mutex::new(Vec::new()),
             mark: AtomicU8::new(watermark::NOT_QUIET),
             held: std::sync::atomic::AtomicBool::new(false),
-            caller: OnceLock::new(),
+            caller: OnceLock::from(caller),
         });
         ROW_BUILD.with_borrow_mut(|build| {
             if let Some(build) = build.as_mut() {

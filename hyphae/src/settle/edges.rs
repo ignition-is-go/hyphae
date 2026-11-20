@@ -84,6 +84,73 @@ pub(super) fn undeclared(target: &dyn Node) {
     }
 }
 
+/// The lifecycle rule: a node is created only between tickets, as a root on
+/// a thread outside any settle, or inside a family's fire, as a row. A node
+/// created in a callback during a ticket is a construction error.
+///
+/// `HYPHAE_LIFECYCLE=report` records each offending site, with the first
+/// stack frame outside hyphae and the node whose fire was running, in
+/// `$HYPHAE_LIFECYCLE_OUT` (once per site); `panic` panics with the same
+/// sites; `off` disables the check.
+pub(super) fn lifecycle(
+    caller: &'static Location<'static>,
+    during: Option<&'static Location<'static>>,
+) {
+    static MODE: LazyLock<u8> =
+        // TODO: panic is the default once hyphae's own sites (the per-entry
+        // mappers of project_cell, select_cell and map_values_cell) are
+        // family rows. Until then report is the default.
+        LazyLock::new(|| match std::env::var("HYPHAE_LIFECYCLE").as_deref() {
+            Ok("off") => 0,
+            Ok("panic") => 2,
+            _ => 1,
+        });
+    match *MODE {
+        0 => {}
+        1 => lifecycle_report(caller, during),
+        _ => panic!(
+            "hyphae: lifecycle rule: a node was created at {caller} (called from {}) inside \
+             a callback of the node created at {} during a ticket; build it between tickets, \
+             or as a family row",
+            outside_frame(),
+            site(during)
+        ),
+    }
+}
+
+/// The first stack frame outside hyphae and the standard library.
+fn outside_frame() -> String {
+    let trace = std::backtrace::Backtrace::force_capture().to_string();
+    let mut lines = trace.lines();
+    while let Some(line) = lines.next() {
+        let line = line.trim();
+        if let Some(path) = line.strip_prefix("at ")
+            && !path.contains("/hyphae/src/")
+            && !path.starts_with("./src/")
+            && !path.contains("/rustc/")
+            && !path.contains("/rustlib/")
+            && !path.contains("/.cargo/registry/")
+        {
+            return path.to_owned();
+        }
+    }
+    "<no frame outside hyphae>".to_owned()
+}
+
+fn lifecycle_report(caller: &'static Location<'static>, during: Option<&'static Location<'static>>) {
+    static SEEN: LazyLock<Mutex<FxHashSet<String>>> = LazyLock::new(Mutex::default);
+    let line = format!("{caller} <- {} | in the fire of {}", outside_frame(), site(during));
+    if !SEEN.lock().insert(line.clone()) {
+        return;
+    }
+    if let Ok(path) = std::env::var("HYPHAE_LIFECYCLE_OUT")
+        && let Ok(mut out) = std::fs::OpenOptions::new().create(true).append(true).open(path)
+    {
+        use std::io::Write as _;
+        let _ = writeln!(out, "{line}");
+    }
+}
+
 /// A write along an edge declared during the ticket reached a node already
 /// past it, and became a new ticket. Logged once per creation site.
 pub(super) fn late(target: &dyn Node) {
