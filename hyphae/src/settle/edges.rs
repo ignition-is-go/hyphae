@@ -138,14 +138,19 @@ fn outside_frame() -> String {
 }
 
 fn lifecycle_report(caller: &'static Location<'static>, during: Option<&'static Location<'static>>) {
-    static SEEN: LazyLock<Mutex<FxHashSet<String>>> = LazyLock::new(Mutex::default);
-    let line = format!("{caller} <- {} | in the fire of {}", outside_frame(), site(during));
-    if !SEEN.lock().insert(line.clone()) {
+    static OUT: LazyLock<Option<String>> = LazyLock::new(|| std::env::var("HYPHAE_LIFECYCLE_OUT").ok());
+    static SEEN: LazyLock<Mutex<FxHashSet<(usize, usize)>>> = LazyLock::new(Mutex::default);
+    let Some(path) = OUT.as_ref() else { return };
+    // Once per (creation site, firing site): the backtrace is costly.
+    let key = (
+        std::ptr::from_ref(caller).addr(),
+        during.map_or(0, |during| std::ptr::from_ref(during).addr()),
+    );
+    if !SEEN.lock().insert(key) {
         return;
     }
-    if let Ok(path) = std::env::var("HYPHAE_LIFECYCLE_OUT")
-        && let Ok(mut out) = std::fs::OpenOptions::new().create(true).append(true).open(path)
-    {
+    let line = format!("{caller} <- {} | in the fire of {}", outside_frame(), site(during));
+    if let Ok(mut out) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
         use std::io::Write as _;
         let _ = writeln!(out, "{line}");
     }
