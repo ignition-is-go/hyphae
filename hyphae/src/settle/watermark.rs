@@ -10,7 +10,7 @@ use std::sync::{Arc, Weak, atomic::Ordering};
 
 use rustc_hash::FxHashSet;
 
-use super::{INVALIDATED, NodeCore, QUIET_HITS, SEEDED, VALIDATED, WALK_NODES, WALKS};
+use super::{CYCLE_SITES, CYCLES, INVALIDATED, NodeCore, QUIET_HITS, SEEDED, VALIDATED, WALK_NODES, WALKS};
 
 pub(super) const NOT_QUIET: u8 = 0;
 const TENTATIVE: u8 = 1;
@@ -51,7 +51,7 @@ pub(super) fn in_w_past(core: &Arc<NodeCore>, ticket: u64) -> Result<(), Arc<Nod
         let mut seen = FxHashSet::default();
         seen.insert(Arc::as_ptr(core).addr());
         let mut cost = 0;
-        let outcome = passed(&input, ticket, &mut seen, &mut cost);
+        let outcome = passed(&input, core, ticket, &mut seen, &mut cost);
         WALK_NODES.fetch_add(cost, Ordering::Relaxed);
         outcome?;
     }
@@ -131,6 +131,7 @@ fn validate(node: &Arc<NodeCore>, seen: &mut FxHashSet<usize>) -> bool {
 /// passes a ticket only after its push of that ticket landed here.
 fn passed(
     m: &Arc<NodeCore>,
+    parent: &NodeCore,
     ticket: u64,
     seen: &mut FxHashSet<usize>,
     cost: &mut u64,
@@ -140,8 +141,14 @@ fn passed(
     }
     if !seen.insert(Arc::as_ptr(m).addr()) {
         // Visited in this walk and not past `ticket`: it is on the current
-        // path, which is a cycle.
-        return Err(Arc::clone(m));
+        // path, so this edge closes a cycle. The design assumes the declared
+        // graph is acyclic; a back edge is ignored, as heights ignore it, and
+        // counted.
+        let seen_cycles = CYCLES.fetch_add(1, Ordering::Relaxed);
+        if seen_cycles < 200_000 || seen_cycles.is_multiple_of(1024) {
+            record_cycle(m, parent);
+        }
+        return Ok(());
     }
     *cost = cost.saturating_add(1);
     let mut low = SEEDED.load(Ordering::Acquire);
@@ -150,7 +157,7 @@ fn passed(
     }
     let inputs: Vec<Arc<NodeCore>> = m.inputs.lock().iter().filter_map(Weak::upgrade).collect();
     for input in &inputs {
-        passed(input, ticket, seen, cost)?;
+        passed(input, m, ticket, seen, cost)?;
         low = low.min(input.watermark.load(Ordering::Acquire));
     }
     let pending = m.pending.lock();
@@ -165,4 +172,31 @@ fn passed(
     );
     drop(pending);
     Ok(())
+}
+
+/// Record a back edge `from -> to`: `to` lists `from` as an input, and
+/// `from` is already on the walk's path.
+fn record_cycle(from: &NodeCore, to: &NodeCore) {
+    let site = |node: &NodeCore| {
+        node.caller
+            .get()
+            .map_or_else(|| "<unknown>".to_owned(), ToString::to_string)
+    };
+    let key = (site(from), site(to));
+    CYCLE_SITES
+        .lock()
+        .entry(key)
+        .and_modify(|count| *count = count.saturating_add(1))
+        .or_insert(1);
+}
+
+/// Sampled back edges, most frequent first.
+pub(super) fn cycle_sites() -> Vec<((String, String), u64)> {
+    let mut sites: Vec<_> = CYCLE_SITES
+        .lock()
+        .iter()
+        .map(|(key, count)| (key.clone(), *count))
+        .collect();
+    sites.sort_by_key(|entry| std::cmp::Reverse(entry.1));
+    sites
 }

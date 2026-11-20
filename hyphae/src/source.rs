@@ -420,6 +420,8 @@ impl<T: Send + Sync> DepNode for Source<T> {
             .any(|existing| existing.as_ptr().cast::<()>() == address)
         {
             if let Some(node) = dependent.upgrade() {
+                node.node_core().set_caller(node.node_caller());
+                self.inner.core.set_caller(Some(self.inner.caller));
                 node.node_core().add_input(&self.inner.core);
             }
             dependents.push(dependent);

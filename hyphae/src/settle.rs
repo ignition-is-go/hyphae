@@ -277,6 +277,8 @@ pub struct NodeCore {
     outputs: Mutex<Vec<Weak<Self>>>,
     /// The quiet certificate (`docs/settle-epochs.md` section 4).
     mark: AtomicU8,
+    /// Where the node was created, for diagnostics.
+    caller: OnceLock<&'static Location<'static>>,
 }
 
 impl NodeCore {
@@ -294,6 +296,7 @@ impl NodeCore {
             inputs: Mutex::new(Vec::new()),
             outputs: Mutex::new(Vec::new()),
             mark: AtomicU8::new(watermark::NOT_QUIET),
+            caller: OnceLock::new(),
         });
         ROW_BUILD.with_borrow_mut(|build| {
             if let Some(build) = build.as_mut() {
@@ -306,6 +309,9 @@ impl NodeCore {
     /// Declare an edge from `input` into this node. The node's ancestry
     /// grows, so its quiet certificate and its descendants' are cleared.
     pub(crate) fn add_input(self: &Arc<Self>, input: &Arc<Self>) {
+        if Arc::ptr_eq(self, input) {
+            return;
+        }
         {
             let mut inputs = self.inputs.lock();
             inputs.retain(|existing| existing.strong_count() > 0);
@@ -322,6 +328,12 @@ impl NodeCore {
         }
         EDGE_GEN.fetch_add(1, Ordering::Release);
         watermark::invalidate(self);
+    }
+
+    pub(crate) fn set_caller(&self, caller: Option<&'static Location<'static>>) {
+        if let Some(caller) = caller {
+            let _ = self.caller.set(caller);
+        }
     }
 
     /// No delivery pending or in flight.
@@ -849,6 +861,8 @@ pub struct SettleStats {
     pub validated: u64,
     /// Quiet certificates cleared by seeds and new edges.
     pub invalidated: u64,
+    /// Back edges a watermark walk ignored: cycles in the declared graph.
+    pub cycles: u64,
 }
 
 static EVENT_SETS: AtomicU64 = AtomicU64::new(0);
@@ -871,6 +885,9 @@ static UNDECLARED: AtomicU64 = AtomicU64::new(0);
 static LATE_EDGE: AtomicU64 = AtomicU64::new(0);
 static UNBOUND_OWNED: AtomicU64 = AtomicU64::new(0);
 static QUIET_HITS: AtomicU64 = AtomicU64::new(0);
+static CYCLES: AtomicU64 = AtomicU64::new(0);
+/// Sampled back edges, `(from site, to site) -> count`.
+static CYCLE_SITES: LazyLock<Mutex<FxHashMap<(String, String), u64>>> = LazyLock::new(Mutex::default);
 static VALIDATED: AtomicU64 = AtomicU64::new(0);
 static INVALIDATED: AtomicU64 = AtomicU64::new(0);
 
@@ -899,6 +916,7 @@ pub fn stats() -> SettleStats {
         quiet_hits: QUIET_HITS.load(Ordering::Relaxed),
         validated: VALIDATED.load(Ordering::Relaxed),
         invalidated: INVALIDATED.load(Ordering::Relaxed),
+        cycles: CYCLES.load(Ordering::Relaxed),
         ..SettleStats::default()
     }
 }
