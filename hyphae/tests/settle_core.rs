@@ -195,7 +195,7 @@ fn a_join_never_observes_a_multi_node_event_set_torn() {
 }
 
 #[test]
-fn event_sets_with_one_exclusive_key_settle_separately_and_in_order() {
+fn event_sets_are_delivered_one_ticket_each_in_order() {
     let exclusive = Cell::new(0u64);
     let shared = Cell::new(0u64);
     let (exclusive_seen, _exclusive_guard) = record(&exclusive);
@@ -211,10 +211,10 @@ fn event_sets_with_one_exclusive_key_settle_separately_and_in_order() {
     }
     held.release();
 
-    // The same key never shares a settle, so every value is delivered.
+    // Every event set is its own ticket, so with or without a key every
+    // value is delivered, in order. The held ticket does not delay them.
     assert_eq!(*exclusive_seen.lock(), vec![1, 2, 3]);
-    // Without a key the three sets combine and the last value wins.
-    assert_eq!(*shared_seen.lock(), vec![3]);
+    assert_eq!(*shared_seen.lock(), vec![1, 2, 3]);
 }
 
 #[test]
@@ -284,14 +284,16 @@ fn submit_returns_while_another_thread_holds_the_settle() {
         submit(&[], None, || cell.set(value));
     }
     let elapsed = started.elapsed();
-    assert_eq!(cell.get(), 0, "nothing settles while the settle is held");
+    // A held ticket holds only the nodes it reaches. A waiting write to the
+    // cell completes without it, and after every earlier ticket to the cell.
+    cell.set(101);
+    assert_eq!(cell.get(), 101);
 
     held.release();
     assert!(
         elapsed < Duration::from_secs(5),
         "submit waited on the held settle: {elapsed:?}"
     );
-    assert_eq!(cell.get(), 100);
 }
 
 #[test]
@@ -374,6 +376,9 @@ fn a_feedback_write_settles_before_the_writer_returns() {
         let before = hyphae::settle::stats().deferred_writes;
         for value in 1..=200u64 {
             input.set(value);
+            // A writer is owed its own ticket only; the callback's write is a later
+            // ticket, which `flush` waits for.
+            flush();
             assert_eq!(feedback.get(), value * 10);
         }
         assert!(hyphae::settle::stats().deferred_writes >= before + 200);
@@ -389,8 +394,8 @@ fn a_feedback_write_settles_before_the_writer_returns() {
 
 #[test]
 fn a_long_feedback_chain_behind_a_waiting_writer_stays_cheap() {
-    // Each link writes the next cell twice from its callback, so every
-    // generation queues two event sets that wait on the same sleeping writer.
+    // Each link writes the next cell from its callback, so every generation
+    // is a new ticket behind a held one.
     const LINKS: usize = 28;
     let cells: Vec<_> = (0..=LINKS).map(|_| Cell::new(0u64)).collect();
     let _guards: Vec<_> = cells
@@ -399,8 +404,9 @@ fn a_long_feedback_chain_behind_a_waiting_writer_stays_cheap() {
         .map(|(cell, next)| {
             let next = next.clone();
             cell.subscribe(move |signal| {
+                // One write per link: two would be two tickets, and without
+                // coalescing across tickets (G3) each doubles the next link.
                 if matches!(signal, Signal::Value(value) if **value == 1) {
-                    next.set(1);
                     next.set(1);
                 }
             })
@@ -409,11 +415,23 @@ fn a_long_feedback_chain_behind_a_waiting_writer_stays_cheap() {
 
     let held = HeldSettle::start();
     let first = cells.first().cloned();
-    let writer = thread::spawn(move || first.iter().for_each(|cell| cell.set(1)));
+    // A writer is owed its own ticket only. Each link's write is a later
+    // ticket that carries the writer's epoch, so the scope finishes when the
+    // whole chain has settled.
+    let (chain_done, chain_settled) = mpsc::channel();
+    let scope = hyphae::Epoch::scoped(move || {
+        let _ = chain_done.send(());
+    });
+    let epoch = scope.epoch();
+    let writer = thread::spawn(move || {
+        hyphae::batch_with(&[], Some(epoch), || first.iter().for_each(|cell| cell.set(1)));
+    });
     thread::sleep(Duration::from_millis(200));
     let started = Instant::now();
     held.release();
     assert!(writer.join().is_ok());
+    drop(scope);
+    assert!(chain_settled.recv_timeout(Duration::from_secs(10)).is_ok());
     let elapsed = started.elapsed();
 
     assert_eq!(
@@ -559,15 +577,18 @@ fn a_write_that_could_join_stays_behind_an_earlier_queued_write_to_its_cell() {
         if !matches!(signal, Signal::Value(value) if **value == 1) {
             return;
         }
-        // An input cell, so this write waits for a later settle.
-        written.set(1);
+        // No edge from the firing node, so these writes are later tickets.
+        hyphae::settle::new_ticket(|| written.set(1));
         // The cell gains a dependency and rises above the firing node, so
         // by height alone the next write would join this settle.
         written.own(other.subscribe(|_| {}));
-        written.set(2);
+        hyphae::settle::new_ticket(|| written.set(2));
     });
 
     trigger.set(1);
+    // A writer is owed its own ticket only; the callback's write is a later
+    // ticket, which `flush` waits for.
+    flush();
 
     assert_eq!(target.get(), 2);
     let seen = seen.lock().clone();

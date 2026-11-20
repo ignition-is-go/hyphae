@@ -53,6 +53,27 @@ That `in_w(n) > t` holds means every input has delivered everything it will
 ever deliver for tickets up to `t`. Glitch freedom (G1, G5) then holds without
 heights: a join fires `t` once, after every input is final for `t`.
 
+### Where a callback runs
+
+A hyphae operator keeps its state in the callbacks it subscribes to its
+inputs (a join's latest left and right, `switch_map`'s generation). If an
+input's callback ran when that input fired, input A's callback for ticket
+`t+1` could run before input B's callback for `t`, and B would push a value
+built from A at `t+1` into ticket `t`.
+
+**Rule: a subscription owned by a node runs its callback at that node's
+fire.** When `a` fires `t`, a subscriber whose guard node `c` owns (bound
+by `own_keyed`) does not run. Its callback and the signal become a pending
+delivery of `c` at `t`. When `c` fires `t`, it runs its deliveries in stamp
+order, and a write a callback makes to `c` itself is `c`'s value at `t`.
+Operator state therefore lives with the node it computes, and it sees its
+inputs in ticket order. A subscription that no node owns runs at its
+source's fire, and its writes follow the routing rules of section 6.
+
+An owned subscription that cannot be bound (its guard does not name the
+subscription) still runs at its source's fire. That is a correctness hole,
+counted per owner site in `SettleStats::unbound_owned`.
+
 ## 4. How a node learns that earlier tickets cannot reach it
 
 ### Why the pull walk was replaced

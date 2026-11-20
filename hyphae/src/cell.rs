@@ -13,7 +13,7 @@ use rustc_hash::FxHashMap;
 use uuid::Uuid;
 
 use crate::{
-    settle::{Node, Stamp, stamp},
+    settle::{Node, NodeCore},
     signal::Signal,
     subscription::SubscriptionGuard,
     traits::{CellValue, DepNode, Gettable, Mutable, Watchable, WatchableResult},
@@ -84,17 +84,18 @@ pub(crate) struct CellInner<T> {
     /// The error, if any. Cold path — only written when the cell errors,
     /// read by error/subscribe paths.
     pub(crate) error: Mutex<Option<Arc<anyhow::Error>>>,
-    /// Deliveries waiting for this cell's turn in the settle in progress, in
-    /// arrival order. Empty between settles.
-    pub(crate) pending: Mutex<Vec<(Stamp, Signal<T>)>>,
-    /// True while this cell is in the settle frontier.
-    pub(crate) queued: AtomicBool,
+    /// Scheduler state: pending deliveries keyed by ticket, watermark,
+    /// declared inputs.
+    pub(crate) core: Arc<NodeCore>,
+    /// The values this cell's deliveries produced for the ticket it is
+    /// firing, with whether each may replace the one before it.
+    pub(crate) outs: Mutex<Vec<(Signal<T>, bool)>>,
+    /// The ticket of `value`, and the entry before it.
+    pub(crate) history: Mutex<History<T>>,
     /// Writes to this cell that a callback queued and no settle has seeded.
     pub(crate) backlog: crate::settle::Backlog,
     /// What a second value does to a pending one. Unset keeps both.
     pub(crate) combine: std::sync::OnceLock<Combine<T>>,
-    /// The settle in which this cell last fanned out.
-    pub(crate) fired_run: std::sync::atomic::AtomicU64,
     /// Height cache: packed `(height_epoch << 32) | height`. Valid while
     /// `height_epoch` is unchanged; `0` means never computed.
     pub(crate) height_cache: std::sync::atomic::AtomicU64,
@@ -108,6 +109,13 @@ pub(crate) struct CellInner<T> {
     /// Source location where this cell was created (via #[`track_caller`]).
     #[allow(dead_code)]
     pub(crate) caller: &'static Location<'static>,
+}
+
+/// The two newest versions of a cell's value: `value` at `ticket`, and the
+/// one before it.
+pub(crate) struct History<T> {
+    pub(crate) ticket: u64,
+    pub(crate) previous: Option<(u64, Arc<T>)>,
 }
 
 /// A reactive cell that holds a value and notifies subscribers on change.
@@ -170,11 +178,14 @@ impl<T: CellValue> Cell<T, CellMutable> {
             completed: AtomicBool::new(false),
             errored: AtomicBool::new(false),
             error: Mutex::new(None),
-            pending: Mutex::new(Vec::new()),
-            queued: AtomicBool::new(false),
+            core: NodeCore::new_arc(),
+            outs: Mutex::new(Vec::new()),
+            history: Mutex::new(History {
+                ticket: 0,
+                previous: None,
+            }),
             backlog: crate::settle::Backlog::default(),
             combine: std::sync::OnceLock::new(),
-            fired_run: std::sync::atomic::AtomicU64::new(0),
             height_cache: std::sync::atomic::AtomicU64::new(0),
             height_epoch: std::sync::atomic::AtomicU64::new(1),
             dependents: Mutex::new(Vec::new()),
@@ -293,6 +304,13 @@ impl<T, M> Cell<T, M> {
         // cell after every dependency.
         let raises = crate::settle::height(guard.source().as_ref())
             >= Node::node_height(self.inner.as_ref());
+        let owner: Arc<dyn Node> = self.inner.clone();
+        let owner = Arc::downgrade(&owner);
+        for (source, id) in guard.binds() {
+            if source.bind_owner(*id, owner.clone()) == Some(false) {
+                crate::settle::unbound_owned(Some(self.inner.caller));
+            }
+        }
         let previous = self.inner.owned.lock().insert(key, guard);
         drop(previous);
         if raises {
@@ -375,33 +393,26 @@ impl<T: CellValue> Node for CellInner<T> {
         height
     }
 
-    fn claim(&self) -> bool {
-        !self.queued.swap(true, Ordering::AcqRel)
+    fn node_core(&self) -> &Arc<NodeCore> {
+        &self.core
     }
 
-    fn fire(&self) {
-        // Cleared before the take: a write that joins while this cell fires
-        // must schedule it again, or its value stays pending. The cost is one
-        // empty fire when the write lands between the two lines.
-        self.queued.store(false, Ordering::Release);
-        let pending = std::mem::take(&mut *self.pending.lock());
-        let pending = self.in_settle_order(pending);
-        for signal in pending {
+    fn emit(&self, ticket: u64) {
+        let outs = std::mem::take(&mut *self.outs.lock());
+        for signal in self.combined(outs) {
             if self.completed.load(Ordering::SeqCst) || self.errored.load(Ordering::SeqCst) {
                 break;
             }
-            self.write_value(&signal);
-            crate::settle::record_fire(&self.fired_run);
+            self.write_value(ticket, &signal);
+            crate::settle::record_fire();
             #[cfg(debug_assertions)]
             let started = crate::platform::Instant::now();
             self.fanout(&signal);
-            // Every writer in the process queues behind this fanout. Name the
-            // cell when one takes long enough to look like a hang.
             #[cfg(debug_assertions)]
             if started.elapsed() > SLOW_FANOUT {
                 log::warn!(
-                    "hyphae: one fanout of the cell created at {} held the settle for {:?}; \
-                     a subscriber that blocks or computes for long delays every write in the process",
+                    "hyphae: one fanout of the cell created at {} took {:?}; \
+                     a subscriber that blocks or computes for long delays its ticket",
                     self.caller,
                     started.elapsed()
                 );
@@ -457,72 +468,47 @@ impl<T: CellValue> CellInner<T> {
         }
     }
 
-    /// Add `signal` to this cell's pending list and put the cell in the
-    /// frontier. Only a thread that is settling calls this.
+    /// Add `signal` to this cell's deliveries for the ticket being
+    /// delivered on this thread, or to its value when it is the node firing.
     fn accept(self: &Arc<Self>, signal: Signal<T>, latest: bool, order: Order) {
-        self.accept_stamped(stamp(), signal, latest, order);
-    }
-
-    fn accept_stamped(
-        self: &Arc<Self>,
-        stamp: Stamp,
-        signal: Signal<T>,
-        latest: bool,
-        order: Order,
-    ) {
-        let latest = match self.combine.get() {
-            Some(Combine::Latest) => true,
-            Some(Combine::Each | Combine::Fold(_)) => false,
-            None => latest,
-        };
-        let displaced = {
-            let mut pending = self.pending.lock();
-            match (pending.last_mut(), signal) {
-                // The last arrival wins whatever its stamp: a fan-in pushes
-                // under its state lock, so a later push holds more.
-                (Some((_, Signal::Value(held))), Signal::Value(next)) if latest => {
-                    Some(std::mem::replace(held, next))
-                }
-                (last, signal) => {
-                    // A terminal ends the stream after what its writer has
-                    // seen, so it stays behind every value already here.
-                    let order = match signal {
-                        Signal::Value(_) => order,
-                        Signal::Complete | Signal::Error(_) => Order::Arrival,
-                    };
-                    let stamp = match (order, last) {
-                        (Order::Arrival, Some((last, _))) => stamp.max(*last),
-                        _ => stamp,
-                    };
-                    pending.push((stamp, signal));
-                    None
-                }
-            }
-        };
-        // A replaced value can own cells whose drop takes other cell locks.
-        drop(displaced);
-        let node: Arc<dyn Node> = self.clone();
-        crate::settle::schedule(Arc::downgrade(&node), self.node_height());
-    }
-
-    /// Put the pending values in the order a one-thread settle delivers
-    /// them, then fold them when this cell folds.
-    ///
-    /// Nodes of one height fire at the same time, so their values reach this
-    /// cell in any order. The stamp restores the order. Values that one node
-    /// pushed share a stamp and keep their arrival order. A value pushed with
-    /// [`Order::Arrival`] never moves ahead of a value that arrived before it.
-    /// A `Latest` cell keeps arrival order.
-    fn in_settle_order(&self, mut pending: Vec<(Stamp, Signal<T>)>) -> Vec<Signal<T>> {
-        let combine = self.combine.get();
-        if !matches!(combine, Some(Combine::Latest))
-            && !pending.is_sorted_by_key(|(stamp, _)| *stamp)
-        {
-            pending.sort_by_key(|(stamp, _)| *stamp);
+        if crate::settle::collecting(self.as_ref()) {
+            self.outs.lock().push((signal, latest));
+            return;
         }
-        let signals = pending.into_iter().map(|(_, signal)| signal);
+        // A terminal ends the stream after what its writer has seen, so it
+        // stays behind every value already here.
+        let arrival = matches!(order, Order::Arrival) || !matches!(signal, Signal::Value(_));
+        let weak = Arc::downgrade(self);
+        let node: Arc<dyn Node> = self.clone();
+        crate::settle::push_current(
+            &node,
+            arrival,
+            Box::new(move || {
+                if let Some(cell) = weak.upgrade() {
+                    cell.outs.lock().push((signal, latest));
+                }
+            }),
+        );
+    }
+
+    /// Combine the values one ticket produced: a value that may replace the
+    /// one before it does so, and a folding cell folds.
+    fn combined(&self, outs: Vec<(Signal<T>, bool)>) -> Vec<Signal<T>> {
+        let combine = self.combine.get();
+        let mut signals: Vec<Signal<T>> = Vec::with_capacity(outs.len());
+        for (signal, latest) in outs {
+            let latest = match combine {
+                Some(Combine::Latest) => true,
+                Some(Combine::Each | Combine::Fold(_)) => false,
+                None => latest,
+            };
+            match (signals.last_mut(), signal) {
+                (Some(Signal::Value(held)), Signal::Value(next)) if latest => *held = next,
+                (_, signal) => signals.push(signal),
+            }
+        }
         let Some(Combine::Fold(fold)) = combine else {
-            return signals.collect();
+            return signals;
         };
         let mut folded: Vec<Signal<T>> = Vec::new();
         for signal in signals {
@@ -657,7 +643,21 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
         {
             return;
         }
+        if let Some(node) = dependent.upgrade() {
+            node.node_core().add_input(&self.inner.core);
+        }
         dependents.push(dependent);
+    }
+
+    fn bind_owner(&self, id: Uuid, owner: Weak<dyn Node>) -> Option<bool> {
+        if let Some(sub) = self.inner.subscribers.lock().get(&id) {
+            return Some(sub.bind(owner));
+        }
+        self.inner
+            .result_subscribers
+            .lock()
+            .get(&id)
+            .map(|_| false)
     }
 
     fn subscriber_count(&self) -> usize {
@@ -707,11 +707,18 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
 impl<T: CellValue> CellInner<T> {
     /// Store this cell's current value, or its completed or errored state.
     #[cfg_attr(feature = "profiling", inline(never))]
-    fn write_value(&self, signal: &Signal<T>) {
+    fn write_value(&self, ticket: u64, signal: &Signal<T>) {
         match signal {
             Signal::Value(value) => {
                 let previous = std::mem::replace(&mut *self.value.lock(), value.clone());
-                drop(previous);
+                let displaced = {
+                    let mut history = self.history.lock();
+                    let at = history.ticket;
+                    let older = history.previous.replace((at, previous));
+                    history.ticket = ticket;
+                    older
+                };
+                drop(displaced);
             }
             Signal::Complete => {
                 self.completed.store(true, Ordering::SeqCst);
@@ -764,6 +771,17 @@ impl<T: CellValue> CellInner<T> {
         // rest of this fanout, which is a bug in the subscriber that should surface
         // loudly rather than be silently swallowed.
         for (_subscriber_id, sub) in subs.as_slice() {
+            // A bound subscription's callback computes its owner, so it runs
+            // at the owner's fire of this ticket.
+            if let Some(owner) = sub.owner()
+                && crate::settle::defer_to_owner(&owner, || {
+                    let sub = Arc::clone(sub);
+                    let signal = signal.clone();
+                    Box::new(move || sub.deliver(&signal))
+                })
+            {
+                continue;
+            }
             sub.deliver(signal);
         }
 
@@ -794,6 +812,7 @@ impl<T: CellValue> CellInner<T> {
 
 impl<T: CellValue, U: Send + Sync + 'static> Gettable<T> for Cell<T, U> {
     fn get(&self) -> T {
+        crate::settle::record_side_read();
         // Brief lock to clone the Arc (refcount bump), release, then deref
         // and clone T outside the lock. Keeps the critical section small.
         let arc = self.inner.value.lock().clone();
@@ -838,6 +857,7 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
         // raced the insert above already delivers to this now-indexed
         // subscriber; a duplicate value delivery is benign, and any one-emit
         // ordering skew self-heals on the next notify.
+        crate::settle::record_side_read();
         let current = self.inner.value.lock().clone();
         sub.finish_initial(&Signal::Value(current));
 

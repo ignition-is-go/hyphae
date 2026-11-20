@@ -95,6 +95,8 @@ fn projection_initialization_batch_keeps_newer_inner_value() {
         .materialize();
 
     source.insert_many(vec![(1, ()), (2, ())]);
+    // The callback's write is its own ticket; the writer is owed only its own.
+    crate::settle::flush();
 
     assert_eq!(first.get(), Some((7, 42)));
     assert_eq!(output.get(&8).materialize().get(), Some(84));
@@ -122,6 +124,8 @@ fn projection_initialization_reentrant_sink_keeps_latest_value() {
     });
 
     source.insert(1, ());
+    // The callback's write is its own ticket; the writer is owed only its own.
+    crate::settle::flush();
 
     assert_eq!(value.get(), Some((7, 20)));
     assert_eq!(output.get(&7).materialize().get(), Some(20));
@@ -197,6 +201,8 @@ fn projection_initialization_queued_old_replay_cannot_replace_new_subscription()
     });
 
     source.insert(1, 0);
+    // The callback's write is its own ticket; the writer is owed only its own.
+    crate::settle::flush();
 
     assert_eq!(output.get(&7).materialize().get(), Some(20));
 }

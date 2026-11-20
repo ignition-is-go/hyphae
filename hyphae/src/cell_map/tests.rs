@@ -1042,6 +1042,8 @@ fn existing_key_diff_preserves_reentrant_membership_changes() {
             }
         };
         map.apply_diff_owned(diff);
+        // The callback's write is its own ticket; the writer is owed only its own.
+        crate::settle::flush();
         assert_eq!(length.get(), 2);
         assert_eq!(map.get_value(&"removable".to_owned()), None);
         assert_eq!(map.get_value(&"added".to_owned()), Some(9));

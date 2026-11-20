@@ -28,6 +28,18 @@ pub trait DepNode: Send + Sync {
     #[doc(hidden)]
     fn add_dependent(&self, _dependent: std::sync::Weak<dyn crate::settle::Node>) {}
 
+    /// Bind the subscription `id` on this node to `owner`, so its callback
+    /// runs at `owner`'s fire. `None` when no subscription with a callback
+    /// has that id here; `Some(false)` when one does and cannot be bound.
+    #[doc(hidden)]
+    fn bind_owner(
+        &self,
+        _id: uuid::Uuid,
+        _owner: std::sync::Weak<dyn crate::settle::Node>,
+    ) -> Option<bool> {
+        None
+    }
+
     fn subscriber_count(&self) -> usize {
         0
     }

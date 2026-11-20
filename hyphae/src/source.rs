@@ -64,11 +64,10 @@ pub(crate) struct SourceInner<T> {
     /// Whether this source has completed (no more values will be emitted).
     pub(crate) completed: AtomicBool,
     /// Events waiting for this source's turn in the settle in progress.
-    pub(crate) pending: Mutex<Vec<Signal<T>>>,
-    /// True while this source is in the settle frontier.
-    pub(crate) queued: AtomicBool,
-    /// The settle in which this source last fanned out.
-    pub(crate) fired_run: std::sync::atomic::AtomicU64,
+    /// Scheduler state.
+    pub(crate) core: Arc<crate::settle::NodeCore>,
+    /// The events this source's deliveries produced for the ticket it fires.
+    pub(crate) outs: Mutex<Vec<Signal<T>>>,
     /// Source location where this source was created (`#[track_caller]`).
     #[allow(dead_code)]
     pub(crate) caller: &'static Location<'static>,
@@ -132,9 +131,8 @@ impl<T: CellValue> Source<T> {
             owned: Mutex::new(FxHashMap::default()),
             dependents: Mutex::new(Vec::new()),
             completed: AtomicBool::new(false),
-            pending: Mutex::new(Vec::new()),
-            queued: AtomicBool::new(false),
-            fired_run: std::sync::atomic::AtomicU64::new(0),
+            core: crate::settle::NodeCore::new_arc(),
+            outs: Mutex::new(Vec::new()),
             caller: Location::caller(),
         });
         Self {
@@ -239,10 +237,8 @@ impl<T: CellValue> SourceInner<T> {
         }
         // A source has height 0, so a write made during a settle never joins
         // it. Every emit goes through the input queue under the source's key.
-        let (high, low) = self.id.as_u64_pair();
-        let key = high ^ low;
         crate::settle::submit_write(
-            crate::settle::SettleKey::Exclusive(key),
+            crate::settle::SettleKey::Shared,
             Box::new(SourceWrite {
                 source: Arc::downgrade(self),
                 signal,
@@ -261,9 +257,18 @@ impl<T: CellValue> crate::settle::Write for SourceWrite<T> {
         let Some(source) = self.source.upgrade() else {
             return;
         };
-        source.pending.lock().push(self.signal);
-        let node: Arc<dyn crate::settle::Node> = source;
-        crate::settle::schedule(Arc::downgrade(&node), 0);
+        let node: Arc<dyn crate::settle::Node> = source.clone();
+        let weak = Arc::downgrade(&source);
+        let signal = self.signal;
+        crate::settle::push_current(
+            &node,
+            true,
+            Box::new(move || {
+                if let Some(source) = weak.upgrade() {
+                    source.outs.lock().push(signal);
+                }
+            }),
+        );
     }
 }
 
@@ -276,14 +281,13 @@ impl<T: CellValue> crate::settle::Node for SourceInner<T> {
         0
     }
 
-    fn claim(&self) -> bool {
-        !self.queued.swap(true, Ordering::AcqRel)
+    fn node_core(&self) -> &Arc<crate::settle::NodeCore> {
+        &self.core
     }
 
-    fn fire(&self) {
-        self.queued.store(false, Ordering::Release);
-        let pending = std::mem::take(&mut *self.pending.lock());
-        for signal in pending {
+    fn emit(&self, _ticket: u64) {
+        let outs = std::mem::take(&mut *self.outs.lock());
+        for signal in outs {
             let terminal = !matches!(signal, Signal::Value(_));
             let already_complete = if terminal {
                 self.completed.swap(true, Ordering::SeqCst)
@@ -293,10 +297,19 @@ impl<T: CellValue> crate::settle::Node for SourceInner<T> {
             if already_complete {
                 break;
             }
-            crate::settle::record_fire(&self.fired_run);
+            crate::settle::record_fire();
             // Callbacks run with the registry lock released.
             let subscribers = Arc::clone(&*self.subscribers.lock());
             for (_id, subscriber) in subscribers.iter() {
+                if let Some(owner) = subscriber.owner()
+                    && crate::settle::defer_to_owner(&owner, || {
+                        let subscriber = Arc::clone(subscriber);
+                        let signal = signal.clone();
+                        Box::new(move || (subscriber.callback)(&signal))
+                    })
+                {
+                    continue;
+                }
                 (subscriber.callback)(&signal);
             }
         }
@@ -406,8 +419,23 @@ impl<T: Send + Sync> DepNode for Source<T> {
             .iter()
             .any(|existing| existing.as_ptr().cast::<()>() == address)
         {
+            if let Some(node) = dependent.upgrade() {
+                node.node_core().add_input(&self.inner.core);
+            }
             dependents.push(dependent);
         }
+    }
+
+    fn bind_owner(
+        &self,
+        id: Uuid,
+        owner: std::sync::Weak<dyn crate::settle::Node>,
+    ) -> Option<bool> {
+        let subscribers = Arc::clone(&*self.inner.subscribers.lock());
+        subscribers
+            .iter()
+            .find(|(existing, _)| *existing == id)
+            .map(|(_, subscriber)| subscriber.bind(owner))
     }
 }
 

@@ -183,7 +183,7 @@ impl<T: CellValue> PipelineInstall<T> for SharedPipeline<T> {
         // 2. Ensure the upstream is subscribed exactly once. The first install
         //    after construction (or after a drain-and-revive race) wins; the
         //    others see `Some(_)` and bail out.
-        {
+        let upstream = {
             let mut guard_slot = self.inner.upstream_guard.lock();
             if guard_slot.is_none() {
                 let weak = Arc::downgrade(&self.inner);
@@ -202,12 +202,15 @@ impl<T: CellValue> PipelineInstall<T> for SharedPipeline<T> {
                 let upstream_guard = self.inner.upstream.install_upstream(fanout);
                 *guard_slot = Some(upstream_guard);
             }
-        }
+            guard_slot.as_ref().map(|guard| Arc::clone(guard.source()))
+        };
 
         // 3. Build a SubscriptionGuard whose Drop removes this subscriber and
         //    releases the upstream guard if it was the last one.
+        // The guard names the upstream node, so an owner declares its edge
+        // from it: the fanout writes each consumer inside the ticket.
         let inner = Arc::clone(&self.inner);
-        SubscriptionGuard::from_callback(move || {
+        let release = move || {
             let remaining = inner.remove_subscriber(id);
             if remaining == 0 {
                 let mut slot = inner.upstream_guard.lock();
@@ -215,7 +218,11 @@ impl<T: CellValue> PipelineInstall<T> for SharedPipeline<T> {
                 drop(slot);
                 drop(drop_outside_lock);
             }
-        })
+        };
+        match upstream {
+            Some(source) => SubscriptionGuard::new(id, source, release),
+            None => SubscriptionGuard::from_callback(release),
+        }
     }
 }
 

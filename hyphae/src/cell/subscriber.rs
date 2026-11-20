@@ -217,6 +217,14 @@ impl<S> SubscriberRegistry<S> {
         self.index.len()
     }
 
+    pub(crate) fn get(&self, id: &Uuid) -> Option<Arc<S>> {
+        match &self.index {
+            SubIndex::Zero => None,
+            SubIndex::One(existing, sub) => (existing == id).then(|| Arc::clone(sub)),
+            SubIndex::Many(map) => map.get(id).cloned(),
+        }
+    }
+
     /// Current notify snapshot, rebuilt from `index` if the index changed since
     /// the last call. Returns `(snapshot_to_iterate, displaced_old_snapshot)`;
     /// the caller must drop the displaced snapshot outside the lock — it may
@@ -251,6 +259,23 @@ pub(crate) struct Subscriber<T> {
     pub(crate) callback: SubscriberCallback<T>,
     initializing: AtomicBool,
     pending: Mutex<Vec<Signal<T>>>,
+    /// The node that owns this subscription's guard. Its callback computes
+    /// that node, so it runs at that node's fire.
+    owner: std::sync::OnceLock<std::sync::Weak<dyn crate::settle::Node>>,
+}
+
+impl<T> Subscriber<T> {
+    /// Bind this subscription to the node that owns its guard. False when it
+    /// is already bound to another node.
+    pub(crate) fn bind(&self, owner: std::sync::Weak<dyn crate::settle::Node>) -> bool {
+        let address = owner.as_ptr().cast::<()>();
+        let bound = self.owner.get_or_init(|| owner);
+        bound.as_ptr().cast::<()>() == address
+    }
+
+    pub(crate) fn owner(&self) -> Option<Arc<dyn crate::settle::Node>> {
+        self.owner.get().and_then(std::sync::Weak::upgrade)
+    }
 }
 
 impl<T: Clone> Subscriber<T> {
@@ -259,6 +284,7 @@ impl<T: Clone> Subscriber<T> {
             callback: Arc::new(callback),
             initializing: AtomicBool::new(true),
             pending: Mutex::new(Vec::new()),
+            owner: std::sync::OnceLock::new(),
         }
     }
 
@@ -267,6 +293,7 @@ impl<T: Clone> Subscriber<T> {
             callback,
             initializing: AtomicBool::new(false),
             pending: Mutex::new(Vec::new()),
+            owner: std::sync::OnceLock::new(),
         }
     }
 

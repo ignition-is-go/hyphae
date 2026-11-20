@@ -280,6 +280,8 @@ fn reentrant_root_changes_wait_for_the_active_fanout_transaction() {
         .clear();
     armed.store(true, Ordering::Release);
     source.insert(1, 10);
+    // The callback's write is its own ticket; the writer is owed only its own.
+    crate::settle::flush();
 
     let events = events
         .lock()
@@ -426,6 +428,8 @@ fn synchronous_different_root_mutation_is_deferred_until_a_finishes() {
     armed.store(true, Ordering::Release);
 
     first.insert(1, 10);
+    // The callback's write is its own ticket; the writer is owed only its own.
+    crate::settle::flush();
 
     assert_eq!(
         *observed
@@ -492,6 +496,8 @@ fn reentrant_different_root_waits_for_complete_repeated_fanout() {
     armed.store(true, Ordering::Release);
 
     first.insert(1, 10);
+    // The callback's write is its own ticket; the writer is owed only its own.
+    crate::settle::flush();
 
     assert_eq!(
         *observed

@@ -68,6 +68,7 @@ web-time = "1"
 tasks = ["fmt", "check", "check-wasm", "check-wasm-features", "build", "test", "lint", "publish"]
 
 [dev-dependencies]
+loom = "0.7"
 criterion = "0.5"
 seq-macro = "0.3"
 

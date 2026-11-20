@@ -10,6 +10,9 @@ pub struct SubscriptionGuard {
     unsubscribe_fn: Option<Box<dyn FnMut() + Send + Sync>>,
     id: Uuid,
     source: Arc<dyn DepNode>,
+    /// The subscriptions this guard holds, as `(source, id)`, for binding
+    /// to the node that owns the guard.
+    binds: Vec<(Arc<dyn DepNode>, Uuid)>,
 }
 
 /// Minimal `DepNode` for callback-only guards (no real cell dependency).
@@ -66,6 +69,7 @@ impl SubscriptionGuard {
         Self {
             unsubscribe_fn: Some(Box::new(unsubscribe_fn)),
             id,
+            binds: vec![(Arc::clone(&source), id)],
             source,
         }
     }
@@ -96,6 +100,7 @@ impl SubscriptionGuard {
             unsubscribe_fn: Some(Box::new(callback)),
             id,
             source: Arc::new(CallbackDepNode(id)),
+            binds: Vec::new(),
         }
     }
 
@@ -107,13 +112,16 @@ impl SubscriptionGuard {
     /// upstream dependency rather than a callback-only placeholder.
     pub(crate) fn with_cleanup(self, mut cleanup: impl FnMut() + Send + Sync + 'static) -> Self {
         let source = self.source.clone();
+        let binds = self.binds.clone();
         let mut guard = Some(self);
-        Self::new(Uuid::new_v4(), source, move || {
+        let mut wrapped = Self::new(Uuid::new_v4(), source, move || {
             cleanup();
             if let Some(guard) = guard.take() {
                 drop(guard);
             }
-        })
+        });
+        wrapped.binds = binds;
+        wrapped
     }
 
     /// Combine multiple upstream subscriptions into one pipeline guard.
@@ -131,18 +139,25 @@ impl SubscriptionGuard {
             _ => {
                 let id = Uuid::new_v4();
                 let sources = guards.iter().map(|guard| guard.source.clone()).collect();
+                let binds = guards.iter().flat_map(|guard| guard.binds.clone()).collect();
                 let source = Arc::new(CompositeDepNode { id, sources });
                 let mut guards = Some(guards);
-                Self::new(id, source, move || {
+                let mut combined = Self::new(id, source, move || {
                     if let Some(guards) = guards.take() {
                         drop(guards);
                     }
-                })
+                });
+                combined.binds = binds;
+                combined
             }
         }
     }
 
     /// Get the source cell this subscription is connected to.
+    pub(crate) fn binds(&self) -> &[(Arc<dyn DepNode>, Uuid)] {
+        &self.binds
+    }
+
     #[must_use]
     pub fn source(&self) -> &Arc<dyn DepNode> {
         &self.source
