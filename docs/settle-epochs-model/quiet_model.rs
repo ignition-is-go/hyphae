@@ -8,6 +8,13 @@
 //
 // Graph: X -> P -> B, Y -> B, B -> C, Z -> C. C joins an active input (Z) and
 // a long-quiet input (B).
+//
+// GATE=1 models a family reader. Stores S and T feed a root R, the family
+// node F hears R and the key K, and the reader L hears K, its row W (fed by
+// S), and F along an edge gated by K: F counts toward L at ticket t only when
+// K delivered t to L, and F writes L only then. C joins L and Z. Clearing and
+// validation follow ungated edges only, so a seed at T, which L's row never
+// reads, leaves L's mark alone.
 use std::collections::{HashMap, VecDeque};
 
 const X: usize = 0;
@@ -16,23 +23,71 @@ const Z: usize = 2;
 const P: usize = 3;
 const B: usize = 4;
 const C: usize = 5;
-const NODES: usize = 6;
+// GATE=1 nodes.
+const S: usize = 0;
+const T: usize = 1;
+const K: usize = 3;
+const R: usize = 4;
+const F: usize = 6;
+const W: usize = 7;
+const L: usize = 8;
+const NODES: usize = 9;
 const NONE: u8 = 0;
 const TENTATIVE: u8 = 1;
 const QUIET: u8 = 2;
 const EDGES: [(usize, usize); 5] = [(X, P), (P, B), (Y, B), (B, C), (Z, C)];
 const VALIDATE: [usize; 4] = [X, Y, P, B]; // B's ancestry in height order
+const GATE_EDGES: [(usize, usize); 9] =
+    [(S, W), (S, R), (T, R), (R, F), (K, F), (K, L), (W, L), (L, C), (Z, C)];
+/// F -> L, gated by K.
+const GATED: (usize, usize, usize) = (F, L, K);
+/// L's ungated ancestry, then F's: a reader's open gate validates F, so F and
+/// its ancestry can hold marks a seed at T must clear.
+const GATE_VALIDATE: [usize; 7] = [S, K, W, L, T, R, F];
+
+fn gated() -> bool {
+    std::env::var("GATE").is_ok_and(|g| g == "1")
+}
 
 fn mutant(name: &str) -> bool {
     std::env::var("MUTANT").is_ok_and(|m| m == name)
 }
 
-fn inputs(n: usize) -> impl Iterator<Item = usize> {
-    EDGES.iter().filter(move |e| e.1 == n).map(|e| e.0)
+fn edges() -> &'static [(usize, usize)] {
+    if gated() { &GATE_EDGES } else { &EDGES }
 }
 
+fn validate_chain() -> &'static [usize] {
+    if gated() { &GATE_VALIDATE } else { &VALIDATE }
+}
+
+/// The node C reads as a long-quiet input.
+fn quiet_input() -> usize {
+    if gated() { L } else { B }
+}
+
+fn inputs(n: usize) -> impl Iterator<Item = usize> {
+    edges().iter().filter(move |e| e.1 == n).map(|e| e.0)
+}
+
+/// Ungated outputs; with `clear_through_gate`, clearing also follows F -> L.
 fn outputs(n: usize) -> impl Iterator<Item = usize> {
-    EDGES.iter().filter(move |e| e.0 == n).map(|e| e.1)
+    let through = gated() && mutant("clear_through_gate") && n == GATED.0;
+    edges()
+        .iter()
+        .filter(move |e| e.0 == n)
+        .map(|e| e.1)
+        .chain(through.then_some(GATED.1))
+}
+
+/// Data outputs of a fire at `t`: the ungated ones, and F -> L when K
+/// delivered `t` to L.
+fn pushes(s: &St, n: usize, t: u8) -> Vec<usize> {
+    let mut out: Vec<usize> = edges().iter().filter(|e| e.0 == n).map(|e| e.1).collect();
+    if gated() && n == GATED.0 && s.key_at.contains(&t) {
+        out.push(GATED.1);
+    }
+    out
 }
 
 fn ancestry(n: usize, out: &mut Vec<usize>) {
@@ -72,6 +127,10 @@ struct St {
     quiet: [u8; NODES],
     admit: Admit,
     validate: Validate,
+    /// The source of the ticket being seeded, while it is.
+    seed_at: Option<u8>,
+    /// GATE=1: the tickets K delivered to L.
+    key_at: Vec<u8>,
 }
 
 fn at(s: &St, n: usize, t: u8) -> i32 {
@@ -86,6 +145,17 @@ fn contrib(s: &St, i: usize) -> u8 {
 
 fn input_w(s: &St, n: usize) -> u8 {
     inputs(n).map(|i| contrib(s, i)).fold(s.seeded, u8::min)
+}
+
+/// The fire rule at `t`, with F counted toward L only when the gate is open.
+fn may_fire(s: &St, n: usize, t: u8) -> bool {
+    if t >= input_w(s, n) {
+        return false;
+    }
+    if gated() && n == GATED.1 && s.key_at.contains(&t) && !mutant("quiet_ignores_gate") {
+        return contrib(s, GATED.0) > t;
+    }
+    true
 }
 
 fn min_pend(s: &St, n: usize) -> u8 {
@@ -104,6 +174,11 @@ fn check_quiet(s: &St) -> Result<(), String> {
             if s.pend[a].iter().any(|&t| t < s.seeded) {
                 return Err(format!("node {n} is quiet while node {a} holds {:?} below S={}", s.pend[a], s.seeded));
             }
+        }
+        // A gate is open only at a ticket K delivered to L, which L then
+        // holds, so a quiet L has no open gate.
+        if gated() && n == GATED.1 && s.key_at.iter().any(|t| s.pend[L].contains(t)) {
+            return Err(format!("L is quiet while it holds a key ticket {:?}", s.pend[L]));
         }
     }
     Ok(())
@@ -129,6 +204,7 @@ fn succ(s: &St, q: &[usize], out: &mut Vec<St>) -> Result<(), String> {
             let x = q[t as usize];
             push(&mut n, t, x)?;
             n.quiet[x] = NONE;
+            n.seed_at = Some(x as u8);
             let work: Vec<u8> = outputs(x).map(|d| d as u8).collect();
             if mutant("publish_before_invalidate") {
                 n.seeded += 1;
@@ -143,6 +219,9 @@ fn succ(s: &St, q: &[usize], out: &mut Vec<St>) -> Result<(), String> {
             let mut work = work.clone();
             if let Some(d) = work.pop() {
                 let d = d as usize;
+                if gated() && d == L && n.seed_at == Some(T as u8) && n.quiet[L] != NONE {
+                    return Err("a seed at T, which L's row never reads, cleared L's mark".into());
+                }
                 // Stop at a node that is not quiet: by closure nothing below it is.
                 if n.quiet[d] != NONE {
                     n.quiet[d] = NONE;
@@ -156,6 +235,7 @@ fn succ(s: &St, q: &[usize], out: &mut Vec<St>) -> Result<(), String> {
                     n.seeded = ticket + 1;
                 }
                 n.admit = Admit::Idle;
+                n.seed_at = None;
             }
             out.push(n);
         }
@@ -164,7 +244,7 @@ fn succ(s: &St, q: &[usize], out: &mut Vec<St>) -> Result<(), String> {
     // Validation of C's quiet input B, started on demand.
     match s.validate {
         Validate::Idle => {
-            if !s.pend[C].is_empty() && s.quiet[B] != QUIET {
+            if !s.pend[C].is_empty() && s.quiet[quiet_input()] != QUIET {
                 let mut n = s.clone();
                 n.validate = Validate::Mark(0);
                 out.push(n);
@@ -172,7 +252,7 @@ fn succ(s: &St, q: &[usize], out: &mut Vec<St>) -> Result<(), String> {
         }
         Validate::Mark(i) => {
             let mut n = s.clone();
-            let v = VALIDATE[i as usize];
+            let v = validate_chain()[i as usize];
             let ok = n.pend[v].is_empty() && (mutant("mark_ignores_inputs") || inputs(v).all(|u| n.quiet[u] == QUIET));
             n.validate = if ok { Validate::Write(i) } else { Validate::Idle };
             out.push(n);
@@ -181,11 +261,11 @@ fn succ(s: &St, q: &[usize], out: &mut Vec<St>) -> Result<(), String> {
             // The mark is written in a separate step from the read that
             // justified it, as on real hardware.
             let mut n = s.clone();
-            let v = VALIDATE[i as usize];
+            let v = validate_chain()[i as usize];
             {
                 n.quiet[v] = if mutant("no_recheck") { QUIET } else { TENTATIVE };
                 n.validate = if mutant("no_recheck") {
-                    if (i as usize) + 1 < VALIDATE.len() { Validate::Mark(i + 1) } else { Validate::Idle }
+                    if (i as usize) + 1 < validate_chain().len() { Validate::Mark(i + 1) } else { Validate::Idle }
                 } else {
                     Validate::Recheck(i)
                 };
@@ -194,7 +274,7 @@ fn succ(s: &St, q: &[usize], out: &mut Vec<St>) -> Result<(), String> {
         }
         Validate::Recheck(i) => {
             let mut n = s.clone();
-            let v = VALIDATE[i as usize];
+            let v = validate_chain()[i as usize];
             if n.pend[v].is_empty() && (mutant("mark_ignores_inputs") || inputs(v).all(|u| n.quiet[u] == QUIET)) {
                 n.validate = Validate::Promote(i);
             } else {
@@ -208,10 +288,10 @@ fn succ(s: &St, q: &[usize], out: &mut Vec<St>) -> Result<(), String> {
         Validate::Promote(i) => {
             // compare_exchange(TENTATIVE, QUIET): fails if a seeder cleared it.
             let mut n = s.clone();
-            let v = VALIDATE[i as usize];
+            let v = validate_chain()[i as usize];
             if n.quiet[v] == TENTATIVE || mutant("blind_promote") {
                 n.quiet[v] = QUIET;
-                n.validate = if (i as usize) + 1 < VALIDATE.len() { Validate::Mark(i + 1) } else { Validate::Idle };
+                n.validate = if (i as usize) + 1 < validate_chain().len() { Validate::Mark(i + 1) } else { Validate::Idle };
             } else {
                 n.validate = Validate::Idle;
             }
@@ -229,7 +309,7 @@ fn succ(s: &St, q: &[usize], out: &mut Vec<St>) -> Result<(), String> {
     }
     for v in 0..NODES {
         let Some(&t) = s.pend[v].first() else { continue };
-        if t >= input_w(s, v) {
+        if !may_fire(s, v, t) {
             continue;
         }
         let mut n = s.clone();
@@ -238,15 +318,12 @@ fn succ(s: &St, q: &[usize], out: &mut Vec<St>) -> Result<(), String> {
         }
         n.processed[v] = t as i16;
         n.pend[v].retain(|&p| p != t);
-        let value = match v {
-            X | Y | Z => t as i32 + 1,
-            P => at(&n, X, t),
-            B => at(&n, P, t) + 10 * at(&n, Y, t),
-            C => at(&n, Z, t) + 1000 * at(&n, B, t),
-            _ => unreachable!(),
-        };
+        let value = value(&n, v, t);
         n.hist[v].push((t, value));
-        for d in outputs(v) {
+        if gated() && v == K {
+            n.key_at.push(t);
+        }
+        for d in pushes(&n, v, t) {
             if n.quiet[d] == QUIET {
                 return Err(format!("push of t{t} into quiet node {d}"));
             }
@@ -257,7 +334,31 @@ fn succ(s: &St, q: &[usize], out: &mut Vec<St>) -> Result<(), String> {
     Ok(())
 }
 
+fn value(n: &St, v: usize, t: u8) -> i32 {
+    if gated() {
+        return match v {
+            S | T | K | Z => t as i32 + 1,
+            R => at(n, S, t) + at(n, T, t),
+            F => at(n, R, t) + at(n, K, t),
+            W => at(n, S, t),
+            L => at(n, W, t) + 100 * at(n, K, t),
+            C => at(n, Z, t) + 1000 * at(n, L, t),
+            _ => unreachable!(),
+        };
+    }
+    match v {
+        X | Y | Z => t as i32 + 1,
+        P => at(n, X, t),
+        B => at(n, P, t) + 10 * at(n, Y, t),
+        C => at(n, Z, t) + 1000 * at(n, B, t),
+        _ => 0,
+    }
+}
+
 fn serial(q: &[usize]) -> [Vec<(u8, i32)>; NODES] {
+    if gated() {
+        return serial_gated(q);
+    }
     let mut val = [0i32; NODES];
     let mut hist: [Vec<(u8, i32)>; NODES] = Default::default();
     for (t, &x) in q.iter().enumerate() {
@@ -279,6 +380,42 @@ fn serial(q: &[usize]) -> [Vec<(u8, i32)>; NODES] {
     hist
 }
 
+/// GATE=1: each ticket's touched nodes fire once, in topological order.
+fn serial_gated(q: &[usize]) -> [Vec<(u8, i32)>; NODES] {
+    let order = [S, T, K, Z, R, W, F, L, C];
+    let mut s = St {
+        seeded: 0,
+        pend: Default::default(),
+        hist: Default::default(),
+        processed: [-1; NODES],
+        cw: [0; NODES],
+        quiet: [NONE; NODES],
+        admit: Admit::Idle,
+        validate: Validate::Idle,
+        seed_at: None,
+        key_at: Vec::new(),
+    };
+    for (t, &x) in q.iter().enumerate() {
+        let t = t as u8;
+        let mut touched = [false; NODES];
+        touched[x] = true;
+        for &v in &order {
+            if !touched[v] {
+                continue;
+            }
+            let val = value(&s, v, t);
+            s.hist[v].push((t, val));
+            if v == K {
+                s.key_at.push(t);
+            }
+            for d in pushes(&s, v, t) {
+                touched[d] = true;
+            }
+        }
+    }
+    s.hist
+}
+
 fn check(q: &[usize]) -> Result<usize, String> {
     let init = St {
         seeded: 0,
@@ -289,6 +426,8 @@ fn check(q: &[usize]) -> Result<usize, String> {
         quiet: [NONE; NODES],
         admit: Admit::Idle,
         validate: Validate::Idle,
+        seed_at: None,
+        key_at: Vec::new(),
     };
     let want = serial(q);
     let mut ids: HashMap<St, usize> = HashMap::new();
@@ -346,8 +485,10 @@ fn check(q: &[usize]) -> Result<usize, String> {
 fn main() {
     let k: u32 = std::env::args().nth(1).map_or(3, |a| a.parse().unwrap());
     let (mut total, mut configs) = (0, 0);
-    for mask in 0..3u32.pow(k) {
-        let q: Vec<usize> = (0..k).map(|t| [X, Y, Z][(mask / 3u32.pow(t) % 3) as usize]).collect();
+    let sources: &[usize] = if gated() { &[S, T, K, Z] } else { &[X, Y, Z] };
+    let n = sources.len() as u32;
+    for mask in 0..n.pow(k) {
+        let q: Vec<usize> = (0..k).map(|t| sources[(mask / n.pow(t) % n) as usize]).collect();
         match check(&q) {
             Ok(n) => {
                 total += n;
