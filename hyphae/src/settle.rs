@@ -29,9 +29,11 @@ use uuid::Uuid;
 
 use crate::traits::DepNode;
 
+mod quiet;
 mod shadow;
 mod wave;
 
+pub use quiet::QuietStats;
 #[doc(hidden)]
 pub use shadow::Shadow;
 pub use shadow::{Histogram, ShadowStats};
@@ -692,8 +694,12 @@ pub(crate) fn position(target: impl FnOnce() -> u64, backlog: &Backlog) -> Posit
 /// Ask for `node` to fire in the settle in progress on this thread. Call it
 /// for every write that joins the settle; the node still fires once.
 pub(crate) fn schedule(node: &Arc<dyn Node>, height: u64) {
-    if let Some(tickets) = ACTIVE.with_borrow(|active| active.as_ref().map(|active| active.tickets))
-    {
+    if let Some((tickets, seeding)) = ACTIVE.with_borrow(|active| {
+        active
+            .as_ref()
+            .map(|active| (active.tickets, active.firing.is_none()))
+    }) {
+        quiet::pushed(node, seeding);
         shadow::push(node.shadow(), tickets);
     }
     request(Request {

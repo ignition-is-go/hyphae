@@ -27,6 +27,18 @@ pub struct Shadow {
     watermark: AtomicU64,
     pending_lo: AtomicU64,
     pending_hi: AtomicU64,
+    pub(super) mark: super::quiet::Mark,
+}
+
+impl Shadow {
+    pub(super) fn processed(&self) -> u64 {
+        self.processed.load(Ordering::Acquire)
+    }
+
+    /// Holds no pending ticket.
+    pub(super) fn is_idle(&self) -> bool {
+        self.pending_lo.load(Ordering::Acquire) == NO_TICKET
+    }
 }
 
 impl Default for Shadow {
@@ -36,6 +48,7 @@ impl Default for Shadow {
             watermark: AtomicU64::new(0),
             pending_lo: AtomicU64::new(NO_TICKET),
             pending_hi: AtomicU64::new(0),
+            mark: super::quiet::Mark::default(),
         }
     }
 }
@@ -161,20 +174,20 @@ fn bucket_floor(bucket: usize) -> u64 {
     (4u64.wrapping_add(bucket % 4)) << octave.wrapping_sub(2)
 }
 
-struct AtomicHistogram([AtomicU64; BUCKETS]);
+pub(super) struct AtomicHistogram([AtomicU64; BUCKETS]);
 
 impl AtomicHistogram {
-    const fn new() -> Self {
+    pub(super) const fn new() -> Self {
         Self([const { AtomicU64::new(0) }; BUCKETS])
     }
 
-    fn record(&self, value: u64) {
+    pub(super) fn record(&self, value: u64) {
         if let Some(slot) = self.0.get(bucket(value)) {
             slot.fetch_add(1, Ordering::Relaxed);
         }
     }
 
-    fn load(&self) -> Histogram {
+    pub(super) fn load(&self) -> Histogram {
         Histogram(self.0.each_ref().map(|slot| slot.load(Ordering::Relaxed)))
     }
 }
@@ -223,6 +236,8 @@ pub struct ShadowStats {
     pub walk_nanos: Histogram,
     /// Pulls per fire, over fires that pulled.
     pub walks_per_walked_fire: Histogram,
+    /// The quiet-certificate design measured on the same fires.
+    pub quiet: super::quiet::QuietStats,
 }
 
 static FIRES: AtomicU64 = AtomicU64::new(0);
@@ -264,6 +279,7 @@ pub(super) fn stats() -> ShadowStats {
         walk_nodes: WALK_NODES.load(),
         walk_nanos: WALK_NANOS.load(),
         walks_per_walked_fire: WALKS_PER_WALKED_FIRE.load(),
+        quiet: super::quiet::stats(),
     }
 }
 
@@ -306,7 +322,9 @@ pub(super) fn fire(node: &dyn Node) -> Tickets {
     let mut in_w = seeded;
     let mut inputs = 0u64;
     let mut walks = 0u64;
-    for input in direct_inputs(node.shadow_inputs()) {
+    let direct = direct_inputs(node.shadow_inputs());
+    super::quiet::read_inputs(&direct, lo);
+    for input in direct {
         let mut walk = Walk::new(ticket, seeded);
         let started = crate::platform::Instant::now();
         let contrib = walk.refresh(input.as_ref());
@@ -340,7 +358,7 @@ pub(super) fn fire(node: &dyn Node) -> Tickets {
 
 /// The inputs that carry tickets, looking through transparent nodes such as
 /// a pipeline's composite guard, which stands for several real inputs.
-fn direct_inputs(inputs: Vec<Arc<dyn DepNode>>) -> Vec<Arc<dyn DepNode>> {
+pub(super) fn direct_inputs(inputs: Vec<Arc<dyn DepNode>>) -> Vec<Arc<dyn DepNode>> {
     let mut direct = Vec::with_capacity(inputs.len());
     let mut stack = inputs;
     while let Some(input) = stack.pop() {
