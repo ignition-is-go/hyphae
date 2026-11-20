@@ -6,10 +6,9 @@
 //! `t + 1` can settle at low heights while ticket `t` is still settling above
 //! it. There is no settle lock.
 //!
-//! The design is `docs/settle-epochs.md` (sections 3 to 7). This is the
-//! prototype of its steps 4 to 6, with these shortcuts: `switch_map` keeps
-//! adding edges at run time, and a side read with `get()` reads the latest
-//! finished value. A callback of an owned subscription runs at its owner's
+//! The design is `docs/settle-epochs.md` (sections 3 to 7). A side read with
+//! `get()` reads the latest finished value, except inside a family row build,
+//! where it reads at the build's ticket. A callback of an owned subscription runs at its owner's
 //! fire, so operator state lives with the node it computes.
 
 use std::{

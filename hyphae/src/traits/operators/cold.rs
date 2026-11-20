@@ -7,7 +7,7 @@
 //! `Some(Arc<value>)`. Useful for trigger/event semantics where retained values
 //! should not fire downstream effects.
 //!
-//! When used inside `switch_map`, each re-creation gets a fresh cold pipeline
+//! Each re-creation gets a fresh cold pipeline
 //! (with its own first-skip), providing per-reconnection suppression of
 //! retained values.
 

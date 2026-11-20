@@ -29,9 +29,9 @@ pub use mutable::Mutable;
 pub use operators::{
     AuditExt, BackpressureExt, BufferCountExt, BufferTimeExt, CatchErrorExt, ColdExt, ConcatExt,
     DebounceExt, DedupedExt, DelayExt, DistinctExt, DistinctUntilChangedByExt, FilterExt,
-    FinalizeExt, FirstExt, JoinExt, LastExt, MapErrExt, MapExt, MapOkExt, MergeExt, MergeMapExt,
+    FinalizeExt, FirstExt, JoinExt, LastExt, MapErrExt, MapExt, MapOkExt, MergeExt,
     PairwiseExt, RetryExt, SampleExt, ScanExt, SkipExt, SkipWhileExt, StateMachineBuilder,
-    StateTransitionExt, SwitchMapExt, TakeExt, TakeUntilExt, TakeWhileExt, TapExt, ThrottleExt,
+    StateTransitionExt, TakeExt, TakeUntilExt, TakeWhileExt, TapExt, ThrottleExt,
     TimeoutExt, TryMapExt, UnwrapOrExt, WindowExt, WithLatestFromExt, ZipExt, join_vec,
 };
 pub use operators::{ParallelCell, ParallelExt};

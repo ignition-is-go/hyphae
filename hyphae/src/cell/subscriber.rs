@@ -31,7 +31,7 @@ use crate::signal::Signal;
 /// A notify snapshot, sized to the subscriber count so the common cases don't
 /// pay for the general one. Profiling rship's HRLV playback showed the *vast
 /// majority* of cells carry exactly one subscriber, yet churn-heavy sources
-/// (`switch_map` rewiring its input every fire) re-`dirty` the registry each
+/// (a subscription replaced every fire) re-`dirty` the registry each
 /// notify — so the old always-`Arc<Vec>` snapshot heap-allocated a `Vec` *and*
 /// an `Arc` per fire just to hold a single element.
 ///
@@ -87,8 +87,8 @@ impl<S> SubSnapshot<S> {
 ///
 /// **No demotion.** Once a registry reaches `Many` it stays there even if it
 /// shrinks back to one subscriber. Demoting would thrash the hash table's
-/// allocation for cells that oscillate across the 1/2 boundary (`switch_map`
-/// re-knitting subscribe-before-unsubscribe transiently holds two); keeping the
+/// allocation for cells that oscillate across the 1/2 boundary (a reader
+/// re-attaching subscribe-before-unsubscribe transiently holds two); keeping the
 /// map matches the previous always-`FxHashMap` behaviour for exactly those
 /// cells, while cells that never exceed one subscriber pay nothing. All
 /// operations stay O(1); iteration order is unspecified (it always was).
@@ -195,7 +195,7 @@ impl<S> SubscriberRegistry<S> {
     /// The stale-snapshot release is load-bearing, not bookkeeping: `remove`
     /// only marks the registry `dirty`, and the cached `snapshot` is otherwise
     /// rebuilt lazily on the *next* notify. A cell that is never notified again
-    /// — e.g. a superseded `switch_map` inner's `CellMap` `diffs_cell` — would
+    /// — e.g. a superseded row's `CellMap` `diffs_cell` — would
     /// then keep the just-removed subscriber pinned in `snapshot` forever, and
     /// a subscriber whose closure holds a `map_keepalive` `Arc<CellMapInner>`
     /// (`CellMap::items`/`subscribe_diffs`) leaks the entire map. Clearing the

@@ -14,7 +14,7 @@ use std::{
 
 use hyphae::{
     Cell, CellMap, CellSet, Gettable, JoinExt, MapDiff, MapExt, MapQuery, Materialize, MergeExt,
-    Mutable, ProjectCellExt, ScanExt, SetDiff, Signal, SwitchMapExt, TakeUntilExt, Watchable,
+    Mutable, ProjectCellExt, ScanExt, SetDiff, Signal, TakeUntilExt, Watchable,
     ZipExt, batch, flush, join_vec,
 };
 use parking_lot::Mutex;
@@ -114,40 +114,6 @@ fn a_join_vec_of_cells_that_fire_together_ends_with_all() {
         assert_eq!(joined.get(), vec![round; 16]);
     }
     assert_eq!(seen.lock().len(), usize::try_from(ROUNDS).unwrap_or(0));
-}
-
-#[test]
-fn a_switch_map_ends_on_the_new_inner_when_the_old_inner_fires_with_the_switch() {
-    waves_on();
-    let (first, second) = (Cell::new(0u64), Cell::new(0u64));
-    let pick_second = Cell::new(false);
-    let (first_inner, second_inner) = (above(&first), above(&second));
-    let switched = pick_second
-        .clone()
-        .map(|pick| *pick)
-        .materialize()
-        .switch_map(move |pick| {
-            if *pick {
-                second_inner.clone()
-            } else {
-                first_inner.clone()
-            }
-        })
-        .materialize();
-    for round in 1..=ROUNDS {
-        let to_second = round % 2 == 1;
-        let (old, new) = if to_second {
-            (&first, &second)
-        } else {
-            (&second, &first)
-        };
-        batch(|| {
-            old.set(round * 10);
-            new.set(round);
-            pick_second.set(to_second);
-        });
-        assert_eq!(switched.get(), round);
-    }
 }
 
 #[test]

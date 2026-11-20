@@ -54,7 +54,7 @@
 //! honest initial value.
 //!
 //! Operators that need state or multiple sources (`debounce`, `buffer_*`,
-//! `join`, `merge`, `switch_map`, and others) are lazy pipelines too. Their
+//! `join`, `merge`, and others) are lazy pipelines too. Their
 //! state and any required fan-in boundary are created only when the pipeline
 //! is installed. Materialize at the point where a cached value, [`Gettable`],
 //! or [`Watchable`] boundary is required.
@@ -217,11 +217,11 @@ pub use traits::{
     GroupByExt, IdFor, IdType, InnerJoinExt, JCons, JNil, JoinExt, JoinKeyFrom, JoinProjection,
     JoinRegion, JoinStage, JoinedValuesPlan, KeyChange, LastExt, LastStage, LeftJoinExt,
     LeftJoinPlan, LeftSemiJoinExt, MapEntriesExt, MapErrExt, MapExt, MapLast, MapOkExt,
-    MapValuesExt, MapValuesPlan, MergeExt, MergeMapExt, MultiLeftJoinExt, Mutable,
+    MapValuesExt, MapValuesPlan, MergeExt, MultiLeftJoinExt, Mutable,
     OptionalRightKey, OwnedIndex, PairwiseExt, ParallelCell, ParallelExt, ProjectCellExt, Push,
     ReactiveKeys, ReactiveMap, RelationPlan, ReplaceLastProject, RequiredRightKey, RetryExt,
     RightJoinKey, SampleExt, ScanExt, SelectCellExt, SelectExt, SharedRelationIndex, SkipExt,
-    SkipWhileExt, StageList, StateMachineBuilder, StateTransitionExt, SwitchMapExt, TakeExt,
+    SkipWhileExt, StageList, StateMachineBuilder, StateTransitionExt, TakeExt,
     TakeUntilExt, TakeWhileExt, TapExt, ThenMap, ThrottleExt, TimeoutExt, TryMapExt,
     TupleJoinProjection, TwoLeftJoinMappedPlan, TwoLeftJoinPlan, UnwrapOrExt, Watchable,
     WatchableResult, WindowExt, WithLatestFromExt, ZipExt, join_vec,

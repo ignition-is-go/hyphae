@@ -124,7 +124,7 @@ fn test_indexed_registry_rebuilds_snapshot_after_unsubscribe() {
     assert_eq!(b_hits.load(Ordering::SeqCst), 3); // B still firing
 }
 
-// Churn many distinct subscriptions on one cell (the switch_map-style
+// Churn many distinct subscriptions on one cell (the
 // resubscribe-per-fire pattern that dominated the profile). Correctness must
 // hold: after the storm only the still-held guards fire, exactly once each.
 #[test]

@@ -626,7 +626,7 @@ where
         let builder = node.clone();
         let key_guard = key.subscribe(move |signal| {
             if let Signal::Value(q) = signal {
-                builder.build(|| switch_map_row(&weak, &follow, &family, Q::name::<()>(q).ok()));
+                builder.build(|| switch_row(&weak, &follow, &family, Q::name::<()>(q).ok()));
             }
         });
         out.own_guard(node.hold(key_guard));
@@ -634,7 +634,7 @@ where
     }
 }
 
-fn switch_map_row<F, RK, V, RM>(
+fn switch_row<F, RK, V, RM>(
     weak: &WeakCellMap<RK, V>,
     follow: &Arc<Follow<F::Key>>,
     family: &F,

@@ -333,8 +333,7 @@ impl<T, M> Cell<T, M> {
     /// Take ownership of a subscription guard with a stable key.
     ///
     /// If a guard with the same key already exists, it is replaced (and dropped).
-    /// This is used by `switch_map` to ensure the old inner subscription is cleaned up
-    /// when switching to a new inner cell.
+    /// A family reader uses this to give up the old row when its key changes.
     pub fn own_keyed(&self, key: Uuid, guard: SubscriptionGuard)
     where
         T: CellValue,
@@ -722,9 +721,8 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
     fn add_dependent(&self, dependent: Weak<dyn Node>) {
         let mut dependents = self.inner.dependents.lock();
         // Prune dead entries, then register only a dependent that is not
-        // already here. A `switch_map` whose closure returns a cached cell
-        // re-registers the same pair on every rewire; without the duplicate
-        // check this list grew without bound.
+        // already here. Re-owning a live source re-registers the same pair;
+        // without the duplicate check this list grew without bound.
         dependents.retain(|existing| existing.strong_count() > 0);
         // Compare data addresses: vtable identity is not guaranteed for
         // trait-object weaks coerced at different sites.
@@ -1075,11 +1073,10 @@ impl<T> Drop for CellInner<T> {
 
 #[cfg(test)]
 mod dependents_tests {
-    use crate::{Cell, Materialize, Mutable, SwitchMapExt, Watchable};
+    use crate::{Cell, Watchable};
 
     /// Re-owning the SAME live source must not grow the source's
-    /// height-dependent set. This is the `switch_map`-onto-a-cached-cell shape:
-    /// the closure returns a memoized inner cell, so every re-knit calls
+    /// height-dependent set. A reader that re-attaches to a memoized cell calls
     /// `own_keyed` with an identical (source, dependent) pair. Before the dedup
     /// in `add_height_dependent`, each call pushed another 16-byte `Weak` that
     /// nothing could ever reclaim while both cells were alive — an unbounded
@@ -1133,30 +1130,6 @@ mod dependents_tests {
         assert_eq!(len, 1, "dropped dependent should not linger, got {len}");
     }
 
-    /// End-to-end: a real `switch_map` re-knitting onto a shared long-lived
-    /// inner cell (the myko report-cache shape) must not grow the inner cell's
-    /// dependent set as the outer fires.
-    #[test]
-    fn switch_map_onto_shared_inner_does_not_grow() {
-        let outer = Cell::new(0i32);
-        let shared_inner = Cell::new(100i32);
-        let inner_for_closure = shared_inner.clone();
-        let switched = outer
-            .clone()
-            .switch_map(move |_| inner_for_closure.clone().lock())
-            .materialize();
-        let _guard = switched.subscribe(|_| {});
-
-        for i in 1..500 {
-            outer.set(i);
-        }
-
-        let len = shared_inner.inner.dependents.lock().len();
-        assert!(
-            len <= 2,
-            "switch_map re-knit onto a cached inner cell grew dependents to {len}"
-        );
-    }
 }
 
 #[cfg(test)]

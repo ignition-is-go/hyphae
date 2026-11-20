@@ -39,7 +39,7 @@ fn bench_churn_against_n_subscribers(c: &mut Criterion) {
 }
 
 /// Full fire cycle — subscribe a transient, `set` (one notify), drop it —
-/// against `n` stable subscribers. This is the switch_map-style
+/// against `n` stable subscribers. This is the
 /// resubscribe-per-fire shape end to end (the index removes two O(n) COW copies
 /// per fire; one O(n) snapshot rebuild remains, amortized into the notify).
 fn bench_resubscribe_per_fire(c: &mut Criterion) {

@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use hyphae::{
     Cell, CellMap, CellSet, DelayExt, DepNode, Gettable, JoinExt, MapExt, Materialize, Mutable,
-    SampleOnSourceExt, ScanExt, Source, SwitchMapExt, ZipExt,
+    SampleOnSourceExt, ScanExt, Source, ZipExt,
 };
 
 #[test]
@@ -132,24 +132,3 @@ fn timer_pipeline_subscribes_only_when_materialized() {
     assert_eq!(source.subscriber_count(), 0);
 }
 
-#[test]
-fn dynamic_source_pipeline_subscribes_only_when_materialized() {
-    let outer = Cell::new(0usize);
-    let inner = Cell::new(7i32);
-    let selected_inner = inner.clone();
-    let pipeline = outer
-        .clone()
-        .switch_map(move |_| selected_inner.clone())
-        .map(|value| value + 1);
-
-    assert_eq!(outer.subscriber_count(), 0);
-    assert_eq!(inner.subscriber_count(), 0);
-
-    let output = pipeline.materialize();
-    assert_eq!(outer.subscriber_count(), 1);
-    assert_eq!(inner.subscriber_count(), 1);
-
-    drop(output);
-    assert_eq!(outer.subscriber_count(), 0);
-    assert_eq!(inner.subscriber_count(), 0);
-}
