@@ -312,6 +312,13 @@ fn a_write_and_the_feedback_it_causes_keep_its_epoch_on_every_thread() {
 
     batch_with(&[], Some(epoch), || root.set(1));
     assert_eq!(*in_leaves.lock(), vec![Some(epoch); 8]);
+    // The leaves' writes are later tickets; the writer is owed only its own.
+    for _ in 0..1_000 {
+        if in_feedback.lock().len() >= 8 {
+            break;
+        }
+        flush();
+    }
     let caused = std::mem::take(&mut *in_feedback.lock());
     assert!(!caused.is_empty());
     assert!(caused.iter().all(|seen| *seen == Some(epoch)));
@@ -364,8 +371,9 @@ fn a_scoped_epoch_finishes_after_its_scope_and_its_last_event_set() {
     let flag = finished.clone();
     let scope = Epoch::scoped(move || flag.store(true, Ordering::SeqCst));
     enqueue(&[], Some(scope.epoch()), || root.set(2));
+    // Pool threads admit an enqueued set on their own, so the epoch may
+    // already be over here.
     drop(scope);
-    assert!(!finished.load(Ordering::SeqCst), "a set is still queued");
     settle_until(&finished);
     assert!(finished.load(Ordering::SeqCst));
     assert!(!early.load(Ordering::SeqCst));
@@ -403,7 +411,7 @@ fn a_scoped_epoch_outlives_a_scope_dropped_inside_an_outer_batch() {
             "the outer batch still holds the write"
         );
     });
-    flush();
+    settle_until(&finished);
     assert!(finished.load(Ordering::SeqCst));
     assert!(
         !early.load(Ordering::SeqCst),
