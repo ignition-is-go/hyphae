@@ -47,7 +47,7 @@ fn run(path: &str) {
             .saturating_sub(COMPLETED.load(Ordering::Acquire));
         let _ = writeln!(
             file,
-            "{now:.3} event_sets={} tickets={} fires={} node_fires={} pool_fires={} waits={} deferred_writes={} fire_nanos={} flush_sets={} max_in_flight={} in_flight={in_flight} backlog={} interval_max_fire_nanos={hold} walks={} walk_nodes={} parks={} side_reads={} undeclared_writes={} unbound_owned={} quiet_hits={} validated={} invalidated={} cycles={}",
+            "{now:.3} event_sets={} tickets={} fires={} node_fires={} pool_fires={} waits={} deferred_writes={} fire_nanos={} flush_sets={} max_in_flight={} in_flight={in_flight} backlog={} interval_max_fire_nanos={hold} label_queries={} frontier_scanned={} max_frontier={} index_rebuilds={} parks={} side_reads={} undeclared_writes={} unbound_owned={} cycles={}",
             s.event_sets,
             s.tickets,
             s.fires,
@@ -59,18 +59,17 @@ fn run(path: &str) {
             s.flush_sets,
             s.max_in_flight,
             INBOX.len().saturating_add(usize::try_from(in_flight).unwrap_or(usize::MAX)),
-            s.walks,
-            s.walk_nodes,
+            s.label_queries,
+            s.frontier_scanned,
+            s.max_frontier,
+            s.index_rebuilds,
             s.parks,
             s.side_reads,
             s.undeclared_writes,
             s.unbound_owned,
-            s.quiet_hits,
-            s.validated,
-            s.invalidated,
             s.cycles,
         );
-        let cycles = super::watermark::cycle_sites();
+        let cycles = super::reach::cycle_sites();
         if !cycles.is_empty()
             && let Ok(mut out) = std::fs::File::create(format!("{path}.cycles"))
         {

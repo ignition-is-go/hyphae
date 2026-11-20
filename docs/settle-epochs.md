@@ -93,76 +93,36 @@ The shadow measurement on rship setup traffic (`epoch-shadow` 7466369,
 Memoization failed because a quiet input's cached watermark is a number, and
 `S` moves past it on every ticket.
 
-### Quiet certificates
+### Reachability readiness (implemented: `hyphae/src/settle/reach.rs`)
 
-Most walks proved one fact: nothing in the input's ancestry is pending. That
-fact changes only when a ticket is **seeded** into the ancestry. Pending work
-spreads only along edges, so it can enter an ancestry from outside only at a
-seed. A push from `y` to `z` means `y` was already pending, and `y` is an
-ancestor of everything `z` is.
+Quiet certificates (the previous version of this section, still checked in
+`quiet_model.rs`) were replaced: a store written every ticket above many
+joins cleared and revalidated them on every write. The rule now is the one
+`reach_model.rs` checks: node `n` fires its lowest pending ticket `t` if and
+only if no pending entry `u <= t` at another node can reach `n`.
 
-So each node carries a mark: `NONE`, `TENTATIVE`, or `QUIET`.
+- **Label index.** Each node has a key in a topological order of the
+  declared edges, and a label of key spans covering every node it reaches.
+  A new node takes half of its first input's free key space (tree cover), so
+  every ancestor already covers it. Any other edge adds the target's label
+  to the source and its ancestors, eagerly. An edge into a node whose key is
+  not above the input's (a family row built after its reader) re-keys the
+  node into the gap between its inputs and outputs. With no gap or no free
+  space, or once non-tree spans grow past a bound, the index is rebuilt from
+  the declared edges; a rebuild leaves back edges out and counts them as
+  `cycles`. Teardown is lazy: a dead node's span stays in labels and only
+  adds waiting.
+- **Frontier.** One global map from each in-flight ticket to the nodes that
+  hold it pending. A check scans the entries at or below its ticket and
+  rejects by key first: `f` cannot reach `n` when `key(f) >= key(n)`.
+- **Gated edges** (family into reader) are not in the labels. They count
+  only at a ticket the gate delivered to the reader, and then only for that
+  reader, which passes its open gates to the check.
 
-- **Meaning.** `QUIET(n)` promises that no node in `n`'s ancestry, `n`
-  included, holds pending work below `S`. The set of `QUIET` nodes is closed
-  upward: a node is `QUIET` only if all its inputs are.
-- **Read (the hot path).** A join reads a quiet input's watermark as `S`: one
-  atomic load of the mark, and `S`, which it already holds. This is O(1), with
-  no walk, and it stays valid across any number of tickets that do not touch
-  the ancestry.
-- **Invalidate (at seeding).** Admitting ticket `t` at node `x` pushes `t` into
-  `x`, sets `x` to `NONE`, and walks `x`'s descendants, clearing every
-  non-`NONE` mark. It stops at `NONE` nodes, because by closure nothing below
-  them is marked. `S` passes `t` only after the walk ends. A reader that sees
-  `S > t` therefore sees the cleared marks.
-- **Validate (on demand).** When a join finds a silent input not `QUIET`, it
-  marks the input's not-yet-`QUIET` ancestors bottom-up. For each node it does
-  four steps:
-  1. Check that the node has no pending work and that every input is `QUIET`.
-  2. Write `TENTATIVE`.
-  3. Re-check the same conditions.
-  4. `compare_exchange(TENTATIVE, QUIET)`.
-
-  An invalidation clears `TENTATIVE` too, so a seed that lands anywhere in
-  between makes the exchange fail. Readers trust only `QUIET`.
-- **Fallback.** A node that is not `QUIET` uses its numeric watermark. A fire
-  refreshes the firing node's watermark from its inputs at O(inputs), so a
-  busy chain keeps its numbers fresh as it fires. A real blocker is parked on,
-  as before.
-
-**Cost per fire:** O(1) for each `QUIET` input, O(1) for an input that just
-delivered, and O(inputs) for the refresh. **Walks:** validation visits only
-nodes that are not yet `QUIET`. Each such node was cleared by a seed, and each
-clear follows at most one validation. So the total walk work is at most twice
-the number of (seed, previously validated descendant) pairs. Cost is paid per
-seed into an ancestry, not per fire.
-
-**The rship pattern** is joins whose other input is quiet for a long time. The
-quiet side is validated once, then read in O(1) on every later fire until
-something is seeded into its ancestry. Nothing global is read except `S`.
-Nothing waits on unrelated tickets, because the mark is exact for the node's
-own ancestry.
-
-**What is still unmeasured, and is the next gate:**
-
-1. **Seed hit rate.** How often a seed lands in a quiet input's ancestry
-   between two checks. A store collection written every ticket that sits
-   above many joins would re-clear and re-validate them on every write. The
-   shadow can count, for each validation, whether a seed landed in its
-   ancestry since the previous one.
-2. **Invalidation length on the admission path.** `S` cannot pass the ticket
-   until its walk ends. A long walk therefore holds back every later ticket,
-   though it clears only nodes that were validated since the last seed there.
-
-**Leads considered and rejected:**
-
-- **A per-height or per-region frontier.** A node at height h waits for every
-  earlier ticket to clear all heights below h, including tickets that cannot
-  reach it. That puts a probe behind the timer tick again.
-- **Announcing every pending ticket downstream.** Announcing along the edges a
-  ticket takes says nothing about silent inputs. Announcing along every static
-  edge is a cone walk per ticket. Quiet certificates announce only at seeds,
-  and only to marked nodes.
+Stats: `label_queries`, `frontier_scanned`, `max_frontier`,
+`index_rebuilds`. Debug builds assert that every declared edge is covered
+by the labels and, at each fire, the readiness rule against the declared
+edges.
 
 **Promise safety, the one invariant everything rests on:** a node never
 receives a ticket below its watermark or at or below `p(n)`. The checker

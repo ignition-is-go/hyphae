@@ -1,19 +1,16 @@
-//! A family reader's quiet certificate survives writes its row never reads.
+//! A family reader joins correctly across writes its row never reads.
 //!
 //! Every family anchors to a root that hears every store. A write to store
-//! T seeds the root, which feeds the family node, but no edge a seed clears
-//! leads from the family node to a reader: the reader hears the family only
-//! through an edge gated by its key. So a join that reads the reader as a
-//! quiet input keeps its certificate across T's writes, and validations do
-//! not grow with them.
+//! T reaches the family node, but the reader hears the family only through
+//! an edge gated by its key, so those writes never hold the join back.
 
 use hyphae::{
-    Cell, CellMap, Gettable, JoinExt, LookupExt, MapDiff, Materialize, Mutable, Signal, Watchable,
+    Cell, CellMap, Gettable, JoinExt, LookupExt, MapDiff, Materialize, Mutable, Signal,
     family, flush, settle,
 };
 
 #[test]
-fn writes_a_row_never_reads_leave_its_reader_quiet() {
+fn writes_a_row_never_reads_leave_its_reader_joined() {
     settle::set_workers(0);
     let s = CellMap::<u32, u32>::new();
     s.insert(1, 10);
@@ -45,16 +42,10 @@ fn writes_a_row_never_reads_leave_its_reader_quiet() {
         t.insert(round, round);
     }
     flush();
-    let before = settle::stats().validated;
     for round in 0..rounds {
         active.set(round);
         t.insert(round, round);
     }
     flush();
-    let validated = settle::stats().validated - before;
     assert_eq!(joined.get(), (Some(10), rounds - 1));
-    assert!(
-        validated < u64::from(rounds) / 4,
-        "{validated} validations over {rounds} writes the row never reads"
-    );
 }

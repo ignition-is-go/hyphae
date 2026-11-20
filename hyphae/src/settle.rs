@@ -32,7 +32,7 @@ use crate::traits::DepNode;
 mod dump;
 mod edges;
 mod pool;
-mod watermark;
+mod reach;
 
 pub(crate) use edges::unbound_owned;
 pub use edges::{new_ticket, unbound_sites};
@@ -229,7 +229,8 @@ struct Delivery {
 }
 
 struct Pending {
-    /// Sorted by ticket; arrival order within a ticket.
+    /// Sorted by ticket; arrival order within a ticket. Every ticket here,
+    /// and the one in flight, has an entry in the reach frontier.
     items: Vec<Delivery>,
     /// The ticket being fired, or [`NONE`].
     inflight: u64,
@@ -245,9 +246,13 @@ impl Pending {
     }
 
     /// True when `ticket` may still be pushed here: the node has not fired
-    /// it, and has not promised past it.
-    const fn accepts(&self, ticket: u64, watermark: u64) -> bool {
-        (self.processed == NONE || self.processed < ticket) && watermark <= ticket
+    /// it.
+    const fn accepts(&self, ticket: u64) -> bool {
+        self.processed == NONE || self.processed < ticket
+    }
+
+    fn holds(&self, ticket: u64) -> bool {
+        self.inflight == ticket || self.items.iter().any(|d| d.ticket == ticket)
     }
 }
 
@@ -265,9 +270,12 @@ static EDGES_REMOVED: AtomicU64 = AtomicU64::new(0);
 #[doc(hidden)]
 pub struct NodeCore {
     seq: u64,
+    this: Weak<Self>,
     pending: Mutex<Pending>,
-    /// `w(n)`: this node never again delivers a ticket below it.
-    watermark: AtomicU64,
+    /// The node's key in the reach index's topological order.
+    key: AtomicU64,
+    /// The reach index's label: the keys of every node this one reaches.
+    label: Mutex<reach::Label>,
     /// [`IDLE`], or claimed by one thread that is evaluating or firing it.
     sched: AtomicU8,
     /// Nodes that wait for this one to fire.
@@ -279,10 +287,8 @@ pub struct NodeCore {
     /// Gated in-edges `(src, gate)`: `src` counts toward the fire rule at a
     /// ticket only when `gate`, an input, delivered that ticket here, and
     /// `src` pushes here only at such a ticket. Not in `inputs`, so they add
-    /// nothing to `in_w` otherwise.
+    /// nothing to the reach labels.
     gated: Mutex<Vec<(Weak<Self>, Weak<Self>)>>,
-    /// The quiet certificate (`docs/settle-epochs.md` section 4).
-    mark: AtomicU8,
     /// Set while the row build that created this node is open: the node
     /// fires nothing until the build has set its promise and backfilled it.
     held: std::sync::atomic::AtomicBool,
@@ -309,20 +315,21 @@ impl NodeCore {
                 edges::lifecycle(caller, during);
             }
         }
-        let core = Arc::new(Self {
+        let core = Arc::new_cyclic(|this| Self {
             seq: NODE_SEQ.fetch_add(1, Ordering::Relaxed),
+            this: Weak::clone(this),
             pending: Mutex::new(Pending {
                 items: Vec::new(),
                 inflight: NONE,
                 processed: NONE,
             }),
-            watermark: AtomicU64::new(0),
+            key: AtomicU64::new(reach::UNASSIGNED),
+            label: Mutex::default(),
             sched: AtomicU8::new(IDLE),
             parked: Mutex::new(Vec::new()),
             inputs: Mutex::new(Vec::new()),
             outputs: Mutex::new(Vec::new()),
             gated: Mutex::new(Vec::new()),
-            mark: AtomicU8::new(watermark::NOT_QUIET),
             held: std::sync::atomic::AtomicBool::new(false),
             row: std::sync::atomic::AtomicBool::new(false),
             caller: OnceLock::from(caller),
@@ -342,8 +349,7 @@ impl NodeCore {
         core
     }
 
-    /// Declare an edge from `input` into this node. The node's ancestry
-    /// grows, so its quiet certificate and its descendants' are cleared.
+    /// Declare an edge from `input` into this node, and index it.
     pub(crate) fn add_input(self: &Arc<Self>, input: &Arc<Self>) {
         if Arc::ptr_eq(self, input) {
             return;
@@ -363,7 +369,7 @@ impl NodeCore {
             outputs.push(Arc::downgrade(self));
         }
         EDGE_GEN.fetch_add(1, Ordering::Release);
-        watermark::invalidate(self);
+        reach::add_edge(input, self);
     }
 
     pub(crate) fn set_caller(&self, caller: Option<&'static Location<'static>>) {
@@ -387,13 +393,9 @@ impl NodeCore {
             }
             gated.push((Arc::downgrade(src), Arc::downgrade(gate)));
         }
-        // Not an output of `src`: clearing and validation follow ungated
-        // edges only, so a seed above the family node leaves this node's
-        // quiet mark alone. It can reach this node only through `gate`,
-        // whose delivery clears the mark (`docs/settle-epochs-model/
-        // quiet_model.rs`, GATE=1).
+        // Not an output of `src` and not in the reach labels: it counts only
+        // at a ticket its gate delivered (`reach::blocker`).
         EDGE_GEN.fetch_add(1, Ordering::Release);
-        watermark::invalidate(self);
     }
 
     /// Remove the gated edge that [`NodeCore::add_gated_input`] declared.
@@ -421,12 +423,6 @@ impl NodeCore {
             .collect()
     }
 
-    /// No delivery pending or in flight.
-    fn idle(&self) -> bool {
-        let pending = self.pending.lock();
-        pending.items.is_empty() && pending.inflight == NONE
-    }
-
     /// Push `item` at `ticket`. Fails when the node has fired the ticket or
     /// promised past it, which would break per-node order.
     fn push(
@@ -438,7 +434,7 @@ impl NodeCore {
         from: usize,
     ) -> Result<(), Item> {
         let mut pending = self.pending.lock();
-        if !pending.accepts(ticket, self.watermark.load(Ordering::Acquire)) {
+        if !pending.accepts(ticket) {
             return Err(item);
         }
         #[cfg(debug_assertions)]
@@ -452,6 +448,9 @@ impl NodeCore {
                     );
                 }
             }
+        }
+        if !pending.holds(ticket) {
+            reach::hold(&self.this, ticket);
         }
         let at = pending.items.partition_point(|d| d.ticket <= ticket);
         let stamp = match at.checked_sub(1).and_then(|i| pending.items.get(i)) {
@@ -479,9 +478,7 @@ impl NodeCore {
     }
 
     fn can_join(&self, ticket: u64) -> bool {
-        self.pending
-            .lock()
-            .accepts(ticket, self.watermark.load(Ordering::Acquire))
+        self.pending.lock().accepts(ticket)
     }
 
     fn wake_parked(&self) {
@@ -498,7 +495,15 @@ impl NodeCore {
 /// as consumed so their tickets complete, and wake the nodes parked on it.
 impl Drop for NodeCore {
     fn drop(&mut self) {
-        let items = std::mem::take(&mut self.pending.get_mut().items);
+        let address = std::ptr::from_ref(self).addr();
+        let pending = self.pending.get_mut();
+        let items = std::mem::take(&mut pending.items);
+        let mut held: Vec<u64> = items.iter().map(|d| d.ticket).collect();
+        held.push(pending.inflight);
+        held.dedup();
+        for ticket in held.into_iter().filter(|t| *t != NONE) {
+            reach::release(address, ticket);
+        }
         let parked = std::mem::take(self.parked.get_mut());
         for delivery in items {
             drop(delivery.item);
@@ -788,8 +793,6 @@ pub(crate) fn build_rows<R>(family: &Arc<NodeCore>, f: impl FnOnce() -> R) -> R 
         if pending.min() > ticket && (pending.processed == NONE || pending.processed < ticket) {
             pending.processed = ticket;
         }
-        core.watermark
-            .fetch_max(ticket.saturating_add(1).min(pending.min()), Ordering::AcqRel);
     }
     for backfill in build.backfills {
         backfill();
@@ -908,7 +911,6 @@ pub(crate) fn backfill(
          node created at {source} into the node created at {}",
         owner.node_caller().map_or_else(|| "?".to_string(), ToString::to_string)
     );
-    watermark::invalidate_if_marked(core);
     poke(owner);
 }
 
@@ -1026,10 +1028,14 @@ pub struct SettleStats {
     pub pool_fires: u64,
     /// The most tickets seeded and not completed at one time.
     pub max_in_flight: u64,
-    /// Watermark walks that a readiness check started.
-    pub walks: u64,
-    /// Nodes those walks visited.
-    pub walk_nodes: u64,
+    /// Reach label lookups made by readiness checks.
+    pub label_queries: u64,
+    /// Frontier entries readiness checks scanned.
+    pub frontier_scanned: u64,
+    /// The most `(ticket, node)` entries the frontier held at one time.
+    pub max_frontier: u64,
+    /// Times the reach index was laid out again.
+    pub index_rebuilds: u64,
     /// Times a node parked on a blocker.
     pub parks: u64,
     /// `get()` and subscribe-time reads made inside a callback.
@@ -1039,13 +1045,7 @@ pub struct SettleStats {
     /// Owned subscriptions whose callback runs at the source's fire because
     /// it could not be bound to its owner.
     pub unbound_owned: u64,
-    /// Readiness checks of an input answered by its quiet certificate.
-    pub quiet_hits: u64,
-    /// Nodes certified quiet.
-    pub validated: u64,
-    /// Quiet certificates cleared by seeds and new edges.
-    pub invalidated: u64,
-    /// Back edges a watermark walk ignored: cycles in the declared graph.
+    /// Back edges the reach index left out: cycles in the declared graph.
     pub cycles: u64,
 }
 
@@ -1061,18 +1061,10 @@ static FLUSH_SETS: AtomicU64 = AtomicU64::new(0);
 static NODE_FIRES: AtomicU64 = AtomicU64::new(0);
 static POOL_FIRES: AtomicU64 = AtomicU64::new(0);
 static MAX_IN_FLIGHT: AtomicU64 = AtomicU64::new(0);
-static WALKS: AtomicU64 = AtomicU64::new(0);
-static WALK_NODES: AtomicU64 = AtomicU64::new(0);
 static PARKS: AtomicU64 = AtomicU64::new(0);
 static SIDE_READS: AtomicU64 = AtomicU64::new(0);
 static UNDECLARED: AtomicU64 = AtomicU64::new(0);
 static UNBOUND_OWNED: AtomicU64 = AtomicU64::new(0);
-static QUIET_HITS: AtomicU64 = AtomicU64::new(0);
-static CYCLES: AtomicU64 = AtomicU64::new(0);
-/// Sampled back edges, `(from site, to site) -> count`.
-static CYCLE_SITES: LazyLock<Mutex<FxHashMap<(String, String), u64>>> = LazyLock::new(Mutex::default);
-static VALIDATED: AtomicU64 = AtomicU64::new(0);
-static INVALIDATED: AtomicU64 = AtomicU64::new(0);
 
 /// Read the process-wide settle counters.
 #[must_use]
@@ -1089,16 +1081,15 @@ pub fn stats() -> SettleStats {
         node_fires: NODE_FIRES.load(Ordering::Relaxed),
         pool_fires: POOL_FIRES.load(Ordering::Relaxed),
         max_in_flight: MAX_IN_FLIGHT.load(Ordering::Relaxed),
-        walks: WALKS.load(Ordering::Relaxed),
-        walk_nodes: WALK_NODES.load(Ordering::Relaxed),
+        label_queries: reach::LABEL_QUERIES.load(Ordering::Relaxed),
+        frontier_scanned: reach::FRONTIER_SCANNED.load(Ordering::Relaxed),
+        max_frontier: reach::MAX_FRONTIER.load(Ordering::Relaxed),
+        index_rebuilds: reach::REBUILDS.load(Ordering::Relaxed),
         parks: PARKS.load(Ordering::Relaxed),
         side_reads: SIDE_READS.load(Ordering::Relaxed),
         undeclared_writes: UNDECLARED.load(Ordering::Relaxed),
         unbound_owned: UNBOUND_OWNED.load(Ordering::Relaxed),
-        quiet_hits: QUIET_HITS.load(Ordering::Relaxed),
-        validated: VALIDATED.load(Ordering::Relaxed),
-        invalidated: INVALIDATED.load(Ordering::Relaxed),
-        cycles: CYCLES.load(Ordering::Relaxed),
+        cycles: reach::CYCLES.load(Ordering::Relaxed),
     }
 }
 
@@ -1284,19 +1275,15 @@ pub(crate) fn push_current(target: &Arc<dyn Node>, arrival: bool, item: Item) {
                 ..Stamp::SEED
             };
             touched.push(Arc::downgrade(target));
-            let pushed = target
+            target
                 .node_core()
                 .push(*ticket, stamp, arrival, item, 0)
-                .map_err(|_| *ticket);
-            // A seed is the only way pending work enters an ancestry from
-            // outside it. `S` passes the ticket after this.
-            watermark::invalidate(target.node_core());
-            pushed
+                .map_err(|_| *ticket)
         }
         Some(Ctx::Firing(firing)) => {
             firing.stamp.index = firing.stamp.index.saturating_add(1);
             firing.touched.push(Arc::downgrade(target));
-            let pushed = target
+            target
                 .node_core()
                 .push(
                     firing.ticket,
@@ -1305,9 +1292,7 @@ pub(crate) fn push_current(target: &Arc<dyn Node>, arrival: bool, item: Item) {
                     item,
                     Arc::as_ptr(&firing.core).addr(),
                 )
-                .map_err(|_| firing.ticket);
-            watermark::invalidate_if_marked(target.node_core());
-            pushed
+                .map_err(|_| firing.ticket)
         }
         _ => Err(NONE),
     });
@@ -1370,7 +1355,6 @@ pub(crate) fn defer_to_owner(owner: &Arc<dyn Node>, make: impl FnOnce() -> Item)
                 Arc::as_ptr(&firing.core).addr(),
             )
             .is_ok();
-        watermark::invalidate_if_marked(core);
         debug_assert!(pushed, "hyphae: promise safety: owner passed the ticket");
         firing.touched.push(Arc::downgrade(owner));
         pushed
@@ -1395,22 +1379,17 @@ fn readiness(core: &Arc<NodeCore>) -> Readiness {
             Some(first) => first.ticket,
         }
     };
-    // A ticket still being seeded is not fireable: `in_w` is capped by `S`,
-    // and its other seeds may not have landed. The seeder pokes every node
-    // it seeded once `S` passes the ticket.
+    // A ticket still being seeded is not fireable: its other seeds may not
+    // have landed. The seeder pokes every node it seeded once `S` passes the
+    // ticket.
     if ticket >= SEEDED.load(Ordering::Acquire) {
         return Readiness::Idle;
     }
-    if let Err(blocker) = watermark::in_w_past(core, ticket) {
-        return Readiness::Blocked(blocker, ticket);
+    let gates = core.open_gates(ticket, &core.pending.lock().items);
+    match reach::blocker(core, ticket, &gates) {
+        Some(blocker) => Readiness::Blocked(blocker, ticket),
+        None => Readiness::Ready,
     }
-    let open = core.open_gates(ticket, &core.pending.lock().items);
-    for src in open {
-        if let Err(blocker) = watermark::input_past(core, &src, ticket) {
-            return Readiness::Blocked(blocker, ticket);
-        }
-    }
-    Readiness::Ready
 }
 
 /// Tell `node` that it may be able to fire.
@@ -1576,22 +1555,15 @@ pub(crate) fn run(owned: Arc<dyn Node>, on_pool: bool) {
     if on_pool {
         POOL_FIRES.fetch_add(1, Ordering::Relaxed);
     }
-    let in_w = watermark::refresh_bound(&core);
     {
         let mut pending = core.pending.lock();
         pending.processed = ticket;
         pending.inflight = NONE;
-        let next = pending.min();
-        // Every input is past `ticket`, so `in_w` exceeds it.
-        let promised = core.watermark.fetch_max(
-            next.min(in_w.max(ticket.saturating_add(1))),
-            Ordering::AcqRel,
-        );
-        debug_assert!(
-            next >= promised.max(next.min(in_w.max(ticket.saturating_add(1)))),
-            "hyphae: promise safety: watermark published above pending {next}"
-        );
-        drop(pending);
+        // Under the pending lock: a push that lands this ticket again would
+        // re-enter the frontier after this.
+        if !pending.holds(ticket) {
+            reach::release(Arc::as_ptr(&core).addr(), ticket);
+        }
     }
     poke_all(touched);
     core.wake_parked();
@@ -1603,23 +1575,11 @@ pub(crate) fn run(owned: Arc<dyn Node>, on_pool: bool) {
     consumed(ticket, count);
 }
 
-/// The model's fire rule: no input still holds the ticket being fired.
+/// The model's fire rule, checked against the declared edges.
 #[cfg(debug_assertions)]
-fn assert_fire_rule(core: &NodeCore, ticket: u64, items: &[Delivery]) {
-    for src in core.open_gates(ticket, items) {
-        let held = src.pending.lock().min();
-        assert!(
-            held > ticket,
-            "hyphae: fire rule: ticket {ticket} fired while an open gated input holds {held}"
-        );
-    }
-    for input in core.inputs.lock().iter().filter_map(Weak::upgrade) {
-        let held = input.pending.lock().min();
-        assert!(
-            held > ticket,
-            "hyphae: fire rule: ticket {ticket} fired while an input holds {held}"
-        );
-    }
+fn assert_fire_rule(core: &Arc<NodeCore>, ticket: u64, items: &[Delivery]) {
+    let gates = core.open_gates(ticket, items);
+    reach::assert_ready(core, ticket, &gates);
 }
 
 fn poke_all(touched: Vec<Weak<dyn Node>>) {
