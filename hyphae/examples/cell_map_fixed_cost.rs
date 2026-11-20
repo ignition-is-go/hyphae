@@ -12,7 +12,7 @@ use std::{
     hint::black_box,
     sync::{
         Arc, Barrier,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Instant,
 };
@@ -77,8 +77,9 @@ fn filled(rows: u64) -> CellMap<u64, u64> {
     map
 }
 
-/// Allocation calls per call of `op` (exact, averaged over `reps`) and ns per call.
-fn measure(reps: usize, mut op: impl FnMut()) -> (f64, f64) {
+/// Allocation calls and bytes per call of `op` (exact, averaged over `reps`)
+/// and ns per call.
+fn measure(reps: usize, mut op: impl FnMut()) -> (f64, f64, f64) {
     op();
     let before = counts();
     let start = Instant::now();
@@ -86,11 +87,41 @@ fn measure(reps: usize, mut op: impl FnMut()) -> (f64, f64) {
         op();
     }
     let elapsed = start.elapsed();
-    let calls = counts().calls - before.calls;
+    let after = counts();
     (
-        calls as f64 / reps as f64,
+        (after.calls - before.calls) as f64 / reps as f64,
+        (after.bytes - before.bytes) as f64 / reps as f64,
         elapsed.as_nanos() as f64 / reps as f64,
     )
+}
+
+fn run_op(map: &CellMap<u64, u64>, name: &str) {
+    match name {
+        "snapshot" => drop(black_box(map.snapshot())),
+        "for_each" => {
+            let mut sum = 0u64;
+            map.for_each(|_, v| sum = sum.wrapping_add(*v));
+            black_box(sum);
+        }
+        "entries" => drop(black_box(map.entries().materialize().get())),
+        "subscribe_diffs" => drop(black_box(map.subscribe_diffs(|diff: &MapDiff<u64, u64>| {
+            black_box(diff);
+        }))),
+        "insert" => drop(black_box(map.insert(u64::MAX, 1))),
+        "get_value" => drop(black_box(map.get_value(&0))),
+        _ => {}
+    }
+}
+
+/// `op <name> <rows> <reps>`: run one operation `reps` times after setup, for
+/// `perf stat` runs whose difference against `reps = 0` excludes the setup.
+fn op_only(args: &[String]) {
+    let name = args.first().map_or("snapshot", String::as_str);
+    let parse = |i: usize| args.get(i).and_then(|a| a.parse::<u64>().ok()).unwrap_or(0);
+    let map = filled(parse(1));
+    for _ in 0..parse(2) {
+        run_op(&map, name);
+    }
 }
 
 fn costs() {
@@ -109,12 +140,12 @@ fn costs() {
     );
     drop(maps);
 
-    println!("rows\top\tallocs/call\tns/call");
+    println!("rows\top\tallocs/call\tbytes/call\tns/call");
     for rows in [0u64, 1, 10, 1_000, 100_000] {
         let map = filled(rows);
         let reps = if rows >= 100_000 { 20 } else { 2_000 };
-        let report = |name: &str, (allocs, ns): (f64, f64)| {
-            println!("{rows}\t{name}\t{allocs:.1}\t{ns:.0}");
+        let report = |name: &str, (allocs, bytes, ns): (f64, f64, f64)| {
+            println!("{rows}\t{name}\t{allocs:.1}\t{bytes:.0}\t{ns:.0}");
         };
         report("snapshot", measure(reps, || drop(black_box(map.snapshot()))));
         report(
@@ -157,14 +188,34 @@ fn contention() {
     const WRITES_PER_THREAD: u64 = 200_000;
     const LARGE_ROWS: u64 = 100_000;
     const SMALL_MAPS: usize = 4_096;
-    println!("threads\tlarge Mwrites/s\tsmall Mwrites/s");
+    let only: Option<usize> = std::env::args().nth(2).and_then(|a| a.parse().ok());
+    println!("threads\tlarge Mwrites/s\treader get_value ns\tsmall Mwrites/s");
     for threads in [1usize, 4, 8, 24] {
+        if only.is_some_and(|only| only != threads) {
+            continue;
+        }
         let large = filled(LARGE_ROWS);
-        let large_secs = run_threads(threads, |t| {
-            let base = t as u64 * (LARGE_ROWS / 24);
-            for i in 0..WRITES_PER_THREAD {
-                large.insert(base + i % (LARGE_ROWS / 24), i);
-            }
+        let stop = AtomicBool::new(false);
+        let mut reader_ns = 0.0;
+        let mut large_secs = 0.0;
+        std::thread::scope(|scope| {
+            let reader = scope.spawn(|| {
+                let start = Instant::now();
+                let mut reads = 0u64;
+                while !stop.load(Ordering::Relaxed) {
+                    black_box(large.get_value(&(reads * 7919 % LARGE_ROWS)));
+                    reads += 1;
+                }
+                start.elapsed().as_nanos() as f64 / reads.max(1) as f64
+            });
+            large_secs = run_threads(threads, |t| {
+                let base = t as u64 * (LARGE_ROWS / 24);
+                for i in 0..WRITES_PER_THREAD {
+                    large.insert(base + i % (LARGE_ROWS / 24), i);
+                }
+            });
+            stop.store(true, Ordering::Relaxed);
+            reader_ns = reader.join().unwrap_or(0.0);
         });
         let small: Arc<Vec<CellMap<u64, u64>>> =
             Arc::new((0..SMALL_MAPS).map(|_| filled(8)).collect());
@@ -176,7 +227,7 @@ fn contention() {
         });
         let total = (threads as u64 * WRITES_PER_THREAD) as f64 / 1e6;
         println!(
-            "{threads}\t{:.2}\t{:.2}",
+            "{threads}\t{:.2}\t{reader_ns:.0}\t{:.2}",
             total / large_secs,
             total / small_secs
         );
@@ -186,6 +237,7 @@ fn contention() {
 fn main() {
     match std::env::args().nth(1).as_deref() {
         Some("contention") => contention(),
+        Some("op") => op_only(&std::env::args().skip(2).collect::<Vec<_>>()),
         _ => costs(),
     }
 }
