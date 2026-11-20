@@ -675,3 +675,46 @@ fn rows_fed_by_owned_key_cell_subscriptions_follow_a_racing_store() {
     }
     crate::settle::set_workers(0);
 }
+
+/// A per-entry mapper that reads an outside cell must anchor to it. Debug
+/// builds panic on the first row build in a ticket that reads an unanchored
+/// node; the anchored form builds the same rows.
+#[test]
+fn a_projection_mapper_that_reads_an_outside_cell_must_anchor_to_it() {
+    use crate::traits::collections::ProjectCellExt;
+    let weight = Cell::new(2i32);
+    let build = |anchored: bool| {
+        let source = CellMap::<u32, i32>::new();
+        source.insert(1, 10);
+        let read = weight.clone();
+        let mapper = move |k: &u32, v: &i32| {
+            let (k, v) = (*k, *v);
+            read.clone().map(move |w| Some((k, v * w))).materialize()
+        };
+        let view = if anchored {
+            source.clone().project_cell_anchored(&[&weight], mapper).materialize()
+        } else {
+            source.clone().project_cell(mapper).materialize()
+        };
+        (source, view)
+    };
+
+    let (source, view) = build(true);
+    source.insert(2, 20);
+    weight.set(3);
+    let held: BTreeMap<u32, i32> = view.snapshot().into_iter().collect();
+    assert_eq!(held, BTreeMap::from([(1, 30), (2, 60)]));
+
+    let (source, _view) = build(false);
+    let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| source.insert(2, 20)));
+    let message = built.err().and_then(|payload| {
+        payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(ToString::to_string))
+    });
+    assert!(
+        message.as_deref().is_some_and(|m| m.contains("no anchor edge")),
+        "an unanchored mapper's row build must panic: {message:?}"
+    );
+}

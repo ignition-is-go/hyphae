@@ -324,7 +324,7 @@ fn row_updates_and_a_source_change_in_one_settle_leave_the_projection_exact() {
     let [even, odd] = weights.each_ref().map(above);
     let projected = rows
         .clone()
-        .project_cell(move |key, value| {
+        .project_cell_anchored(&[&weights[0], &weights[1]], move |key, value| {
             let (key, value) = (*key, *value);
             let weight = if key % 2 == 0 { &even } else { &odd };
             weight

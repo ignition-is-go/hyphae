@@ -221,11 +221,17 @@ where
 /// The runtime is generic in `U`; `project_cell`'s `Option<(K2, V2)>` projection
 /// step lives in [`crate::traits::collections::project_cell`] as a follow-on
 /// stage on top of this primitive.
+/// Install a per-entry mapper. Its node is a family node: each source diff
+/// is applied in that node's fire, as a row build, so the cells the mapper
+/// builds are rows. `anchors` are the outside nodes the mapper reads; the
+/// node gets an edge from each, and debug builds panic on a row that reads
+/// a node they do not cover. A mapper that reads only its entry passes none.
 pub fn install_map_values_cell_via_query<K, V, U, S, W, F>(
     cx: &mut crate::map_query::compiler::CompileContext,
     source: S,
     mapper: F,
     sink: crate::map_query::BoxedMapDiffSink<K, U>,
+    anchors: Vec<SubscriptionGuard>,
 ) -> Vec<SubscriptionGuard>
 where
     K: Hash + Eq + CellValue,
@@ -243,13 +249,57 @@ where
         inner: crate::Cell::new(()),
         marker: PhantomData,
     });
+    for anchor in anchors {
+        runtime.inner.own(anchor);
+    }
     let inner = SubscriptionGuard::dependency(&runtime.inner);
+    let node: Arc<dyn crate::settle::Node> = runtime.inner.inner.clone();
+    let weak = Arc::downgrade(&runtime);
     let upstream_sink = move |diff: &MapDiff<K, V>| {
-        runtime.source_changed(diff);
+        let diff = diff.clone();
+        let weak = weak.clone();
+        crate::settle::run_in_fire_or_now(
+            &node,
+            Box::new(move || {
+                if let Some(runtime) = weak.upgrade() {
+                    // Through the query's gate, as the root fanout ran it: a
+                    // row's replay during the build queues behind this diff
+                    // instead of re-entering the rows lock. The build is
+                    // inside the gate, so it wraps the diff wherever the gate
+                    // runs it, including after a construction-time fanout.
+                    let gate = runtime.gate.clone();
+                    gate.run(move || {
+                        let core = std::sync::Arc::clone(&runtime.inner.inner.core);
+                        crate::settle::build_rows(&core, || runtime.source_changed(&diff));
+                    });
+                }
+            }),
+        );
     };
 
+    let start = cx.activation_count();
     let mut guards = crate::map_query::compile_runtime_into(source, cx, Arc::new(upstream_sink));
+    // The diffs reach the node's fire along edges from the query's roots.
+    // Roots are installed when the query activates, so each activation
+    // declares its roots' edges into the node as it installs them.
+    for guard in &guards {
+        runtime.inner.own(SubscriptionGuard::dependency_on(guard.source()));
+    }
+    for activate in cx.take_activations_since(start) {
+        let node = runtime.inner.clone();
+        cx.push_activation(Box::new(move || {
+            let installed = activate();
+            for guard in &installed {
+                node.own(SubscriptionGuard::dependency_on(guard.source()));
+            }
+            installed
+        }));
+    }
     guards.push(inner);
+    // The runtime lives as long as the guards.
+    guards.push(SubscriptionGuard::from_callback(move || {
+        let _ = &runtime;
+    }));
     guards
 }
 
@@ -345,6 +395,8 @@ mod tests {
                 }
             },
             sink,
+            // The mapper reads `factors`, so the rows anchor to it.
+            vec![crate::family::FamilyInput::anchor_guard(&factors)],
         );
         guards.extend(cx.activate());
         assert!(!guards.is_empty());
@@ -391,6 +443,7 @@ mod tests {
             source.clone(),
             |_: &String, v: &i32| Cell::new(*v * 10).lock(),
             Arc::new(sink),
+            Vec::new(),
         );
         guards.extend(cx.activate());
         assert!(!guards.is_empty());

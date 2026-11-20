@@ -287,7 +287,7 @@ fn project_cell_plan_reacts_to_inner_pipeline_emissions() {
     let weights_for_mapper = weights.clone();
     let mat = src
         .clone()
-        .project_cell(move |key, value| {
+        .project_cell_anchored(&[&weights], move |key, value| {
             // For each row, derive a pipeline that pulls the weight from
             // weights and produces Option<(String, i32)>.
             let key = key.clone();

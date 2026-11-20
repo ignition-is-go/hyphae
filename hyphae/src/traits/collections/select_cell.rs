@@ -7,7 +7,6 @@
 
 use std::{hash::Hash, marker::PhantomData, sync::Arc};
 
-use super::ProjectCellExt;
 use crate::{
     map_query::{
         BuildQueryRuntime, MapQuery,
@@ -43,6 +42,8 @@ where
 {
     pub(crate) source: S,
     pub(crate) predicate: Arc<F>,
+    /// The outside nodes the predicate reads.
+    pub(crate) anchors: Vec<SubscriptionGuard>,
     pub(crate) _types: PhantomData<fn() -> (K, V, W)>,
 }
 
@@ -88,7 +89,11 @@ where
         // Implement select_cell as a project_cell whose inner Watchable maps
         // the boolean gate into Option<(K, V)>.
         let predicate = self.predicate;
-        let inner_plan = self.source.project_cell(move |k: &K, v: &V| {
+        let inner_plan = crate::traits::collections::project_cell::ProjectCellPlan {
+            source: self.source,
+            anchors: self.anchors,
+            _types: PhantomData,
+            mapper: Arc::new(move |k: &K, v: &V| {
             let k = k.clone();
             let v = v.clone();
             predicate(&k, &v)
@@ -100,7 +105,8 @@ where
                     }
                 })
                 .materialize()
-        });
+            }),
+        };
         crate::map_query::compile_runtime_into(inner_plan, cx, sink)
     }
 }
@@ -154,6 +160,35 @@ where
         SelectCellPlan {
             source: self,
             predicate: Arc::new(predicate),
+            anchors: Vec::new(),
+            _types: PhantomData,
+        }
+    }
+
+    /// [`select_cell`](Self::select_cell) for a predicate that reads nodes
+    /// other than its entry: `anchors` must cover them, as for
+    /// [`project_cell_anchored`](crate::traits::ProjectCellExt::project_cell_anchored).
+    #[track_caller]
+    #[allow(private_bounds)]
+    fn select_cell_anchored<W, F>(
+        self,
+        anchors: &[&dyn crate::family::FamilyInput],
+        predicate: F,
+    ) -> impl MapQuery<Key = K, Value = V>
+    where
+        W: Pipeline<bool>
+            + crate::pipeline::PipelineSeed<bool>
+            + Gettable<bool>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+        F: Fn(&K, &V) -> W + Send + Sync + 'static,
+    {
+        SelectCellPlan {
+            source: self,
+            predicate: Arc::new(predicate),
+            anchors: anchors.iter().map(|input| input.anchor_guard()).collect(),
             _types: PhantomData,
         }
     }

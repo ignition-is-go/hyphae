@@ -7,7 +7,7 @@ mod left_semi_join;
 mod map_values;
 mod multi_left_join;
 mod project;
-mod project_cell;
+pub(crate) mod project_cell;
 mod project_many;
 mod select;
 mod select_cell;

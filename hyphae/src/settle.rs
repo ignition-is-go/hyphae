@@ -912,6 +912,29 @@ pub(crate) fn backfill(
     poke(owner);
 }
 
+/// Run `item` in the fire of `node` when the node firing on this thread
+/// reaches `node` along a declared edge; otherwise now. A delivery from an
+/// installed source always reaches it. A call that does not, outside any
+/// settle or from the synchronous replay while `node` is being built, runs
+/// now, as construction does.
+pub(crate) fn run_in_fire_or_now(node: &Arc<dyn Node>, item: Item) {
+    if collecting(node.as_ref()) {
+        item();
+        return;
+    }
+    let joins = CTX.with_borrow(|ctx| match ctx {
+        Some(Ctx::Firing(firing)) => {
+            declared(&firing.core, node.node_core()) && node.node_core().can_join(firing.ticket)
+        }
+        _ => false,
+    });
+    if joins {
+        push_current(node, false, item);
+    } else {
+        item();
+    }
+}
+
 /// Run `item` in the fire of `node`: at the ticket this thread delivers
 /// when a declared edge allows it, otherwise as a new ticket.
 pub(crate) fn run_in_fire(node: &Arc<dyn Node>, item: Item) {

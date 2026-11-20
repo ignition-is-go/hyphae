@@ -45,6 +45,8 @@ where
 {
     pub(crate) source: S,
     pub(crate) mapper: Arc<F>,
+    /// The outside nodes the mapper reads. See [`ProjectCellExt::project_cell_anchored`].
+    pub(crate) anchors: Vec<SubscriptionGuard>,
     #[allow(clippy::type_complexity)]
     pub(crate) _types: PhantomData<fn() -> (K, V, K2, V2, W)>,
 }
@@ -110,6 +112,7 @@ where
             self.source,
             move |k, v| (mapper)(k, v),
             Arc::new(intermediate_sink),
+            self.anchors,
         )
     }
 }
@@ -279,6 +282,34 @@ where
         ProjectCellPlan {
             source: self,
             mapper: Arc::new(mapper),
+            anchors: Vec::new(),
+            _types: PhantomData,
+        }
+    }
+
+    /// [`project_cell`](Self::project_cell) for a mapper that reads nodes
+    /// other than its entry. Each entry's cell is a family row built in the
+    /// operator's fire, and `anchors` must cover every outside node the
+    /// mapper reads: the operator hears every ticket they fire, so a row
+    /// built at ticket `N` is sound against later tickets. Debug builds
+    /// panic on a row that reads a node no anchor covers. See
+    /// `docs/settle-epochs.md`, section 6.
+    #[track_caller]
+    fn project_cell_anchored<K2, V2, W, F>(
+        self,
+        anchors: &[&dyn crate::family::FamilyInput],
+        mapper: F,
+    ) -> impl MapQuery<Key = K2, Value = V2>
+    where
+        K2: Hash + Eq + CellValue,
+        V2: CellValue,
+        W: Watchable<Option<(K2, V2)>> + Gettable<Option<(K2, V2)>> + Clone + Send + Sync + 'static,
+        F: Fn(&K, &V) -> W + Send + Sync + 'static,
+    {
+        ProjectCellPlan {
+            source: self,
+            mapper: Arc::new(mapper),
+            anchors: anchors.iter().map(|input| input.anchor_guard()).collect(),
             _types: PhantomData,
         }
     }
@@ -310,7 +341,7 @@ mod tests {
         let weights_for_mapper = weights.clone();
         let mat = src
             .clone()
-            .project_cell(move |key, value| {
+            .project_cell_anchored(&[&weights], move |key, value| {
                 let key = key.clone();
                 let value = *value;
                 weights_for_mapper
