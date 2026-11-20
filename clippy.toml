@@ -1,3 +1,7 @@
 disallowed-types = [
     { path = "std::sync::RwLock", reason = "prefer Mutex or lock-free primitives" },
 ]
+
+# Oldest compiler the published crates are known to build on. Keeps clippy from
+# suggesting APIs stabilized later, such as `Option::map_or_default` (1.98).
+msrv = "1.97.1"
