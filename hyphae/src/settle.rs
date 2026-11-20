@@ -281,7 +281,7 @@ pub struct NodeCore {
 
 impl NodeCore {
     pub(crate) fn new_arc() -> Arc<Self> {
-        Arc::new(Self {
+        let core = Arc::new(Self {
             seq: NODE_SEQ.fetch_add(1, Ordering::Relaxed),
             pending: Mutex::new(Pending {
                 items: Vec::new(),
@@ -294,7 +294,13 @@ impl NodeCore {
             inputs: Mutex::new(Vec::new()),
             outputs: Mutex::new(Vec::new()),
             mark: AtomicU8::new(watermark::NOT_QUIET),
-        })
+        });
+        ROW_BUILD.with_borrow_mut(|build| {
+            if let Some(build) = build.as_mut() {
+                build.created.push(Arc::downgrade(&core));
+            }
+        });
+        core
     }
 
     /// Declare an edge from `input` into this node. The node's ancestry
@@ -552,6 +558,213 @@ thread_local! {
     static CTX: RefCell<Option<Ctx>> = const { RefCell::new(None) };
     static BUILDING: RefCell<Option<Building>> = const { RefCell::new(None) };
     static DECLARED: RefCell<DeclaredCache> = RefCell::new(FxHashMap::default());
+    static ROW_BUILD: RefCell<Option<RowBuild>> = const { RefCell::new(None) };
+}
+
+// ============================================================================
+// Family row builds (`docs/settle-epochs.md` section 6, "Build inside the
+// ticket")
+// ============================================================================
+
+/// A row build open on this thread, inside the fire of ticket `ticket`.
+struct RowBuild {
+    ticket: u64,
+    /// Every node created by the build.
+    created: Vec<Weak<NodeCore>>,
+    /// Run when the build closes, after the created nodes promise past
+    /// `ticket`: each pushes the tickets above `ticket` that a subscription
+    /// made during the build missed.
+    backfills: Vec<Box<dyn FnOnce()>>,
+}
+
+/// `C`: every ticket below it has completed. A versioned read never asks for
+/// a ticket below it.
+pub(crate) fn completed_through() -> u64 {
+    COMPLETED.load(Ordering::Acquire)
+}
+
+/// The ticket a row build on this thread reads at: reads and subscribe
+/// replays return each node's value at this ticket.
+pub(crate) fn build_ticket() -> Option<u64> {
+    ROW_BUILD.with_borrow(|build| build.as_ref().map(|build| build.ticket))
+}
+
+/// Run `backfill` when the row build open on this thread closes.
+pub(crate) fn on_build_close(backfill: Box<dyn FnOnce()>) {
+    ROW_BUILD.with_borrow_mut(|build| {
+        if let Some(build) = build.as_mut() {
+            build.backfills.push(backfill);
+        }
+    });
+}
+
+/// Build family rows inside the fire of `firing` at the ticket it fires.
+///
+/// Every value `f` reads, and every subscribe replay, is the value at that
+/// ticket `N`. When `f` returns, every node it created has processed `N` and
+/// promises `N + 1`, and every subscription it made is sent each ticket
+/// above `N` that its source had already fired, at that ticket, through its
+/// owner. A nested call joins the outer build.
+///
+/// Outside the family's fire, as when a reader is constructed, `f` is plain
+/// construction and reads the latest values, like any node built there. A
+/// demand change always reaches the family's fire, because the readers' key
+/// subscriptions are bound to the family node.
+///
+/// # Panics
+///
+/// In debug builds, when a node the build created has an input with no
+/// declared path into `family`: the family's anchor edges must cover every
+/// input its rows read.
+pub(crate) fn build_rows<R>(family: &Arc<NodeCore>, f: impl FnOnce() -> R) -> R {
+    if build_ticket().is_some() {
+        return f();
+    }
+    let ticket = CTX.with_borrow(|ctx| match ctx {
+        Some(Ctx::Firing(fire)) if Arc::ptr_eq(&fire.core, family) => Some(fire.ticket),
+        _ => None,
+    });
+    let Some(ticket) = ticket else {
+        return f();
+    };
+    ROW_BUILD.with_borrow_mut(|build| {
+        *build = Some(RowBuild {
+            ticket,
+            created: Vec::new(),
+            backfills: Vec::new(),
+        });
+    });
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    let Some(build) = ROW_BUILD.with_borrow_mut(Option::take) else {
+        unreachable!("the row build is open until here");
+    };
+    let created: Vec<Arc<NodeCore>> = build.created.iter().filter_map(Weak::upgrade).collect();
+    #[cfg(debug_assertions)]
+    assert_anchored(family, &created);
+    for core in &created {
+        let mut pending = core.pending.lock();
+        debug_assert!(
+            pending.min() > ticket,
+            "hyphae: family rule: a row node holds ticket {} at its build ticket {ticket}",
+            pending.min()
+        );
+        if pending.processed == NONE || pending.processed < ticket {
+            pending.processed = ticket;
+        }
+        core.watermark
+            .fetch_max(ticket.saturating_add(1).min(pending.min()), Ordering::AcqRel);
+    }
+    for backfill in build.backfills {
+        backfill();
+    }
+    match outcome {
+        Ok(value) => value,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
+
+/// The anchor rule: every input a row build reads is covered by the family
+/// node's anchor edges. An input is covered when it reaches the family node
+/// along declared edges, or when every one of its own inputs is covered.
+/// Then a ticket above the build ticket that the input fired is still
+/// pending on the way to the family node.
+#[cfg(debug_assertions)]
+fn assert_anchored(family: &Arc<NodeCore>, created: &[Arc<NodeCore>]) {
+    fn covered(
+        node: &Arc<NodeCore>,
+        family: &Arc<NodeCore>,
+        known: &mut FxHashMap<usize, bool>,
+    ) -> bool {
+        let address = Arc::as_ptr(node).addr();
+        if let Some(known) = known.get(&address) {
+            return *known;
+        }
+        // A cycle reads as covered while it is being decided.
+        known.insert(address, true);
+        let inputs: Vec<Arc<NodeCore>> =
+            node.inputs.lock().iter().filter_map(Weak::upgrade).collect();
+        let answer = declared(node, family)
+            || (!inputs.is_empty() && inputs.iter().all(|input| covered(input, family, known)));
+        known.insert(address, answer);
+        answer
+    }
+    let mut known: FxHashMap<usize, bool> = created
+        .iter()
+        .map(|core| (Arc::as_ptr(core).addr(), true))
+        .collect();
+    for core in created {
+        let inputs: Vec<Arc<NodeCore>> =
+            core.inputs.lock().iter().filter_map(Weak::upgrade).collect();
+        for input in inputs {
+            assert!(
+                covered(&input, family, &mut known),
+                "hyphae: family rule: a row reads a node with no anchor edge into its family"
+            );
+        }
+    }
+}
+
+/// Push `item` to `owner` at `ticket`, a ticket above the row build that
+/// subscribed it. The ticket cannot have completed: the family node that
+/// builds holds the build ticket and has a static edge from every input
+/// that delivered it.
+pub(crate) fn backfill(owner: &Arc<dyn Node>, ticket: u64, item: Item) {
+    let core = owner.node_core();
+    let stamp = Stamp {
+        height: owner.node_height(),
+        node: 0,
+        index: 0,
+    };
+    let pushed = core.push(ticket, stamp, false, item).is_ok();
+    debug_assert!(
+        pushed,
+        "hyphae: promise safety: a backfill at ticket {ticket} reached a node past it"
+    );
+    debug_assert!(
+        slot(ticket).done.load(Ordering::Acquire) != ticket.wrapping_add(1),
+        "hyphae: family rule: backfill of ticket {ticket} after it completed"
+    );
+    watermark::invalidate_if_marked(core);
+    poke(owner);
+}
+
+/// Run `item` in the fire of `node`: at the ticket this thread delivers
+/// when a declared edge allows it, otherwise as a new ticket.
+pub(crate) fn run_in_fire(node: &Arc<dyn Node>, item: Item) {
+    if collecting(node.as_ref()) {
+        item();
+        return;
+    }
+    let joins = CTX.with_borrow(|ctx| match ctx {
+        Some(Ctx::Firing(firing)) => {
+            declared(&firing.core, node.node_core()) && node.node_core().can_join(firing.ticket)
+        }
+        _ => false,
+    });
+    if joins {
+        push_current(node, false, item);
+        return;
+    }
+    submit_write(
+        SettleKey::Shared,
+        Box::new(InFire {
+            node: Arc::downgrade(node),
+            item,
+        }),
+    );
+}
+
+struct InFire {
+    node: Weak<dyn Node>,
+    item: Item,
+}
+
+impl Write for InFire {
+    fn apply(self: Box<Self>) {
+        if let Some(node) = self.node.upgrade() {
+            push_current(&node, false, self.item);
+        }
+    }
 }
 
 /// The ticket this thread is delivering, if any.

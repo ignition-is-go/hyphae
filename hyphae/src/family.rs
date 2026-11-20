@@ -6,20 +6,24 @@
 //! and torn down by the family once no reader holds it. A row's inputs are
 //! existing nodes, so a family grows the graph only at this keyed boundary.
 //!
-//! [`LookupExt::lookup`] reads a family at a reactive key. The reader keeps
-//! two fixed inputs, the key cell and the family. When the key changes, the
-//! reader takes the new key's row, built inside that fire when no reader held
-//! it, and gives up the old one. A value reader then holds the new row's
-//! value; a collection reader is told the new row's snapshot as one
-//! `MapDiff::Initial` and after that the new row's diffs only.
+//! [`LookupExt::lookup`] reads a family at a reactive key. When the key
+//! changes, the reader takes the new key's row and gives up the old one. A
+//! value reader then holds the new row's value; a collection reader is told
+//! the new row's snapshot as one `MapDiff::Initial` and after that the new
+//! row's diffs only.
 //!
-//! The design and its model check are in `docs/settle-epochs.md`, section 6.
-//! Under ticket settling the family is a node with fixed edges from every row
-//! input and from its readers' key cells: [`Family::acquire`] is the row build
-//! in the family's fire at the demanding ticket, and [`Teardown`] is the drop
-//! in the family's fire. On today's core teardown runs as its own write, after
-//! the settle that released the last lease, so a reader that takes the key in
-//! that same settle keeps the row and any state it holds.
+//! The rules are `docs/settle-epochs.md` section 6:
+//!
+//! - **Anchor.** The family is a node. [`KeyedFamily::anchor`] gives it a
+//!   static edge from an input its rows read, and every ticket that input
+//!   fires is delivered to it. Each reader's key cell feeds it too, and each
+//!   reader hears it.
+//! - **Build in the ticket.** A key change reaches the family's fire at
+//!   ticket `N`, and the row is built there. It reads every input at `N`,
+//!   processes `N`, promises `N + 1`, and is sent each ticket above `N` that
+//!   an input already fired.
+//! - **Teardown.** The row is dropped in the family's own fire: at `N` when
+//!   the last lease is given up in that fire, otherwise as a later ticket.
 
 use std::{
     collections::{BTreeSet, HashMap},
@@ -35,14 +39,13 @@ use parking_lot::Mutex;
 use uuid::Uuid;
 
 use crate::{
-    MapExt, Materialize, ProjectCellExt,
     cell::{Cell, CellImmutable, CellMutable, WeakCell},
     cell_map::{CellMap, MapDiff, WeakCellMap},
     map_query::MapQuery,
-    settle::{SettleKey, Write},
+    settle::Node,
     signal::Signal,
     subscription::SubscriptionGuard,
-    traits::{CellValue, Gettable, Watchable},
+    traits::{CellValue, Gettable, Mutable, Watchable},
 };
 
 /// A keyed set of rows that readers share.
@@ -53,6 +56,69 @@ pub trait Family: Clone + Send + Sync + 'static {
     /// Take a lease on the row for `key`, building the row when no lease holds
     /// it. The row lives at least as long as the lease.
     fn acquire(&self, key: &Self::Key) -> Lease<Self::Row>;
+
+    /// The family's node, whose fire builds and drops rows.
+    fn node(&self) -> FamilyNode;
+}
+
+/// A family's node. Readers' demand flows into it, and it builds and drops
+/// rows in its fire.
+#[derive(Clone)]
+pub struct FamilyNode(Cell<(), CellMutable>);
+
+impl FamilyNode {
+    fn new() -> Self {
+        Self(Cell::new(()))
+    }
+
+    fn dyn_node(&self) -> Arc<dyn Node> {
+        self.0.inner.clone()
+    }
+
+    /// Run `f`, which builds rows, as a row build in this node's fire.
+    fn build<R>(&self, f: impl FnOnce() -> R) -> R {
+        crate::settle::build_rows(&self.0.inner.core, f)
+    }
+
+    /// Make `guard`'s callback run in this node's fire, until the returned
+    /// guard drops.
+    fn hold(&self, guard: SubscriptionGuard) -> SubscriptionGuard {
+        let key = Uuid::new_v4();
+        self.0.own_keyed(key, guard);
+        let node = self.0.downgrade();
+        SubscriptionGuard::from_callback(move || {
+            if let Some(node) = node.upgrade() {
+                node.release_owned(key);
+            }
+        })
+    }
+
+    /// A guard that gives its owner a static edge from this node.
+    fn feeds(&self) -> SubscriptionGuard {
+        SubscriptionGuard::dependency(&self.0)
+    }
+}
+
+/// A node a family can anchor to: an input its rows read.
+pub trait FamilyInput {
+    /// A subscription that delivers every ticket this input fires.
+    fn anchor_guard(&self) -> SubscriptionGuard;
+}
+
+impl<T: CellValue, M: Send + Sync + 'static> FamilyInput for Cell<T, M> {
+    fn anchor_guard(&self) -> SubscriptionGuard {
+        self.subscribe(|_| {})
+    }
+}
+
+impl<K, V, M> FamilyInput for CellMap<K, V, M>
+where
+    K: CellValue + Hash + Eq,
+    V: CellValue,
+{
+    fn anchor_guard(&self) -> SubscriptionGuard {
+        self.inner.diffs_cell.subscribe(|_| {})
+    }
 }
 
 /// A held row. Dropping the last lease on a row lets the family tear it down.
@@ -91,6 +157,13 @@ impl<K, R> Clone for KeyedFamily<K, R> {
 struct Rows<K, R> {
     build: Box<dyn Fn(&K) -> R + Send + Sync>,
     slots: Mutex<HashMap<K, Slot<R>>>,
+    node: FamilyNode,
+    /// Keys whose last lease was given up in the family's fire now running.
+    /// The fire's fanout drops the ones still unheld, so a key released and
+    /// demanded in one ticket keeps its row.
+    dropping: Mutex<Vec<K>>,
+    /// The family node's own subscription that runs that drop.
+    sweep: Mutex<Option<SubscriptionGuard>>,
 }
 
 struct Slot<R> {
@@ -102,24 +175,41 @@ struct Slot<R> {
 ///
 /// `build` must be a pure function of its inputs: two calls for one key must
 /// build rows that agree, because a row that nobody holds is torn down and a
-/// later demand builds it again.
+/// later demand builds it again. Declare every input `build` reads with
+/// [`KeyedFamily::anchor`]; debug builds panic on a row that reads a node no
+/// anchor covers.
 pub fn family<K, R>(build: impl Fn(&K) -> R + Send + Sync + 'static) -> KeyedFamily<K, R>
 where
     K: CellValue + Hash + Eq,
     R: FamilyRow<K>,
 {
-    KeyedFamily {
-        rows: Arc::new(Rows {
-            build: Box::new(build),
-            slots: Mutex::new(HashMap::new()),
-        }),
-    }
+    let rows = Arc::new(Rows {
+        build: Box::new(build),
+        slots: Mutex::new(HashMap::new()),
+        node: FamilyNode::new(),
+        dropping: Mutex::new(Vec::new()),
+        sweep: Mutex::new(None),
+    });
+    let weak = Arc::downgrade(&rows);
+    let sweep = rows.node.0.subscribe(move |_| teardown(&weak));
+    *rows.sweep.lock() = Some(sweep);
+    KeyedFamily { rows }
 }
 
 impl<K, R> KeyedFamily<K, R>
 where
     K: CellValue + Hash + Eq,
 {
+    /// Anchor the family to `input`, a node its rows read: the family node
+    /// gets a static edge from it and hears every ticket it fires. A row
+    /// built at ticket `N` is then sound against tickets above `N` that the
+    /// input fires during the build. An input is covered when it, or every
+    /// node its value derives from, is anchored.
+    pub fn anchor(&self, input: &impl FamilyInput) -> &Self {
+        self.rows.node.0.own(input.anchor_guard());
+        self
+    }
+
     /// The number of rows built and not yet torn down.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -154,7 +244,7 @@ where
         // Build outside the lock: a build may take leases on other families
         // or on this one.
         let row = held.unwrap_or_else(|| {
-            let built = (self.rows.build)(key);
+            let built = self.rows.node.build(|| (self.rows.build)(key));
             let mut slots = self.rows.slots.lock();
             let slot = slots.entry(key.clone()).or_insert(Slot {
                 row: built,
@@ -172,6 +262,10 @@ where
             release: Some(Box::new(move || release(&rows, key))),
         }
     }
+
+    fn node(&self) -> FamilyNode {
+        self.rows.node.clone()
+    }
 }
 
 fn release<K, R>(rows: &Weak<Rows<K, R>>, key: K)
@@ -188,42 +282,39 @@ where
         })
     };
     if unheld {
-        crate::settle::submit_write(
-            SettleKey::Shared,
-            Box::new(Teardown {
-                rows: Arc::downgrade(&rows),
-                key,
+        let weak = Arc::downgrade(&rows);
+        crate::settle::run_in_fire(
+            &rows.node.dyn_node(),
+            Box::new(move || {
+                if let Some(rows) = weak.upgrade() {
+                    rows.dropping.lock().push(key);
+                    rows.node.0.set(());
+                }
             }),
         );
     }
 }
 
-/// The family's drop of a row that no lease holds. A reader that took a new
-/// lease since the release keeps the row.
-struct Teardown<K, R> {
-    rows: Weak<Rows<K, R>>,
-    key: K,
-}
-
-impl<K, R> Write for Teardown<K, R>
+/// The family's drop, at the fanout of its fire, of each released row that
+/// no lease holds. A reader that took a new lease in the fire keeps the row.
+fn teardown<K, R>(rows: &Weak<Rows<K, R>>)
 where
     K: CellValue + Hash + Eq,
-    R: FamilyRow<K>,
 {
-    fn apply(self: Box<Self>) {
-        let Some(rows) = self.rows.upgrade() else {
-            return;
-        };
-        let removed = {
-            let mut slots = rows.slots.lock();
-            match slots.get(&self.key) {
-                Some(slot) if slot.leases == 0 => slots.remove(&self.key),
+    let Some(rows) = rows.upgrade() else { return };
+    let dropping = std::mem::take(&mut *rows.dropping.lock());
+    let removed: Vec<Slot<R>> = {
+        let mut slots = rows.slots.lock();
+        dropping
+            .iter()
+            .filter_map(|key| match slots.get(key) {
+                Some(slot) if slot.leases == 0 => slots.remove(key),
                 _ => None,
-            }
-        };
-        // Dropping a row can drop cells whose drop takes other locks.
-        drop(removed);
-    }
+            })
+            .collect()
+    };
+    // Dropping a row can drop cells whose drop takes other locks.
+    drop(removed);
 }
 
 /// How a key cell's value names a row: the key itself, or `Option<K>`, where
@@ -369,10 +460,13 @@ where
             Err(none) => none.clone(),
         };
         let out = Cell::<Q::Out<T>, CellMutable>::new(initial).combine_latest();
+        let node = family.node();
+        out.own(node.feeds());
         let follow = Follow::<K>::new();
         let weak = out.downgrade();
+        let builder = node.clone();
         let key_guard = key.subscribe(move |signal| match signal {
-            Signal::Value(q) => switch_value(&weak, &follow, &family, q),
+            Signal::Value(q) => builder.build(|| switch_value(&weak, &follow, &family, q)),
             Signal::Error(error) => {
                 if let Some(out) = weak.upgrade() {
                     out.notify(Signal::Error(Arc::clone(error)));
@@ -380,7 +474,7 @@ where
             }
             Signal::Complete => {}
         });
-        out.own(key_guard);
+        out.own(node.hold(key_guard));
         drop(first);
         out.lock()
     }
@@ -487,14 +581,17 @@ where
         M: Send + Sync + 'static,
     {
         let out = CellMap::<RK, V, CellMutable>::new();
+        let node = family.node();
+        out.inner.diffs_cell.own(node.feeds());
         let follow = Follow::<K>::new();
         let weak = out.downgrade();
+        let builder = node.clone();
         let key_guard = key.subscribe(move |signal| {
             if let Signal::Value(q) = signal {
-                switch_map_row(&weak, &follow, &family, Q::name::<()>(q).ok());
+                builder.build(|| switch_map_row(&weak, &follow, &family, Q::name::<()>(q).ok()));
             }
         });
-        out.own(key_guard);
+        out.own_guard(node.hold(key_guard));
         out.lock()
     }
 }
@@ -618,13 +715,16 @@ where
             rows: Mutex::new(IndexMap::new()),
             attaches: AtomicU64::new(0),
         });
+        let node = family.node();
+        out.own(node.feeds());
         let weak = out.downgrade();
+        let builder = node.clone();
         let key_guard = self.subscribe(move |signal| {
             if let Signal::Value(keys) = signal {
-                switch_set(&weak, &members, &family, &**keys);
+                builder.build(|| switch_set(&weak, &members, &family, &**keys));
             }
         });
-        out.own(key_guard);
+        out.own(node.hold(key_guard));
         out.lock()
     }
 }
@@ -689,28 +789,49 @@ fn switch_set<F, K, S, T, RM>(
                 let value = Arc::clone(value);
                 let members = Arc::clone(&members);
                 let key = key.clone();
-                out.write_with(move |push| {
-                    let mut rows = members.rows.lock();
-                    let Some(member) = rows.get_mut(&key).filter(|m| m.attach == attach) else {
-                        return;
-                    };
-                    member.value = Some(value);
-                    // Pushed under the lock, so a later snapshot is never
-                    // pushed ahead of this one.
-                    push(Signal::value(Members::snapshot(&rows)));
-                    drop(rows);
-                });
+                let target = out.downgrade();
+                let reader: Arc<dyn Node> = out.inner.clone();
+                // Applied in the reader's fire: a replay in the family's fire
+                // must not snapshot ahead of a row update the reader applies
+                // in the same ticket.
+                crate::settle::run_in_fire(
+                    &reader,
+                    Box::new(move || {
+                        let Some(out) = target.upgrade() else { return };
+                        let mut rows = members.rows.lock();
+                        let Some(member) = rows.get_mut(&key).filter(|m| m.attach == attach)
+                        else {
+                            return;
+                        };
+                        member.value = Some(value);
+                        let snapshot = Members::snapshot(&rows);
+                        drop(rows);
+                        out.set(snapshot);
+                    }),
+                );
             }
         };
         let guard = lease.row().subscribe(deliver);
         let mut lease = Some(lease);
         out.own_keyed(guard_key, guard.with_cleanup(move || drop(lease.take())));
     }
+    // Computed in the reader's fire, after the family's fire: a row change
+    // in this ticket may reach the reader before or after this push, and the
+    // snapshot taken last must include it.
     let members = Arc::clone(members);
-    out.write_with(move |push| {
-        let rows = members.rows.lock();
-        push(Signal::value(Members::snapshot(&rows)));
-    });
+    let weak = out.downgrade();
+    let reader: Arc<dyn Node> = out.inner.clone();
+    crate::settle::run_in_fire(
+        &reader,
+        Box::new(move || {
+            if let Some(out) = weak.upgrade() {
+                let rows = members.rows.lock();
+                let snapshot = Members::snapshot(&rows);
+                drop(rows);
+                out.set(snapshot);
+            }
+        }),
+    );
 }
 
 /// Join a family per entry of a collection.
@@ -733,18 +854,150 @@ where
         RM: Send + Sync + 'static,
         KF: Fn(&K, &V) -> F::Key + Send + Sync + 'static,
     {
-        self.project_cell(move |k: &K, v: &V| {
-            let lease = family.acquire(&key(k, v));
-            let k = k.clone();
-            let row = lease
-                .row()
-                .clone()
-                .map(move |t: &T| Some((k.clone(), t.clone())))
-                .materialize();
-            let mut lease = Some(lease);
-            row.own(SubscriptionGuard::from_callback(move || drop(lease.take())));
-            row
-        })
+        let source = self.materialize();
+        let out = CellMap::<K, T, CellMutable>::new();
+        let node = family.node();
+        out.inner.diffs_cell.own(node.feeds());
+        let each = Arc::new(Each {
+            entries: Mutex::new(HashMap::new()),
+            attaches: AtomicU64::new(0),
+        });
+        let weak = out.downgrade();
+        let builder = node.clone();
+        let guard = source.subscribe_diffs(move |diff| {
+            builder.build(|| each_diff(&weak, &each, &family, &key, diff));
+        });
+        out.own_guard(node.hold(guard));
+        out.lock()
+    }
+}
+
+/// The entries [`LookupEachExt::lookup_each`] joins: each source key's
+/// family key and the attachment that may still deliver for it.
+struct Each<K, FK> {
+    entries: Mutex<HashMap<K, Joined<FK>>>,
+    attaches: AtomicU64,
+}
+
+struct Joined<FK> {
+    family_key: FK,
+    attach: u64,
+    guard_key: Uuid,
+}
+
+/// Apply one source diff in the family's fire: lease the row of each new or
+/// rekeyed entry, and release the rows of entries that left or rekeyed.
+fn each_diff<F, K, V, T, RM, KF>(
+    weak: &WeakCellMap<K, T>,
+    each: &Arc<Each<K, F::Key>>,
+    family: &F,
+    key: &KF,
+    diff: &MapDiff<K, V>,
+) where
+    F: Family<Row = Cell<T, RM>>,
+    K: CellValue + Hash + Eq,
+    V: CellValue,
+    T: CellValue,
+    RM: Send + Sync + 'static,
+    KF: Fn(&K, &V) -> F::Key,
+{
+    let Some(out) = weak.upgrade() else { return };
+    match diff {
+        MapDiff::Initial { entries } => {
+            let stale: Vec<K> = {
+                let present: std::collections::HashSet<&K> = entries.iter().map(|(k, _)| k).collect();
+                each.entries
+                    .lock()
+                    .keys()
+                    .filter(|k| !present.contains(k))
+                    .cloned()
+                    .collect()
+            };
+            for k in stale {
+                leave(&out, each, &k);
+            }
+            for (k, v) in entries {
+                join_entry(&out, each, family, k, key(k, v));
+            }
+        }
+        MapDiff::Insert { key: k, value } | MapDiff::Update { key: k, new_value: value, .. } => {
+            join_entry(&out, each, family, k, key(k, value));
+        }
+        MapDiff::Remove { key: k, .. } => leave(&out, each, k),
+        MapDiff::Batch { changes } => {
+            for change in changes {
+                each_diff(weak, each, family, key, change);
+            }
+        }
+    }
+}
+
+fn join_entry<F, K, T, RM>(
+    out: &CellMap<K, T, CellMutable>,
+    each: &Arc<Each<K, F::Key>>,
+    family: &F,
+    k: &K,
+    family_key: F::Key,
+) where
+    F: Family<Row = Cell<T, RM>>,
+    K: CellValue + Hash + Eq,
+    T: CellValue,
+    RM: Send + Sync + 'static,
+{
+    let attach = each.attaches.fetch_add(1, Ordering::Relaxed);
+    let guard_key = Uuid::new_v4();
+    let replaced = {
+        let mut entries = each.entries.lock();
+        if entries.get(k).is_some_and(|joined| joined.family_key == family_key) {
+            return;
+        }
+        entries.insert(
+            k.clone(),
+            Joined {
+                family_key: family_key.clone(),
+                attach,
+                guard_key,
+            },
+        )
+    };
+    if let Some(replaced) = replaced {
+        out.inner.diffs_cell.release_owned(replaced.guard_key);
+    }
+    let lease = family.acquire(&family_key);
+    let deliver = {
+        let weak = out.downgrade();
+        let each = Arc::clone(each);
+        let k = k.clone();
+        move |signal: &Signal<T>| {
+            let (Signal::Value(value), Some(out)) = (signal, weak.upgrade()) else {
+                return;
+            };
+            let live = each
+                .entries
+                .lock()
+                .get(&k)
+                .is_some_and(|joined| joined.attach == attach);
+            if live {
+                out.insert(k.clone(), T::clone(value));
+            }
+        }
+    };
+    let guard = lease.row().subscribe(deliver);
+    let mut lease = Some(lease);
+    out.inner
+        .diffs_cell
+        .own_keyed(guard_key, guard.with_cleanup(move || drop(lease.take())));
+}
+
+fn leave<K, T, FK>(out: &CellMap<K, T, CellMutable>, each: &Each<K, FK>, k: &K)
+where
+    K: CellValue + Hash + Eq,
+    T: CellValue,
+{
+    let left = each.entries.lock().remove(k);
+    if let Some(left) = left {
+        out.inner.diffs_cell.release_owned(left.guard_key);
+        out.remove(k);
     }
 }
 

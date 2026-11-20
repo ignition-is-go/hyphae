@@ -258,7 +258,12 @@ pub(crate) type SubscriberCallback<T> = Arc<dyn Fn(&Signal<T>) + Send + Sync>;
 pub(crate) struct Subscriber<T> {
     pub(crate) callback: SubscriberCallback<T>,
     initializing: AtomicBool,
-    pending: Mutex<Vec<Signal<T>>>,
+    /// Signals held back while initializing, with the ticket each was
+    /// delivered at.
+    pending: Mutex<Vec<(Option<u64>, Signal<T>)>>,
+    /// One past the last ticket a row build's backfill delivered, or 0. A
+    /// delivery at or below that ticket was already backfilled.
+    floor: std::sync::atomic::AtomicU64,
     /// The node that owns this subscription's guard. Its callback computes
     /// that node, so it runs at that node's fire.
     owner: std::sync::OnceLock<std::sync::Weak<dyn crate::settle::Node>>,
@@ -284,6 +289,7 @@ impl<T: Clone> Subscriber<T> {
             callback: Arc::new(callback),
             initializing: AtomicBool::new(true),
             pending: Mutex::new(Vec::new()),
+            floor: std::sync::atomic::AtomicU64::new(0),
             owner: std::sync::OnceLock::new(),
         }
     }
@@ -293,6 +299,7 @@ impl<T: Clone> Subscriber<T> {
             callback,
             initializing: AtomicBool::new(false),
             pending: Mutex::new(Vec::new()),
+            floor: std::sync::atomic::AtomicU64::new(0),
             owner: std::sync::OnceLock::new(),
         }
     }
@@ -301,15 +308,46 @@ impl<T: Clone> Subscriber<T> {
     /// completed. This prevents a concurrent notify from running before that
     /// replay and then being overwritten by an older value delivered last.
     pub(super) fn deliver(&self, signal: &Signal<T>) {
-        if self.initializing.load(Ordering::Acquire) {
+        let floor = self.floor.load(Ordering::Acquire);
+        if self.initializing.load(Ordering::Acquire) || floor > 0 {
+            let ticket = crate::settle::current_ticket();
+            if floor > 0 && ticket.is_some_and(|ticket| ticket < floor) {
+                return;
+            }
             let mut pending = self.pending.lock();
             if self.initializing.load(Ordering::Relaxed) {
-                pending.push(signal.clone());
+                pending.push((ticket, signal.clone()));
                 return;
             }
             drop(pending);
         }
         (self.callback)(signal);
+    }
+
+    /// End a subscription a row build made at `ticket`: take the signals
+    /// held back above `ticket`, merged with `versions`, the source's values
+    /// written above it, and stop holding back. Every later delivery at or
+    /// below the last ticket returned is dropped, since the caller delivers
+    /// those itself.
+    pub(super) fn finish_build(
+        &self,
+        ticket: u64,
+        versions: Vec<(u64, Signal<T>)>,
+    ) -> Vec<(u64, Signal<T>)> {
+        let mut pending = self.pending.lock();
+        let seen = versions.last().map_or(ticket, |(at, _)| *at);
+        let mut backfill = versions;
+        backfill.extend(
+            std::mem::take(&mut *pending)
+                .into_iter()
+                .filter_map(|(at, signal)| at.filter(|at| *at > seen).map(|at| (at, signal))),
+        );
+        if let Some((last, _)) = backfill.last() {
+            self.floor.store(last.saturating_add(1), Ordering::Release);
+        }
+        self.initializing.store(false, Ordering::Release);
+        drop(pending);
+        backfill
     }
 
     pub(super) fn finish_initial(&self, initial: &Signal<T>) {
@@ -323,7 +361,7 @@ impl<T: Clone> Subscriber<T> {
                 }
                 std::mem::take(&mut *pending)
             };
-            for signal in pending {
+            for (_, signal) in pending {
                 (self.callback)(&signal);
             }
         }

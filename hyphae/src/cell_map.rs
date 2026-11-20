@@ -409,6 +409,35 @@ where
         }
     }
 
+    /// What a subscriber made now holds: the stored entries, with each key
+    /// that waits to be published at its told value and the untold diffs
+    /// undone.
+    fn held(&self) -> Vec<(K, V)> {
+        let order = self.inner.write_order.lock();
+        let mut held: std::collections::HashMap<K, V> = order
+            .borrow()
+            .held(
+                self.inner
+                    .data
+                    .iter()
+                    .map(|r| (r.key().clone(), r.value().clone())),
+            )
+            .into_iter()
+            .collect();
+        let untold = self.untold();
+        // An `Initial` replaces what the subscriber holds, so only the
+        // diffs after the last one need undoing.
+        let undone = untold
+            .iter()
+            .rev()
+            .take_while(|diff| !matches!(***diff, MapDiff::Initial { .. }));
+        for diff in undone {
+            diff.undo(&mut held);
+        }
+        drop(order);
+        held.into_iter().collect::<Vec<_>>()
+    }
+
     /// Write `diff` to the diff cell, for a mutation that joins the ticket
     /// this thread delivers, and log it until the cell has told it.
     pub(crate) fn tell(&self, diff: MapDiff<K, V>) {
@@ -420,19 +449,29 @@ where
         self.inner.diffs_cell.inner.write(Signal::Value(diff), true);
     }
 
-    /// The logged diffs the diff cell has not told, oldest first. Told ones
-    /// are dropped from the log here.
+    /// The logged diffs a subscriber made now must not find in its
+    /// snapshot, oldest first: those the diff cell has not told, and inside a
+    /// row build at `N` also those above `N`, which the build backfills.
     fn untold(&self) -> Vec<Arc<MapDiff<K, V>>> {
+        let told = self.inner.diffs_cell.inner.core.processed();
+        let seen = match (told, crate::settle::build_ticket()) {
+            (Some(told), Some(build)) => Some(told.min(build)),
+            (told, None) => told,
+            (None, Some(_)) => None,
+        };
         self.untold_log()
             .iter()
+            .filter(|(ticket, _)| seen.is_none_or(|seen| *ticket > seen))
             .map(|(_, diff)| Arc::clone(diff))
             .collect()
     }
 
+    /// The log, with the diffs of completed tickets dropped: no row build
+    /// reads below `C`, and a completed ticket's diff has been told.
     fn untold_log(&self) -> parking_lot::MutexGuard<'_, Vec<(u64, Arc<MapDiff<K, V>>)>> {
-        let told = self.inner.diffs_cell.inner.core.processed();
+        let completed = crate::settle::completed_through();
         let mut untold = self.inner.untold.lock();
-        untold.retain(|(ticket, _)| told.is_none_or(|told| *ticket > told));
+        untold.retain(|(ticket, _)| *ticket >= completed);
         untold
     }
 
@@ -442,6 +481,9 @@ where
     /// Use this for one-shot reads where you don't need live updates.
     #[must_use]
     pub fn snapshot(&self) -> Vec<(K, V)> {
+        if crate::settle::build_ticket().is_some() {
+            return self.held();
+        }
         self.inner
             .data
             .iter()
@@ -522,31 +564,7 @@ where
         // The snapshot is what subscribers hold. A change that waits to be
         // published, or whose diff waits in the diff cell, reaches this
         // subscriber as a diff, so it must not be in the snapshot as well.
-        let entries = {
-            let order = self.inner.write_order.lock();
-            let mut held: std::collections::HashMap<K, V> = order
-                .borrow()
-                .held(
-                    self.inner
-                        .data
-                        .iter()
-                        .map(|r| (r.key().clone(), r.value().clone())),
-                )
-                .into_iter()
-                .collect();
-            let untold = self.untold();
-            // An `Initial` replaces what the subscriber holds, so only the
-            // diffs after the last one need undoing.
-            let undone = untold
-                .iter()
-                .rev()
-                .take_while(|diff| !matches!(***diff, MapDiff::Initial { .. }));
-            for diff in undone {
-                diff.undo(&mut held);
-            }
-            drop(order);
-            held.into_iter().collect::<Vec<_>>()
-        };
+        let entries = self.held();
         callback(&MapDiff::Initial { entries });
         loop {
             let queued = {

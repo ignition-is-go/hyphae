@@ -20,6 +20,7 @@ type Rows = KeyedFamily<u32, Cell<i32, CellImmutable>>;
 fn store_family(store: &Cell<i32, crate::CellMutable>) -> (Rows, Arc<AtomicUsize>) {
     let builds = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&builds);
+    let anchor = store.clone();
     let store = store.clone();
     let rows = family(move |k: &u32| {
         counted.fetch_add(1, Ordering::SeqCst);
@@ -29,6 +30,7 @@ fn store_family(store: &Cell<i32, crate::CellMutable>) -> (Rows, Arc<AtomicUsize
             .map(move |s| s.saturating_mul(10).saturating_add(k))
             .materialize()
     });
+    rows.anchor(&anchor);
     (rows, builds)
 }
 
@@ -64,6 +66,7 @@ fn old_row_changes_do_not_reach_the_reader() {
     let b = Cell::new(100);
     let (ra, rb) = (a.clone(), b.clone());
     let rows = family(move |k: &usize| if *k == 0 { ra.clone() } else { rb.clone() }.lock());
+    rows.anchor(&a).anchor(&b);
     let key = Cell::new(0usize);
     let out = key.clone().lookup(rows);
     let seen = record(&out);
@@ -276,6 +279,7 @@ fn views() -> (KeyedFamily<u32, CellMap<u32, i32>>, Tables) {
             rows.1.clone()
         }
     });
+    family.anchor(&tables.0).anchor(&tables.1);
     (family, tables)
 }
 
@@ -388,6 +392,7 @@ fn set_join_takes_hash_only_keys_in_set_order() {
                 .materialize()
         })
     };
+    rows.anchor(&store);
     let keys = Cell::new(IndexSet::from([Param("ccc"), Param("a")]));
     let joined = keys.clone().lookup_set(rows);
     let order = |m: IndexMap<Param, i32>| m.into_iter().collect::<Vec<_>>();

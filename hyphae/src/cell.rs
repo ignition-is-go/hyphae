@@ -111,11 +111,55 @@ pub(crate) struct CellInner<T> {
     pub(crate) caller: &'static Location<'static>,
 }
 
-/// The two newest versions of a cell's value: `value` at `ticket`, and the
-/// one before it.
+/// The versions of a cell's value that a row build can still read: `value`
+/// at `ticket`, and the older versions, oldest first, back to the newest one
+/// at or below `C` (`docs/settle-epochs.md` section 5).
 pub(crate) struct History<T> {
     pub(crate) ticket: u64,
-    pub(crate) previous: Option<(u64, Arc<T>)>,
+    pub(crate) older: std::collections::VecDeque<(u64, Arc<T>)>,
+}
+
+impl<T> History<T> {
+    /// Drop the versions no read can ask for: those older than the newest
+    /// version at or below `completed`.
+    fn prune(&mut self, completed: u64) -> Vec<(u64, Arc<T>)> {
+        let mut displaced = Vec::new();
+        if self.ticket <= completed {
+            displaced.extend(self.older.drain(..));
+            return displaced;
+        }
+        while self.older.len() > 1 && self.older.get(1).is_some_and(|(at, _)| *at <= completed) {
+            displaced.extend(self.older.pop_front());
+        }
+        displaced
+    }
+
+    /// The version at `ticket`: the newest at or below it. `current` is the
+    /// value at `self.ticket`.
+    fn at(&self, ticket: u64, current: &Arc<T>) -> Arc<T> {
+        if self.ticket <= ticket {
+            return Arc::clone(current);
+        }
+        self.older
+            .iter()
+            .rev()
+            .find(|(at, _)| *at <= ticket)
+            .or_else(|| self.older.front())
+            .map_or_else(|| Arc::clone(current), |(_, value)| Arc::clone(value))
+    }
+
+    /// The versions written after `ticket`, oldest first.
+    fn after(&self, ticket: u64, current: &Arc<T>) -> Vec<(u64, Arc<T>)> {
+        if self.ticket <= ticket {
+            return Vec::new();
+        }
+        self.older
+            .iter()
+            .filter(|(at, _)| *at > ticket)
+            .cloned()
+            .chain(std::iter::once((self.ticket, Arc::clone(current))))
+            .collect()
+    }
 }
 
 /// A reactive cell that holds a value and notifies subscribers on change.
@@ -182,7 +226,7 @@ impl<T: CellValue> Cell<T, CellMutable> {
             outs: Mutex::new(Vec::new()),
             history: Mutex::new(History {
                 ticket: 0,
-                previous: None,
+                older: std::collections::VecDeque::new(),
             }),
             backlog: crate::settle::Backlog::default(),
             combine: std::sync::OnceLock::new(),
@@ -436,6 +480,54 @@ impl<T: CellValue> Node for CellInner<T> {
 }
 
 impl<T: CellValue> CellInner<T> {
+    /// The value, or inside a row build the value at the build's ticket.
+    pub(crate) fn read(&self) -> Arc<T> {
+        let Some(ticket) = crate::settle::build_ticket() else {
+            return self.value.lock().clone();
+        };
+        let history = self.history.lock();
+        let current = self.value.lock().clone();
+        history.at(ticket, &current)
+    }
+
+    /// Replay the value at `ticket` to `sub`, a subscription a row build
+    /// makes, and hold its deliveries back until the build closes. Then each
+    /// value written above `ticket` is delivered at its own ticket through
+    /// the subscription's owner.
+    fn subscribe_in_build(self: &Arc<Self>, ticket: u64, sub: &Arc<Subscriber<T>>) {
+        (sub.callback)(&Signal::Value(self.read()));
+        let cell = Arc::clone(self);
+        let sub = Arc::clone(sub);
+        crate::settle::on_build_close(Box::new(move || {
+            let versions: Vec<(u64, Signal<T>)> = {
+                let history = cell.history.lock();
+                let current = cell.value.lock().clone();
+                history
+                    .after(ticket, &current)
+                    .into_iter()
+                    .map(|(at, value)| (at, Signal::Value(value)))
+                    .collect()
+            };
+            let backfill = sub.finish_build(ticket, versions);
+            if backfill.is_empty() {
+                return;
+            }
+            let Some(owner) = sub.owner() else {
+                debug_assert!(
+                    false,
+                    "hyphae: family rule: a subscription made in a row build, on the cell \
+                     created at {}, has no owner to backfill tickets above {ticket} into",
+                    cell.caller
+                );
+                return;
+            };
+            for (at, signal) in backfill {
+                let sub = Arc::clone(&sub);
+                crate::settle::backfill(&owner, at, Box::new(move || (sub.callback)(&signal)));
+            }
+        }));
+    }
+
     /// Route one signal: into the settle in progress when this cell has not
     /// had its turn there, otherwise through the input queue.
     ///
@@ -707,14 +799,15 @@ impl<T: CellValue> CellInner<T> {
     fn write_value(&self, ticket: u64, signal: &Signal<T>) {
         match signal {
             Signal::Value(value) => {
+                let mut history = self.history.lock();
                 let previous = std::mem::replace(&mut *self.value.lock(), value.clone());
-                let displaced = {
-                    let mut history = self.history.lock();
-                    let at = history.ticket;
-                    let older = history.previous.replace((at, previous));
-                    history.ticket = ticket;
-                    older
-                };
+                let at = history.ticket;
+                history.older.push_back((at, previous));
+                history.ticket = ticket;
+                // Old values drop outside the lock: a value's drop can reach
+                // other cells.
+                let displaced = history.prune(crate::settle::completed_through());
+                drop(history);
                 drop(displaced);
             }
             Signal::Complete => {
@@ -810,10 +903,7 @@ impl<T: CellValue> CellInner<T> {
 impl<T: CellValue, U: Send + Sync + 'static> Gettable<T> for Cell<T, U> {
     fn get(&self) -> T {
         crate::settle::record_side_read();
-        // Brief lock to clone the Arc (refcount bump), release, then deref
-        // and clone T outside the lock. Keeps the critical section small.
-        let arc = self.inner.value.lock().clone();
-        (*arc).clone()
+        (*self.inner.read()).clone()
     }
 }
 
@@ -855,8 +945,12 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
         // subscriber; a duplicate value delivery is benign, and any one-emit
         // ordering skew self-heals on the next notify.
         crate::settle::record_side_read();
-        let current = self.inner.value.lock().clone();
-        sub.finish_initial(&Signal::Value(current));
+        if let Some(ticket) = crate::settle::build_ticket() {
+            self.inner.subscribe_in_build(ticket, &sub);
+        } else {
+            let current = self.inner.value.lock().clone();
+            sub.finish_initial(&Signal::Value(current));
+        }
 
         // If already complete or errored, send that signal too
         if self.is_complete() {
