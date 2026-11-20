@@ -507,3 +507,50 @@ fn each_join_shares_a_row_across_entries() {
     flush();
     assert!(!rows.contains(&7));
 }
+
+/// Readers built inside a settling callback, as myko builds a report while
+/// a callback asks for it. The build's writes into the new readers must be
+/// declared, and each reader must hold its row once the ticket settles.
+#[test]
+fn readers_built_inside_a_settling_callback_hold_their_rows() {
+    let store = Cell::new(1);
+    let (rows, _) = store_family(&store);
+    let (views, _tables) = views();
+    let trigger = Cell::new(0);
+    let built: Arc<Mutex<Vec<Box<dyn std::any::Any + Send>>>> = Arc::default();
+    let sink = Arc::clone(&built);
+    let readers = {
+        let rows = rows.clone();
+        let views = views.clone();
+        trigger.subscribe(move |signal| {
+            if !matches!(signal, Signal::Value(v) if **v == 1) {
+                return;
+            }
+            let value = Cell::new(1u32).lookup(rows.clone());
+            let view = Cell::new(0u32).lookup(views.clone());
+            let set = Cell::new(BTreeSet::from([0u32, 1])).lookup_set(rows.clone());
+            let entries = CellMap::<u32, u32>::from_entries(vec![(7, 0)]);
+            let each = entries.clone().lookup_each(rows.clone(), |_, fk: &u32| *fk).materialize();
+            sink.lock().push(Box::new((value, view, set, entries, each)));
+        })
+    };
+    trigger.set(1);
+    flush();
+    drop(readers);
+    let built = built.lock();
+    type Built = (
+        Cell<i32, CellImmutable>,
+        CellMap<u32, i32, CellImmutable>,
+        Cell<IndexMap<u32, i32>, CellImmutable>,
+        CellMap<u32, u32>,
+        CellMap<u32, i32, CellImmutable>,
+    );
+    let (value, view, set, _entries, each) = built
+        .first()
+        .and_then(|b| b.downcast_ref::<Built>())
+        .expect("the callback built the readers");
+    assert_eq!(value.get(), 11);
+    assert_eq!(view.snapshot(), vec![(0, 0)]);
+    assert_eq!(set.get(), IndexMap::from([(0, 10), (1, 11)]));
+    assert_eq!(each.snapshot(), vec![(7, 10)]);
+}
