@@ -305,13 +305,15 @@ impl Index {
         self.next_root = ROOT_BASE;
         self.overflow = 0;
         self.limit = u64::try_from(count).unwrap_or(u64::MAX).saturating_mul(8).max(4096);
+        // The edges the layout read; one declared since then is indexed by
+        // its own `add_edge`, queued behind the index lock.
         #[cfg(debug_assertions)]
-        for node in &nodes {
-            // An output whose own `add_edge` is still waiting for the index
-            // has no key yet; that call indexes the edge.
-            for output in live(&node.outputs) {
-                if key(node) < key(&output) && key(&output) != UNASSIGNED {
-                    assert_edge(node, &output);
+        for (v, node) in nodes.iter().enumerate() {
+            for &w in outs.get(v).into_iter().flatten() {
+                if !back.contains(&(v, w))
+                    && let Some(output) = nodes.get(w)
+                {
+                    assert_edge(node, output);
                 }
             }
         }
