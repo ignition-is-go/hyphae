@@ -577,3 +577,219 @@ estimates.
 
 Net in hyphae: about 3,000 lines added and 1,500 removed, plus the
 switch_map migration in rship.
+
+## 14. Causal readiness (the weaker guarantee)
+
+The user dropped global serializability. rship aligns payloads by PTP time at
+the application level, so writes from independent writers need no defined
+order. Every structure in sections 3 to 7 answered one global question: can
+any earlier ticket still reach this node? This section replaces that question
+with one about a node's own queues and the writes in them. The checker is
+`docs/settle-epochs-model/causal_model.rs`.
+
+### The guarantee
+
+1. **Per-writer order.** A writer is the handle a write is submitted through:
+   one per thread that calls `submit`, `enqueue` or `batch`, and one per node
+   whose callback writes during that node's fire. Each writer's writes take
+   effect at every node in the order the writer sent them.
+2. **Causality.** A write made by a callback at node `c` while `c` applies
+   write `x` takes effect after `x` at every node that both reach.
+3. **Glitch freedom.** A node never fires on a partial write. If write `x`
+   reaches a node through several inputs, each fire sees `x` on all of those
+   inputs or on none.
+4. **Per-node order.** Each node applies each write once, in groups, in an
+   order compatible with 1 and 2.
+
+In the terms of Margara and Salvaneschi (DEBS 2014; TSE 2018), this is their
+*causal* level plus *glitch freedom*, and not *atomic consistency*.
+Independent writes can reach two nodes in opposite orders. SID-UP
+(Drechsler et al., OOPSLA 2014) gives the same level with source sets and
+done markers. The comparison is in "Rejected candidates" below.
+
+### The rule
+
+- **Height.** Each node gets a static height when it is built: one plus the
+  maximum height of its inputs. A family takes two plus the maximum height of
+  its inputs, so that its rows fit at the height in between. Heights never
+  change, because the graph changes only between writes and at family rows.
+- **Write frontier `minh(x)`.** For each write in flight, a count of its
+  pending deliveries per height. `minh(x)` is the lowest height with a
+  nonzero count, or infinity once `x` is complete. A write reaches a node
+  only through lower heights, and only that write's own fires change its
+  counts.
+- **Earlier writes `preds(x)`.** These are the writer's earlier writes that
+  are still incomplete, plus the cause of a callback write and that cause's
+  own `preds`. The writer keeps the chain. Complete writes drop out of it.
+- **Group.** A node `n` holding `x` takes the smallest group `G` that
+  contains `x` and is closed under two rules. First, on each input queue,
+  every delivery up to the last delivery that carries a member of `G`.
+  Second, every write in `preds` of a member that is pending at `n`.
+- **Fire.** `n` fires `G` when `minh(m) >= h(n)` for every member `m`, and
+  `minh(p) >= h(n)` for every earlier write `p` of a member outside `G`. A
+  pending entry at the same height as `n` and at a different node cannot
+  reach `n`.
+- **Silence.** A node whose value did not change pushes nothing. The writes
+  it skipped ride on its next real delivery on that edge. The reader drops
+  any of those writes that it already applied through another input.
+
+Groups are what make glitch freedom hold without a global order. Take writers
+A and B that both feed the diamond `P, Q -> D`. P can apply A then B while Q
+applies B then A. No state of Q holds A without B, so D cannot apply A
+alone. It applies A and B as one group. A strict-FIFO node that takes only
+the heads of its queues deadlocks or glitches here. The `fifo_strict` mutant
+shows this.
+
+### Families: what the anchor is for now
+
+Rows, keyed lookup, row build inside Fam's fire, backfill, and family-owned
+teardown all stay as in section 6. Under tickets, the anchor edge `I -> Fam`
+stopped a ticket above N from completing before a row build at N. With no
+tickets, nothing completes in a global order, so that purpose is gone. Two
+local purposes remain:
+
+1. **Alignment.** Nodes now order independent writes differently. A row built
+   from the store's current value can be ahead of Fam, and Fam would then
+   combine one row that reflects a store write with another row that does
+   not. Without the anchor this is a glitch: the `no_anchor` mutant fails. A
+   new row starts from the anchor's view, which is the store exactly as Fam
+   applied it.
+2. **Backfill source.** Fam's anchor queue holds exactly the store writes
+   that Fam has not yet applied. Backfill copies that queue into the new
+   row's input queue. The copy lowers those writes' `minh` to the row's
+   height. That is safe because the anchor already holds them at Fam's
+   height, and a row feeds only Fam.
+
+Both purposes are local to the family. The global debug check
+`anchored_path` and `assert_anchored` goes away.
+
+### What replaces what
+
+| Old | New |
+| --- | --- |
+| Ticket, settle order, `S` | Write id plus its `preds` chain. Nothing is global |
+| Watermark, processed, promise safety | Per-write `minh` |
+| In-flight frontier map | Per-write height counts, touched only by that write's fires |
+| Quiet certificates | Nothing |
+| Reach index (labels, keys, re-key, rebuild, reorder) | Static heights |
+| Completion ring and `C` | A write completes when its counts reach zero. `flush` waits on the set of writes in flight when it was called |
+| Gated family edges | Not needed for readiness. Kept only for fan-out, as routing (not modeled) |
+
+### Cost per fire
+
+- Build the group: a scan of the node's own queue heads, usually one entry.
+- One `minh` load per member, and one per incomplete earlier write. A busy
+  writer chain is usually one or two writes.
+- Decrement the write's count at `h(n)`. Increment it at each destination
+  height that a real delivery goes to.
+- An unchanged node does nothing for its readers.
+
+The open cost is contention. Every fire of `x` updates `x`'s counts. A store
+write that reaches about 80k nodes puts all of those updates on one write's
+counters. Counts per height spread the updates across cache lines, but a wide
+height is still a hot line. Fires can batch updates per worker, as section 7
+batches completion counts, and flush them before they park. That keeps
+`minh` conservative. It only delays readiness and never makes a node ready
+too early.
+
+### Marker cost on large cones (the coordinator's candidate)
+
+The candidate combines FIFO edges, static per-input source sets, and done
+markers along a write's path. That is SID-UP and DREAM's glitch-free
+protocol. The model answers it as follows:
+
+- **Done markers are inherent to source sets.** A source set says which
+  inputs to wait on, not when a write is finished on that input. Only a
+  marker can say that. A node that skips its marker must know that no join
+  below it has the source in a source set. That is a non-local fact. So a
+  store write that touches 80k nodes sends markers to every node in the
+  static cone of its sources, whether or not anything changes.
+- **The frontier makes markers unnecessary.** "Is `x` done below me" is
+  `minh(x) >= h(n)`. With `SKIP=1`, unchanged nodes push nothing, and every
+  property still holds. Work is proportional to the nodes that change, plus
+  the counter updates. The one obligation is the `skip_carry` rule: a later
+  real delivery must carry the writes skipped before it, or a join glitches.
+  The `skip_carry` mutant fails.
+- **Causality is not free with source sets.** A feedback write enters at its
+  own root and shares no edge with its cause past the callback node. FIFO
+  does not order the two, and a source set waits only on the feedback's own
+  source. The minimal addition is the one used here: the feedback carries
+  its cause as a predecessor, and nodes wait on the cause's `minh`. The
+  `feedback_overtakes` mutant fails without it.
+- **Static source sets are not local under families.** A row build adds the
+  store to the source set of everything above Fam. Heights are fixed when a
+  node is built and never change.
+
+### Fairness
+
+A write waits on three things. The first is its group mates, which are
+deliveries already queued ahead of it on an edge it shares. The second is
+its own writer's earlier writes. The third is its causes. It never waits on
+another writer's frontier for any other reason. A node picks ready groups in
+arrival order, so a busy writer can delay another writer's write only by the
+deliveries already queued ahead of it at shared nodes. The checker explores
+every schedule, including unfair ones, so this property is argued, not
+checked. The checker does prove that every path terminates.
+
+### Not covered
+
+- Node construction between writes. A new node's snapshot of its inputs can
+  reflect half of a write in flight. The proposed fix is the row-build rule:
+  the new node's first fire takes as its group the in-flight writes reflected
+  in any input snapshot. This is not modeled.
+- Collection rows (diff streams), gated fan-out, `Latest` coalescing, a
+  bounded worker pool, and more than two user writers.
+- Bounds: up to 4 user writes over 2 writers, plus feedback writes.
+
+### What the checker proves
+
+`run_causal.sh SCEN A B [MUTANT] [SKIP]` runs `causal_model` under
+`systemd-run --user --scope -p MemoryMax=16G` and `timeout`. Writer 0 sends
+`A` writes and writer 1 sends `B` writes, and every interleaving of
+admission and fires is explored.
+
+- `diamond`: roots X, Y and U. P and Q both join X and Y, and D joins P, Q
+  and U. A write sets X, Y, both, or X with a trigger, and on a trigger P's
+  callback writes U as writer 2.
+- `family`: store I, demand K (a set over two keys), and Fam with rows F0
+  and F1. A write sets the store, sets the demand, or sets both in one write.
+  This covers first demand, key change, teardown, rebuild, and a row write in
+  the same write as a key change.
+
+The checks:
+
+- Properties 1 and 2 at every fire. Every required earlier write is applied
+  here, is in this group, or can never arrive (checked by a reachability
+  oracle).
+- Property 3 at every fire. No write is in one input's view while another
+  input has applied it or will receive it.
+- Property 4: no write is applied twice.
+- Deadlock freedom: every terminal state has every write admitted and every
+  queue empty.
+- Convergence: final values equal the function of the final roots.
+- Family alignment: each demanded row equals the row of the anchor's view.
+- Progress: the state graph is acyclic.
+
+Results (`A B` = writes per writer; every run also has the feedback writes
+that triggers cause):
+
+| Scenario | Bounds | Sequences | States, SKIP=0 / SKIP=1 | Time |
+| --- | --- | --- | --- | --- |
+| diamond | 2 2 | 256 | 2,209,281 / 2,372,675 | 24 s / 23 s |
+| diamond | 3 1 | 256 | 1,511,124 / 1,669,658 | 16 s / 15 s |
+| family | 2 2 | 6,561 | 13,799,043 / 12,575,567 | 88 s / 81 s |
+| family | 3 1 | 6,561 | 9,438,694 / 8,600,597 | 59 s / 53 s |
+| family | 4 0 | 6,561 | 2,548,213 / 2,320,941 | 16 s / 15 s |
+
+All properties hold in every run. Each mutant fails, in both SKIP modes
+unless noted:
+
+| Mutant | Failure |
+| --- | --- |
+| `no_writer_order`: the rule ignores a writer's earlier writes | per-writer order: P (diamond) or Fam applies w1 before w0 |
+| `half_write`: a node fires without waiting for `minh` | glitch: D fires with w0 from P but not Q; Fam fires with a store write from the anchor but not row F0 |
+| `feedback_overtakes`: a callback write carries no cause | causality: D applies the feedback before its cause |
+| `fifo_strict`: no groups, queue heads only | deadlock in both scenarios |
+| `skip_carry` (SKIP=1): a real delivery does not carry skipped writes | glitch at D |
+| `no_anchor` (family) | glitch: Fam fires with a store write in one row and not in the other |
+| `no_backfill` (family) | a row is not aligned with the store Fam applied |
