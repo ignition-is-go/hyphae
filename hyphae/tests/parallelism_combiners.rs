@@ -270,7 +270,7 @@ fn concurrent_switch_map_latest_inner_wins_same_height() {
             // as the selector, so selector-set and old-inner-set collide in one
             // wave. The old inner is the current inner until `sel` flips to 1.
             let old = old_src.clone().lock();
-            let new = new_src.clone().lock();
+            let new = new_src.lock();
             let result = sel
                 .clone()
                 .switch_map(move |&selector| {

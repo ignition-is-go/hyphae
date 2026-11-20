@@ -353,7 +353,7 @@ fn switch_map_old_inner_firing_during_switch_is_glitch_free() {
             .materialize(); // taller inner, h3
 
         let sel = Cell::new(0i64);
-        let (in0c, in1c) = (in0.clone(), in1.clone());
+        let (in0c, in1c) = (in0, in1);
         let result = sel
             .clone()
             .switch_map(move |&i| if i == 0 { in0c.clone() } else { in1c.clone() })
