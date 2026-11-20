@@ -177,7 +177,7 @@ where
         crate::settle::submit_write(
             crate::settle::SettleKey::Shared,
             Box::new(Publish {
-                map: Arc::downgrade(&self.map.inner),
+                map: Arc::clone(&self.map.inner),
                 keys: later.keys,
                 shape: later.shape,
             }),
@@ -186,13 +186,14 @@ where
 }
 
 /// A queued request to tell a map's subscribers what is stored for `keys`.
-/// Holds the map weakly: a map that nothing else holds has nobody to tell.
+/// Holds the map: a key cell made while the request waits starts at the value
+/// subscribers were told, and can outlive every other handle to the map.
 struct Publish<K, V>
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
 {
-    map: std::sync::Weak<CellMapInner<K, V>>,
+    map: Arc<CellMapInner<K, V>>,
     keys: Vec<K>,
     shape: Shape,
 }
@@ -203,13 +204,11 @@ where
     V: CellValue,
 {
     fn apply(self: Box<Self>) {
-        if let Some(inner) = self.map.upgrade() {
-            CellMap {
-                inner,
-                _marker: PhantomData::<CellMutable>,
-            }
-            .publish(self.keys, self.shape);
+        CellMap {
+            inner: self.map,
+            _marker: PhantomData::<CellMutable>,
         }
+        .publish(self.keys, self.shape);
     }
 }
 
@@ -663,7 +662,7 @@ where
             crate::settle::submit_write(
                 crate::settle::SettleKey::Shared,
                 Box::new(Publish {
-                    map: Arc::downgrade(&self.inner),
+                    map: Arc::clone(&self.inner),
                     keys,
                     shape,
                 }),

@@ -474,3 +474,44 @@ fn a_key_cell_made_while_its_key_is_in_flight_ends_at_the_map() {
         assert_eq!(cell.get(), Some(5));
     });
 }
+
+#[test]
+fn a_key_cell_ends_at_the_map_when_the_map_is_dropped_before_its_publish() {
+    in_both_modes(|| {
+        let cell = batch(|| {
+            let map = CellMap::<&'static str, u64>::new();
+            map.insert("key", 5);
+            // Made before the batch closes, so it starts at what subscribers
+            // were told: no entry. Only the map's publish can correct it.
+            map.get(&"key").materialize()
+        });
+        flush();
+        assert_eq!(cell.get(), Some(5));
+    });
+}
+
+#[test]
+fn a_membership_cell_ends_at_the_set_when_the_set_is_dropped_before_its_publish() {
+    in_both_modes(|| {
+        let cell = batch(|| {
+            let set = CellSet::<&'static str>::new();
+            set.insert("value");
+            set.contains(&"value").materialize()
+        });
+        flush();
+        assert!(cell.get());
+    });
+}
+
+#[test]
+fn a_map_is_freed_once_its_last_handle_is_dropped_and_its_publish_has_settled() {
+    in_both_modes(|| {
+        let weak = batch(|| {
+            let map = CellMap::<&'static str, u64>::new();
+            map.insert("key", 5);
+            map.downgrade()
+        });
+        flush();
+        assert!(weak.upgrade().is_none());
+    });
+}

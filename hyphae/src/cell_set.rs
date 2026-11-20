@@ -157,7 +157,7 @@ where
         crate::settle::submit_write(
             crate::settle::SettleKey::Shared,
             Box::new(Publish {
-                set: Arc::downgrade(&self.inner),
+                set: Arc::clone(&self.inner),
                 value: value.clone(),
             }),
         );
@@ -181,7 +181,7 @@ where
             crate::settle::submit_write(
                 crate::settle::SettleKey::Shared,
                 Box::new(Publish {
-                    set: Arc::downgrade(&self.inner),
+                    set: Arc::clone(&self.inner),
                     value,
                 }),
             );
@@ -219,12 +219,13 @@ where
 }
 
 /// A queued request to tell a set's subscribers whether `value` is stored.
-/// Holds the set weakly: a set that nothing else holds has nobody to tell.
+/// Holds the set: a membership cell made while the request waits starts at
+/// what subscribers were told, and can outlive every other handle to the set.
 struct Publish<T>
 where
     T: Hash + Eq + CellValue,
 {
-    set: std::sync::Weak<CellSetInner<T>>,
+    set: Arc<CellSetInner<T>>,
     value: T,
 }
 
@@ -233,13 +234,11 @@ where
     T: Hash + Eq + CellValue,
 {
     fn apply(self: Box<Self>) {
-        if let Some(inner) = self.set.upgrade() {
-            CellSet {
-                inner,
-                _marker: PhantomData::<CellMutable>,
-            }
-            .publish(self.value);
+        CellSet {
+            inner: self.set,
+            _marker: PhantomData::<CellMutable>,
         }
+        .publish(self.value);
     }
 }
 
