@@ -227,6 +227,9 @@ struct Delivery {
     ticket: u64,
     stamp: Stamp,
     item: Item,
+    /// The address of the node whose fire pushed it, or 0 for a seed or a
+    /// backfill. A gated edge reads it.
+    from: usize,
 }
 
 struct Pending {
@@ -275,6 +278,11 @@ pub struct NodeCore {
     inputs: Mutex<Vec<Weak<Self>>>,
     /// The nodes with a declared edge from this one.
     outputs: Mutex<Vec<Weak<Self>>>,
+    /// Gated in-edges `(src, gate)`: `src` counts toward the fire rule at a
+    /// ticket only when `gate`, an input, delivered that ticket here, and
+    /// `src` pushes here only at such a ticket. Not in `inputs`, so they add
+    /// nothing to `in_w` otherwise.
+    gated: Mutex<Vec<(Weak<Self>, Weak<Self>)>>,
     /// The quiet certificate (`docs/settle-epochs.md` section 4).
     mark: AtomicU8,
     /// Where the node was created, for diagnostics.
@@ -295,6 +303,7 @@ impl NodeCore {
             parked: Mutex::new(Vec::new()),
             inputs: Mutex::new(Vec::new()),
             outputs: Mutex::new(Vec::new()),
+            gated: Mutex::new(Vec::new()),
             mark: AtomicU8::new(watermark::NOT_QUIET),
             caller: OnceLock::new(),
         });
@@ -336,6 +345,46 @@ impl NodeCore {
         }
     }
 
+    /// Declare a gated edge from `src` into this node, gated by `gate`: see
+    /// [`NodeCore::gated`]. `gate` must also be an input.
+    pub(crate) fn add_gated_input(self: &Arc<Self>, src: &Arc<Self>, gate: &Arc<Self>) {
+        self.add_input(gate);
+        {
+            let mut gated = self.gated.lock();
+            gated.retain(|(src, gate)| src.strong_count() > 0 && gate.strong_count() > 0);
+            if gated
+                .iter()
+                .any(|(s, g)| s.as_ptr() == Arc::as_ptr(src) && g.as_ptr() == Arc::as_ptr(gate))
+            {
+                return;
+            }
+            gated.push((Arc::downgrade(src), Arc::downgrade(gate)));
+        }
+        {
+            let mut outputs = src.outputs.lock();
+            outputs.retain(|existing| existing.strong_count() > 0);
+            outputs.push(Arc::downgrade(self));
+        }
+        EDGE_GEN.fetch_add(1, Ordering::Release);
+        watermark::invalidate(self);
+    }
+
+    /// The gated sources open at `ticket`: those whose gate delivered it.
+    fn open_gates(&self, ticket: u64, items: &[Delivery]) -> Vec<Arc<Self>> {
+        let gated = self.gated.lock();
+        if gated.is_empty() {
+            return Vec::new();
+        }
+        gated
+            .iter()
+            .filter(|(_, gate)| {
+                let gate = gate.as_ptr().addr();
+                items.iter().any(|d| d.ticket == ticket && d.from == gate)
+            })
+            .filter_map(|(src, _)| src.upgrade())
+            .collect()
+    }
+
     /// No delivery pending or in flight.
     fn idle(&self) -> bool {
         let pending = self.pending.lock();
@@ -344,10 +393,29 @@ impl NodeCore {
 
     /// Push `item` at `ticket`. Fails when the node has fired the ticket or
     /// promised past it, which would break per-node order.
-    fn push(&self, ticket: u64, stamp: Stamp, arrival: bool, item: Item) -> Result<(), Item> {
+    fn push(
+        &self,
+        ticket: u64,
+        stamp: Stamp,
+        arrival: bool,
+        item: Item,
+        from: usize,
+    ) -> Result<(), Item> {
         let mut pending = self.pending.lock();
         if !pending.accepts(ticket, self.watermark.load(Ordering::Acquire)) {
             return Err(item);
+        }
+        #[cfg(debug_assertions)]
+        if from != 0 {
+            for (src, gate) in self.gated.lock().iter() {
+                if src.as_ptr().addr() == from {
+                    let gate = gate.as_ptr().addr();
+                    assert!(
+                        pending.items.iter().any(|d| d.ticket == ticket && d.from == gate),
+                        "hyphae: gated edge: a push at ticket {ticket} whose gate did not deliver it"
+                    );
+                }
+            }
         }
         let at = pending.items.partition_point(|d| d.ticket <= ticket);
         let stamp = match at.checked_sub(1).and_then(|i| pending.items.get(i)) {
@@ -360,6 +428,7 @@ impl NodeCore {
                 ticket,
                 stamp,
                 item,
+                from,
             },
         );
         drop(pending);
@@ -727,7 +796,7 @@ pub(crate) fn backfill(owner: &Arc<dyn Node>, ticket: u64, item: Item) {
         node: 0,
         index: 0,
     };
-    let pushed = core.push(ticket, stamp, false, item).is_ok();
+    let pushed = core.push(ticket, stamp, false, item, 0).is_ok();
     debug_assert!(
         pushed,
         "hyphae: promise safety: a backfill at ticket {ticket} reached a node past it"
@@ -999,6 +1068,7 @@ fn declared(from: &Arc<NodeCore>, to: &Arc<NodeCore>) -> bool {
             continue;
         }
         stack.extend(node.inputs.lock().iter().filter_map(Weak::upgrade));
+        stack.extend(node.gated.lock().iter().filter_map(|(src, _)| src.upgrade()));
     }
     DECLARED.with_borrow_mut(|cache| {
         if cache.len() > 1 << 16 {
@@ -1085,7 +1155,7 @@ pub(crate) fn push_current(target: &Arc<dyn Node>, arrival: bool, item: Item) {
             touched.push(Arc::downgrade(target));
             let pushed = target
                 .node_core()
-                .push(*ticket, stamp, arrival, item)
+                .push(*ticket, stamp, arrival, item, 0)
                 .map_err(|_| *ticket);
             // A seed is the only way pending work enters an ancestry from
             // outside it. `S` passes the ticket after this.
@@ -1097,7 +1167,13 @@ pub(crate) fn push_current(target: &Arc<dyn Node>, arrival: bool, item: Item) {
             firing.touched.push(Arc::downgrade(target));
             let pushed = target
                 .node_core()
-                .push(firing.ticket, firing.stamp, arrival, item)
+                .push(
+                    firing.ticket,
+                    firing.stamp,
+                    arrival,
+                    item,
+                    Arc::as_ptr(&firing.core).addr(),
+                )
                 .map_err(|_| firing.ticket);
             watermark::invalidate_if_marked(target.node_core());
             pushed
@@ -1150,7 +1226,13 @@ pub(crate) fn defer_to_owner(owner: &Arc<dyn Node>, make: impl FnOnce() -> Item)
         // The owner is below the firing node along a declared edge, so it
         // cannot pass this ticket while this node holds it.
         let pushed = core
-            .push(firing.ticket, firing.stamp, false, wrapped)
+            .push(
+                firing.ticket,
+                firing.stamp,
+                false,
+                wrapped,
+                Arc::as_ptr(&firing.core).addr(),
+            )
             .is_ok();
         watermark::invalidate_if_marked(core);
         debug_assert!(pushed, "hyphae: promise safety: owner passed the ticket");
@@ -1183,10 +1265,16 @@ fn readiness(core: &Arc<NodeCore>) -> Readiness {
     if ticket >= SEEDED.load(Ordering::Acquire) {
         return Readiness::Idle;
     }
-    match watermark::in_w_past(core, ticket) {
-        Ok(()) => Readiness::Ready,
-        Err(blocker) => Readiness::Blocked(blocker, ticket),
+    if let Err(blocker) = watermark::in_w_past(core, ticket) {
+        return Readiness::Blocked(blocker, ticket);
     }
+    let open = core.open_gates(ticket, &core.pending.lock().items);
+    for src in open {
+        if let Err(blocker) = watermark::input_past(core, &src, ticket) {
+            return Readiness::Blocked(blocker, ticket);
+        }
+    }
+    Readiness::Ready
 }
 
 /// Tell `node` that it may be able to fire.
@@ -1290,7 +1378,7 @@ pub(crate) fn run(owned: Arc<dyn Node>, on_pool: bool) {
         return;
     };
     #[cfg(debug_assertions)]
-    assert_fire_rule(&core, ticket);
+    assert_fire_rule(&core, ticket, &items);
     items.sort_by_key(|d| d.stamp);
     let count = i64::try_from(items.len()).unwrap_or(i64::MAX);
     let started = crate::platform::Instant::now();
@@ -1366,7 +1454,14 @@ pub(crate) fn run(owned: Arc<dyn Node>, on_pool: bool) {
 
 /// The model's fire rule: no input still holds the ticket being fired.
 #[cfg(debug_assertions)]
-fn assert_fire_rule(core: &NodeCore, ticket: u64) {
+fn assert_fire_rule(core: &NodeCore, ticket: u64, items: &[Delivery]) {
+    for src in core.open_gates(ticket, items) {
+        let held = src.pending.lock().min();
+        assert!(
+            held > ticket,
+            "hyphae: fire rule: ticket {ticket} fired while an open gated input holds {held}"
+        );
+    }
     for input in core.inputs.lock().iter().filter_map(Weak::upgrade) {
         let held = input.pending.lock().min();
         assert!(

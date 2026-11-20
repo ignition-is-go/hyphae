@@ -37,25 +37,35 @@ fn quiet(node: &NodeCore) -> bool {
 /// pulled from its ancestry.
 pub(super) fn in_w_past(core: &Arc<NodeCore>, ticket: u64) -> Result<(), Arc<NodeCore>> {
     for input in inputs(core) {
-        if quiet(&input) {
-            QUIET_HITS.fetch_add(1, Ordering::Relaxed);
-            continue;
-        }
-        if input.watermark.load(Ordering::Acquire) > ticket {
-            continue;
-        }
-        if validate(&input, &mut FxHashSet::default()) {
-            continue;
-        }
-        WALKS.fetch_add(1, Ordering::Relaxed);
-        let mut seen = FxHashSet::default();
-        seen.insert(Arc::as_ptr(core).addr());
-        let mut cost = 0;
-        let outcome = passed(&input, core, ticket, &mut seen, &mut cost);
-        WALK_NODES.fetch_add(cost, Ordering::Relaxed);
-        outcome?;
+        input_past(core, &input, ticket)?;
     }
     Ok(())
+}
+
+/// True when `input` of `core` has promised past `ticket`. Otherwise the node
+/// found holding work at or below `ticket`.
+pub(super) fn input_past(
+    core: &Arc<NodeCore>,
+    input: &Arc<NodeCore>,
+    ticket: u64,
+) -> Result<(), Arc<NodeCore>> {
+    if quiet(input) {
+        QUIET_HITS.fetch_add(1, Ordering::Relaxed);
+        return Ok(());
+    }
+    if input.watermark.load(Ordering::Acquire) > ticket {
+        return Ok(());
+    }
+    if validate(input, &mut FxHashSet::default()) {
+        return Ok(());
+    }
+    WALKS.fetch_add(1, Ordering::Relaxed);
+    let mut seen = FxHashSet::default();
+    seen.insert(Arc::as_ptr(core).addr());
+    let mut cost = 0;
+    let outcome = passed(input, core, ticket, &mut seen, &mut cost);
+    WALK_NODES.fetch_add(cost, Ordering::Relaxed);
+    outcome
 }
 
 /// The bound `in_w` gives a node's watermark when it fires: `S` for a quiet

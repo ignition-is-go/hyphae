@@ -93,9 +93,18 @@ impl FamilyNode {
         })
     }
 
-    /// A guard that gives its owner a static edge from this node.
-    fn feeds(&self) -> SubscriptionGuard {
-        SubscriptionGuard::dependency(&self.0)
+    /// Give `reader` a gated edge from this node, gated by `gate`, a node
+    /// that delivers each of the reader's demand changes. The reader waits
+    /// on the family only at a ticket that changed its own demand, the only
+    /// ticket at which the family writes it. Returns the subscription, for
+    /// the reader to own, through which `gate` delivers those tickets.
+    fn gate<T: CellValue>(
+        &self,
+        reader: &Arc<crate::settle::NodeCore>,
+        gate: &Cell<T, impl Send + Sync + 'static>,
+    ) -> SubscriptionGuard {
+        reader.add_gated_input(&self.0.inner.core, &gate.inner.core);
+        gate.subscribe(|_| {})
     }
 }
 
@@ -395,13 +404,14 @@ impl<Q: CellValue, M: Send + Sync + 'static> LookupExt<Q> for Cell<Q, M> {
 /// The state every reader shares: which key it follows, and which
 /// generation of attachment may still deliver.
 ///
-/// A switch bumps the generation under `switch_lock`, and a row's delivery
-/// checks it under the same lock, so the old row cannot deliver behind the new
-/// one. `current` is held across a whole switch, so two switches never
-/// interleave.
+/// The family's fire issues a generation at the switch ticket `T`, and the
+/// reader's own fire at `T` makes it live. A delivery is checked in the
+/// reader's fire too, so the old row's deliveries below `T` still apply and
+/// its delivery at `T` does not: the family's fire can run ahead of the
+/// reader, which hears it only at tickets that change its key.
 struct Follow<K> {
     generation: AtomicU64,
-    switch_lock: Mutex<()>,
+    issued: AtomicU64,
     current: Mutex<Option<K>>,
     guard_key: Uuid,
 }
@@ -410,7 +420,7 @@ impl<K: Clone + PartialEq> Follow<K> {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             generation: AtomicU64::new(0),
-            switch_lock: Mutex::new(()),
+            issued: AtomicU64::new(0),
             current: Mutex::new(None),
             guard_key: Uuid::new_v4(),
         })
@@ -419,19 +429,31 @@ impl<K: Clone + PartialEq> Follow<K> {
     /// Start following `next`. The generation of the new attachment, or
     /// `None` when the reader already follows that key. `current` is the
     /// caller's hold on [`Follow::current`].
-    fn advance(&self, current: &mut Option<K>, next: Option<&K>) -> Option<u64> {
+    fn advance(
+        self: &Arc<Self>,
+        current: &mut Option<K>,
+        next: Option<&K>,
+        reader: &Arc<dyn Node>,
+    ) -> Option<u64>
+    where
+        K: Send + Sync + 'static,
+    {
         if next.is_some() && current.as_ref() == next {
             return None;
         }
         current.clone_from(&next.cloned());
-        let _switch = self.switch_lock.lock();
-        Some(
-            self.generation
-                .fetch_add(1, Ordering::SeqCst)
-                .wrapping_add(1),
-        )
+        let generation = self.issued.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
+        let follow = Arc::clone(self);
+        crate::settle::run_in_fire(
+            reader,
+            Box::new(move || follow.generation.store(generation, Ordering::SeqCst)),
+        );
+        Some(generation)
     }
 
+}
+
+impl<K> Follow<K> {
     fn live(&self, generation: u64) -> bool {
         self.generation.load(Ordering::SeqCst) == generation
     }
@@ -461,7 +483,7 @@ where
         };
         let out = Cell::<Q::Out<T>, CellMutable>::new(initial).combine_latest();
         let node = family.node();
-        out.own(node.feeds());
+        out.own(node.gate(&out.inner.core, &key));
         let follow = Follow::<K>::new();
         let weak = out.downgrade();
         let builder = node.clone();
@@ -492,9 +514,11 @@ fn switch_value<F, Q, T, RM>(
     RM: Send + Sync + 'static,
 {
     let Some(out) = weak.upgrade() else { return };
+    let reader: Arc<dyn Node> = out.inner.clone();
     let mut current = follow.current.lock();
     let next = Q::name::<T>(q);
-    let Some(generation) = follow.advance(&mut current, next.as_ref().ok().copied()) else {
+    let Some(generation) = follow.advance(&mut current, next.as_ref().ok().copied(), &reader)
+    else {
         return;
     };
     let next = match next {
@@ -524,12 +548,18 @@ fn switch_value<F, Q, T, RM>(
                 Signal::Error(error) => {
                     let error = Arc::clone(error);
                     let follow = Arc::clone(&follow);
-                    out.write_with(move |push| {
-                        let _switch = follow.switch_lock.lock();
-                        if follow.live(generation) {
-                            push(Signal::Error(error));
-                        }
-                    });
+                    let target = out.downgrade();
+                    let reader: Arc<dyn Node> = out.inner.clone();
+                    crate::settle::run_in_fire(
+                        &reader,
+                        Box::new(move || {
+                            if follow.live(generation)
+                                && let Some(out) = target.upgrade()
+                            {
+                                out.notify(Signal::Error(error));
+                            }
+                        }),
+                    );
                 }
                 Signal::Complete => {}
             }
@@ -557,12 +587,18 @@ fn push_value<K, Q, T>(
     T: CellValue,
 {
     let follow = Arc::clone(follow);
-    out.write_with(move |push| {
-        let _switch = follow.switch_lock.lock();
-        if follow.live(generation) {
-            push(Signal::Value(value));
-        }
-    });
+    let target = out.downgrade();
+    let reader: Arc<dyn Node> = out.inner.clone();
+    crate::settle::run_in_fire(
+        &reader,
+        Box::new(move || {
+            if follow.live(generation)
+                && let Some(out) = target.upgrade()
+            {
+                out.inner.write(Signal::Value(value), true);
+            }
+        }),
+    );
 }
 
 impl<K, RK, V, RM> FamilyRow<K> for CellMap<RK, V, RM>
@@ -582,7 +618,9 @@ where
     {
         let out = CellMap::<RK, V, CellMutable>::new();
         let node = family.node();
-        out.inner.diffs_cell.own(node.feeds());
+        out.inner
+            .diffs_cell
+            .own(node.gate(&out.inner.diffs_cell.inner.core, &key));
         let follow = Follow::<K>::new();
         let weak = out.downgrade();
         let builder = node.clone();
@@ -608,13 +646,14 @@ fn switch_map_row<F, RK, V, RM>(
     RM: Clone + Send + Sync + 'static,
 {
     let Some(out) = weak.upgrade() else { return };
+    let reader: Arc<dyn Node> = out.inner.diffs_cell.inner.clone();
     let mut current = follow.current.lock();
-    let Some(generation) = follow.advance(&mut current, next) else {
+    let Some(generation) = follow.advance(&mut current, next, &reader) else {
         return;
     };
     let Some(next) = next else {
         out.inner.diffs_cell.release_owned(follow.guard_key);
-        out.apply_diff_owned(MapDiff::Initial {
+        apply_row_diff(&out, follow, generation, MapDiff::Initial {
             entries: Vec::new(),
         });
         drop(current);
@@ -626,10 +665,7 @@ fn switch_map_row<F, RK, V, RM>(
         let follow = Arc::clone(follow);
         move |diff: &MapDiff<RK, V>| {
             let Some(out) = weak.upgrade() else { return };
-            let _switch = follow.switch_lock.lock();
-            if follow.live(generation) {
-                out.apply_diff_owned(diff.clone());
-            }
+            apply_row_diff(&out, &follow, generation, diff.clone());
         }
     };
     // `subscribe_diffs` tells the row's snapshot first, as one `Initial`, and
@@ -642,6 +678,33 @@ fn switch_map_row<F, RK, V, RM>(
         guard.with_cleanup(move || drop(lease.take())),
     );
     drop(current);
+}
+
+/// Apply a row diff to a collection reader in the reader's fire, if the
+/// attachment that told it is live there.
+fn apply_row_diff<K, RK, V>(
+    out: &CellMap<RK, V, CellMutable>,
+    follow: &Arc<Follow<K>>,
+    generation: u64,
+    diff: MapDiff<RK, V>,
+) where
+    K: Send + Sync + 'static,
+    RK: CellValue + Hash + Eq,
+    V: CellValue,
+{
+    let follow = Arc::clone(follow);
+    let target = out.downgrade();
+    let reader: Arc<dyn Node> = out.inner.diffs_cell.inner.clone();
+    crate::settle::run_in_fire(
+        &reader,
+        Box::new(move || {
+            if follow.live(generation)
+                && let Some(out) = target.upgrade()
+            {
+                out.apply_diff_owned(diff);
+            }
+        }),
+    );
 }
 
 /// A key set [`LookupSetExt::lookup_set`] can join over. Its iteration order
@@ -676,11 +739,14 @@ pub trait LookupSetExt<K> {
 
 struct Member<T> {
     attach: u64,
-    guard_key: Uuid,
     value: Option<Arc<T>>,
 }
 
+/// A set join's members. `held` is the family's view, changed in its fire:
+/// each key's attachment and the guard that holds its row. `rows` is the
+/// reader's view, changed in the reader's fire at the same ticket.
 struct Members<K, T> {
+    held: Mutex<IndexMap<K, (u64, Uuid)>>,
     rows: Mutex<IndexMap<K, Member<T>>>,
     attaches: AtomicU64,
 }
@@ -712,11 +778,12 @@ where
     {
         let out = Cell::<IndexMap<K, T>, CellMutable>::new(IndexMap::new()).combine_latest();
         let members = Arc::new(Members {
+            held: Mutex::new(IndexMap::new()),
             rows: Mutex::new(IndexMap::new()),
             attaches: AtomicU64::new(0),
         });
         let node = family.node();
-        out.own(node.feeds());
+        out.own(node.gate(&out.inner.core, &self));
         let weak = out.downgrade();
         let builder = node.clone();
         let key_guard = self.subscribe(move |signal| {
@@ -742,38 +809,61 @@ fn switch_set<F, K, S, T, RM>(
     RM: Send + Sync + 'static,
 {
     let Some(out) = weak.upgrade() else { return };
-    let (left, entered) = {
-        let mut rows = members.rows.lock();
+    let reader: Arc<dyn Node> = out.inner.clone();
+    let (left, entered, order) = {
+        let mut held = members.held.lock();
         // Rebuild in the set's order, keeping members that stay.
-        let mut next = IndexMap::with_capacity(rows.len());
+        let mut next = IndexMap::with_capacity(held.len());
         let mut entered = Vec::new();
         for key in keys.keys() {
             if next.contains_key(key) {
                 continue;
             }
-            if let Some(member) = rows.swap_remove(key) {
+            if let Some(member) = held.swap_remove(key) {
                 next.insert(key.clone(), member);
                 continue;
             }
             let attach = members.attaches.fetch_add(1, Ordering::Relaxed);
             let guard_key = Uuid::new_v4();
-            next.insert(
-                key.clone(),
-                Member {
-                    attach,
-                    guard_key,
-                    value: None,
-                },
-            );
+            next.insert(key.clone(), (attach, guard_key));
             entered.push((key.clone(), attach, guard_key));
         }
-        let left: Vec<Uuid> = std::mem::replace(&mut *rows, next)
+        let order: Vec<(K, u64)> = next.iter().map(|(k, (a, _))| (k.clone(), *a)).collect();
+        let left: Vec<Uuid> = std::mem::replace(&mut *held, next)
             .into_values()
-            .map(|member| member.guard_key)
+            .map(|(_, guard_key)| guard_key)
             .collect();
-        drop(rows);
-        (left, entered)
+        drop(held);
+        (left, entered, order)
     };
+    // The reader takes the new membership in its own fire at this ticket,
+    // ahead of the new rows' replays, and after the deliveries it still owes
+    // at earlier tickets.
+    {
+        let members = Arc::clone(members);
+        let target = out.downgrade();
+        crate::settle::run_in_fire(
+            &reader,
+            Box::new(move || {
+                let Some(out) = target.upgrade() else { return };
+                let mut rows = members.rows.lock();
+                let mut old = std::mem::take(&mut *rows);
+                for (key, attach) in order {
+                    let member = old
+                        .swap_remove(&key)
+                        .filter(|member| member.attach == attach)
+                        .unwrap_or(Member {
+                            attach,
+                            value: None,
+                        });
+                    rows.insert(key, member);
+                }
+                let snapshot = Members::snapshot(&rows);
+                drop(rows);
+                out.set(snapshot);
+            }),
+        );
+    }
     for guard_key in left {
         out.release_owned(guard_key);
     }
@@ -815,23 +905,6 @@ fn switch_set<F, K, S, T, RM>(
         let mut lease = Some(lease);
         out.own_keyed(guard_key, guard.with_cleanup(move || drop(lease.take())));
     }
-    // Computed in the reader's fire, after the family's fire: a row change
-    // in this ticket may reach the reader before or after this push, and the
-    // snapshot taken last must include it.
-    let members = Arc::clone(members);
-    let weak = out.downgrade();
-    let reader: Arc<dyn Node> = out.inner.clone();
-    crate::settle::run_in_fire(
-        &reader,
-        Box::new(move || {
-            if let Some(out) = weak.upgrade() {
-                let rows = members.rows.lock();
-                let snapshot = Members::snapshot(&rows);
-                drop(rows);
-                out.set(snapshot);
-            }
-        }),
-    );
 }
 
 /// Join a family per entry of a collection.
@@ -857,9 +930,12 @@ where
         let source = self.materialize();
         let out = CellMap::<K, T, CellMutable>::new();
         let node = family.node();
-        out.inner.diffs_cell.own(node.feeds());
+        out.inner
+            .diffs_cell
+            .own(node.gate(&out.inner.diffs_cell.inner.core, &source.inner.diffs_cell));
         let each = Arc::new(Each {
             entries: Mutex::new(HashMap::new()),
+            live: Mutex::new(HashMap::new()),
             attaches: AtomicU64::new(0),
         });
         let weak = out.downgrade();
@@ -875,7 +951,11 @@ where
 /// The entries [`LookupEachExt::lookup_each`] joins: each source key's
 /// family key and the attachment that may still deliver for it.
 struct Each<K, FK> {
+    /// The family's view, changed in its fire.
     entries: Mutex<HashMap<K, Joined<FK>>>,
+    /// The reader's view, changed in the reader's fire at the same ticket:
+    /// the attachment that may deliver for each entry.
+    live: Mutex<HashMap<K, u64>>,
     attaches: AtomicU64,
 }
 
@@ -963,23 +1043,39 @@ fn join_entry<F, K, T, RM>(
     if let Some(replaced) = replaced {
         out.inner.diffs_cell.release_owned(replaced.guard_key);
     }
+    let reader: Arc<dyn Node> = out.inner.diffs_cell.inner.clone();
+    {
+        let each = Arc::clone(each);
+        let k = k.clone();
+        crate::settle::run_in_fire(
+            &reader,
+            Box::new(move || {
+                each.live.lock().insert(k, attach);
+            }),
+        );
+    }
     let lease = family.acquire(&family_key);
     let deliver = {
         let weak = out.downgrade();
         let each = Arc::clone(each);
         let k = k.clone();
+        let reader = Arc::clone(&reader);
         move |signal: &Signal<T>| {
-            let (Signal::Value(value), Some(out)) = (signal, weak.upgrade()) else {
-                return;
-            };
-            let live = each
-                .entries
-                .lock()
-                .get(&k)
-                .is_some_and(|joined| joined.attach == attach);
-            if live {
-                out.insert(k.clone(), T::clone(value));
-            }
+            let Signal::Value(value) = signal else { return };
+            let value = Arc::clone(value);
+            let Some(out) = weak.upgrade() else { return };
+            let weak = out.downgrade();
+            let each = Arc::clone(&each);
+            let k = k.clone();
+            crate::settle::run_in_fire(
+                &reader,
+                Box::new(move || {
+                    let live = each.live.lock().get(&k) == Some(&attach);
+                    if live && let Some(out) = weak.upgrade() {
+                        out.insert(k, T::clone(&value));
+                    }
+                }),
+            );
         }
     };
     let guard = lease.row().subscribe(deliver);
@@ -989,15 +1085,33 @@ fn join_entry<F, K, T, RM>(
         .own_keyed(guard_key, guard.with_cleanup(move || drop(lease.take())));
 }
 
-fn leave<K, T, FK>(out: &CellMap<K, T, CellMutable>, each: &Each<K, FK>, k: &K)
+fn leave<K, T, FK>(out: &CellMap<K, T, CellMutable>, each: &Arc<Each<K, FK>>, k: &K)
 where
     K: CellValue + Hash + Eq,
     T: CellValue,
+    FK: Send + Sync + 'static,
 {
     let left = each.entries.lock().remove(k);
     if let Some(left) = left {
         out.inner.diffs_cell.release_owned(left.guard_key);
-        out.remove(k);
+        let reader: Arc<dyn Node> = out.inner.diffs_cell.inner.clone();
+        let weak = out.downgrade();
+        let k = k.clone();
+        let attach = left.attach;
+        let each = Arc::clone(each);
+        crate::settle::run_in_fire(
+            &reader,
+            Box::new(move || {
+                let mut live = each.live.lock();
+                if live.get(&k) == Some(&attach) {
+                    live.remove(&k);
+                    drop(live);
+                    if let Some(out) = weak.upgrade() {
+                        out.remove(&k);
+                    }
+                }
+            }),
+        );
     }
 }
 
