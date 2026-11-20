@@ -455,6 +455,14 @@ fn complete(ticket: u64) {
     let slot = slot(ticket);
     let epoch = Epoch::from_raw(slot.epoch.load(Ordering::Acquire));
     let carriers = slot.carriers.load(Ordering::Acquire);
+    // An epoch that this ticket finishes is over before the ticket counts as
+    // complete, so a writer or `flush` that waits on it sees `finished` run.
+    if let Some(epoch) = epoch
+        && carriers > 0
+        && let Some(finished) = release(epoch, carriers)
+    {
+        detached(finished);
+    }
     slot.done.store(ticket.wrapping_add(1), Ordering::Release);
     loop {
         let c = COMPLETED.load(Ordering::Acquire);
@@ -463,12 +471,6 @@ fn complete(ticket: u64) {
         }
         let _ =
             COMPLETED.compare_exchange(c, c.saturating_add(1), Ordering::AcqRel, Ordering::Acquire);
-    }
-    if let Some(epoch) = epoch
-        && carriers > 0
-        && let Some(finished) = release(epoch, carriers)
-    {
-        detached(finished);
     }
     pool::notify();
     if !INBOX.is_empty() || GATE.lock().is_some() {
@@ -1049,14 +1051,7 @@ pub(crate) fn run(owned: Arc<dyn Node>, on_pool: bool) {
         return;
     };
     #[cfg(debug_assertions)]
-    for input in core.inputs.lock().iter().filter_map(Weak::upgrade) {
-        let held = input.pending.lock().min();
-        debug_assert!(
-            held > ticket,
-            "hyphae: fire rule: ticket {ticket} fired while an input holds {held} (mark {})",
-            input.mark.load(Ordering::Acquire)
-        );
-    }
+    assert_fire_rule(&core, ticket);
     items.sort_by_key(|d| d.stamp);
     let count = i64::try_from(items.len()).unwrap_or(i64::MAX);
     let started = crate::platform::Instant::now();
@@ -1127,6 +1122,18 @@ pub(crate) fn run(owned: Arc<dyn Node>, on_pool: bool) {
     drop(core);
     drop(owned);
     consumed(ticket, count);
+}
+
+/// The model's fire rule: no input still holds the ticket being fired.
+#[cfg(debug_assertions)]
+fn assert_fire_rule(core: &NodeCore, ticket: u64) {
+    for input in core.inputs.lock().iter().filter_map(Weak::upgrade) {
+        let held = input.pending.lock().min();
+        assert!(
+            held > ticket,
+            "hyphae: fire rule: ticket {ticket} fired while an input holds {held}"
+        );
+    }
 }
 
 fn poke_all(touched: Vec<Weak<dyn Node>>) {

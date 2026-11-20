@@ -6,7 +6,10 @@
 //! types. Keep the two in sync: the claim states, the order "register on
 //! the blocker, then re-check it", and the dirty-claim release.
 
-#![allow(clippy::unwrap_used, reason = "a poisoned loom lock is a model failure")]
+#![allow(
+    clippy::unwrap_used,
+    reason = "a poisoned loom lock is a model failure"
+)]
 
 use loom::sync::{
     Arc, Mutex,

@@ -164,6 +164,8 @@ fn projection_initialization_ignores_old_callback_after_remove_or_reattach() {
             .materialize();
 
         old_value.set(Some((7, 30)));
+        // The callback's write is its own ticket; the writer is owed only its own.
+        crate::settle::flush();
 
         assert_eq!(
             output.get(&7).materialize().get(),
