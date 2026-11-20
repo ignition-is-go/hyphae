@@ -145,7 +145,7 @@ fn passed(
         // graph is acyclic; a back edge is ignored, as heights ignore it, and
         // counted.
         let seen_cycles = CYCLES.fetch_add(1, Ordering::Relaxed);
-        if seen_cycles.is_multiple_of(1024) {
+        if seen_cycles < 200_000 || seen_cycles.is_multiple_of(1024) {
             record_cycle(m, parent);
         }
         return Ok(());
