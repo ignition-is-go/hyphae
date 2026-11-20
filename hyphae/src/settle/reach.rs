@@ -160,7 +160,7 @@ impl Index {
             return child(input, node);
         }
         if key(input) < key(node) {
-            self.propagate(node);
+            self.propagate(node, &mut Vec::new());
             return true;
         }
         self.rekey(node)
@@ -182,7 +182,10 @@ impl Index {
 
     /// Add `node`'s label to its inputs and their ancestors, up the
     /// labelled edges, stopping where it is already covered.
-    fn propagate(&mut self, node: &Arc<NodeCore>) {
+    ///
+    /// Every node it visits stays in `keep`: a caller holding the frontier
+    /// lock drops them after it, since a node's drop takes that lock.
+    fn propagate(&mut self, node: &Arc<NodeCore>, keep: &mut Vec<Arc<NodeCore>>) {
         let spans = node.label.lock().spans.clone();
         let mut seen: FxHashSet<usize> = FxHashSet::default();
         let mut stack = vec![Arc::clone(node)];
@@ -200,6 +203,7 @@ impl Index {
                 drop(label);
                 stack.push(input);
             }
+            keep.push(below);
         }
     }
 
@@ -216,15 +220,18 @@ impl Index {
             return false;
         }
         let at = lo.saturating_add(hi.saturating_sub(lo) / 2);
+        let mut keep = Vec::new();
         // Readers compare keys and labels: they see the move whole.
-        let _frontier = FRONTIER.lock();
+        let frontier = FRONTIER.lock();
         {
             let mut label = node.label.lock();
             label.merge(&[(at, at.saturating_add(1))]);
             label.free = (at, at);
         }
         node.key.store(at, Ordering::Release);
-        self.propagate(node);
+        self.propagate(node, &mut keep);
+        drop(frontier);
+        drop(keep);
         true
     }
 
@@ -233,7 +240,6 @@ impl Index {
     /// and labels closed over the edges that are not back edges.
     fn rebuild(&mut self) {
         REBUILDS.fetch_add(1, Ordering::Relaxed);
-        let _frontier = FRONTIER.lock();
         let nodes: Vec<Arc<NodeCore>> = self.nodes.iter().filter_map(Weak::upgrade).collect();
         self.nodes = nodes.iter().map(Arc::downgrade).collect();
         self.pruned_at = nodes.len();
@@ -288,17 +294,23 @@ impl Index {
                 *slot = label;
             }
         }
+        // Readers see the new layout whole. No node drops under the lock:
+        // `nodes` holds them all, and a node's drop takes it.
+        let frontier = FRONTIER.lock();
         for ((node, label), rank) in nodes.iter().zip(labels).zip(rank) {
             node.key.store(rank.saturating_mul(spacing), Ordering::Release);
             *node.label.lock() = label;
         }
+        drop(frontier);
         self.next_root = ROOT_BASE;
         self.overflow = 0;
         self.limit = u64::try_from(count).unwrap_or(u64::MAX).saturating_mul(8).max(4096);
         #[cfg(debug_assertions)]
         for node in &nodes {
+            // An output whose own `add_edge` is still waiting for the index
+            // has no key yet; that call indexes the edge.
             for output in live(&node.outputs) {
-                if key(node) < key(&output) {
+                if key(node) < key(&output) && key(&output) != UNASSIGNED {
                     assert_edge(node, &output);
                 }
             }
@@ -415,7 +427,9 @@ fn assert_edge(input: &NodeCore, node: &NodeCore) {
     let label = input.label.lock();
     assert!(
         label.covers(kn) && label.covers_all(&spans),
-        "hyphae: reach index: the label of an input does not cover its output"
+        "hyphae: reach index: the label of an input (key {ki}, {:?}) does not cover its \
+         output (key {kn}, {spans:?})",
+        label.spans
     );
 }
 
@@ -469,6 +483,9 @@ pub(super) fn blocker(
 ) -> Option<Arc<NodeCore>> {
     let address = std::ptr::from_ref(node).addr();
     let (mut queries, mut scanned) = (0u64, 0u64);
+    // Nodes upgraded during the scan drop after the lock is released: a
+    // node's drop takes it.
+    let mut keep: Vec<Arc<NodeCore>> = Vec::new();
     let found = {
         let frontier = FRONTIER.lock();
         let target = key(node);
@@ -498,10 +515,12 @@ pub(super) fn blocker(
                     found = Some(held);
                     break 'scan;
                 }
+                keep.push(held);
             }
         }
         found
     };
+    drop(keep);
     LABEL_QUERIES.fetch_add(queries, Ordering::Relaxed);
     FRONTIER_SCANNED.fetch_add(scanned, Ordering::Relaxed);
     found
