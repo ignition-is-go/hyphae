@@ -30,6 +30,7 @@ use uuid::Uuid;
 
 use crate::traits::DepNode;
 
+mod dump;
 mod edges;
 mod pool;
 mod watermark;
@@ -638,6 +639,7 @@ static WAITS: AtomicU64 = AtomicU64::new(0);
 static DEFERRED_WRITES: AtomicU64 = AtomicU64::new(0);
 static FIRE_NANOS: AtomicU64 = AtomicU64::new(0);
 static MAX_FIRE_NANOS: AtomicU64 = AtomicU64::new(0);
+static INTERVAL_MAX_FIRE_NANOS: AtomicU64 = AtomicU64::new(0);
 static FLUSH_SETS: AtomicU64 = AtomicU64::new(0);
 static NODE_FIRES: AtomicU64 = AtomicU64::new(0);
 static POOL_FIRES: AtomicU64 = AtomicU64::new(0);
@@ -1093,6 +1095,7 @@ pub(crate) fn run(owned: Arc<dyn Node>, on_pool: bool) {
     let nanos = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
     FIRE_NANOS.fetch_add(nanos, Ordering::Relaxed);
     MAX_FIRE_NANOS.fetch_max(nanos, Ordering::Relaxed);
+    INTERVAL_MAX_FIRE_NANOS.fetch_max(nanos, Ordering::Relaxed);
     NODE_FIRES.fetch_add(1, Ordering::Relaxed);
     if on_pool {
         POOL_FIRES.fetch_add(1, Ordering::Relaxed);
@@ -1251,6 +1254,7 @@ pub(crate) fn admit_drain() {
 
 /// Seed `arrival` as the next ticket. Called with the admission lock held.
 fn seed(arrival: Arrival) -> u64 {
+    dump::start();
     let ticket = SEEDED.load(Ordering::Acquire);
     let slot = slot(ticket);
     slot.count.store(1, Ordering::Release);

@@ -1,0 +1,82 @@
+//! Settle counters appended once a second to `$HYPHAE_SETTLE_STATS_OUT.<pid>`
+//! for the load harness, and the owned subscriptions that could not be bound
+//! to `<that path>.unbound`.
+
+use std::{
+    io::Write as _,
+    sync::{Once, atomic::Ordering},
+};
+
+use super::{COMPLETED, INBOX, INTERVAL_MAX_FIRE_NANOS, SEEDED, stats};
+
+static STARTED: Once = Once::new();
+
+/// Start the dump thread the first time a ticket is seeded, when asked for.
+pub(super) fn start() {
+    STARTED.call_once(|| {
+        let Ok(path) = std::env::var("HYPHAE_SETTLE_STATS_OUT") else {
+            return;
+        };
+        let path = format!("{path}.{}", std::process::id());
+        let spawned = std::thread::Builder::new()
+            .name("hyphae-settle-stats".to_owned())
+            .spawn(move || run(&path));
+        if let Err(error) = spawned {
+            log::error!("hyphae: cannot start the settle stats thread: {error}");
+        }
+    });
+}
+
+fn run(path: &str) {
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    else {
+        return;
+    };
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |elapsed| elapsed.as_secs_f64());
+        let s = stats();
+        let hold = INTERVAL_MAX_FIRE_NANOS.swap(0, Ordering::Relaxed);
+        let in_flight = SEEDED
+            .load(Ordering::Acquire)
+            .saturating_sub(COMPLETED.load(Ordering::Acquire));
+        let _ = writeln!(
+            file,
+            "{now:.3} event_sets={} tickets={} fires={} node_fires={} pool_fires={} lock_waits={} deferred_writes={} settle_nanos={} flush_sets={} max_in_flight={} in_flight={in_flight} backlog={} interval_max_hold_nanos={hold} walks={} walk_nodes={} parks={} side_reads={} undeclared_writes={} late_edge_writes={} unbound_owned={} quiet_hits={} validated={} invalidated={}",
+            s.event_sets,
+            s.runs,
+            s.fires,
+            s.waves,
+            s.parallel_waves,
+            s.lock_waits,
+            s.deferred_writes,
+            s.settle_nanos,
+            s.flush_sets,
+            s.widest_wave,
+            INBOX.len().saturating_add(usize::try_from(in_flight).unwrap_or(usize::MAX)),
+            s.walks,
+            s.walk_nodes,
+            s.parks,
+            s.side_reads,
+            s.undeclared_writes,
+            s.late_edge_writes,
+            s.unbound_owned,
+            s.quiet_hits,
+            s.validated,
+            s.invalidated,
+        );
+        let sites = super::edges::unbound_sites();
+        if !sites.is_empty()
+            && let Ok(mut unbound) = std::fs::File::create(format!("{path}.unbound"))
+        {
+            for (site, count) in sites {
+                let _ = writeln!(unbound, "{count} {site}");
+            }
+        }
+    }
+}
