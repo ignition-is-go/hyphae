@@ -352,7 +352,7 @@ where
         let membership_changed = match &diff {
             MapDiff::Initial { entries } => {
                 let previous_len = self.inner.data.len();
-                let stale_keys: Vec<K> = self.inner.data.iter().map(|r| r.key().clone()).collect();
+                let stale_keys: Vec<K> = self.collect(|key, _| key.clone());
                 for key in stale_keys {
                     self.inner.data.remove(&key);
                     if let Some(cell) = self.observed_key_cell(&key) {
@@ -432,7 +432,7 @@ where
             }
             match &diff {
                 MapDiff::Initial { entries } => {
-                    let keys: Vec<K> = map.inner.data.iter().map(|r| r.key().clone()).collect();
+                    let keys: Vec<K> = map.collect(|key, _| key.clone());
                     for key in keys {
                         map.inner.data.remove(&key);
                         if let Some(cell) = map.observed_key_cell(&key) {

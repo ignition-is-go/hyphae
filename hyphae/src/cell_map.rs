@@ -392,9 +392,25 @@ where
     /// or it may deadlock. Mutate after `for_each` returns, or use
     /// `snapshot()` when the loop body must write back.
     pub fn for_each(&self, mut f: impl FnMut(&K, &V)) {
-        for entry in &self.inner.data {
-            f(entry.key(), entry.value());
+        for shard in self.inner.data.shards() {
+            let table = shard.read();
+            // SAFETY: the shard's read guard outlives the iterator and every
+            // bucket reference, and no writer can modify the table under it.
+            for bucket in unsafe { table.iter() } {
+                let (key, value) = unsafe { bucket.as_ref() };
+                f(key, value.get());
+            }
         }
+    }
+
+    /// Map every entry into a `Vec`, one shard read lock at a time.
+    ///
+    /// `DashMap::iter` allocates an `Arc` per shard and clones it for every
+    /// entry, which makes it about ten times slower than walking the shards.
+    fn collect<T>(&self, mut f: impl FnMut(&K, &V) -> T) -> Vec<T> {
+        let mut out = Vec::with_capacity(self.inner.data.len());
+        self.for_each(|key, value| out.push(f(key, value)));
+        out
     }
 
     /// Get a point-in-time snapshot of all entries (non-reactive).
@@ -403,31 +419,19 @@ where
     /// Use this for one-shot reads where you don't need live updates.
     #[must_use]
     pub fn snapshot(&self) -> Vec<(K, V)> {
-        self.inner
-            .data
-            .iter()
-            .map(|r| (r.key().clone(), r.value().clone()))
-            .collect()
+        self.collect(|key, value| (key.clone(), value.clone()))
     }
 
     /// Return the current values without creating a reactive projection.
     #[must_use]
     pub fn items_snapshot(&self) -> Vec<V> {
-        self.inner
-            .data
-            .iter()
-            .map(|entry| entry.value().clone())
-            .collect()
+        self.collect(|_, value| value.clone())
     }
 
     /// Return the current keys without creating a reactive projection.
     #[must_use]
     pub fn keys_snapshot(&self) -> Vec<K> {
-        self.inner
-            .data
-            .iter()
-            .map(|entry| entry.key().clone())
-            .collect()
+        self.collect(|key, _| key.clone())
     }
 
     /// Check if key exists (non-reactive).
@@ -480,12 +484,7 @@ where
             callback_for_diffs(diff.as_ref());
         });
 
-        let entries: Vec<(K, V)> = self
-            .inner
-            .data
-            .iter()
-            .map(|r| (r.key().clone(), r.value().clone()))
-            .collect();
+        let entries = self.collect(|key, value| (key.clone(), value.clone()));
         callback(&MapDiff::Initial { entries });
         loop {
             let queued = {
@@ -559,7 +558,7 @@ where
     type Key = K;
 
     fn key_set(&self) -> Vec<K> {
-        self.inner.data.iter().map(|r| r.key().clone()).collect()
+        self.collect(|key, _| key.clone())
     }
 
     fn contains_key(&self, key: &K) -> bool {
@@ -591,11 +590,7 @@ where
     }
 
     fn snapshot(&self) -> Vec<(K, V)> {
-        self.inner
-            .data
-            .iter()
-            .map(|r| (r.key().clone(), r.value().clone()))
-            .collect()
+        self.collect(|key, value| (key.clone(), value.clone()))
     }
 
     fn subscribe_diffs_reactive(
