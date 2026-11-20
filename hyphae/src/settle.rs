@@ -286,6 +286,9 @@ pub struct NodeCore {
     /// Set while the row build that created this node is open: the node
     /// fires nothing until the build has set its promise and backfilled it.
     held: std::sync::atomic::AtomicBool,
+    /// Set for a node a row build created: a path through it does not
+    /// count as an anchor of any family.
+    row: std::sync::atomic::AtomicBool,
     /// Where the node was created, for diagnostics.
     caller: OnceLock<&'static Location<'static>>,
 }
@@ -321,12 +324,19 @@ impl NodeCore {
             gated: Mutex::new(Vec::new()),
             mark: AtomicU8::new(watermark::NOT_QUIET),
             held: std::sync::atomic::AtomicBool::new(false),
+            row: std::sync::atomic::AtomicBool::new(false),
             caller: OnceLock::from(caller),
         });
         ROW_BUILD.with_borrow_mut(|build| {
             if let Some(build) = build.as_mut() {
                 core.held.store(true, Ordering::Release);
                 build.created.push(Arc::downgrade(&core));
+            }
+        });
+        #[cfg(debug_assertions)]
+        ROW_MARK.with_borrow_mut(|mark| {
+            if let Some(mark) = mark.as_mut() {
+                mark.push(Arc::downgrade(&core));
             }
         });
         core
@@ -666,6 +676,9 @@ thread_local! {
     static BUILDING: RefCell<Option<Building>> = const { RefCell::new(None) };
     static DECLARED: RefCell<DeclaredCache> = RefCell::new(FxHashMap::default());
     static ROW_BUILD: RefCell<Option<RowBuild>> = const { RefCell::new(None) };
+    /// The nodes a row build made outside any ticket creates, to mark them
+    /// as rows. Debug builds only.
+    static ROW_MARK: RefCell<Option<Vec<Weak<NodeCore>>>> = const { RefCell::new(None) };
 }
 
 // ============================================================================
@@ -732,6 +745,21 @@ pub(crate) fn build_rows<R>(family: &Arc<NodeCore>, f: impl FnOnce() -> R) -> R 
         _ => None,
     });
     let Some(ticket) = ticket else {
+        // Construction: no versioning or hold, but the nodes are rows.
+        #[cfg(debug_assertions)]
+        {
+            let outer = ROW_MARK.with_borrow_mut(|mark| mark.replace(Vec::new()));
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+            let made = ROW_MARK.with_borrow_mut(|mark| std::mem::replace(mark, outer));
+            for core in made.into_iter().flatten().filter_map(|core| core.upgrade()) {
+                core.row.store(true, Ordering::Release);
+            }
+            return match outcome {
+                Ok(value) => value,
+                Err(payload) => std::panic::resume_unwind(payload),
+            };
+        }
+        #[cfg(not(debug_assertions))]
         return f();
     };
     ROW_BUILD.with_borrow_mut(|build| {
@@ -767,6 +795,7 @@ pub(crate) fn build_rows<R>(family: &Arc<NodeCore>, f: impl FnOnce() -> R) -> R 
         backfill();
     }
     for core in &created {
+        core.row.store(true, Ordering::Release);
         core.held.store(false, Ordering::Release);
         core.wake_parked();
     }
@@ -781,11 +810,45 @@ pub(crate) fn build_rows<R>(family: &Arc<NodeCore>, f: impl FnOnce() -> R) -> R 
 /// along declared edges, or when every one of its own inputs is covered.
 /// Then a ticket above the build ticket that the input fired is still
 /// pending on the way to the family node.
+/// True when `from` reaches `family` along declared edges that pass
+/// through no row: a row feeds its family, so a path through one does not
+/// show that the family hears its inputs.
+#[cfg(debug_assertions)]
+fn anchored_path(
+    from: &Arc<NodeCore>,
+    family: &Arc<NodeCore>,
+    built: &FxHashSet<usize>,
+) -> bool {
+    let mut seen: FxHashSet<usize> = FxHashSet::default();
+    let mut stack = vec![Arc::clone(family)];
+    while let Some(node) = stack.pop() {
+        if Arc::ptr_eq(&node, from) {
+            return true;
+        }
+        if !seen.insert(Arc::as_ptr(&node).addr()) {
+            continue;
+        }
+        stack.extend(
+            node.inputs
+                .lock()
+                .iter()
+                .filter_map(Weak::upgrade)
+                .filter(|input| {
+                    Arc::ptr_eq(input, from)
+                        || !(input.row.load(Ordering::Acquire)
+                            || built.contains(&Arc::as_ptr(input).addr()))
+                }),
+        );
+    }
+    false
+}
+
 #[cfg(debug_assertions)]
 fn assert_anchored(family: &Arc<NodeCore>, created: &[Arc<NodeCore>]) {
     fn covered(
         node: &Arc<NodeCore>,
         family: &Arc<NodeCore>,
+        built: &FxHashSet<usize>,
         known: &mut FxHashMap<usize, bool>,
     ) -> bool {
         let address = Arc::as_ptr(node).addr();
@@ -796,11 +859,12 @@ fn assert_anchored(family: &Arc<NodeCore>, created: &[Arc<NodeCore>]) {
         known.insert(address, true);
         let inputs: Vec<Arc<NodeCore>> =
             node.inputs.lock().iter().filter_map(Weak::upgrade).collect();
-        let answer = declared(node, family)
-            || (!inputs.is_empty() && inputs.iter().all(|input| covered(input, family, known)));
+        let answer = anchored_path(node, family, built)
+            || (!inputs.is_empty() && inputs.iter().all(|input| covered(input, family, built, known)));
         known.insert(address, answer);
         answer
     }
+    let built: FxHashSet<usize> = created.iter().map(|core| Arc::as_ptr(core).addr()).collect();
     let mut known: FxHashMap<usize, bool> = created
         .iter()
         .map(|core| (Arc::as_ptr(core).addr(), true))
@@ -810,7 +874,7 @@ fn assert_anchored(family: &Arc<NodeCore>, created: &[Arc<NodeCore>]) {
             core.inputs.lock().iter().filter_map(Weak::upgrade).collect();
         for input in inputs {
             assert!(
-                covered(&input, family, &mut known),
+                covered(&input, family, &built, &mut known),
                 "hyphae: family rule: a row reads a node with no anchor edge into its family"
             );
         }
