@@ -10,8 +10,8 @@ use indexmap::{IndexMap, IndexSet};
 use parking_lot::Mutex;
 
 use crate::{
-    Cell, CellImmutable, CellMap, Gettable, KeyedFamily, LookupExt, LookupSetExt, MapDiff, MapExt,
-    Materialize, Mutable, Signal, Watchable, batch, family, flush,
+    Cell, CellImmutable, CellMap, Gettable, KeyedFamily, LookupEachExt, LookupExt, LookupSetExt,
+    MapDiff, MapExt, MapQuery, Materialize, Mutable, Signal, Watchable, batch, family, flush,
 };
 
 type Rows = KeyedFamily<u32, Cell<i32, CellImmutable>>;
@@ -402,4 +402,103 @@ fn set_join_takes_hash_only_keys_in_set_order() {
         order(joined.get()),
         vec![(Param("bb"), 22), (Param("ccc"), 23)]
     );
+}
+
+/// Entries name family keys; `lookup_each` holds each entry's row value.
+fn each_join() -> (
+    Cell<i32, crate::CellMutable>,
+    Rows,
+    Arc<AtomicUsize>,
+    CellMap<u32, u32, crate::CellMutable>,
+    CellMap<u32, i32, CellImmutable>,
+) {
+    let store = Cell::new(1);
+    let (rows, builds) = store_family(&store);
+    let entries = CellMap::<u32, u32>::new();
+    let joined = entries
+        .clone()
+        .lookup_each(rows.clone(), |_, fk: &u32| *fk)
+        .materialize();
+    (store, rows, builds, entries, joined)
+}
+
+#[test]
+fn each_join_follows_insert_remove_and_rekey() {
+    let (_store, rows, _, entries, joined) = each_join();
+    let told = tell(&joined);
+    entries.insert(100, 1);
+    entries.insert(200, 2);
+    assert_eq!(told.held(), BTreeMap::from([(100, 11), (200, 12)]));
+
+    entries.insert(100, 3);
+    flush();
+    assert_eq!(told.held(), BTreeMap::from([(100, 13), (200, 12)]));
+    assert!(!rows.contains(&1), "a rekeyed entry releases its old row");
+
+    entries.remove(&200);
+    flush();
+    assert_eq!(told.held(), BTreeMap::from([(100, 13)]));
+    assert!(!rows.contains(&2), "a removed entry releases its row");
+}
+
+#[test]
+fn each_join_follows_row_changes() {
+    let (store, _, _, entries, joined) = each_join();
+    let told = tell(&joined);
+    entries.insert(100, 1);
+    store.set(5);
+    assert_eq!(told.held(), BTreeMap::from([(100, 51)]));
+}
+
+#[test]
+fn each_join_entry_and_row_in_one_batch_is_glitch_free() {
+    let (store, _, _, entries, joined) = each_join();
+    entries.insert(100, 1);
+    entries.insert(200, 2);
+    let told = tell(&joined);
+    let before = told.diffs.lock().len();
+    batch(|| {
+        store.set(2);
+        entries.insert(100, 3);
+        entries.insert(300, 4);
+    });
+    assert_eq!(
+        told.held(),
+        BTreeMap::from([(100, 23), (200, 22), (300, 24)])
+    );
+    let mut values = Vec::new();
+    for diff in told.diffs.lock().iter().skip(before) {
+        let mut held = BTreeMap::new();
+        if let MapDiff::Batch { changes } = diff {
+            for change in changes {
+                let _ = hold(&mut held, change);
+                values.extend(held.values().copied());
+            }
+        } else {
+            let _ = hold(&mut held, diff);
+            values.extend(held.values().copied());
+        }
+    }
+    assert!(
+        values.iter().all(|v| *v >= 20),
+        "no entry is told a stale row value: {values:?}"
+    );
+}
+
+#[test]
+fn each_join_shares_a_row_across_entries() {
+    let (store, rows, builds, entries, joined) = each_join();
+    let told = tell(&joined);
+    entries.insert(100, 7);
+    entries.insert(200, 7);
+    assert_eq!(builds.load(Ordering::SeqCst), 1);
+    store.set(3);
+    assert_eq!(told.held(), BTreeMap::from([(100, 37), (200, 37)]));
+
+    entries.remove(&100);
+    flush();
+    assert!(rows.contains(&7), "the remaining entry still holds the row");
+    entries.remove(&200);
+    flush();
+    assert!(!rows.contains(&7));
 }

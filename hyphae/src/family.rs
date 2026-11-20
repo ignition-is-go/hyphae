@@ -35,10 +35,13 @@ use parking_lot::Mutex;
 use uuid::Uuid;
 
 use crate::{
+    MapExt, Materialize, ProjectCellExt,
     cell::{Cell, CellImmutable, CellMutable, WeakCell},
     cell_map::{CellMap, MapDiff, WeakCellMap},
+    map_query::MapQuery,
     settle::{SettleKey, Write},
     signal::Signal,
+    subscription::SubscriptionGuard,
     traits::{CellValue, Gettable, Watchable},
 };
 
@@ -708,4 +711,47 @@ fn switch_set<F, K, S, T, RM>(
         let rows = members.rows.lock();
         push(Signal::value(Members::snapshot(&rows)));
     });
+}
+
+/// Join a family per entry of a collection.
+pub trait LookupEachExt<K, V>: MapQuery<Key = K, Value = V>
+where
+    K: CellValue + Hash + Eq,
+    V: CellValue,
+{
+    /// For each entry `(k, v)`, the value of the row at `key(k, v)`, under
+    /// `k`. An entry holds a lease on its row while it is present, so rows
+    /// are built as entries arrive, shared by entries with the same family
+    /// key, and released as entries leave or rekey. An entry and its row
+    /// changing in one settle are told once, with the row's new value.
+    #[track_caller]
+    fn lookup_each<F, T, RM, KF>(self, family: F, key: KF) -> impl MapQuery<Key = K, Value = T>
+    where
+        Self: Sized,
+        F: Family<Row = Cell<T, RM>>,
+        T: CellValue,
+        RM: Send + Sync + 'static,
+        KF: Fn(&K, &V) -> F::Key + Send + Sync + 'static,
+    {
+        self.project_cell(move |k: &K, v: &V| {
+            let lease = family.acquire(&key(k, v));
+            let k = k.clone();
+            let row = lease
+                .row()
+                .clone()
+                .map(move |t: &T| Some((k.clone(), t.clone())))
+                .materialize();
+            let mut lease = Some(lease);
+            row.own(SubscriptionGuard::from_callback(move || drop(lease.take())));
+            row
+        })
+    }
+}
+
+impl<K, V, Q> LookupEachExt<K, V> for Q
+where
+    K: CellValue + Hash + Eq,
+    V: CellValue,
+    Q: MapQuery<Key = K, Value = V>,
+{
 }
