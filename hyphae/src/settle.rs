@@ -277,6 +277,8 @@ pub struct NodeCore {
     outputs: Mutex<Vec<Weak<Self>>>,
     /// The quiet certificate (`docs/settle-epochs.md` section 4).
     mark: AtomicU8,
+    /// Where the node was created, for diagnostics.
+    caller: OnceLock<&'static Location<'static>>,
 }
 
 impl NodeCore {
@@ -294,6 +296,7 @@ impl NodeCore {
             inputs: Mutex::new(Vec::new()),
             outputs: Mutex::new(Vec::new()),
             mark: AtomicU8::new(watermark::NOT_QUIET),
+            caller: OnceLock::new(),
         })
     }
 
@@ -319,6 +322,12 @@ impl NodeCore {
         }
         EDGE_GEN.fetch_add(1, Ordering::Release);
         watermark::invalidate(self);
+    }
+
+    pub(crate) fn set_caller(&self, caller: Option<&'static Location<'static>>) {
+        if let Some(caller) = caller {
+            let _ = self.caller.set(caller);
+        }
     }
 
     /// No delivery pending or in flight.
@@ -658,6 +667,8 @@ static LATE_EDGE: AtomicU64 = AtomicU64::new(0);
 static UNBOUND_OWNED: AtomicU64 = AtomicU64::new(0);
 static QUIET_HITS: AtomicU64 = AtomicU64::new(0);
 static CYCLES: AtomicU64 = AtomicU64::new(0);
+/// Sampled back edges, `(from site, to site) -> count`.
+static CYCLE_SITES: LazyLock<Mutex<FxHashMap<(String, String), u64>>> = LazyLock::new(Mutex::default);
 static VALIDATED: AtomicU64 = AtomicU64::new(0);
 static INVALIDATED: AtomicU64 = AtomicU64::new(0);
 

@@ -71,6 +71,14 @@ fn run(path: &str) {
             s.invalidated,
             s.cycles,
         );
+        let cycles = super::watermark::cycle_sites();
+        if !cycles.is_empty()
+            && let Ok(mut out) = std::fs::File::create(format!("{path}.cycles"))
+        {
+            for ((from, to), count) in cycles {
+                let _ = writeln!(out, "{count} {from} -> {to}");
+            }
+        }
         let sites = super::edges::unbound_sites();
         if !sites.is_empty()
             && let Ok(mut unbound) = std::fs::File::create(format!("{path}.unbound"))
