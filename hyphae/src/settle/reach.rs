@@ -54,25 +54,29 @@ pub(super) static LABEL_QUERIES: AtomicU64 = AtomicU64::new(0);
 pub(super) static FRONTIER_SCANNED: AtomicU64 = AtomicU64::new(0);
 pub(super) static MAX_FRONTIER: AtomicU64 = AtomicU64::new(0);
 /// Compactions, by cause, and their total time.
-pub(super) static REBUILD_CONFLICT: AtomicU64 = AtomicU64::new(0);
 pub(super) static REBUILD_OVERFLOW: AtomicU64 = AtomicU64::new(0);
 pub(super) static REBUILD_DEAD: AtomicU64 = AtomicU64::new(0);
 pub(super) static REBUILD_NANOS: AtomicU64 = AtomicU64::new(0);
 /// Local relabels of the order, and the slots they moved.
 pub(super) static RELABELS: AtomicU64 = AtomicU64::new(0);
 pub(super) static RELABELED_SLOTS: AtomicU64 = AtomicU64::new(0);
-/// Nodes given a new pair because an edge landed out of order.
-pub(super) static REKEYS: AtomicU64 = AtomicU64::new(0);
+/// Edges that landed against the order, and the nodes their local reorders
+/// moved.
+pub(super) static REORDERS: AtomicU64 = AtomicU64::new(0);
+pub(super) static REORDERED_NODES: AtomicU64 = AtomicU64::new(0);
 pub(super) static CYCLES: AtomicU64 = AtomicU64::new(0);
 /// Back edges a compaction left out of the labels, `(from site, to site) ->
 /// count`.
-static CYCLE_SITES: LazyLock<Mutex<FxHashMap<(String, String), u64>>> =
-    LazyLock::new(Mutex::default);
+static CYCLE_SITES: Sites = LazyLock::new(Mutex::default);
+/// Edges that landed against the order, `(input site, target site) ->
+/// count`.
+static CONFLICT_SITES: Sites = LazyLock::new(Mutex::default);
+
+type Sites = LazyLock<Mutex<FxHashMap<(String, String), u64>>>;
 
 /// Every compaction, whatever its cause.
 pub(super) fn rebuilds() -> u64 {
-    REBUILD_CONFLICT.load(Ordering::Relaxed)
-        + REBUILD_OVERFLOW.load(Ordering::Relaxed)
+    REBUILD_OVERFLOW.load(Ordering::Relaxed)
         + REBUILD_DEAD.load(Ordering::Relaxed)
 }
 
@@ -246,7 +250,6 @@ static INDEX: Mutex<Index> = Mutex::new(Index {
 });
 
 enum Cause {
-    Conflict,
     Overflow,
     Dead,
 }
@@ -265,11 +268,9 @@ pub(super) fn add_edge(input: &Arc<NodeCore>, node: &Arc<NodeCore>) {
         index.nodes.retain(|node| node.strong_count() > 0);
         index.pruned_at = index.nodes.len();
     }
-    let placed = index.place(input, node);
+    index.place(input, node);
     let live = u64::try_from(index.pruned_at.max(index.nodes.len())).unwrap_or(u64::MAX);
-    let cause = if !placed {
-        Some(Cause::Conflict)
-    } else if index.overflow > live.saturating_mul(8).max(4096) {
+    let cause = if index.overflow > live.saturating_mul(8).max(4096) {
         Some(Cause::Overflow)
     } else if u64::try_from(ORDER.read().slots()).unwrap_or(0) > live.saturating_mul(8).max(1 << 16) {
         Some(Cause::Dead)
@@ -284,11 +285,12 @@ pub(super) fn add_edge(input: &Arc<NodeCore>, node: &Arc<NodeCore>) {
 }
 
 impl Index {
-    /// Give `input -> node` its labels without a compaction. False on an
-    /// order conflict: the node's latest input is not before its outputs.
-    fn place(&mut self, input: &Arc<NodeCore>, node: &Arc<NodeCore>) -> bool {
+    /// Give `input -> node` its labels. An edge against the order moves the
+    /// nodes `node` reaches before `input` to after it (Pearce and Kelly's
+    /// forward window), each right after its latest input's start.
+    fn place(&mut self, input: &Arc<NodeCore>, node: &Arc<NodeCore>) {
         let order = ORDER.upgradable_read();
-        let mut order = if start(input).is_none() {
+        let order = if start(input).is_none() {
             let mut order = RwLockUpgradableReadGuard::upgrade(order);
             pair(&mut order, input, None);
             parking_lot::RwLockWriteGuard::downgrade_to_upgradable(order)
@@ -298,39 +300,52 @@ impl Index {
         if start(node).is_none() {
             let mut write = RwLockUpgradableReadGuard::upgrade(order);
             pair(&mut write, node, start(input));
-            return true;
+            return;
         }
         if order.of(input) < order.of(node) {
-            self.propagate(&order, node, &mut Vec::new());
-            return true;
+            let mut keep = Vec::new();
+            self.propagate(&order, node, &mut keep);
+            drop(order);
+            drop(keep);
+            return;
         }
-        // The node moves to right after its latest input's start, which must
-        // still be before every output.
-        let inputs = live(&node.inputs);
-        let latest = inputs.iter().max_by_key(|input| order.of(input)).map(Arc::clone);
-        let first_out = live(&node.outputs).iter().map(|output| order.of(output)).min();
-        let Some(latest) = latest else { return false };
-        if first_out.is_some_and(|out| out <= order.of(&latest)) {
-            return false;
-        }
-        REKEYS.fetch_add(1, Ordering::Relaxed);
-        order = {
-            let mut write = RwLockUpgradableReadGuard::upgrade(order);
-            // The old pair stays, still covering the node's tree subtree.
-            let old = std::mem::take(&mut node.label.lock().spans);
-            pair(&mut write, node, start(&latest));
-            let mut label = node.label.lock();
-            let mut spans = std::mem::take(&mut label.spans);
-            write.merge(&mut spans, &old);
-            label.spans = spans;
-            drop(label);
-            parking_lot::RwLockWriteGuard::downgrade_to_upgradable(write)
-        };
+        // The edge lands against the order: reorder the affected window.
+        record_site(&CONFLICT_SITES, input, node);
         let mut keep = Vec::new();
-        self.propagate(&order, node, &mut keep);
-        drop(order);
+        let mut write = RwLockUpgradableReadGuard::upgrade(order);
+        let limit = write.of(input);
+        match forward(&write, node, input, limit, &mut keep) {
+            None => record_cycle(input, node),
+            Some(moved) => {
+                REORDERS.fetch_add(1, Ordering::Relaxed);
+                REORDERED_NODES
+                    .fetch_add(u64::try_from(moved.len()).unwrap_or(u64::MAX), Ordering::Relaxed);
+                for m in &moved {
+                    let latest = live(&m.inputs)
+                        .into_iter()
+                        .max_by_key(|input| write.of(input))
+                        .unwrap_or_else(|| Arc::clone(input));
+                    // The old pair stays in the label, still covering the
+                    // nodes that did not move.
+                    let old = std::mem::take(&mut m.label.lock().spans);
+                    pair(&mut write, m, start(&latest));
+                    let mut label = m.label.lock();
+                    let mut spans = std::mem::take(&mut label.spans);
+                    write.merge(&mut spans, &old);
+                    label.spans = spans;
+                    drop(label);
+                    keep.push(latest);
+                }
+                // Under the write guard: no reader sees a moved node before
+                // its ancestors cover its new place.
+                for m in &moved {
+                    self.propagate(&write, m, &mut keep);
+                }
+                keep.extend(moved);
+            }
+        }
+        drop(write);
         drop(keep);
-        true
     }
 
     /// Add `node`'s label to its inputs and their ancestors, up the
@@ -370,7 +385,6 @@ impl Index {
     fn rebuild(&mut self, cause: &Cause) {
         let started = Instant::now();
         match cause {
-            Cause::Conflict => &REBUILD_CONFLICT,
             Cause::Overflow => &REBUILD_OVERFLOW,
             Cause::Dead => &REBUILD_DEAD,
         }
@@ -483,6 +497,43 @@ impl Index {
     }
 }
 
+/// The forward window of Pearce and Kelly for the edge `input -> node` that
+/// lands against the order: every node `node` reaches whose start is before
+/// `input`'s (key `limit`), in order. `None` when `node` reaches `input`: the
+/// edge closes a cycle.
+fn forward(
+    order: &Order,
+    node: &Arc<NodeCore>,
+    input: &Arc<NodeCore>,
+    limit: u64,
+    keep: &mut Vec<Arc<NodeCore>>,
+) -> Option<Vec<Arc<NodeCore>>> {
+    let mut seen: FxHashSet<usize> = FxHashSet::default();
+    seen.insert(Arc::as_ptr(node).addr());
+    let mut window = vec![Arc::clone(node)];
+    let mut stack = vec![Arc::clone(node)];
+    while let Some(at) = stack.pop() {
+        let at_key = order.of(&at);
+        for output in live(&at.outputs) {
+            if Arc::ptr_eq(&output, input) {
+                keep.push(output);
+                keep.extend(window);
+                return None;
+            }
+            let key = order.of(&output);
+            if key <= at_key || key >= limit || !seen.insert(Arc::as_ptr(&output).addr()) {
+                keep.push(output);
+                continue;
+            }
+            window.push(Arc::clone(&output));
+            stack.push(output);
+        }
+        keep.push(at);
+    }
+    window.sort_by_key(|node| order.of(node));
+    Some(window)
+}
+
 /// Give `node` a fresh pair of slots right after `after` (inside that
 /// node's pair), or at the end of the list, and make the pair its label.
 fn pair(order: &mut Order, node: &NodeCore, after: Option<u32>) {
@@ -554,27 +605,41 @@ fn depth_first(
 /// Record a back edge `from -> to` that the labels leave out.
 fn record_cycle(from: &NodeCore, to: &NodeCore) {
     CYCLES.fetch_add(1, Ordering::Relaxed);
+    record_site(&CYCLE_SITES, from, to);
+}
+
+/// Count the edge `from -> to` in `sites`, by creation sites.
+fn record_site(sites: &Sites, from: &NodeCore, to: &NodeCore) {
     let site = |node: &NodeCore| {
         node.caller
             .get()
             .map_or_else(|| "<unknown>".to_owned(), ToString::to_string)
     };
-    CYCLE_SITES
+    sites
         .lock()
         .entry((site(from), site(to)))
         .and_modify(|count| *count = count.saturating_add(1))
         .or_insert(1);
 }
 
-/// Back edges the labels leave out, most frequent first.
-pub(super) fn cycle_sites() -> Vec<((String, String), u64)> {
-    let mut sites: Vec<_> = CYCLE_SITES
+fn ranked(sites: &Sites) -> Vec<((String, String), u64)> {
+    let mut ranked: Vec<_> = sites
         .lock()
         .iter()
         .map(|(key, count)| (key.clone(), *count))
         .collect();
-    sites.sort_by_key(|entry| std::cmp::Reverse(entry.1));
-    sites
+    ranked.sort_by_key(|entry| std::cmp::Reverse(entry.1));
+    ranked
+}
+
+/// Edges that landed against the order, most frequent first.
+pub(super) fn conflict_sites() -> Vec<((String, String), u64)> {
+    ranked(&CONFLICT_SITES)
+}
+
+/// Back edges the labels leave out, most frequent first.
+pub(super) fn cycle_sites() -> Vec<((String, String), u64)> {
+    ranked(&CYCLE_SITES)
 }
 
 /// The labels cover the declared edge `input -> node`: the input is first in

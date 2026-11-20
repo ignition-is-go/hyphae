@@ -1036,9 +1036,6 @@ pub struct SettleStats {
     pub max_frontier: u64,
     /// Times the reach index was laid out again (all causes).
     pub index_rebuilds: u64,
-    /// Compactions after an edge landed against the order with no room to
-    /// move its target.
-    pub rebuild_conflicts: u64,
     /// Compactions after non-tree label pairs grew past eight per live node.
     pub rebuild_overflows: u64,
     /// Compactions after dead slots grew past eight per live node.
@@ -1048,8 +1045,10 @@ pub struct SettleStats {
     /// Local relabels of the order, and the slots they moved.
     pub relabels: u64,
     pub relabeled_slots: u64,
-    /// Nodes given a new place because an edge landed against the order.
-    pub rekeys: u64,
+    /// Edges that landed against the order, and the nodes their local
+    /// reorders moved.
+    pub reorders: u64,
+    pub reordered_nodes: u64,
     /// Times a node parked on a blocker.
     pub parks: u64,
     /// `get()` and subscribe-time reads made inside a callback.
@@ -1099,13 +1098,13 @@ pub fn stats() -> SettleStats {
         frontier_scanned: reach::FRONTIER_SCANNED.load(Ordering::Relaxed),
         max_frontier: reach::MAX_FRONTIER.load(Ordering::Relaxed),
         index_rebuilds: reach::rebuilds(),
-        rebuild_conflicts: reach::REBUILD_CONFLICT.load(Ordering::Relaxed),
         rebuild_overflows: reach::REBUILD_OVERFLOW.load(Ordering::Relaxed),
         rebuild_dead: reach::REBUILD_DEAD.load(Ordering::Relaxed),
         rebuild_nanos: reach::REBUILD_NANOS.load(Ordering::Relaxed),
         relabels: reach::RELABELS.load(Ordering::Relaxed),
         relabeled_slots: reach::RELABELED_SLOTS.load(Ordering::Relaxed),
-        rekeys: reach::REKEYS.load(Ordering::Relaxed),
+        reorders: reach::REORDERS.load(Ordering::Relaxed),
+        reordered_nodes: reach::REORDERED_NODES.load(Ordering::Relaxed),
         parks: PARKS.load(Ordering::Relaxed),
         side_reads: SIDE_READS.load(Ordering::Relaxed),
         undeclared_writes: UNDECLARED.load(Ordering::Relaxed),
