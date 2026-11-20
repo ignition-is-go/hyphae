@@ -35,6 +35,7 @@ fn run(path: &str) {
     else {
         return;
     };
+    let (mut last_tickets, mut last_cleared) = (0u64, 0u64);
     loop {
         std::thread::sleep(std::time::Duration::from_secs(1));
         let now = std::time::SystemTime::now()
@@ -47,7 +48,7 @@ fn run(path: &str) {
             .saturating_sub(COMPLETED.load(Ordering::Acquire));
         let _ = writeln!(
             file,
-            "{now:.3} event_sets={} tickets={} fires={} node_fires={} pool_fires={} waits={} deferred_writes={} fire_nanos={} flush_sets={} max_in_flight={} in_flight={in_flight} backlog={} interval_max_fire_nanos={hold} walks={} walk_nodes={} parks={} side_reads={} undeclared_writes={} unbound_owned={} quiet_hits={} validated={} invalidated={} cycles={} sampled_clearings={} sampled_validations={}",
+            "{now:.3} event_sets={} tickets={} fires={} node_fires={} pool_fires={} waits={} deferred_writes={} fire_nanos={} flush_sets={} max_in_flight={} in_flight={in_flight} backlog={} interval_max_fire_nanos={hold} walks={} walk_nodes={} parks={} side_reads={} undeclared_writes={} unbound_owned={} quiet_hits={} validated={} invalidated={} cycles={} sampled_clearings={} sampled_validations={} cleared_per_ticket={:.1}",
             s.event_sets,
             s.tickets,
             s.fires,
@@ -71,7 +72,17 @@ fn run(path: &str) {
             s.cycles,
             super::watermark::diag::SAMPLED_CLEARINGS.load(Ordering::Relaxed),
             super::watermark::diag::SAMPLED_VALIDATIONS.load(Ordering::Relaxed),
+            // Nodes whose quiet mark was cleared, per ticket seeded, over the
+            // last interval: the cost of eager clearing.
+            {
+                #[allow(clippy::cast_precision_loss, reason = "a ratio for a log line")]
+                let average = (s.invalidated.saturating_sub(last_cleared)) as f64
+                    / (s.tickets.saturating_sub(last_tickets)).max(1) as f64;
+                average
+            },
         );
+        last_tickets = s.tickets;
+        last_cleared = s.invalidated;
         for (suffix, lines) in [
             ("clears", super::watermark::diag::clear_lines()),
             ("validations", super::watermark::diag::validation_lines()),
