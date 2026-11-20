@@ -35,6 +35,10 @@ profiling = ["dep:tracing"]
 # benchmark set because its deeply nested static type has a multi-gigabyte
 # compiler memory footprint.
 deep-bench = []
+# Compile the rship-scale bench target: full-scale timed runs of the suite in
+# `benches/support/rship_scale`. Its reduced-scale correctness tests need only
+# `scheduler`.
+scale-bench = ["scheduler"]
 
 [dependencies]
 anyhow = "1"
@@ -132,4 +136,13 @@ required-features = ["scheduler"]
 [[bench]]
 name = "wave_calibration"
 harness = false
+required-features = ["scheduler"]
+
+[[bench]]
+name = "rship_scale"
+harness = false
+required-features = ["scale-bench"]
+
+[[test]]
+name = "rship_scale"
 required-features = ["scheduler"]
