@@ -138,10 +138,11 @@ def cmd_run(args):
     env = dict(os.environ, HYPHAE_BENCH_COMMIT=git_commit())
     for scen in args.scenarios or SCENARIOS:
         for scale in args.scales:
-            # One block per point, so other benchmarks on the machine interleave.
-            if lock:
-                fcntl.flock(lock, fcntl.LOCK_EX)
             for _ in range(args.runs):
+                # The lock is held for one run, so other benchmarks on the
+                # machine alternate with this one run by run.
+                if lock:
+                    fcntl.flock(lock, fcntl.LOCK_EX)
                 command = ["cargo", "bench", "-q", "-p", "hyphae", "--features", "scale-bench",
                            "--bench", "rship_scale", "--", "--scen", scen, "--scale", str(scale)]
                 try:
@@ -155,9 +156,9 @@ def cmd_run(args):
                                        "scen": scen, "scale": scale, "failed": failure})
                 with out.open("a") as handle:
                     handle.write(line + "\n")
+                if lock:
+                    fcntl.flock(lock, fcntl.LOCK_UN)
                 print(f"{scen} x{scale}: {'ok' if 'failed' not in json.loads(line) else failure}", flush=True)
-            if lock:
-                fcntl.flock(lock, fcntl.LOCK_UN)
     print(f"results: {out}")
 
 

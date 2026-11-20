@@ -125,7 +125,7 @@ range divided by its median. The floors are 25% for a p50, a time, a ratio or
 a throughput, and 50% for a p99.
 
 Why these numbers: the baseline was taken on a shared development machine
-with 2 to 10 cores busy in other processes. Over five runs there, the range of
+with 1 to 12 cores busy in other processes. Over five runs there, the range of
 a metric divided by its median had the distribution in the table below. A
 fixed floor below the usual range would flag noise, so the floor sits near the
 median range and the baseline's own range covers the noisy metrics. On a quiet
@@ -133,10 +133,26 @@ machine, take a new baseline and the per-metric ranges tighten by themselves.
 
 | kind of metric | metrics | median range / median | 75th percentile | 90th percentile |
 | --- | --- | --- | --- | --- |
-| pending | | | | |
+| p50 | 12 | 0.26 | 0.49 | 0.59 |
+| p99 | 27 | 0.59 | 1.25 | 1.42 |
+| setup time and memory | 3 | 0.04 | 0.08 | 0.08 |
+| ratio | 5 | 0.16 | 0.24 | 0.26 |
+| throughput | 4 | 0.28 | 1.34 | 1.34 |
 
 The tracked metrics and the kind of each are the `TRACKED` table at the top of
 `scripts/rship_scale.py`.
+
+## Correctness counts that are not 0 in the baseline
+
+At full scale v3.1.12 fails three correctness counts, and the baseline records
+them. `compare` flags only a count that was 0 in the baseline.
+
+| scenario | count | cause |
+| --- | --- | --- |
+| `churn`, `overload` | `viol.tick.gaps`, `viol.tick.incomplete` | The tick sources are latest-value cells. When a backlog forms, the scheduler replaces a queued write to a cell with the next one (`scheduler.rs`, `enqueue_locked` with `coalesce`), so some sinks never see some ticks. |
+| `diamond` | `viol.probe.lost` | A probe write took more than 2 seconds to reach its sink while four writers ran. It is late, not lost. |
+
+The reduced-scale tests pass because no backlog forms at 1/40 size.
 
 ## The absolute targets
 

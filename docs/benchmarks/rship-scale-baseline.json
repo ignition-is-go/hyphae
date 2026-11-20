@@ -1,0 +1,3292 @@
+{
+ "commits": [
+  "e30e7aa3fc83"
+ ],
+ "machine": "malcolm, 24 cores",
+ "points": {
+  "burst@1": {
+   "died": 0,
+   "metrics": {
+    "burst.read_total.max": {
+     "max": 14448.653,
+     "median": 1284.704,
+     "min": 822.772,
+     "n": 5
+    },
+    "burst.read_total.n": {
+     "max": 23,
+     "median": 23,
+     "min": 23,
+     "n": 5
+    },
+    "burst.read_total.p50": {
+     "max": 750.843,
+     "median": 749.142,
+     "min": 731.272,
+     "n": 5
+    },
+    "burst.read_total.p99": {
+     "max": 14448.653,
+     "median": 1284.704,
+     "min": 822.772,
+     "n": 5
+    },
+    "burst.unread_total.max": {
+     "max": 22216.919,
+     "median": 22122.689,
+     "min": 21448.215,
+     "n": 5
+    },
+    "burst.unread_total.n": {
+     "max": 23,
+     "median": 23,
+     "min": 23,
+     "n": 5
+    },
+    "burst.unread_total.p50": {
+     "max": 7789.996,
+     "median": 7722.762,
+     "min": 7521.935,
+     "n": 5
+    },
+    "burst.unread_total.p99": {
+     "max": 22216.919,
+     "median": 22122.689,
+     "min": 21448.215,
+     "n": 5
+    },
+    "cpu.cores": {
+     "max": 1.6250608335869081,
+     "median": 1.5958288717377713,
+     "min": 1.5741221988863234,
+     "n": 5
+    },
+    "probe.idle.max": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.n": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.p50": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.p99": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.quiet.max": {
+     "max": 25808.754,
+     "median": 14729.395,
+     "min": 13974.849,
+     "n": 5
+    },
+    "probe.quiet.n": {
+     "max": 822,
+     "median": 808,
+     "min": 782,
+     "n": 5
+    },
+    "probe.quiet.p50": {
+     "max": 4.11,
+     "median": 3.75,
+     "min": 3.28,
+     "n": 5
+    },
+    "probe.quiet.p99": {
+     "max": 10414.105,
+     "median": 9720.055,
+     "min": 9272.877,
+     "n": 5
+    },
+    "probe.read.max": {
+     "max": 7652.745,
+     "median": 14.29,
+     "min": 8.82,
+     "n": 5
+    },
+    "probe.read.n": {
+     "max": 5,
+     "median": 3,
+     "min": 1,
+     "n": 5
+    },
+    "probe.read.p50": {
+     "max": 8.82,
+     "median": 8.04,
+     "min": 1.97,
+     "n": 5
+    },
+    "probe.read.p99": {
+     "max": 7652.745,
+     "median": 14.29,
+     "min": 8.82,
+     "n": 5
+    },
+    "probe.unread.max": {
+     "max": 10786.618,
+     "median": 8870.542,
+     "min": 8333.7,
+     "n": 5
+    },
+    "probe.unread.n": {
+     "max": 50,
+     "median": 47,
+     "min": 44,
+     "n": 5
+    },
+    "probe.unread.p50": {
+     "max": 10.68,
+     "median": 8.39,
+     "min": 6.63,
+     "n": 5
+    },
+    "probe.unread.p99": {
+     "max": 10786.618,
+     "median": 8870.542,
+     "min": 8333.7,
+     "n": 5
+    },
+    "rss_end.mb": {
+     "max": 339.542016,
+     "median": 339.492864,
+     "min": 338.878464,
+     "n": 5
+    },
+    "setup.ms": {
+     "max": 346.35371999999995,
+     "median": 344.172355,
+     "min": 340.475022,
+     "n": 5
+    },
+    "setup.rss_mb": {
+     "max": 334.831616,
+     "median": 334.819328,
+     "min": 334.68416,
+     "n": 5
+    },
+    "tick.end_depth": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "tick.max": {
+     "max": 22330.975,
+     "median": 19854.962,
+     "min": 17906.625,
+     "n": 5
+    },
+    "tick.max_depth": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "tick.n": {
+     "max": 150,
+     "median": 150,
+     "min": 150,
+     "n": 5
+    },
+    "tick.p50": {
+     "max": 15551.526,
+     "median": 14954.176,
+     "min": 14881.048,
+     "n": 5
+    },
+    "tick.p99": {
+     "max": 19169.857,
+     "median": 18787.871,
+     "min": 17817.787,
+     "n": 5
+    },
+    "tick.read.max": {
+     "max": 13426.22,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "tick.read.n": {
+     "max": 2,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "tick.read.p50": {
+     "max": 13069.463,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "tick.read.p99": {
+     "max": 13426.22,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "tick.unread.max": {
+     "max": 14856.764,
+     "median": 14352.035,
+     "min": 13783.079,
+     "n": 5
+    },
+    "tick.unread.n": {
+     "max": 10,
+     "median": 8,
+     "min": 8,
+     "n": 5
+    },
+    "tick.unread.p50": {
+     "max": 13254.637,
+     "median": 12913.909,
+     "min": 12732.908,
+     "n": 5
+    },
+    "tick.unread.p99": {
+     "max": 14856.764,
+     "median": 14352.035,
+     "min": 13783.079,
+     "n": 5
+    },
+    "viol.burst.missing": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.probe.lost": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.dup": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.gaps": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.incomplete": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.reorder": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    }
+   },
+   "runs": 5
+  },
+  "churn@1": {
+   "died": 0,
+   "metrics": {
+    "churn.key.max": {
+     "max": 66835.229,
+     "median": 53719.51,
+     "min": 42931.591,
+     "n": 5
+    },
+    "churn.key.n": {
+     "max": 814,
+     "median": 629,
+     "min": 446,
+     "n": 5
+    },
+    "churn.key.p50": {
+     "max": 13.32,
+     "median": 12.42,
+     "min": 9.92,
+     "n": 5
+    },
+    "churn.key.p99": {
+     "max": 46081.857,
+     "median": 22561.712,
+     "min": 16219.837,
+     "n": 5
+    },
+    "churn.key_over_value": {
+     "max": 2.2857142857142856,
+     "median": 1.864864864864865,
+     "min": 1.834710743801653,
+     "n": 5
+    },
+    "churn.request.max": {
+     "max": 144.42,
+     "median": 69.17,
+     "min": 50.8,
+     "n": 5
+    },
+    "churn.request.n": {
+     "max": 814,
+     "median": 629,
+     "min": 446,
+     "n": 5
+    },
+    "churn.request.p50": {
+     "max": 6.66,
+     "median": 5.93,
+     "min": 4.87,
+     "n": 5
+    },
+    "churn.request.p99": {
+     "max": 58.78,
+     "median": 32.05,
+     "min": 15.75,
+     "n": 5
+    },
+    "churn.value.max": {
+     "max": 106902.562,
+     "median": 42515.429,
+     "min": 23919.27,
+     "n": 5
+    },
+    "churn.value.n": {
+     "max": 1627,
+     "median": 1257,
+     "min": 891,
+     "n": 5
+    },
+    "churn.value.p50": {
+     "max": 7.26,
+     "median": 6.66,
+     "min": 4.34,
+     "n": 5
+    },
+    "churn.value.p99": {
+     "max": 52844.828,
+     "median": 24043.907,
+     "min": 16074.101,
+     "n": 5
+    },
+    "cpu.cores": {
+     "max": 3.021658069221058,
+     "median": 2.569080435505097,
+     "min": 1.9603964748941312,
+     "n": 5
+    },
+    "probe.idle.max": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.n": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.p50": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.p99": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.load.max": {
+     "max": 49813.824,
+     "median": 30195.325,
+     "min": 25371.725,
+     "n": 5
+    },
+    "probe.load.n": {
+     "max": 874,
+     "median": 739,
+     "min": 613,
+     "n": 5
+    },
+    "probe.load.p50": {
+     "max": 61.07,
+     "median": 3.66,
+     "min": 2.75,
+     "n": 5
+    },
+    "probe.load.p99": {
+     "max": 36557.579,
+     "median": 17553.443,
+     "min": 11691.734,
+     "n": 5
+    },
+    "rss_end.mb": {
+     "max": 341.528576,
+     "median": 340.430848,
+     "min": 339.853312,
+     "n": 5
+    },
+    "setup.ms": {
+     "max": 388.45048399999996,
+     "median": 365.698778,
+     "min": 350.750951,
+     "n": 5
+    },
+    "setup.rss_mb": {
+     "max": 334.884864,
+     "median": 334.819328,
+     "min": 334.802944,
+     "n": 5
+    },
+    "tick.end_depth": {
+     "max": 164,
+     "median": 110,
+     "min": 0,
+     "n": 5
+    },
+    "tick.max": {
+     "max": 74666.937,
+     "median": 47504.516,
+     "min": 27266.664,
+     "n": 5
+    },
+    "tick.max_depth": {
+     "max": 164,
+     "median": 110,
+     "min": 0,
+     "n": 5
+    },
+    "tick.n": {
+     "max": 150,
+     "median": 150,
+     "min": 136,
+     "n": 5
+    },
+    "tick.p50": {
+     "max": 19065.183,
+     "median": 16925.529,
+     "min": 14147.628,
+     "n": 5
+    },
+    "tick.p99": {
+     "max": 72421.24,
+     "median": 40922.371,
+     "min": 24362.474,
+     "n": 5
+    },
+    "viol.churn.lost": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.churn.unconverged": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.probe.lost": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.dup": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.gaps": {
+     "max": 50400,
+     "median": 3600,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.incomplete": {
+     "max": 14,
+     "median": 1,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.reorder": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    }
+   },
+   "runs": 5
+  },
+  "deep@1": {
+   "died": 0,
+   "metrics": {
+    "deep.200_over_100": {
+     "max": 2.105059732958538,
+     "median": 1.8297766019988242,
+     "min": 1.8151576511426093,
+     "n": 5
+    },
+    "deep.group.max": {
+     "max": 19315.133,
+     "median": 5901.498,
+     "min": 4944.032,
+     "n": 5
+    },
+    "deep.group.n": {
+     "max": 1026,
+     "median": 866,
+     "min": 546,
+     "n": 5
+    },
+    "deep.group.p50": {
+     "max": 3535.076,
+     "median": 2065.254,
+     "min": 1877.154,
+     "n": 5
+    },
+    "deep.group.p99": {
+     "max": 13277.801,
+     "median": 4385.993,
+     "min": 4013.352,
+     "n": 5
+    },
+    "deep.mid.max": {
+     "max": 204.29,
+     "median": 155.931,
+     "min": 143.501,
+     "n": 5
+    },
+    "deep.mid.n": {
+     "max": 1000,
+     "median": 1000,
+     "min": 1000,
+     "n": 5
+    },
+    "deep.mid.p50": {
+     "max": 34.57,
+     "median": 33.711,
+     "min": 28.46,
+     "n": 5
+    },
+    "deep.mid.p99": {
+     "max": 118.731,
+     "median": 93.651,
+     "min": 92.85,
+     "n": 5
+    },
+    "deep.ns_per_level": {
+     "max": 313.75,
+     "median": 308.1,
+     "min": 299.55,
+     "n": 5
+    },
+    "deep.one.max": {
+     "max": 293.541,
+     "median": 249.941,
+     "min": 225.641,
+     "n": 5
+    },
+    "deep.one.n": {
+     "max": 1000,
+     "median": 1000,
+     "min": 1000,
+     "n": 5
+    },
+    "deep.one.p50": {
+     "max": 62.75,
+     "median": 61.62,
+     "min": 59.91,
+     "n": 5
+    },
+    "deep.one.p99": {
+     "max": 205.741,
+     "median": 171.43,
+     "min": 145.091,
+     "n": 5
+    },
+    "probe.group.max": {
+     "max": 160.66,
+     "median": 95.45,
+     "min": 54.9,
+     "n": 5
+    },
+    "probe.group.n": {
+     "max": 400,
+     "median": 399,
+     "min": 395,
+     "n": 5
+    },
+    "probe.group.p50": {
+     "max": 14.14,
+     "median": 10.61,
+     "min": 8.55,
+     "n": 5
+    },
+    "probe.group.p99": {
+     "max": 130.33,
+     "median": 64.1,
+     "min": 32.27,
+     "n": 5
+    },
+    "probe.idle.max": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.n": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.p50": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.p99": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.one.max": {
+     "max": 43.52,
+     "median": 26.49,
+     "min": 12.1,
+     "n": 5
+    },
+    "probe.one.n": {
+     "max": 405,
+     "median": 405,
+     "min": 405,
+     "n": 5
+    },
+    "probe.one.p50": {
+     "max": 3.48,
+     "median": 2.89,
+     "min": 2.5,
+     "n": 5
+    },
+    "probe.one.p99": {
+     "max": 20.97,
+     "median": 12.43,
+     "min": 6.28,
+     "n": 5
+    },
+    "rss_end.mb": {
+     "max": 336.306176,
+     "median": 335.839232,
+     "min": 335.74912,
+     "n": 5
+    },
+    "setup.ms": {
+     "max": 354.448689,
+     "median": 351.09354199999996,
+     "min": 342.579312,
+     "n": 5
+    },
+    "setup.rss_mb": {
+     "max": 334.884864,
+     "median": 334.82752,
+     "min": 334.802944,
+     "n": 5
+    },
+    "viol.deep.gaps": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.deep.missing": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.deep.reorder": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.probe.lost": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    }
+   },
+   "runs": 5
+  },
+  "demand@1": {
+   "died": 0,
+   "metrics": {
+    "demand.leak_of_peak": {
+     "max": 1,
+     "median": 1,
+     "min": 1,
+     "n": 5
+    },
+    "demand.reader_hits": {
+     "max": 36356,
+     "median": 36356,
+     "min": 36356,
+     "n": 5
+    },
+    "demand.rss_growth": {
+     "max": 0.012611703660997398,
+     "median": 0.01253963678293446,
+     "min": 0.012409812409812426,
+     "n": 5
+    },
+    "demand.rss_peak_mb": {
+     "max": 57.552896,
+     "median": 57.5488,
+     "min": 57.475072,
+     "n": 5
+    },
+    "demand.rss_zero_first_mb": {
+     "max": 56.836096,
+     "median": 56.836096,
+     "min": 56.77056,
+     "n": 5
+    },
+    "demand.rss_zero_last_mb": {
+     "max": 57.552896,
+     "median": 57.5488,
+     "min": 57.475072,
+     "n": 5
+    },
+    "demand.zero_fires_per_write.first": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "demand.zero_fires_per_write.fresh": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "demand.zero_fires_per_write.last": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "demand.zero_reader_evals_per_write": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "demand.zero_write_cost_ratio": {
+     "max": 3.026720841439618,
+     "median": 2.8964216410132964,
+     "min": 2.0356911804392595,
+     "n": 5
+    },
+    "demand.zero_write_us.first": {
+     "max": 2.3900915,
+     "median": 0.4917665,
+     "min": 0.427601,
+     "n": 5
+    },
+    "demand.zero_write_us.fresh": {
+     "max": 0.270501,
+     "median": 0.1714205,
+     "min": 0.17031549999999998,
+     "n": 5
+    },
+    "demand.zero_write_us.last": {
+     "max": 0.5506565000000001,
+     "median": 0.518842,
+     "min": 0.4933055,
+     "n": 5
+    },
+    "rss_end.mb": {
+     "max": 57.745408,
+     "median": 57.741312,
+     "min": 50.528256,
+     "n": 5
+    }
+   },
+   "runs": 5
+  },
+  "diamond@1": {
+   "died": 0,
+   "metrics": {
+    "dia.coalesced": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "dia.four_writes_per_s": {
+     "max": 338560,
+     "median": 334016,
+     "min": 321280,
+     "n": 5
+    },
+    "dia.max": {
+     "max": 414.861,
+     "median": 160.781,
+     "min": 143.68,
+     "n": 5
+    },
+    "dia.n": {
+     "max": 10759,
+     "median": 10759,
+     "min": 10759,
+     "n": 5
+    },
+    "dia.p50": {
+     "max": 15.63,
+     "median": 13.7,
+     "min": 13.52,
+     "n": 5
+    },
+    "dia.p99": {
+     "max": 92.16,
+     "median": 61.24,
+     "min": 43.871,
+     "n": 5
+    },
+    "dia.writes": {
+     "max": 4000,
+     "median": 4000,
+     "min": 4000,
+     "n": 5
+    },
+    "probe.four.max": {
+     "max": 34249.39,
+     "median": 25711.637,
+     "min": 14735.861,
+     "n": 5
+    },
+    "probe.four.n": {
+     "max": 44,
+     "median": 44,
+     "min": 44,
+     "n": 5
+    },
+    "probe.four.p50": {
+     "max": 4.07,
+     "median": 3.27,
+     "min": 2.45,
+     "n": 5
+    },
+    "probe.four.p99": {
+     "max": 34249.39,
+     "median": 25711.637,
+     "min": 14735.861,
+     "n": 5
+    },
+    "probe.idle.max": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.n": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.p50": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.p99": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.one.max": {
+     "max": 258.511,
+     "median": 52.97,
+     "min": 31.14,
+     "n": 5
+    },
+    "probe.one.n": {
+     "max": 425,
+     "median": 424,
+     "min": 423,
+     "n": 5
+    },
+    "probe.one.p50": {
+     "max": 3.8,
+     "median": 2.85,
+     "min": 2.37,
+     "n": 5
+    },
+    "probe.one.p99": {
+     "max": 68.641,
+     "median": 23.23,
+     "min": 16.9,
+     "n": 5
+    },
+    "rss_end.mb": {
+     "max": 343.330816,
+     "median": 343.150592,
+     "min": 343.08096,
+     "n": 5
+    },
+    "setup.ms": {
+     "max": 367.223318,
+     "median": 355.32728000000003,
+     "min": 348.49604899999997,
+     "n": 5
+    },
+    "setup.rss_mb": {
+     "max": 334.82752,
+     "median": 334.819328,
+     "min": 334.671872,
+     "n": 5
+    },
+    "viol.dag.glitch": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.dag.reorder": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.dag.torn": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.dag.unconverged": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.dia.dup_fires": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.probe.lost": {
+     "max": 1,
+     "median": 1,
+     "min": 1,
+     "n": 5
+    }
+   },
+   "runs": 5
+  },
+  "edit@1": {
+   "died": 0,
+   "metrics": {
+    "cpu.cores": {
+     "max": 2.6926323673464165,
+     "median": 1.957388102113397,
+     "min": 1.4525226509315516,
+     "n": 5
+    },
+    "edit.add.max": {
+     "max": 202.96,
+     "median": 98.2,
+     "min": 67.64,
+     "n": 5
+    },
+    "edit.add.n": {
+     "max": 83,
+     "median": 80,
+     "min": 80,
+     "n": 5
+    },
+    "edit.add.p50": {
+     "max": 71.84,
+     "median": 39.14,
+     "min": 36.01,
+     "n": 5
+    },
+    "edit.add.p99": {
+     "max": 202.96,
+     "median": 98.2,
+     "min": 67.64,
+     "n": 5
+    },
+    "edit.remove.max": {
+     "max": 336.021,
+     "median": 66.94,
+     "min": 39.59,
+     "n": 5
+    },
+    "edit.remove.n": {
+     "max": 33,
+     "median": 30,
+     "min": 30,
+     "n": 5
+    },
+    "edit.remove.p50": {
+     "max": 32.74,
+     "median": 20.31,
+     "min": 15.04,
+     "n": 5
+    },
+    "edit.remove.p99": {
+     "max": 336.021,
+     "median": 66.94,
+     "min": 39.59,
+     "n": 5
+    },
+    "probe.idle.max": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.n": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.p50": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.p99": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.load.max": {
+     "max": 54368.776,
+     "median": 26833.999,
+     "min": 19104.384,
+     "n": 5
+    },
+    "probe.load.n": {
+     "max": 895,
+     "median": 772,
+     "min": 589,
+     "n": 5
+    },
+    "probe.load.p50": {
+     "max": 1104.034,
+     "median": 3.481,
+     "min": 2.62,
+     "n": 5
+    },
+    "probe.load.p99": {
+     "max": 33611.139,
+     "median": 18346.658,
+     "min": 10525.683,
+     "n": 5
+    },
+    "rss_end.mb": {
+     "max": 338.788352,
+     "median": 338.358272,
+     "min": 338.305024,
+     "n": 5
+    },
+    "setup.ms": {
+     "max": 444.490065,
+     "median": 363.416517,
+     "min": 347.943593,
+     "n": 5
+    },
+    "setup.rss_mb": {
+     "max": 334.831616,
+     "median": 334.798848,
+     "min": 334.675968,
+     "n": 5
+    },
+    "tick.end_depth": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "tick.max": {
+     "max": 78621.658,
+     "median": 36965.519,
+     "min": 26433.495,
+     "n": 5
+    },
+    "tick.max_depth": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "tick.n": {
+     "max": 150,
+     "median": 150,
+     "min": 150,
+     "n": 5
+    },
+    "tick.p50": {
+     "max": 24341.361,
+     "median": 16745.071,
+     "min": 12603.134,
+     "n": 5
+    },
+    "tick.p99": {
+     "max": 74678.245,
+     "median": 36455.01,
+     "min": 25564.458,
+     "n": 5
+    },
+    "viol.edit.gaps": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.edit.never_fired": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.edit.reorder": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.probe.lost": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.dup": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.gaps": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.incomplete": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.reorder": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    }
+   },
+   "runs": 5
+  },
+  "fanout@1": {
+   "died": 0,
+   "metrics": {
+    "cpu.cores": {
+     "max": 1.687186375103482,
+     "median": 1.544993452547582,
+     "min": 1.3232837857341413,
+     "n": 5
+    },
+    "fan.end_depth": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "fan.max": {
+     "max": 60538.625,
+     "median": 24034.964,
+     "min": 18958.005,
+     "n": 5
+    },
+    "fan.max_depth": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "fan.n": {
+     "max": 150,
+     "median": 150,
+     "min": 150,
+     "n": 5
+    },
+    "fan.p50": {
+     "max": 14691.578,
+     "median": 14113.824,
+     "min": 11323.734,
+     "n": 5
+    },
+    "fan.p99": {
+     "max": 52510.154,
+     "median": 22174.943,
+     "min": 18674.429,
+     "n": 5
+    },
+    "probe.idle.max": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.n": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.p50": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.p99": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.load.max": {
+     "max": 54707.491,
+     "median": 20152.834,
+     "min": 16417.176,
+     "n": 5
+    },
+    "probe.load.n": {
+     "max": 829,
+     "median": 755,
+     "min": 678,
+     "n": 5
+    },
+    "probe.load.p50": {
+     "max": 4.43,
+     "median": 3.16,
+     "min": 2.56,
+     "n": 5
+    },
+    "probe.load.p99": {
+     "max": 35808.469,
+     "median": 14155.719,
+     "min": 13620.455,
+     "n": 5
+    },
+    "rss_end.mb": {
+     "max": 338.2272,
+     "median": 337.48992,
+     "min": 337.44896,
+     "n": 5
+    },
+    "setup.ms": {
+     "max": 352.25445,
+     "median": 348.14277100000004,
+     "min": 346.632335,
+     "n": 5
+    },
+    "setup.rss_mb": {
+     "max": 334.88896,
+     "median": 334.819328,
+     "min": 334.700544,
+     "n": 5
+    },
+    "viol.fan.dup": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.fan.gaps": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.fan.incomplete": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.fan.reorder": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.probe.lost": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    }
+   },
+   "runs": 5
+  },
+  "feedback@1": {
+   "died": 0,
+   "metrics": {
+    "fb.hop_ns": {
+     "max": 123.29,
+     "median": 121.0835,
+     "min": 117.99,
+     "n": 5
+    },
+    "fb.hop_ns_p99": {
+     "max": 228.25,
+     "median": 169.7205,
+     "min": 157.4505,
+     "n": 5
+    },
+    "fb.trip.max": {
+     "max": 2637.817,
+     "median": 960.393,
+     "min": 654.352,
+     "n": 5
+    },
+    "fb.trip.n": {
+     "max": 12436,
+     "median": 11941,
+     "min": 11253,
+     "n": 5
+    },
+    "fb.trip.p50": {
+     "max": 246.58,
+     "median": 242.167,
+     "min": 235.98,
+     "n": 5
+    },
+    "fb.trip.p99": {
+     "max": 456.5,
+     "median": 339.441,
+     "min": 314.901,
+     "n": 5
+    },
+    "probe.idle.max": {
+     "max": 72.12,
+     "median": 32.02,
+     "min": 14.08,
+     "n": 5
+    },
+    "probe.idle.n": {
+     "max": 203,
+     "median": 203,
+     "min": 203,
+     "n": 5
+    },
+    "probe.idle.p50": {
+     "max": 3.89,
+     "median": 2.77,
+     "min": 2.46,
+     "n": 5
+    },
+    "probe.idle.p99": {
+     "max": 22.04,
+     "median": 14.08,
+     "min": 8.73,
+     "n": 5
+    },
+    "probe.load.max": {
+     "max": 6655.247,
+     "median": 2801.881,
+     "min": 1917.876,
+     "n": 5
+    },
+    "probe.load.n": {
+     "max": 514,
+     "median": 505,
+     "min": 504,
+     "n": 5
+    },
+    "probe.load.p50": {
+     "max": 934.894,
+     "median": 850.283,
+     "min": 803.532,
+     "n": 5
+    },
+    "probe.load.p99": {
+     "max": 4004.75,
+     "median": 1908.163,
+     "min": 1623.364,
+     "n": 5
+    },
+    "rss_end.mb": {
+     "max": 335.331328,
+     "median": 335.265792,
+     "min": 335.249408,
+     "n": 5
+    },
+    "setup.ms": {
+     "max": 382.851662,
+     "median": 351.717053,
+     "min": 344.015341,
+     "n": 5
+    },
+    "setup.rss_mb": {
+     "max": 334.88896,
+     "median": 334.823424,
+     "min": 334.811136,
+     "n": 5
+    },
+    "viol.fb.gaps": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.fb.links": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.fb.lost": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.fb.reorder": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.probe.lost": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    }
+   },
+   "runs": 5
+  },
+  "hotcone@1": {
+   "died": 0,
+   "metrics": {
+    "cpu.cores": {
+     "max": 1.9601445096865384,
+     "median": 1.6827989358295694,
+     "min": 1.56299161654612,
+     "n": 5
+    },
+    "hot.evals_per_write": {
+     "max": 2,
+     "median": 2,
+     "min": 2,
+     "n": 5
+    },
+    "hot.idle.max": {
+     "max": 373.172,
+     "median": 245.721,
+     "min": 231.7,
+     "n": 5
+    },
+    "hot.idle.n": {
+     "max": 750,
+     "median": 749,
+     "min": 748,
+     "n": 5
+    },
+    "hot.idle.p50": {
+     "max": 5.98,
+     "median": 4.16,
+     "min": 3.52,
+     "n": 5
+    },
+    "hot.idle.p99": {
+     "max": 18.78,
+     "median": 14.57,
+     "min": 12.57,
+     "n": 5
+    },
+    "hot.load.max": {
+     "max": 11957.081,
+     "median": 10561.994,
+     "min": 9844.866,
+     "n": 5
+    },
+    "hot.load.n": {
+     "max": 2324,
+     "median": 2269,
+     "min": 2095,
+     "n": 5
+    },
+    "hot.load.p50": {
+     "max": 5.84,
+     "median": 5.11,
+     "min": 4.82,
+     "n": 5
+    },
+    "hot.load.p99": {
+     "max": 5519.245,
+     "median": 3832.586,
+     "min": 3273.379,
+     "n": 5
+    },
+    "probe.idle.max": {
+     "max": 37.45,
+     "median": 25.29,
+     "min": 11.061,
+     "n": 5
+    },
+    "probe.idle.n": {
+     "max": 304,
+     "median": 304,
+     "min": 304,
+     "n": 5
+    },
+    "probe.idle.p50": {
+     "max": 4.01,
+     "median": 2.55,
+     "min": 2.25,
+     "n": 5
+    },
+    "probe.idle.p99": {
+     "max": 17.17,
+     "median": 13.05,
+     "min": 3.9,
+     "n": 5
+    },
+    "probe.load.max": {
+     "max": 29084.445,
+     "median": 23791.258,
+     "min": 16423.733,
+     "n": 5
+    },
+    "probe.load.n": {
+     "max": 915,
+     "median": 896,
+     "min": 840,
+     "n": 5
+    },
+    "probe.load.p50": {
+     "max": 4.05,
+     "median": 2.74,
+     "min": 2.54,
+     "n": 5
+    },
+    "probe.load.p99": {
+     "max": 9851.467,
+     "median": 9726.382,
+     "min": 8737.433,
+     "n": 5
+    },
+    "rss_end.mb": {
+     "max": 338.182144,
+     "median": 338.055168,
+     "min": 337.625088,
+     "n": 5
+    },
+    "setup.ms": {
+     "max": 366.25905800000004,
+     "median": 352.794343,
+     "min": 340.555946,
+     "n": 5
+    },
+    "setup.rss_mb": {
+     "max": 334.823424,
+     "median": 334.819328,
+     "min": 334.802944,
+     "n": 5
+    },
+    "tick.end_depth": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "tick.max": {
+     "max": 25846.651,
+     "median": 24296.028,
+     "min": 21410.217,
+     "n": 5
+    },
+    "tick.max_depth": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "tick.n": {
+     "max": 150,
+     "median": 150,
+     "min": 150,
+     "n": 5
+    },
+    "tick.p50": {
+     "max": 16561.424,
+     "median": 13505.725,
+     "min": 12454.819,
+     "n": 5
+    },
+    "tick.p99": {
+     "max": 24419.789,
+     "median": 21236.111,
+     "min": 18736.669,
+     "n": 5
+    },
+    "viol.hot.gaps": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.hot.lost": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.hot.reorder": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.probe.lost": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.dup": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.gaps": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.incomplete": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.reorder": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    }
+   },
+   "runs": 5
+  },
+  "oracle@1": {
+   "died": 0,
+   "metrics": {
+    "oracle.writes": {
+     "max": 1000000,
+     "median": 1000000,
+     "min": 1000000,
+     "n": 5
+    },
+    "probe.idle.max": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.n": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.p50": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.p99": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.load.max": {
+     "max": 1863881.997,
+     "median": 1471400.892,
+     "min": 985447.151,
+     "n": 5
+    },
+    "probe.load.n": {
+     "max": 80,
+     "median": 56,
+     "min": 48,
+     "n": 5
+    },
+    "probe.load.p50": {
+     "max": 7.64,
+     "median": 3.97,
+     "min": 2.78,
+     "n": 5
+    },
+    "probe.load.p99": {
+     "max": 1863881.997,
+     "median": 1471400.892,
+     "min": 985447.151,
+     "n": 5
+    },
+    "rss_end.mb": {
+     "max": 354.05824,
+     "median": 352.079872,
+     "min": 347.27936,
+     "n": 5
+    },
+    "setup.ms": {
+     "max": 420.764035,
+     "median": 360.895477,
+     "min": 348.172704,
+     "n": 5
+    },
+    "setup.rss_mb": {
+     "max": 334.901248,
+     "median": 334.823424,
+     "min": 334.819328,
+     "n": 5
+    },
+    "viol.dag.glitch": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.dag.reorder": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.dag.torn": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.dag.unconverged": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.det.sinks_differ": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.map.bad_diff": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.map.diverged": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.probe.lost": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    }
+   },
+   "runs": 5
+  },
+  "overload@1": {
+   "died": 0,
+   "metrics": {
+    "cpu.cores": {
+     "max": 5.395455450739354,
+     "median": 5.242380185025115,
+     "min": 5.1737832055568695,
+     "n": 5
+    },
+    "over.drain_ms": {
+     "max": 106.767816,
+     "median": 98.299381,
+     "min": 37.798737,
+     "n": 5
+    },
+    "over.write.max": {
+     "max": 361726.582,
+     "median": 200071.812,
+     "min": 170162.507,
+     "n": 5
+    },
+    "over.write.n": {
+     "max": 18540,
+     "median": 15180,
+     "min": 12660,
+     "n": 5
+    },
+    "over.write.p50": {
+     "max": 119530.402,
+     "median": 105423.165,
+     "min": 69406.313,
+     "n": 5
+    },
+    "over.write.p99": {
+     "max": 360165.588,
+     "median": 198814.888,
+     "min": 168891.925,
+     "n": 5
+    },
+    "over.writes_per_s": {
+     "max": 10114.224326882591,
+     "median": 8280.916405355567,
+     "min": 6906.548016506975,
+     "n": 5
+    },
+    "probe.after.max": {
+     "max": 23617.064,
+     "median": 20955.73,
+     "min": 19796.886,
+     "n": 5
+    },
+    "probe.after.n": {
+     "max": 221,
+     "median": 198,
+     "min": 168,
+     "n": 5
+    },
+    "probe.after.p50": {
+     "max": 1953.733,
+     "median": 871.832,
+     "min": 226.661,
+     "n": 5
+    },
+    "probe.after.p99": {
+     "max": 21265.252,
+     "median": 18622.501,
+     "min": 17192.554,
+     "n": 5
+    },
+    "probe.before.max": {
+     "max": 27503.577,
+     "median": 20671.166,
+     "min": 16862.811,
+     "n": 5
+    },
+    "probe.before.n": {
+     "max": 247,
+     "median": 230,
+     "min": 174,
+     "n": 5
+    },
+    "probe.before.p50": {
+     "max": 1954.688,
+     "median": 132.121,
+     "min": 6.57,
+     "n": 5
+    },
+    "probe.before.p99": {
+     "max": 26794.758,
+     "median": 17175.065,
+     "min": 16268.911,
+     "n": 5
+    },
+    "probe.idle.max": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.n": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.p50": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.p99": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.over.max": {
+     "max": 159857.172,
+     "median": 93375.501,
+     "min": 90745.353,
+     "n": 5
+    },
+    "probe.over.n": {
+     "max": 75,
+     "median": 71,
+     "min": 69,
+     "n": 5
+    },
+    "probe.over.p50": {
+     "max": 18353.506,
+     "median": 14782.849,
+     "min": 11150.048,
+     "n": 5
+    },
+    "probe.over.p99": {
+     "max": 159857.172,
+     "median": 93375.501,
+     "min": 90745.353,
+     "n": 5
+    },
+    "rss_end.mb": {
+     "max": 344.51456,
+     "median": 343.8592,
+     "min": 343.617536,
+     "n": 5
+    },
+    "setup.ms": {
+     "max": 397.708892,
+     "median": 350.491314,
+     "min": 350.163516,
+     "n": 5
+    },
+    "setup.rss_mb": {
+     "max": 334.82752,
+     "median": 334.819328,
+     "min": 334.770176,
+     "n": 5
+    },
+    "tick.after.max": {
+     "max": 39111.305,
+     "median": 37167.091,
+     "min": 32509.025,
+     "n": 5
+    },
+    "tick.after.n": {
+     "max": 55,
+     "median": 53,
+     "min": 52,
+     "n": 5
+    },
+    "tick.after.p50": {
+     "max": 30386.271,
+     "median": 26492.455,
+     "min": 22981.444,
+     "n": 5
+    },
+    "tick.after.p99": {
+     "max": 39111.305,
+     "median": 37167.091,
+     "min": 32509.025,
+     "n": 5
+    },
+    "tick.before.max": {
+     "max": 50127.911,
+     "median": 30618.959,
+     "min": 29529.684,
+     "n": 5
+    },
+    "tick.before.n": {
+     "max": 40,
+     "median": 40,
+     "min": 40,
+     "n": 5
+    },
+    "tick.before.p50": {
+     "max": 30560.059,
+     "median": 23615.426,
+     "min": 20650.409,
+     "n": 5
+    },
+    "tick.before.p99": {
+     "max": 50127.911,
+     "median": 30618.959,
+     "min": 29529.684,
+     "n": 5
+    },
+    "tick.end_depth": {
+     "max": 109,
+     "median": 109,
+     "min": 109,
+     "n": 5
+    },
+    "tick.max": {
+     "max": 50127.911,
+     "median": 38774.904,
+     "min": 38162.024,
+     "n": 5
+    },
+    "tick.max_depth": {
+     "max": 109,
+     "median": 109,
+     "min": 109,
+     "n": 5
+    },
+    "tick.n": {
+     "max": 115,
+     "median": 110,
+     "min": 108,
+     "n": 5
+    },
+    "tick.over.max": {
+     "max": 40299.442,
+     "median": 38162.024,
+     "min": 37059.462,
+     "n": 5
+    },
+    "tick.over.n": {
+     "max": 21,
+     "median": 17,
+     "min": 14,
+     "n": 5
+    },
+    "tick.over.p50": {
+     "max": 33070.093,
+     "median": 28863.111,
+     "min": 27083.178,
+     "n": 5
+    },
+    "tick.over.p99": {
+     "max": 40299.442,
+     "median": 38162.024,
+     "min": 37059.462,
+     "n": 5
+    },
+    "tick.p50": {
+     "max": 28982.162,
+     "median": 26528.036,
+     "min": 23061.337,
+     "n": 5
+    },
+    "tick.p99": {
+     "max": 48677.803,
+     "median": 37228.63,
+     "min": 36457.269,
+     "n": 5
+    },
+    "viol.over.gaps": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.over.reorder": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.over.undrained": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.probe.lost": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.dup": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.gaps": {
+     "max": 151200,
+     "median": 144000,
+     "min": 126000,
+     "n": 5
+    },
+    "viol.tick.incomplete": {
+     "max": 42,
+     "median": 40,
+     "min": 35,
+     "n": 5
+    },
+    "viol.tick.reorder": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    }
+   },
+   "runs": 5
+  },
+  "probe@1": {
+   "died": 0,
+   "metrics": {
+    "cpu.cores": {
+     "max": 1.767898098775401,
+     "median": 1.6975114612527789,
+     "min": 1.6668706294432112,
+     "n": 5
+    },
+    "probe.idle.max": {
+     "max": 47.211,
+     "median": 21.68,
+     "min": 14.19,
+     "n": 5
+    },
+    "probe.idle.n": {
+     "max": 304,
+     "median": 304,
+     "min": 304,
+     "n": 5
+    },
+    "probe.idle.p50": {
+     "max": 4.58,
+     "median": 2.84,
+     "min": 2.42,
+     "n": 5
+    },
+    "probe.idle.p99": {
+     "max": 20.27,
+     "median": 13.56,
+     "min": 9.8,
+     "n": 5
+    },
+    "probe.load.max": {
+     "max": 29858.501,
+     "median": 21225.937,
+     "min": 19072.322,
+     "n": 5
+    },
+    "probe.load.n": {
+     "max": 836,
+     "median": 818,
+     "min": 788,
+     "n": 5
+    },
+    "probe.load.p50": {
+     "max": 5.72,
+     "median": 4.24,
+     "min": 3.64,
+     "n": 5
+    },
+    "probe.load.p99": {
+     "max": 14934.295,
+     "median": 10643.365,
+     "min": 9758.363,
+     "n": 5
+    },
+    "rss_end.mb": {
+     "max": 338.018304,
+     "median": 337.5104,
+     "min": 337.432576,
+     "n": 5
+    },
+    "setup.ms": {
+     "max": 355.645269,
+     "median": 348.30253500000003,
+     "min": 346.220129,
+     "n": 5
+    },
+    "setup.rss_mb": {
+     "max": 334.82752,
+     "median": 334.819328,
+     "min": 334.688256,
+     "n": 5
+    },
+    "tick.end_depth": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "tick.max": {
+     "max": 36815.421,
+     "median": 21782.947,
+     "min": 19537.504,
+     "n": 5
+    },
+    "tick.max_depth": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "tick.n": {
+     "max": 150,
+     "median": 150,
+     "min": 150,
+     "n": 5
+    },
+    "tick.p50": {
+     "max": 17061.22,
+     "median": 16273.727,
+     "min": 16056.845,
+     "n": 5
+    },
+    "tick.p99": {
+     "max": 33987.805,
+     "median": 20127.452,
+     "min": 18063.012,
+     "n": 5
+    },
+    "viol.probe.lost": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.dup": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.gaps": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.incomplete": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.reorder": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    }
+   },
+   "runs": 5
+  },
+  "pulse@1": {
+   "died": 0,
+   "metrics": {
+    "cpu.cores": {
+     "max": 1.6450647100748488,
+     "median": 1.4675234013038403,
+     "min": 1.4015661346722865,
+     "n": 5
+    },
+    "probe.idle.max": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.n": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.p50": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.p99": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.load.max": {
+     "max": 23006.365,
+     "median": 18450.236,
+     "min": 16337.483,
+     "n": 5
+    },
+    "probe.load.n": {
+     "max": 935,
+     "median": 924,
+     "min": 854,
+     "n": 5
+    },
+    "probe.load.p50": {
+     "max": 2.86,
+     "median": 2.56,
+     "min": 2.46,
+     "n": 5
+    },
+    "probe.load.p99": {
+     "max": 10466.365,
+     "median": 9751.204,
+     "min": 8629.572,
+     "n": 5
+    },
+    "pulse.max": {
+     "max": 31089.382,
+     "median": 23306.187,
+     "min": 21579.143,
+     "n": 5
+    },
+    "pulse.n": {
+     "max": 5484,
+     "median": 5481,
+     "min": 5479,
+     "n": 5
+    },
+    "pulse.p50": {
+     "max": 2.63,
+     "median": 2.07,
+     "min": 1.7,
+     "n": 5
+    },
+    "pulse.p99": {
+     "max": 11750.46,
+     "median": 9847.48,
+     "min": 9328.725,
+     "n": 5
+    },
+    "pulse.sent": {
+     "max": 5484,
+     "median": 5481,
+     "min": 5479,
+     "n": 5
+    },
+    "rss_end.mb": {
+     "max": 338.018304,
+     "median": 337.543168,
+     "min": 337.514496,
+     "n": 5
+    },
+    "setup.ms": {
+     "max": 354.143666,
+     "median": 349.752431,
+     "min": 332.37248600000004,
+     "n": 5
+    },
+    "setup.rss_mb": {
+     "max": 334.819328,
+     "median": 334.815232,
+     "min": 334.692352,
+     "n": 5
+    },
+    "tick.end_depth": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "tick.max": {
+     "max": 31416.924,
+     "median": 24269.231,
+     "min": 19261.034,
+     "n": 5
+    },
+    "tick.max_depth": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "tick.n": {
+     "max": 150,
+     "median": 150,
+     "min": 150,
+     "n": 5
+    },
+    "tick.p50": {
+     "max": 14692.432,
+     "median": 12098.267,
+     "min": 11608.554,
+     "n": 5
+    },
+    "tick.p99": {
+     "max": 30195.796,
+     "median": 22947.24,
+     "min": 16890.68,
+     "n": 5
+    },
+    "viol.probe.lost": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.pulse.gaps": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.pulse.missing": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.pulse.reorder": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.dup": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.gaps": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.incomplete": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.reorder": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    }
+   },
+   "runs": 5
+  },
+  "setup@1": {
+   "died": 0,
+   "metrics": {
+    "probe.after.max": {
+     "max": 13667.574,
+     "median": 9357.568,
+     "min": 9172.756,
+     "n": 5
+    },
+    "probe.after.n": {
+     "max": 176,
+     "median": 166,
+     "min": 164,
+     "n": 5
+    },
+    "probe.after.p50": {
+     "max": 5.01,
+     "median": 2.66,
+     "min": 2.58,
+     "n": 5
+    },
+    "probe.after.p99": {
+     "max": 12086.029,
+     "median": 9070.817,
+     "min": 7263.98,
+     "n": 5
+    },
+    "probe.build.max": {
+     "max": 22264.242,
+     "median": 17513.025,
+     "min": 14961.383,
+     "n": 5
+    },
+    "probe.build.n": {
+     "max": 167,
+     "median": 163,
+     "min": 146,
+     "n": 5
+    },
+    "probe.build.p50": {
+     "max": 5.05,
+     "median": 3.06,
+     "min": 2.85,
+     "n": 5
+    },
+    "probe.build.p99": {
+     "max": 12607.219,
+     "median": 12226.685,
+     "min": 11156.135,
+     "n": 5
+    },
+    "probe.idle.max": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.n": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.p50": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.p99": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "rss_end.mb": {
+     "max": 336.801792,
+     "median": 336.379904,
+     "min": 190.119936,
+     "n": 5
+    },
+    "setup.loaded_ms": {
+     "max": 518.2588609999999,
+     "median": 485.99602400000003,
+     "min": 477.706996,
+     "n": 5
+    },
+    "tick.after.max": {
+     "max": 27450.271,
+     "median": 18582.052,
+     "min": 16167.877,
+     "n": 5
+    },
+    "tick.after.n": {
+     "max": 30,
+     "median": 30,
+     "min": 30,
+     "n": 5
+    },
+    "tick.after.p50": {
+     "max": 14811.195,
+     "median": 12833.995,
+     "min": 11530.96,
+     "n": 5
+    },
+    "tick.after.p99": {
+     "max": 27450.271,
+     "median": 18582.052,
+     "min": 16167.877,
+     "n": 5
+    },
+    "tick.build.max": {
+     "max": 29472.181,
+     "median": 19984.298,
+     "min": 17972.525,
+     "n": 5
+    },
+    "tick.build.n": {
+     "max": 16,
+     "median": 15,
+     "min": 15,
+     "n": 5
+    },
+    "tick.build.p50": {
+     "max": 15251.784,
+     "median": 14625.945,
+     "min": 13160.245,
+     "n": 5
+    },
+    "tick.build.p99": {
+     "max": 29472.181,
+     "median": 19984.298,
+     "min": 17972.525,
+     "n": 5
+    },
+    "tick.end_depth": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "tick.max": {
+     "max": 29472.181,
+     "median": 19984.298,
+     "min": 17972.525,
+     "n": 5
+    },
+    "tick.max_depth": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "tick.n": {
+     "max": 46,
+     "median": 45,
+     "min": 45,
+     "n": 5
+    },
+    "tick.p50": {
+     "max": 14811.195,
+     "median": 12886.592,
+     "min": 11965.705,
+     "n": 5
+    },
+    "tick.p99": {
+     "max": 29472.181,
+     "median": 19984.298,
+     "min": 17972.525,
+     "n": 5
+    },
+    "viol.probe.lost": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.dup": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.gaps": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.incomplete": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.reorder": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    }
+   },
+   "runs": 5
+  },
+  "shared@1": {
+   "died": 0,
+   "metrics": {
+    "cpu.cores": {
+     "max": 2.226800612154194,
+     "median": 1.6889076501521478,
+     "min": 1.6425794520772967,
+     "n": 5
+    },
+    "probe.idle.max": {
+     "max": 21.67,
+     "median": 17.56,
+     "min": 11.58,
+     "n": 5
+    },
+    "probe.idle.n": {
+     "max": 304,
+     "median": 304,
+     "min": 304,
+     "n": 5
+    },
+    "probe.idle.p50": {
+     "max": 2.72,
+     "median": 2.53,
+     "min": 2.19,
+     "n": 5
+    },
+    "probe.idle.p99": {
+     "max": 12.13,
+     "median": 8.46,
+     "min": 3.53,
+     "n": 5
+    },
+    "probe.load.max": {
+     "max": 27352.713,
+     "median": 25146.809,
+     "min": 22868.516,
+     "n": 5
+    },
+    "probe.load.n": {
+     "max": 928,
+     "median": 910,
+     "min": 800,
+     "n": 5
+    },
+    "probe.load.p50": {
+     "max": 5.52,
+     "median": 2.69,
+     "min": 2.52,
+     "n": 5
+    },
+    "probe.load.p99": {
+     "max": 12179.634,
+     "median": 10242.469,
+     "min": 7400.022,
+     "n": 5
+    },
+    "rss_end.mb": {
+     "max": 338.16576,
+     "median": 337.53088,
+     "min": 337.440768,
+     "n": 5
+    },
+    "setup.ms": {
+     "max": 349.026613,
+     "median": 343.520575,
+     "min": 331.908588,
+     "n": 5
+    },
+    "setup.rss_mb": {
+     "max": 334.88896,
+     "median": 334.823424,
+     "min": 334.798848,
+     "n": 5
+    },
+    "shared.idle.max": {
+     "max": 67.5,
+     "median": 50.141,
+     "min": 34.53,
+     "n": 5
+    },
+    "shared.idle.n": {
+     "max": 297,
+     "median": 297,
+     "min": 297,
+     "n": 5
+    },
+    "shared.idle.p50": {
+     "max": 12.55,
+     "median": 11.34,
+     "min": 11.09,
+     "n": 5
+    },
+    "shared.idle.p99": {
+     "max": 45.31,
+     "median": 37.401,
+     "min": 32.67,
+     "n": 5
+    },
+    "shared.load.max": {
+     "max": 40247.231,
+     "median": 34055.17,
+     "min": 30028.725,
+     "n": 5
+    },
+    "shared.load.n": {
+     "max": 784,
+     "median": 780,
+     "min": 637,
+     "n": 5
+    },
+    "shared.load.p50": {
+     "max": 10.49,
+     "median": 5.33,
+     "min": 4.88,
+     "n": 5
+    },
+    "shared.load.p99": {
+     "max": 18921.788,
+     "median": 15805.752,
+     "min": 13505.613,
+     "n": 5
+    },
+    "tick.end_depth": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "tick.max": {
+     "max": 31839.817,
+     "median": 23464.002,
+     "min": 19483.152,
+     "n": 5
+    },
+    "tick.max_depth": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "tick.n": {
+     "max": 150,
+     "median": 150,
+     "min": 150,
+     "n": 5
+    },
+    "tick.p50": {
+     "max": 17169.072,
+     "median": 13002.448,
+     "min": 12238.318,
+     "n": 5
+    },
+    "tick.p99": {
+     "max": 30966.617,
+     "median": 21696.888,
+     "min": 19309.654,
+     "n": 5
+    },
+    "viol.probe.lost": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.shared.lost": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.dup": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.gaps": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.incomplete": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.reorder": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    }
+   },
+   "runs": 5
+  },
+  "tick@1": {
+   "died": 0,
+   "metrics": {
+    "cpu.cores": {
+     "max": 1.6995568909803158,
+     "median": 1.4776757614087075,
+     "min": 1.4162359767133283,
+     "n": 5
+    },
+    "probe.idle.max": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.n": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.p50": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.p99": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.load.max": {
+     "max": 20949.331,
+     "median": 16922.882,
+     "min": 12341.613,
+     "n": 5
+    },
+    "probe.load.n": {
+     "max": 916,
+     "median": 905,
+     "min": 833,
+     "n": 5
+    },
+    "probe.load.p50": {
+     "max": 5.36,
+     "median": 2.67,
+     "min": 2.59,
+     "n": 5
+    },
+    "probe.load.p99": {
+     "max": 10149.175,
+     "median": 8998.352,
+     "min": 8318.177,
+     "n": 5
+    },
+    "rss_end.mb": {
+     "max": 337.010688,
+     "median": 336.46592,
+     "min": 336.441344,
+     "n": 5
+    },
+    "setup.ms": {
+     "max": 397.191295,
+     "median": 393.94984500000004,
+     "min": 379.90625900000003,
+     "n": 5
+    },
+    "setup.rss_mb": {
+     "max": 333.438976,
+     "median": 333.369344,
+     "min": 333.238272,
+     "n": 5
+    },
+    "tick.end_depth": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "tick.max": {
+     "max": 26879.497,
+     "median": 25738.313,
+     "min": 20790.884,
+     "n": 5
+    },
+    "tick.max_depth": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "tick.n": {
+     "max": 150,
+     "median": 150,
+     "min": 150,
+     "n": 5
+    },
+    "tick.p50": {
+     "max": 16591.688,
+     "median": 13273.198,
+     "min": 12987.781,
+     "n": 5
+    },
+    "tick.p99": {
+     "max": 24519.002,
+     "median": 20531.698,
+     "min": 19387.331,
+     "n": 5
+    },
+    "viol.probe.lost": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.dup": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.gaps": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.incomplete": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.tick.reorder": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    }
+   },
+   "runs": 5
+  },
+  "writers@1": {
+   "died": 0,
+   "metrics": {
+    "probe.all.max": {
+     "max": 242.451,
+     "median": 235.591,
+     "min": 207.13,
+     "n": 5
+    },
+    "probe.all.n": {
+     "max": 626,
+     "median": 626,
+     "min": 625,
+     "n": 5
+    },
+    "probe.all.p50": {
+     "max": 2.61,
+     "median": 2.45,
+     "min": 2.23,
+     "n": 5
+    },
+    "probe.all.p99": {
+     "max": 89.851,
+     "median": 84.01,
+     "min": 59.04,
+     "n": 5
+    },
+    "probe.idle.max": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.n": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.p50": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.idle.p99": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "probe.solo.max": {
+     "max": 69.48,
+     "median": 39.47,
+     "min": 30.4,
+     "n": 5
+    },
+    "probe.solo.n": {
+     "max": 323,
+     "median": 323,
+     "min": 323,
+     "n": 5
+    },
+    "probe.solo.p50": {
+     "max": 2.96,
+     "median": 2.72,
+     "min": 2.43,
+     "n": 5
+    },
+    "probe.solo.p99": {
+     "max": 33.561,
+     "median": 20.87,
+     "min": 17.44,
+     "n": 5
+    },
+    "probe.thr1.max": {
+     "max": 64.02,
+     "median": 39.41,
+     "min": 24.1,
+     "n": 5
+    },
+    "probe.thr1.n": {
+     "max": 217,
+     "median": 217,
+     "min": 217,
+     "n": 5
+    },
+    "probe.thr1.p50": {
+     "max": 6.72,
+     "median": 5.42,
+     "min": 4.28,
+     "n": 5
+    },
+    "probe.thr1.p99": {
+     "max": 43.75,
+     "median": 31.25,
+     "min": 13.5,
+     "n": 5
+    },
+    "probe.thr_all.max": {
+     "max": 297.671,
+     "median": 202.451,
+     "min": 120.91,
+     "n": 5
+    },
+    "probe.thr_all.n": {
+     "max": 315,
+     "median": 314,
+     "min": 312,
+     "n": 5
+    },
+    "probe.thr_all.p50": {
+     "max": 21.75,
+     "median": 17.99,
+     "min": 9.53,
+     "n": 5
+    },
+    "probe.thr_all.p99": {
+     "max": 136.48,
+     "median": 89.6,
+     "min": 53.06,
+     "n": 5
+    },
+    "rss_end.mb": {
+     "max": 339.214336,
+     "median": 338.792448,
+     "min": 338.333696,
+     "n": 5
+    },
+    "setup.ms": {
+     "max": 351.862417,
+     "median": 346.518559,
+     "min": 343.937388,
+     "n": 5
+    },
+    "setup.rss_mb": {
+     "max": 334.831616,
+     "median": 334.823424,
+     "min": 334.700544,
+     "n": 5
+    },
+    "viol.probe.lost": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.wr.gaps": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.wr.missing": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "viol.wr.reorder": {
+     "max": 0,
+     "median": 0,
+     "min": 0,
+     "n": 5
+    },
+    "wr.all.max": {
+     "max": 749.022,
+     "median": 530.151,
+     "min": 506.151,
+     "n": 5
+    },
+    "wr.all.n": {
+     "max": 12000,
+     "median": 12000,
+     "min": 12000,
+     "n": 5
+    },
+    "wr.all.p50": {
+     "max": 87.381,
+     "median": 79.47,
+     "min": 59.8,
+     "n": 5
+    },
+    "wr.all.p99": {
+     "max": 326.15,
+     "median": 302.751,
+     "min": 268.87,
+     "n": 5
+    },
+    "wr.all_over_solo_p99": {
+     "max": 2.8100687988099664,
+     "median": 2.56359649122807,
+     "min": 2.1309988034067713,
+     "n": 5
+    },
+    "wr.solo.max": {
+     "max": 295.891,
+     "median": 209.841,
+     "min": 170.991,
+     "n": 5
+    },
+    "wr.solo.n": {
+     "max": 1500,
+     "median": 1500,
+     "min": 1500,
+     "n": 5
+    },
+    "wr.solo.p50": {
+     "max": 36.15,
+     "median": 35.01,
+     "min": 33.62,
+     "n": 5
+    },
+    "wr.solo.p99": {
+     "max": 142.07,
+     "median": 125.701,
+     "min": 104.88,
+     "n": 5
+    },
+    "wr.speedup": {
+     "max": 0.8601415022876707,
+     "median": 0.4364916450590608,
+     "min": 0.37521553573797095,
+     "n": 5
+    },
+    "wr.thr1_per_s": {
+     "max": 89507,
+     "median": 86216,
+     "min": 74048,
+     "n": 5
+    },
+    "wr.thr_all_per_s": {
+     "max": 75699.33333333333,
+     "median": 32637.333333333332,
+     "min": 32060.666666666668,
+     "n": 5
+    },
+    "wr.writers": {
+     "max": 4,
+     "median": 4,
+     "min": 4,
+     "n": 5
+    }
+   },
+   "runs": 5
+  }
+ },
+ "suite": "rship_scale",
+ "taken": "2026-11-20"
+}
