@@ -34,7 +34,7 @@ fn switch_map_latest_inner_always_wins_under_wide_prolonged_contention() {
             // Both inners are bare height-0 sources — same height as the
             // selector, so selector-set and old-inner-set collide in one wave.
             let old = old_src.clone().lock();
-            let new = new_src.clone().lock();
+            let new = new_src.lock();
             let result = sel
                 .clone()
                 .switch_map(move |&k| if k == 0 { old.clone() } else { new.clone() })

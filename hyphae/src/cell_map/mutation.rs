@@ -250,7 +250,7 @@ where
             if let Some((k, old_value)) = removed {
                 changes.push(MapDiff::Remove {
                     key: k.clone(),
-                    old_value: old_value.clone(),
+                    old_value,
                 });
 
                 if let Some(cell) = self.observed_key_cell(&k) {
