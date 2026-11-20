@@ -3,6 +3,7 @@
 //! `CellSet` wraps a concurrent `HashSet` where membership changes can be observed.
 
 use std::{cell::RefCell, hash::Hash, marker::PhantomData, sync::Arc};
+use parking_lot::Mutex;
 
 use dashmap::DashSet;
 
@@ -30,7 +31,7 @@ where
     /// The actual data storage.
     data: DashSet<T>,
     /// Cached per-value observation cells.
-    membership_cells: dashmap::DashMap<T, WeakCell<bool, CellMutable>>,
+    membership_cells: dashmap::DashMap<T, Arc<Membership>>,
     /// Cell for diff notifications.
     diffs_cell: Cell<Option<SetDiff<T>>, CellMutable>,
     /// Cell for length.
@@ -188,11 +189,7 @@ where
             return;
         }
         let live = self.inner.data.contains(&value).then_some(());
-        // A membership cell holds the stored membership from its creation,
-        // which can be ahead of what diff subscribers were told.
-        if let Some(cell) = self.observed_membership_cell(&value)
-            && cell.get() != live.is_some()
-        {
+        if let Some(cell) = self.observed_membership_cell(&value) {
             cell.set(live.is_some());
         }
         if InFlight::land(&order, &value, live.as_ref()).is_some() {
@@ -207,9 +204,10 @@ where
     }
 
     // The shard guard is released before the cell is written.
-    fn observed_membership_cell(&self, value: &T) -> Option<Cell<bool, CellMutable>> {
-        let weak = self.inner.membership_cells.get(value)?.value().clone();
-        weak.upgrade()
+    fn observed_membership_cell(&self, value: &T) -> Option<MembershipWriter> {
+        let slot = Arc::clone(self.inner.membership_cells.get(value)?.value());
+        let cell = slot.cell.upgrade()?;
+        Some(MembershipWriter { slot, cell })
     }
 
     /// Lock the set to prevent further mutations.
@@ -219,6 +217,35 @@ where
             inner: self.inner,
             _marker: PhantomData,
         }
+    }
+}
+
+/// A membership cell and the value last written to it: its seed, then each
+/// write. `get()` cannot stand in for it: it reads the last value the cell
+/// fired, not a write an earlier ticket has queued.
+struct Membership {
+    cell: WeakCell<bool, CellMutable>,
+    written: Mutex<bool>,
+}
+
+struct MembershipWriter {
+    slot: Arc<Membership>,
+    cell: Cell<bool, CellMutable>,
+}
+
+impl MembershipWriter {
+    /// Write `member` unless it is the value last written.
+    fn set(self, member: bool) {
+        {
+            let mut written = self.slot.written.lock();
+            if *written == member {
+                return;
+            }
+            *written = member;
+        }
+        // The set's write lock orders the writers; the slot lock is released
+        // first, because a set can run callbacks that read this value.
+        self.cell.set(member);
     }
 }
 
@@ -267,8 +294,8 @@ where
     #[track_caller]
     pub fn contains(&self, value: &T) -> impl Materialize<bool, Definite> + use<T, M> {
         // Check cache first
-        if let Some(weak) = self.inner.membership_cells.get(value)
-            && let Some(cell) = weak.upgrade()
+        if let Some(slot) = self.inner.membership_cells.get(value)
+            && let Some(cell) = slot.cell.upgrade()
         {
             return cell.lock();
         }
@@ -278,17 +305,20 @@ where
         // Under the write lock no mutation or publish runs between the read
         // and the caching of the cell.
         let order = self.inner.write_order.lock();
-        if let Some(weak) = self.inner.membership_cells.get(value)
-            && let Some(cell) = weak.upgrade()
+        if let Some(slot) = self.inner.membership_cells.get(value)
+            && let Some(cell) = slot.cell.upgrade()
         {
             return cell.lock();
         }
         let is_member = self.inner.data.contains(value);
         let cell = Cell::new(is_member);
-        let weak = cell.downgrade();
-
-        // Cache it
-        self.inner.membership_cells.insert(value.clone(), weak);
+        self.inner.membership_cells.insert(
+            value.clone(),
+            Arc::new(Membership {
+                cell: cell.downgrade(),
+                written: Mutex::new(is_member),
+            }),
+        );
         drop(order);
 
         cell.lock()

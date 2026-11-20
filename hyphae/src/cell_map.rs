@@ -34,11 +34,40 @@ pub(crate) use publish::{InFlight, WriteOrder, joins_settle, write_in_order};
 
 struct PointCellSlot<V: CellValue> {
     state: Mutex<PointCellState<V>>,
+    /// The last value written to the cell: its seed, then each write. A
+    /// write of the same value is skipped. `get()` cannot stand in for it:
+    /// it reads the last value the cell fired, not a write an earlier ticket
+    /// has queued. Its own lock: comparing runs `V`'s `PartialEq`, which must
+    /// not run under `state`.
+    written: Mutex<Option<Arc<Option<V>>>>,
 }
 
 struct PointCellState<V: CellValue> {
     cell: Option<WeakCell<Option<V>, CellMutable>>,
     revision: usize,
+}
+
+/// A key cell a mutation writes. See [`PointCellState::written`].
+pub(crate) struct KeyCellWriter<V: CellValue> {
+    slot: Arc<PointCellSlot<V>>,
+    cell: Cell<Option<V>, CellMutable>,
+}
+
+impl<V: CellValue> KeyCellWriter<V> {
+    /// Write `value` unless it is the value last written.
+    pub(crate) fn set(self, value: Option<V>) {
+        let value = Arc::new(value);
+        {
+            let mut written = self.slot.written.lock();
+            if written.as_deref() == Some(&*value) {
+                return;
+            }
+            *written = Some(Arc::clone(&value));
+        }
+        // The map's write lock orders the writers; the slot lock is released
+        // first, because a set can run callbacks that read this key.
+        self.cell.inner.write(Signal::Value(value), true);
+    }
 }
 
 impl<V: CellValue> PointCellSlot<V> {
@@ -48,6 +77,7 @@ impl<V: CellValue> PointCellSlot<V> {
                 cell: None,
                 revision: 0,
             }),
+            written: Mutex::new(None),
         }
     }
 
@@ -71,15 +101,21 @@ impl<V: CellValue> PointCellSlot<V> {
         if state.revision != revision {
             return None;
         }
+        // The seed, as the cell holds it: no clone of the value.
+        *self.written.lock() = Some(candidate.inner.value.lock().clone());
         state.cell = Some(candidate.downgrade());
         drop(state);
         Some(candidate.clone())
     }
 
-    fn changed(&self) -> Option<Cell<Option<V>, CellMutable>> {
+    fn changed(self: &Arc<Self>) -> Option<KeyCellWriter<V>> {
         let mut state = self.state.lock();
         state.revision = state.revision.wrapping_add(1);
-        state.cell.as_ref().and_then(WeakCell::upgrade)
+        let cell = state.cell.as_ref().and_then(WeakCell::upgrade)?;
+        Some(KeyCellWriter {
+            slot: Arc::clone(self),
+            cell,
+        })
     }
 
     fn is_alive(&self) -> bool {

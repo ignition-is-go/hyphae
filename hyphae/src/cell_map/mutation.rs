@@ -18,7 +18,7 @@ use super::{
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     subscription::SubscriptionGuard,
-    traits::{CellValue, Gettable, Mutable},
+    traits::{CellValue, Mutable},
 };
 
 /// The diff a mutation emits: one change, a batch of changes, or every entry.
@@ -357,7 +357,7 @@ where
     // Upgrading inside this helper releases the shard guard before any callback.
     // Observers may materialize another key in this same map, including a key
     // sharing the shard. Holding a Ref across `set` would deadlock that lookup.
-    fn observed_key_cell(&self, key: &K) -> Option<Cell<Option<V>, CellMutable>> {
+    fn observed_key_cell(&self, key: &K) -> Option<crate::cell_map::KeyCellWriter<V>> {
         let slot = self
             .inner
             .key_cells
@@ -693,11 +693,7 @@ where
         let mut changes = Vec::new();
         for key in keys {
             let live = stored(&key);
-            // A key cell holds the stored value from its creation, which can
-            // be ahead of what diff subscribers were told.
-            if let Some(cell) = self.observed_key_cell(&key)
-                && cell.get() != live
-            {
+            if let Some(cell) = self.observed_key_cell(&key) {
                 cell.set(live.clone());
             }
             let Some(Held(told)) = InFlight::land(&flight, &key, live.as_ref()) else {
