@@ -57,6 +57,9 @@ does not touch. `--shrink F` divides every part.
 | `edit` | Streams added to and removed from the tick's scene. | S11 |
 | `burst` | A control writer inserting 10,000 rows the tick does not read, then 1,000 it does. | S12 |
 | `pulse` | A 1 kHz pulse train during the tick. | S13 |
+| `cost` | The cost model. One writer, no tick: what each primitive costs to build, hold and fire, how a write's cost grows with depth, fan-out and the readers of a map, which writes of an equal value still propagate, and what contending writers lose. Not scaled. | |
+| `diamonds` | Joins over parents that repeat their value, at widths 2, 8 and 64, nested, and with concurrent writers: evaluations per write, mixed inputs, stalls. Prints counts; `scripts/rship_scale.py` does not track it. | |
+| `collection_reads` | A key cell, a membership cell and `get_value` read what a collection built in the same batch or callback stores. Test only. | |
 | `tick --bg 10` | Ten times the state the tick does not touch. | S5 |
 | `tick --workers N` | The tick on N threads. | S6 |
 

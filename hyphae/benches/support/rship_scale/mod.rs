@@ -29,6 +29,7 @@
 pub mod adapter;
 pub mod dag;
 pub mod load;
+pub mod scen_cost;
 pub mod scen_solo;
 pub mod scen_tick;
 pub mod universe;
@@ -107,6 +108,9 @@ pub fn run(scen: &str, ctx: &mut Ctx) -> bool {
         "demand" => scen_solo::demand(ctx),
         "oracle" => scen_solo::oracle(ctx),
         "selftest" => scen_solo::selftest(ctx),
+        "cost" => scen_cost::cost(ctx),
+        "diamonds" => scen_cost::diamonds_dedup(ctx),
+        "collection_reads" => scen_cost::backport(ctx),
         _ => return false,
     }
     true

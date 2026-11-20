@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BASELINE = ROOT / "docs" / "benchmarks" / "rship-scale-baseline.json"
 SCENARIOS = (
     "tick probe shared pulse burst edit churn setup overload fanout hotcone "
-    "feedback writers diamond deep demand oracle"
+    "feedback writers diamond deep demand oracle cost"
 ).split()
 
 # What a regression is, per kind of metric. A candidate regresses when its
@@ -90,6 +90,26 @@ TRACKED = [
     ("demand", "demand.rss_growth", "ratio", "0.05"),
     ("demand", "demand.zero_write_us.last", "p50", None),
     ("oracle", "probe.load.p99", "p99", None),
+    # The cost model: nanoseconds per item, best of three repeats inside a run.
+    ("cost", "build_ns.cell", "p50", None),
+    ("cost", "build_ns.map_materialize", "p50", None),
+    ("cost", "build_ns.join_map_materialize", "p50", None),
+    ("cost", "build_ns.key_lookup", "p50", None),
+    ("cost", "build_ns.key_reader.of_100000", "p50", None),
+    ("cost", "build_ns.subscribe_diffs.rows_10000", "p50", None),
+    ("cost", "chain.1000.batched_ns_per_cell", "p50", None),
+    ("cost", "chain.1000.unbatched_ns_per_cell", "p50", None),
+    ("cost", "fan_cells.100.batched_ns_per_cell", "p50", None),
+    ("cost", "fan_cells.10000.batched_ns_per_cell", "p50", None),
+    ("cost", "fan_subscribers.10000.batched_ns_per_subscriber", "p50", None),
+    ("cost", "join.batched_ns", "p50", None),
+    ("cost", "lookup.key_change_ns", "p50", None),
+    ("cost", "row_write.other_key_readers_100000.ns", "p50", None),
+    ("cost", "row_write.diff_subscribers_1000.ns", "p50", None),
+    ("cost", "row_write.rows_10000.entries_reader_ns", "p50", None),
+    ("cost", "quantised_tick.plain.tick_us", "p50", None),
+    ("cost", "quantised_tick.deduped.tick_us", "p50", None),
+    ("cost", "write_ns.set_no_dependents.batched", "p50", None),
 ]
 
 

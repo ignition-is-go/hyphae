@@ -18,8 +18,24 @@ macro_rules! scenario {
 }
 
 scenario!(
-    tick, probe, shared, pulse, burst, edit, churn, setup, overload, fanout, hotcone, feedback,
-    writers, diamond, deep, demand, oracle,
+    tick,
+    probe,
+    shared,
+    pulse,
+    burst,
+    edit,
+    churn,
+    setup,
+    overload,
+    fanout,
+    hotcone,
+    feedback,
+    writers,
+    diamond,
+    deep,
+    demand,
+    oracle,
+    collection_reads,
 );
 
 /// The checks above can only be trusted if they fail when the rule is
