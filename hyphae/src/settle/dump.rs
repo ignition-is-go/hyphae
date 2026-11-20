@@ -47,7 +47,7 @@ fn run(path: &str) {
             .saturating_sub(COMPLETED.load(Ordering::Acquire));
         let _ = writeln!(
             file,
-            "{now:.3} event_sets={} tickets={} fires={} node_fires={} pool_fires={} waits={} deferred_writes={} fire_nanos={} flush_sets={} max_in_flight={} in_flight={in_flight} backlog={} interval_max_fire_nanos={hold} walks={} walk_nodes={} parks={} side_reads={} undeclared_writes={} late_edge_writes={} unbound_owned={} quiet_hits={} validated={} invalidated={} cycles={}",
+            "{now:.3} event_sets={} tickets={} fires={} node_fires={} pool_fires={} waits={} deferred_writes={} fire_nanos={} flush_sets={} max_in_flight={} in_flight={in_flight} backlog={} interval_max_fire_nanos={hold} walks={} walk_nodes={} parks={} side_reads={} undeclared_writes={} unbound_owned={} quiet_hits={} validated={} invalidated={} cycles={}",
             s.event_sets,
             s.tickets,
             s.fires,
@@ -64,7 +64,6 @@ fn run(path: &str) {
             s.parks,
             s.side_reads,
             s.undeclared_writes,
-            s.late_edge_writes,
             s.unbound_owned,
             s.quiet_hits,
             s.validated,

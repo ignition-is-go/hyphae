@@ -906,9 +906,6 @@ pub struct SettleStats {
     pub side_reads: u64,
     /// Callback writes to a node with no declared edge from the writer.
     pub undeclared_writes: u64,
-    /// Callback writes along a declared edge that the target had already
-    /// promised past: an edge added during a ticket.
-    pub late_edge_writes: u64,
     /// Owned subscriptions whose callback runs at the source's fire because
     /// it could not be bound to its owner.
     pub unbound_owned: u64,
@@ -939,7 +936,6 @@ static WALK_NODES: AtomicU64 = AtomicU64::new(0);
 static PARKS: AtomicU64 = AtomicU64::new(0);
 static SIDE_READS: AtomicU64 = AtomicU64::new(0);
 static UNDECLARED: AtomicU64 = AtomicU64::new(0);
-static LATE_EDGE: AtomicU64 = AtomicU64::new(0);
 static UNBOUND_OWNED: AtomicU64 = AtomicU64::new(0);
 static QUIET_HITS: AtomicU64 = AtomicU64::new(0);
 static CYCLES: AtomicU64 = AtomicU64::new(0);
@@ -968,7 +964,6 @@ pub fn stats() -> SettleStats {
         parks: PARKS.load(Ordering::Relaxed),
         side_reads: SIDE_READS.load(Ordering::Relaxed),
         undeclared_writes: UNDECLARED.load(Ordering::Relaxed),
-        late_edge_writes: LATE_EDGE.load(Ordering::Relaxed),
         unbound_owned: UNBOUND_OWNED.load(Ordering::Relaxed),
         quiet_hits: QUIET_HITS.load(Ordering::Relaxed),
         validated: VALIDATED.load(Ordering::Relaxed),
@@ -1104,11 +1099,19 @@ pub(crate) fn position(target: &dyn Node, backlog: &Backlog) -> Position {
                 }
                 return Position::Queue(Some(backlog.add()));
             }
-            if backlog.is_empty() && core.can_join(firing.ticket) {
+            // A target downstream of the firing node along a declared edge
+            // cannot have promised past the ticket the firing node holds.
+            let joinable = core.can_join(firing.ticket);
+            debug_assert!(
+                joinable,
+                "hyphae: promise safety: a write along a declared edge reached a node past ticket {}",
+                firing.ticket
+            );
+            // An earlier write to the target still queued keeps the target's
+            // write order: this one queues behind it.
+            if backlog.is_empty() && joinable {
                 return Position::Joins;
             }
-            LATE_EDGE.fetch_add(1, Ordering::Relaxed);
-            edges::late(target);
             Position::Queue(Some(backlog.add()))
         }
     })
@@ -1186,10 +1189,18 @@ pub(crate) fn defer_to_owner(owner: &Arc<dyn Node>, make: impl FnOnce() -> Item)
             return false;
         };
         let core = owner.node_core();
-        if !matches!(firing.phase, Phase::Fanout)
-            || Arc::ptr_eq(&firing.core, core)
-            || !core.can_join(firing.ticket)
-        {
+        if !matches!(firing.phase, Phase::Fanout) || Arc::ptr_eq(&firing.core, core) {
+            return false;
+        }
+        // The owner is below the firing node along a declared edge, so it
+        // cannot have passed the ticket the firing node holds.
+        let joinable = core.can_join(firing.ticket);
+        debug_assert!(
+            joinable,
+            "hyphae: promise safety: an owner passed ticket {} before its source fired it",
+            firing.ticket
+        );
+        if !joinable {
             return false;
         }
         firing.stamp.index = firing.stamp.index.saturating_add(1);

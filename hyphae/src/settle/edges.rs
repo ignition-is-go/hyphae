@@ -4,8 +4,7 @@
 //! The check panics on a callback write with no declared edge and on an
 //! owned subscription that cannot be bound to its owner.
 //! `HYPHAE_EDGE_CHECK=warn` logs each once per creation site instead, and
-//! `off` disables it. Writes along an edge declared
-//! during a ticket (a late edge) are logged once per site in either mode.
+//! `off` disables it.
 
 use std::{
     cell::Cell,
@@ -80,19 +79,6 @@ pub(super) fn undeclared(target: &dyn Node) {
     );
     assert!(mode != Mode::Panic, "{message}");
     if once(0, target.node_caller()) {
-        log::warn!("{message}");
-        eprintln!("{message}");
-    }
-}
-
-/// A write along a declared edge reached a target already past the ticket.
-pub(super) fn late(target: &dyn Node) {
-    if *MODE != Mode::Off && once(1, target.node_caller()) {
-        let message = format!(
-            "hyphae: late edge: a write to the node created at {} became a new ticket; \
-             its edge was declared during a ticket",
-            site(target.node_caller())
-        );
         log::warn!("{message}");
         eprintln!("{message}");
     }
