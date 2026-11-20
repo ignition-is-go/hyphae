@@ -89,6 +89,13 @@ impl<V: CellValue> PointCellSlot<V> {
     }
 }
 
+/// Shard count for a map's stores. `DashMap` defaults to four shards per CPU,
+/// which costs 128 bytes per shard per map and one allocation per shard on
+/// every iteration. Most maps hold a handful of rows, and the shared diff cell
+/// every write sets bounds write throughput well below what four shards
+/// sustain.
+const SHARDS: usize = 4;
+
 pub(crate) struct CellMapInner<K, V>
 where
     K: Hash + Eq + CellValue,
@@ -251,7 +258,7 @@ where
     /// underlying per-key cell, but that cache is not part of the public API.
     #[track_caller]
     pub fn get(&self, key: &K) -> impl Materialize<Option<V>, Definite> + use<K, V, M> {
-        let key_cells = self.inner.key_cells.get_or_init(DashMap::new);
+        let key_cells = self.inner.key_cells.get_or_init(|| DashMap::with_shard_amount(SHARDS));
         let reserved = key_cells.get(key).map(|slot| slot.value().clone());
         let slot = reserved.unwrap_or_else(|| match key_cells.entry(key.clone()) {
             Entry::Occupied(slot) => slot.get().clone(),

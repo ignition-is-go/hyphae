@@ -45,7 +45,7 @@ where
 
         Self {
             inner: Arc::new(CellMapInner {
-                data: DashMap::new(),
+                data: DashMap::with_shard_amount(super::SHARDS),
                 key_cells: OnceLock::new(),
                 key_cell_slots: AtomicUsize::new(0),
                 prune_ops: AtomicUsize::new(0),
