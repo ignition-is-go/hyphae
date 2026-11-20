@@ -522,7 +522,12 @@ impl<T: CellValue> CellInner<T> {
             };
             for (at, signal) in backfill {
                 let sub = Arc::clone(&sub);
-                crate::settle::backfill(&owner, at, Box::new(move || (sub.callback)(&signal)));
+                crate::settle::backfill(
+                    &owner,
+                    at,
+                    Box::new(move || (sub.callback)(&signal)),
+                    cell.caller,
+                );
             }
         }));
     }

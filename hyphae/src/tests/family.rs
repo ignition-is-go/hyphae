@@ -10,7 +10,7 @@ use indexmap::{IndexMap, IndexSet};
 use parking_lot::Mutex;
 
 use crate::{
-    Cell, CellImmutable, CellMap, Gettable, KeyedFamily, LookupEachExt, LookupExt, LookupSetExt,
+    Cell, CellImmutable, CellMap, SelectExt, Gettable, KeyedFamily, LookupEachExt, LookupExt, LookupSetExt,
     MapDiff, MapExt, MapQuery, Materialize, Mutable, Signal, Watchable, batch, family, flush,
 };
 
@@ -553,4 +553,125 @@ fn readers_built_inside_a_settling_callback_hold_their_rows() {
     assert_eq!(view.snapshot(), vec![(0, 0)]);
     assert_eq!(set.get(), IndexMap::from([(0, 10), (1, 11)]));
     assert_eq!(each.snapshot(), vec![(7, 10)]);
+}
+
+/// A store, a root that fires on each of its changes, and a view family
+/// anchored to the root whose rows are queries over the store, as myko
+/// builds them. A reader follows a changing key while the store changes.
+#[test]
+fn a_view_family_over_a_store_follows_a_changing_key() {
+    for workers in [0, 1, 8] {
+        crate::settle::set_workers(workers);
+        let store = CellMap::<u32, u32>::new();
+        store.insert(1, 10);
+        store.insert(2, 20);
+        let root = Cell::new(());
+        let fire = root.downgrade();
+        root.own(store.subscribe_diffs(move |diff| {
+            if !matches!(diff, MapDiff::Initial { .. })
+                && let Some(root) = fire.upgrade()
+            {
+                root.notify(Signal::value(()));
+            }
+        }));
+        let rows = {
+            let store = store.clone();
+            family(move |want: &u32| {
+                let want = *want;
+                store
+                    .clone()
+                    .select(move |v: &u32| *v / 10 == want)
+                    .materialize()
+            })
+        };
+        rows.anchor(&root);
+        let key = Cell::new(Some(1u32));
+        let view = key.clone().lookup(rows.clone());
+        let held = || view.snapshot().into_iter().collect::<BTreeMap<_, _>>();
+        assert_eq!(held(), BTreeMap::from([(1, 10)]));
+
+        for round in 0..50u32 {
+            let next = 1 + round % 2;
+            key.set(Some(next));
+            store.insert(100 + round, next * 10);
+            flush();
+            let want: BTreeMap<u32, u32> =
+                store.snapshot().into_iter().filter(|(_, v)| *v / 10 == next).collect();
+            assert_eq!(held(), want, "workers {workers}, round {round}");
+        }
+        key.set(None);
+        flush();
+        assert!(held().is_empty());
+    }
+    crate::settle::set_workers(0);
+}
+
+/// Rows built the way myko builds an ids view: a collection fed by
+/// subscriptions to store key cells that the collection owns. A store
+/// writer races the key changes, so a key cell fires tickets above a row's
+/// build ticket while the row is built, and the row must receive them.
+#[test]
+fn rows_fed_by_owned_key_cell_subscriptions_follow_a_racing_store() {
+    for workers in [0, 1, 8] {
+        crate::settle::set_workers(workers);
+        let store = CellMap::<u32, u32>::new();
+        for id in 0..4 {
+            store.insert(id, 0);
+        }
+        let root = Cell::new(());
+        let fire = root.downgrade();
+        root.own(store.subscribe_diffs(move |diff| {
+            if !matches!(diff, MapDiff::Initial { .. })
+                && let Some(root) = fire.upgrade()
+            {
+                root.notify(Signal::value(()));
+            }
+        }));
+        let rows = {
+            let store = store.clone();
+            family(move |pair: &u32| {
+                let result = CellMap::<u32, u32>::new();
+                for id in [*pair * 2, *pair * 2 + 1] {
+                    let key_cell = store.get(&id).materialize();
+                    let target = result.downgrade();
+                    result.own(key_cell.subscribe(move |signal| {
+                        let (Signal::Value(value), Some(result)) = (signal, target.upgrade())
+                        else {
+                            return;
+                        };
+                        match value.as_ref() {
+                            Some(value) => drop(result.insert(id, *value)),
+                            None => drop(result.remove(&id)),
+                        }
+                    }));
+                }
+                result.lock()
+            })
+        };
+        rows.anchor(&root);
+        let key = Cell::new(0u32);
+        let view = key.clone().lookup(rows);
+        let writer = {
+            let store = store.clone();
+            std::thread::spawn(move || {
+                for round in 1..=300u32 {
+                    store.insert(round % 4, round);
+                }
+            })
+        };
+        for round in 0..200u32 {
+            key.set(round % 2);
+        }
+        assert!(writer.join().is_ok());
+        flush();
+        let pair = key.get();
+        let want: BTreeMap<u32, u32> = store
+            .snapshot()
+            .into_iter()
+            .filter(|(id, _)| id / 2 == pair)
+            .collect();
+        let held: BTreeMap<u32, u32> = view.snapshot().into_iter().collect();
+        assert_eq!(held, want, "workers {workers}");
+    }
+    crate::settle::set_workers(0);
 }

@@ -119,7 +119,8 @@ where
     pub(crate) diffs_cell: Cell<MapDiff<K, V>, CellMutable>,
     /// Cell for length.
     len_cell: Cell<usize, CellMutable>,
-    /// Subscription guards owned by this map (dropped when map drops).
+    /// Subscription guards this map owns outside a row build, dropped with
+    /// the map.
     owned: Mutex<Vec<SubscriptionGuard>>,
     /// Optional name for debugging. Cold path — set once via `with_name`,
     /// read by per-key cell formatting helpers.
@@ -451,13 +452,15 @@ where
 
     /// The logged diffs a subscriber made now must not find in its
     /// snapshot, oldest first: those the diff cell has not told, and inside a
-    /// row build at `N` also those above `N`, which the build backfills.
+    /// row build at `N` those above `N` instead, which the build backfills.
     fn untold(&self) -> Vec<Arc<MapDiff<K, V>>> {
         let told = self.inner.diffs_cell.inner.core.processed();
+        // In a row build at `N` the subscriber holds the map as of `N`,
+        // including a new row's own writes at `N`, and is backfilled above.
         let seen = match (told, crate::settle::build_ticket()) {
             (Some(told), Some(build)) => Some(told.min(build)),
+            (None, Some(build)) => Some(build),
             (told, None) => told,
-            (None, Some(_)) => None,
         };
         self.untold_log()
             .iter()

@@ -283,9 +283,16 @@ where
 
     /// Own a subscription guard, keeping it alive as long as this `CellMap` exists.
     pub fn own(&self, guard: SubscriptionGuard) {
-        // The diff cell is what this map publishes through, so the guard's
-        // source is a dependency of the diff cell: a diff published while that
-        // source is firing joins the same settle.
+        // A subscription a family row build makes belongs to the row: its
+        // diff cell owns the guard, so the callbacks run at the row's fire
+        // and the build's backfill reaches them.
+        if crate::settle::build_ticket().is_some() {
+            self.inner.diffs_cell.own(guard);
+            return;
+        }
+        // Otherwise the guard's source is a dependency of the diff cell, so
+        // a diff published while that source is firing joins the same
+        // ticket, and the callbacks run at the source's fire.
         self.inner
             .diffs_cell
             .own(SubscriptionGuard::dependency_on(guard.source()));

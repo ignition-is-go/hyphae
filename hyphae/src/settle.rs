@@ -258,6 +258,8 @@ const DIRTY: u8 = 2;
 static NODE_SEQ: AtomicU64 = AtomicU64::new(1);
 /// Bumped whenever an edge is added.
 static EDGE_GEN: AtomicU64 = AtomicU64::new(0);
+/// Bumped whenever an edge is removed.
+static EDGES_REMOVED: AtomicU64 = AtomicU64::new(0);
 
 /// The scheduler state every node carries.
 #[doc(hidden)]
@@ -281,6 +283,9 @@ pub struct NodeCore {
     gated: Mutex<Vec<(Weak<Self>, Weak<Self>)>>,
     /// The quiet certificate (`docs/settle-epochs.md` section 4).
     mark: AtomicU8,
+    /// Set while the row build that created this node is open: the node
+    /// fires nothing until the build has set its promise and backfilled it.
+    held: std::sync::atomic::AtomicBool,
     /// Where the node was created, for diagnostics.
     caller: OnceLock<&'static Location<'static>>,
 }
@@ -301,10 +306,12 @@ impl NodeCore {
             outputs: Mutex::new(Vec::new()),
             gated: Mutex::new(Vec::new()),
             mark: AtomicU8::new(watermark::NOT_QUIET),
+            held: std::sync::atomic::AtomicBool::new(false),
             caller: OnceLock::new(),
         });
         ROW_BUILD.with_borrow_mut(|build| {
             if let Some(build) = build.as_mut() {
+                core.held.store(true, Ordering::Release);
                 build.created.push(Arc::downgrade(&core));
             }
         });
@@ -342,9 +349,9 @@ impl NodeCore {
     }
 
     /// Declare a gated edge from `src` into this node, gated by `gate`: see
-    /// [`NodeCore::gated`]. `gate` must also be an input.
+    /// [`NodeCore::gated`]. `gate` must also be an input, declared by a guard
+    /// the node owns. The edge lives until [`NodeCore::remove_gated_input`].
     pub(crate) fn add_gated_input(self: &Arc<Self>, src: &Arc<Self>, gate: &Arc<Self>) {
-        self.add_input(gate);
         {
             let mut gated = self.gated.lock();
             gated.retain(|(src, gate)| src.strong_count() > 0 && gate.strong_count() > 0);
@@ -363,6 +370,15 @@ impl NodeCore {
         // quiet_model.rs`, GATE=1).
         EDGE_GEN.fetch_add(1, Ordering::Release);
         watermark::invalidate(self);
+    }
+
+    /// Remove the gated edge that [`NodeCore::add_gated_input`] declared.
+    pub(crate) fn remove_gated_input(self: &Arc<Self>, src: &Arc<Self>, gate: &Arc<Self>) {
+        let (src_at, gate_at) = (Arc::as_ptr(src).addr(), Arc::as_ptr(gate).addr());
+        self.gated
+            .lock()
+            .retain(|(s, g)| !(s.as_ptr().addr() == src_at && g.as_ptr().addr() == gate_at));
+        EDGES_REMOVED.fetch_add(1, Ordering::Release);
     }
 
     /// The gated sources open at `ticket`: those whose gate delivered it.
@@ -628,7 +644,7 @@ struct Building {
     set: EventSet,
 }
 
-type DeclaredCache = FxHashMap<(usize, usize), (u64, bool)>;
+type DeclaredCache = FxHashMap<(usize, usize), (u64, u64, bool)>;
 
 thread_local! {
     static MODE: std::cell::Cell<Mode> = const { std::cell::Cell::new(Mode::Wait) };
@@ -721,11 +737,13 @@ pub(crate) fn build_rows<R>(family: &Arc<NodeCore>, f: impl FnOnce() -> R) -> R 
     for core in &created {
         let mut pending = core.pending.lock();
         debug_assert!(
-            pending.min() > ticket,
-            "hyphae: family rule: a row node holds ticket {} at its build ticket {ticket}",
+            pending.min() >= ticket,
+            "hyphae: family rule: a row node holds ticket {} below its build ticket {ticket}",
             pending.min()
         );
-        if pending.processed == NONE || pending.processed < ticket {
+        // A node the build filled fires the build ticket itself; one it did
+        // not has its value at the build ticket already.
+        if pending.min() > ticket && (pending.processed == NONE || pending.processed < ticket) {
             pending.processed = ticket;
         }
         core.watermark
@@ -733,6 +751,10 @@ pub(crate) fn build_rows<R>(family: &Arc<NodeCore>, f: impl FnOnce() -> R) -> R 
     }
     for backfill in build.backfills {
         backfill();
+    }
+    for core in &created {
+        core.held.store(false, Ordering::Release);
+        core.wake_parked();
     }
     match outcome {
         Ok(value) => value,
@@ -785,7 +807,12 @@ fn assert_anchored(family: &Arc<NodeCore>, created: &[Arc<NodeCore>]) {
 /// subscribed it. The ticket cannot have completed: the family node that
 /// builds holds the build ticket and has a static edge from every input
 /// that delivered it.
-pub(crate) fn backfill(owner: &Arc<dyn Node>, ticket: u64, item: Item) {
+pub(crate) fn backfill(
+    owner: &Arc<dyn Node>,
+    ticket: u64,
+    item: Item,
+    source: &'static Location<'static>,
+) {
     let core = owner.node_core();
     let stamp = Stamp {
         height: owner.node_height(),
@@ -799,7 +826,9 @@ pub(crate) fn backfill(owner: &Arc<dyn Node>, ticket: u64, item: Item) {
     );
     debug_assert!(
         slot(ticket).done.load(Ordering::Acquire) != ticket.wrapping_add(1),
-        "hyphae: family rule: backfill of ticket {ticket} after it completed"
+        "hyphae: family rule: backfill of ticket {ticket} after it completed, from the \
+         node created at {source} into the node created at {}",
+        owner.node_caller().map_or_else(|| "?".to_string(), ToString::to_string)
     );
     watermark::invalidate_if_marked(core);
     poke(owner);
@@ -1030,11 +1059,14 @@ impl Drop for Backlogged {
 fn declared(from: &Arc<NodeCore>, to: &Arc<NodeCore>) -> bool {
     let key = (Arc::as_ptr(from).addr(), Arc::as_ptr(to).addr());
     let generation = EDGE_GEN.load(Ordering::Acquire);
-    // Edges are only added, so a path once found stays.
+    let removed = EDGES_REMOVED.load(Ordering::Acquire);
+    // A path found stays until an edge is removed; a missing path stays
+    // missing until an edge is added.
     if let Some(hit) = DECLARED.with_borrow(|cache| {
-        cache
-            .get(&key)
-            .and_then(|(seen, hit)| (*seen == generation || *hit).then_some(*hit))
+        cache.get(&key).and_then(|(added, cut, hit)| {
+            let current = if *hit { *cut == removed } else { *added == generation };
+            current.then_some(*hit)
+        })
     }) {
         return hit;
     }
@@ -1056,7 +1088,7 @@ fn declared(from: &Arc<NodeCore>, to: &Arc<NodeCore>) -> bool {
         if cache.len() > 1 << 16 {
             cache.clear();
         }
-        cache.insert(key, (generation, hit));
+        cache.insert(key, (generation, removed, hit));
     });
     hit
 }
@@ -1079,6 +1111,12 @@ pub(crate) fn position(target: &dyn Node, backlog: &Backlog) -> Position {
         Some(Ctx::Detached) => Position::Queue(Some(backlog.add())),
         Some(Ctx::Seeding { .. }) => Position::Joins,
         Some(Ctx::Firing(firing)) => {
+            // A node the open row build created holds nothing yet: a write
+            // that fills it joins the build ticket, and the node fires that
+            // ticket once the build closes.
+            if core.held.load(Ordering::Acquire) && build_ticket() == Some(firing.ticket) {
+                return Position::Joins;
+            }
             if Arc::ptr_eq(&firing.core, core) {
                 return match firing.phase {
                     Phase::Collect => Position::Joins,
@@ -1323,6 +1361,21 @@ fn evaluate(node: &Arc<dyn Node>) {
         // A read-modify-write, so this claim follows every poke that
         // marked it dirty.
         core.sched.swap(CLAIMED, Ordering::AcqRel);
+        // A node its row build still holds waits for the build to close,
+        // which wakes it.
+        if core.held.load(Ordering::Acquire) {
+            core.parked.lock().push(Arc::downgrade(node));
+            if core.held.load(Ordering::Acquire) {
+                if core
+                    .sched
+                    .compare_exchange(CLAIMED, IDLE, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    return;
+                }
+                continue;
+            }
+        }
         match readiness(core) {
             Readiness::Ready => {
                 pool::ready(Arc::clone(node));

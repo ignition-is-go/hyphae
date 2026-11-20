@@ -342,9 +342,10 @@ impl<T: Clone> Subscriber<T> {
                 .into_iter()
                 .filter_map(|(at, signal)| at.filter(|at| *at > seen).map(|at| (at, signal))),
         );
-        if let Some((last, _)) = backfill.last() {
-            self.floor.store(last.saturating_add(1), Ordering::Release);
-        }
+        // The replay holds the source at `ticket`, so a delivery at or below
+        // it, such as a new row firing its build ticket, is already held.
+        let last = backfill.last().map_or(ticket, |(at, _)| (*at).max(ticket));
+        self.floor.store(last.saturating_add(1), Ordering::Release);
         self.initializing.store(false, Ordering::Release);
         drop(pending);
         backfill

@@ -103,8 +103,15 @@ impl FamilyNode {
         reader: &Arc<crate::settle::NodeCore>,
         gate: &Cell<T, impl Send + Sync + 'static>,
     ) -> SubscriptionGuard {
-        reader.add_gated_input(&self.0.inner.core, &gate.inner.core);
-        gate.subscribe(|_| {})
+        let (src, gate_core) = (Arc::clone(&self.0.inner.core), Arc::clone(&gate.inner.core));
+        reader.add_gated_input(&src, &gate_core);
+        let reader = Arc::downgrade(reader);
+        // The gated edge lives as long as the gate's subscription.
+        gate.subscribe(|_| {}).with_cleanup(move || {
+            if let Some(reader) = reader.upgrade() {
+                reader.remove_gated_input(&src, &gate_core);
+            }
+        })
     }
 }
 
@@ -178,6 +185,8 @@ struct Rows<K, R> {
 struct Slot<R> {
     row: R,
     leases: usize,
+    /// The key under which the family node owns the row's watermark edge.
+    edge: Uuid,
 }
 
 /// A family whose row for `key` is `build(key)`.
@@ -255,9 +264,14 @@ where
         let row = held.unwrap_or_else(|| {
             let built = self.rows.node.build(|| (self.rows.build)(key));
             let mut slots = self.rows.slots.lock();
-            let slot = slots.entry(key.clone()).or_insert(Slot {
-                row: built,
-                leases: 0,
+            let slot = slots.entry(key.clone()).or_insert_with(|| {
+                let edge = Uuid::new_v4();
+                self.rows.node.0.own_keyed(edge, built.watermark_edge());
+                Slot {
+                    row: built,
+                    leases: 0,
+                    edge,
+                }
             });
             slot.leases = slot.leases.saturating_add(1);
             let row = slot.row.clone();
@@ -322,6 +336,9 @@ where
             })
             .collect()
     };
+    for slot in &removed {
+        rows.node.0.release_owned(slot.edge);
+    }
     // Dropping a row can drop cells whose drop takes other locks.
     drop(removed);
 }
@@ -378,6 +395,12 @@ pub trait FamilyRow<K>: Clone + Send + Sync + 'static {
         F: Family<Key = K, Row = Self>,
         Q: LookupKey<K>,
         M: Send + Sync + 'static;
+
+    /// An edge from the row's output into its owner that carries no data:
+    /// the family's fire waits for the row, so the row has delivered every
+    /// ticket up to the one the family drops it at.
+    #[doc(hidden)]
+    fn watermark_edge(&self) -> SubscriptionGuard;
 }
 
 /// Read a family at a reactive key.
@@ -466,6 +489,10 @@ where
     RM: Send + Sync + 'static,
 {
     type Reader<Q: LookupKey<K>> = Cell<Q::Out<T>, CellImmutable>;
+
+    fn watermark_edge(&self) -> SubscriptionGuard {
+        SubscriptionGuard::dependency(self)
+    }
 
     fn read<F, Q, M>(key: Cell<Q, M>, family: F) -> Self::Reader<Q>
     where
@@ -609,6 +636,10 @@ where
     RM: Clone + Send + Sync + 'static,
 {
     type Reader<Q: LookupKey<K>> = CellMap<RK, V, CellImmutable>;
+
+    fn watermark_edge(&self) -> SubscriptionGuard {
+        SubscriptionGuard::dependency(&self.inner.diffs_cell)
+    }
 
     fn read<F, Q, M>(key: Cell<Q, M>, family: F) -> Self::Reader<Q>
     where
