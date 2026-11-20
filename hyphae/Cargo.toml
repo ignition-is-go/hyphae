@@ -133,3 +133,7 @@ required-features = ["scheduler"]
 name = "wave_calibration"
 harness = false
 required-features = ["scheduler"]
+
+[[test]]
+name = "dedup_diamonds"
+required-features = ["scheduler"]
