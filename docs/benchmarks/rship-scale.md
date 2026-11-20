@@ -150,7 +150,7 @@ them. `compare` flags only a count that was 0 in the baseline.
 | scenario | count | cause |
 | --- | --- | --- |
 | `churn`, `overload` | `viol.tick.gaps`, `viol.tick.incomplete` | The tick sources are latest-value cells. When a backlog forms, the scheduler replaces a queued write to a cell with the next one (`scheduler.rs`, `enqueue_locked` with `coalesce`), so some sinks never see some ticks. |
-| `diamond` | `viol.probe.lost` | A probe write took more than 2 seconds to reach its sink while four writers ran. It is late, not lost. |
+| `diamond` | `viol.probe.lost` | A probe write had not reached its sink 2 seconds after it was made, while four writers ran. The suite does not distinguish late from lost here. |
 
 The reduced-scale tests pass because no backlog forms at 1/40 size.
 
