@@ -2,8 +2,8 @@
 //!
 //! A node that is ready to fire sits in one queue with its claim held. Any
 //! thread may pop it and fire it. A waiting writer helps instead of
-//! sleeping, which keeps `HYPHAE_SETTLE_WORKERS=0` working: the writer then
-//! fires everything its ticket needs itself.
+//! sleeping. `HYPHAE_SETTLE_WORKERS=0` still runs one pool thread, for the
+//! work no writer waits for.
 //!
 //! The pool is plain threads, not the Rayon pool in `executor.rs`, for the
 //! reason `docs/settle-core.md` section 12 gives.
@@ -62,9 +62,17 @@ pub(super) fn workers() -> usize {
     WORKERS.load(Ordering::Acquire)
 }
 
+/// Pool threads that run. A write a callback makes is a later ticket that
+/// no writer waits for, and `submit` and `enqueue` leave work behind, so at
+/// least one thread must run what no writer is helping with. With
+/// `HYPHAE_SETTLE_WORKERS=0` that is one thread.
+fn running() -> usize {
+    workers().max(1)
+}
+
 fn spawn_workers() {
     let mut spawned = SPAWNED.lock();
-    while *spawned < workers() {
+    while *spawned < running() {
         let index = *spawned;
         let started = std::thread::Builder::new()
             .name(format!("hyphae-settle-{index}"))
@@ -80,7 +88,7 @@ fn spawn_workers() {
 
 fn worker(index: usize) {
     loop {
-        if index < workers() {
+        if index < running() {
             if !INBOX.is_empty() {
                 admit_drain();
             }
@@ -89,7 +97,7 @@ fn worker(index: usize) {
                 continue;
             }
         }
-        sleep(&|| index < workers() && (!READY.is_empty() || !INBOX.is_empty()));
+        sleep(&|| index < running() && (!READY.is_empty() || !INBOX.is_empty()));
     }
 }
 
