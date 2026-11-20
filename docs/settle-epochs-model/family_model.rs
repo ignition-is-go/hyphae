@@ -19,6 +19,8 @@ const KEYS: usize = 2;
 enum Desc {
     Store(i32),
     Demand(u8), // bitmask of demanded keys
+    /// A store write and a demand change in one event set (BOTH=1).
+    Both(i32, u8),
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -27,6 +29,24 @@ struct Edge {
     dst: u8,
     from: u8,
     to: u8,
+    /// `INF`, or the node whose delivery at `t` to `dst` makes this edge
+    /// count at `t` (GATE mode).
+    gate: u8,
+    /// False for an edge that only carries the watermark: `src` pushes
+    /// nothing along it.
+    data: bool,
+}
+
+const fn edge(src: usize, dst: usize, from: u8) -> Edge {
+    Edge { src: src as u8, dst: dst as u8, from, to: INF, gate: INF, data: true }
+}
+
+/// GATE=1: L reads the rows directly. Fam's edge into L counts at ticket t
+/// only when K delivered t to L, and Fam writes L only at such a ticket.
+/// The rows feed Fam's watermark only, so Fam tears a row down after it has
+/// passed the ticket.
+fn gated() -> bool {
+    std::env::var("GATE").is_ok_and(|g| g == "1")
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -55,8 +75,28 @@ fn contrib(s: &St, e: &Edge) -> u8 {
     if lo >= e.to { INF } else { lo }
 }
 
+/// `in_w(n)` over the edges that always count. A gated edge is left out: it
+/// can deliver `t` only after its gate delivered `t`, which holds `n`'s own
+/// pending list at `t`.
 fn input_w(s: &St, n: usize) -> u8 {
-    s.edges.iter().filter(|e| e.dst as usize == n).map(|e| contrib(s, e)).fold(s.seeded, u8::min)
+    s.edges
+        .iter()
+        .filter(|e| e.dst as usize == n && e.gate == INF)
+        .map(|e| contrib(s, e))
+        .fold(s.seeded, u8::min)
+}
+
+/// The fire rule at `t`: every edge that always counts is past `t`, and so is
+/// every gated edge whose gate delivered `t`.
+fn may_fire(s: &St, n: usize, t: u8) -> bool {
+    if t >= input_w(s, n) {
+        return false;
+    }
+    s.edges.iter().filter(|e| e.dst as usize == n && e.gate != INF).all(|e| {
+        let gate = if mutant("gate_wrong") { F0 as u8 } else { e.gate };
+        let open = !mutant("no_gate") && s.pend[n].contains(&(t, gate));
+        !open || contrib(s, e) > t
+    })
 }
 
 fn min_pend(s: &St, n: usize) -> u8 {
@@ -132,11 +172,14 @@ fn succ(s: &St, q: &[Desc], out: &mut Vec<St>) -> Result<(), String> {
         let mut n = s.clone();
         let t = n.seeded;
         n.seeded += 1;
-        let node = match q[t as usize] {
-            Desc::Store(_) => I,
-            Desc::Demand(_) => K,
-        };
-        push(&mut n, t, SEED, node)?;
+        match q[t as usize] {
+            Desc::Store(_) => push(&mut n, t, SEED, I)?,
+            Desc::Demand(_) => push(&mut n, t, SEED, K)?,
+            Desc::Both(..) => {
+                push(&mut n, t, SEED, I)?;
+                push(&mut n, t, SEED, K)?;
+            }
+        }
         out.push(n);
     }
     for v in 0..NODES {
@@ -149,7 +192,7 @@ fn succ(s: &St, q: &[Desc], out: &mut Vec<St>) -> Result<(), String> {
     }
     for v in 0..NODES {
         let Some(&(t, _)) = s.pend[v].first() else { continue };
-        if t >= input_w(s, v) {
+        if !may_fire(s, v, t) {
             continue;
         }
         // Without the anchor edge Fam still reads the store at t, so it waits
@@ -164,9 +207,13 @@ fn succ(s: &St, q: &[Desc], out: &mut Vec<St>) -> Result<(), String> {
         n.processed[v] = t as i16;
         n.pend[v].retain(|p| p.0 != t);
         let value = match v {
-            I | K => match q[t as usize] {
-                Desc::Store(x) => x,
-                Desc::Demand(m) => m as i32,
+            I => match q[t as usize] {
+                Desc::Store(x) | Desc::Both(x, _) => x,
+                Desc::Demand(_) => at(&n, I, t),
+            },
+            K => match q[t as usize] {
+                Desc::Demand(m) | Desc::Both(_, m) => m as i32,
+                Desc::Store(_) => at(&n, K, t),
             },
             FAM => {
                 let demand = at(&n, K, t) as u8;
@@ -179,12 +226,20 @@ fn succ(s: &St, q: &[Desc], out: &mut Vec<St>) -> Result<(), String> {
                         // from the store at t; edges start at t+1; tickets the
                         // store already fired above t are backfilled.
                         n.built[k] = true;
-                        n.hist[f] = vec![(t, row(at(&n, I, t), k))];
+                        // A rebuild keeps the torn-down row's history: in GATE
+                        // mode L may still read it below t, as a reader in
+                        // hyphae still holds deliveries the old row made.
+                        n.hist[f].push((t, row(at(&n, I, t), k)));
                         n.processed[f] = t as i16;
                         n.cw[f] = t + 1;
                         n.pend[f].clear();
-                        n.edges.push(Edge { src: I as u8, dst: f as u8, from: t + 1, to: INF });
-                        n.edges.push(Edge { src: f as u8, dst: FAM as u8, from: t + 1, to: INF });
+                        n.edges.push(edge(I, f, t + 1));
+                        if gated() {
+                            n.edges.push(Edge { data: false, ..edge(f, FAM, t + 1) });
+                            n.edges.push(edge(f, L, t + 1));
+                        } else {
+                            n.edges.push(edge(f, FAM, t + 1));
+                        }
                         n.edges.sort();
                         if !mutant("no_backfill") {
                             let back: Vec<u8> = n.hist[I].iter().map(|h| h.0).filter(|&x| x > t).collect();
@@ -220,7 +275,15 @@ fn succ(s: &St, q: &[Desc], out: &mut Vec<St>) -> Result<(), String> {
                         }
                     }
                 }
-                at(&n, FAM, t)
+                if gated() {
+                    let demand = at(&n, K, t) as u8;
+                    (0..KEYS)
+                        .filter(|k| demand & (1 << k) != 0)
+                        .map(|k| at(&n, F0 + k, t))
+                        .fold(0, combine)
+                } else {
+                    at(&n, FAM, t)
+                }
             }
             _ => row(at(&n, I, t), v - F0),
         };
@@ -239,7 +302,13 @@ fn succ(s: &St, q: &[Desc], out: &mut Vec<St>) -> Result<(), String> {
         let outs: Vec<Edge> = n
             .edges
             .iter()
-            .filter(|e| e.src as usize == v && e.from <= t && t < e.to)
+            .filter(|e| e.src as usize == v && e.data && e.from <= t && t < e.to)
+            // Fam writes L only at a ticket that changed L's key.
+            .filter(|e| {
+                !(gated() && v == FAM && e.dst as usize == L)
+                    || mutant("fam_nonkey")
+                    || n.hist[K].iter().any(|h| h.0 == t)
+            })
             .copied()
             .collect();
         for e in outs {
@@ -256,10 +325,14 @@ fn serial(q: &[Desc]) -> Vec<(u8, i32)> {
     let (mut store, mut demand, mut last) = (0, 0u8, 0);
     let mut out = Vec::new();
     for (t, d) in q.iter().enumerate() {
-        let demand_changed = matches!(d, Desc::Demand(_));
+        let demand_changed = matches!(d, Desc::Demand(_) | Desc::Both(..));
         match *d {
             Desc::Store(x) => store = x,
             Desc::Demand(m) => demand = m,
+            Desc::Both(x, m) => {
+                store = x;
+                demand = m;
+            }
         }
         let v: i32 = (0..KEYS).filter(|k| demand & (1 << k) != 0).map(|k| row(store, k)).fold(0, combine);
         if demand_changed || v != last {
@@ -271,13 +344,10 @@ fn serial(q: &[Desc]) -> Vec<(u8, i32)> {
 }
 
 fn check(q: &[Desc]) -> Result<usize, String> {
-    let mut edges = vec![
-        Edge { src: K as u8, dst: FAM as u8, from: 0, to: INF },
-        Edge { src: FAM as u8, dst: L as u8, from: 0, to: INF },
-        Edge { src: K as u8, dst: L as u8, from: 0, to: INF },
-    ];
+    let fam_l = if gated() { Edge { gate: K as u8, ..edge(FAM, L, 0) } } else { edge(FAM, L, 0) };
+    let mut edges = vec![edge(K, FAM, 0), fam_l, edge(K, L, 0)];
     if !mutant("no_anchor") {
-        edges.push(Edge { src: I as u8, dst: FAM as u8, from: 0, to: INF });
+        edges.push(edge(I, FAM, 0));
     }
     edges.sort();
     let init = St {
@@ -352,11 +422,14 @@ fn check(q: &[Desc]) -> Result<usize, String> {
 fn main() {
     let k: u32 = std::env::args().nth(1).map_or(4, |a| a.parse().unwrap());
     let (mut total, mut configs) = (0, 0);
-    for mask in 0..5u32.pow(k) {
+    // BOTH=1 adds four letters: a store write with each demand, in one ticket.
+    let letters: u32 = if std::env::var("BOTH").is_ok_and(|b| b == "1") { 9 } else { 5 };
+    for mask in 0..letters.pow(k) {
         let q: Vec<Desc> = (0..k)
-            .map(|t| match mask / 5u32.pow(t) % 5 {
+            .map(|t| match mask / letters.pow(t) % letters {
                 0 => Desc::Store(t as i32 + 1),
-                m => Desc::Demand((m - 1) as u8),
+                m @ 1..=4 => Desc::Demand((m - 1) as u8),
+                m => Desc::Both(t as i32 + 1, (m - 5) as u8),
             })
             .collect();
         match check(&q) {
