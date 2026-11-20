@@ -186,6 +186,7 @@ mod tests;
 pub use async_support::{AsyncWatchableExt, CellStream};
 pub use bounded_input::{BoundedInput, BoundedInputMetrics, OverflowPolicy};
 pub use bounded_output::BoundedOutput;
+pub use indexmap::{IndexMap, IndexSet};
 pub use cell::{Cell, CellImmutable, CellMutable};
 pub use cell_map::{CellMap, MapDiff, WeakCellMap};
 pub use cell_set::{CellSet, SetDiff};
