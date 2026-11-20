@@ -18,7 +18,7 @@ use super::{
 use crate::{
     cell::{Cell, CellImmutable, CellMutable},
     subscription::SubscriptionGuard,
-    traits::{CellValue, Mutable},
+    traits::{CellValue, Gettable, Mutable},
 };
 
 /// The diff a mutation emits: one change, a batch of changes, or every entry.
@@ -685,12 +685,16 @@ where
         let mut changes = Vec::new();
         for key in keys {
             let live = stored(&key);
+            // A key cell holds the stored value from its creation, which can
+            // be ahead of what diff subscribers were told.
+            if let Some(cell) = self.observed_key_cell(&key)
+                && cell.get() != live
+            {
+                cell.set(live.clone());
+            }
             let Some(Held(told)) = InFlight::land(&flight, &key, live.as_ref()) else {
                 continue;
             };
-            if let Some(cell) = self.observed_key_cell(&key) {
-                cell.set(live.clone());
-            }
             changes.push(match (told, live) {
                 (None, Some(value)) => MapDiff::Insert { key, value },
                 (Some(old_value), Some(new_value)) => MapDiff::Update {

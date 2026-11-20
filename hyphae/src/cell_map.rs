@@ -249,15 +249,12 @@ where
         }
     }
 
-    /// What subscribers hold for `key`: the stored value, or the value they
-    /// were last told while a change to the key waits to be published. A key
-    /// cell starts here, so that it and the diffs describe one state.
-    fn told(&self, key: &K) -> Option<V> {
-        let told = InFlight::told(&self.inner.write_order.lock(), key).map(|held| held.0);
-        // The stored value is cloned with the write lock released. A change
-        // that lands in between marks the key's slot, and the caller reads
-        // again.
-        told.unwrap_or_else(|| self.inner.data.get(key).map(|entry| entry.value().clone()))
+    /// The stored value of `key`, which a key cell starts at. A read sees
+    /// every mutation made before it, told to subscribers or not; a change
+    /// that lands after the read marks the key's slot, and the caller reads
+    /// again.
+    fn stored(&self, key: &K) -> Option<V> {
+        self.inner.data.get(key).map(|entry| entry.value().clone())
     }
 
     /// Build an observable pipeline for a specific key.
@@ -283,7 +280,7 @@ where
         if let Some(cached) = cached {
             return cached.lock();
         }
-        let mut current = self.told(key);
+        let mut current = self.stored(key);
         let map_name = self.inner.name.lock().clone();
         let point_name = map_name.map(|name| Arc::<str>::from(format!("{name}[{key:?}]")));
         loop {
@@ -303,7 +300,7 @@ where
                 return cached.lock();
             }
             revision = next_revision;
-            current = self.told(key);
+            current = self.stored(key);
         }
     }
 

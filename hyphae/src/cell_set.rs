@@ -188,11 +188,15 @@ where
             return;
         }
         let live = self.inner.data.contains(&value).then_some(());
+        // A membership cell holds the stored membership from its creation,
+        // which can be ahead of what diff subscribers were told.
+        if let Some(cell) = self.observed_membership_cell(&value)
+            && cell.get() != live.is_some()
+        {
+            cell.set(live.is_some());
+        }
         if InFlight::land(&order, &value, live.as_ref()).is_some() {
             let member = live.is_some();
-            if let Some(cell) = self.observed_membership_cell(&value) {
-                cell.set(member);
-            }
             self.inner.diffs_cell.set(Some(if member {
                 SetDiff::Insert(value)
             } else {
@@ -279,8 +283,7 @@ where
         {
             return cell.lock();
         }
-        let is_member = InFlight::told(&order, value)
-            .map_or_else(|| self.inner.data.contains(value), |held| held.0.is_some());
+        let is_member = self.inner.data.contains(value);
         let cell = Cell::new(is_member);
         let weak = cell.downgrade();
 

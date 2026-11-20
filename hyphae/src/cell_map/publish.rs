@@ -89,19 +89,6 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq> InFlight<K, V> {
         self.keys.contains_key(key)
     }
 
-    /// What subscribers hold for `key`, when a change to it waits to be
-    /// published. `None` when none does, and then they hold the stored value.
-    ///
-    /// Also `None` when the state is in use further up this thread's stack:
-    /// a key whose `Hash` or `Eq` reads the collection gets the stored value.
-    pub fn told(flight: &RefCell<Self>, key: &K) -> Option<Held<V>> {
-        let told = flight.try_borrow_mut().ok()?.keys.remove(key)?;
-        let value = told.value.clone();
-        let key = key.clone();
-        flight.borrow_mut().restore(key, told);
-        Some(Held(value))
-    }
-
     /// Put back an entry that was taken out, or add one that was built,
     /// while code of the key or value type ran. If that code changed the key
     /// meanwhile, the entry it made keeps its count, and subscribers still

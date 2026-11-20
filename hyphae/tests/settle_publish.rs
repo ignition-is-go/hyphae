@@ -480,10 +480,10 @@ fn a_key_cell_ends_at_the_map_when_the_map_is_dropped_before_its_publish() {
     in_both_modes(|| {
         let cell = batch(|| {
             let map = CellMap::<&'static str, u64>::new();
+            // Observed before the write, so the write waits for a publish.
+            let cell = map.get(&"key").materialize();
             map.insert("key", 5);
-            // Made before the batch closes, so it starts at what subscribers
-            // were told: no entry. Only the map's publish can correct it.
-            map.get(&"key").materialize()
+            cell
         });
         flush();
         assert_eq!(cell.get(), Some(5));
@@ -513,5 +513,26 @@ fn a_map_is_freed_once_its_last_handle_is_dropped_and_its_publish_has_settled() 
         });
         flush();
         assert!(weak.upgrade().is_none());
+    });
+}
+
+#[test]
+fn a_key_cell_made_in_a_callback_reads_what_a_map_built_there_stores() {
+    in_both_modes(|| {
+        let source = Cell::new(0_u64);
+        let seen = Arc::new(Mutex::new(None));
+        let record = seen.clone();
+        let _guard = source.subscribe(move |signal| {
+            if let Signal::Value(value) = signal
+                && **value == 1
+            {
+                let map = CellMap::<&'static str, u64>::new();
+                map.insert("key", 5);
+                *record.lock() = Some(map.get(&"key").materialize().get());
+            }
+        });
+        source.set(1);
+        flush();
+        assert_eq!(*seen.lock(), Some(Some(5)));
     });
 }
