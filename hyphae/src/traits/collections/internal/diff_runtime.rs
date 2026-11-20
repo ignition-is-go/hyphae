@@ -103,16 +103,16 @@ where
                 .map(|group_state| (self.materialize)(group_state));
             match (old_value, new_value) {
                 (Some(old_value), Some(new_value)) => downstream.push(MapDiff::Update {
-                    key: group.clone(),
+                    key: group,
                     old_value,
                     new_value,
                 }),
                 (None, Some(new_value)) => downstream.push(MapDiff::Insert {
-                    key: group.clone(),
+                    key: group,
                     value: new_value,
                 }),
                 (Some(old_value), None) => downstream.push(MapDiff::Remove {
-                    key: group.clone(),
+                    key: group,
                     old_value,
                 }),
                 (None, None) => {}

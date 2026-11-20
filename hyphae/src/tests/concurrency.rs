@@ -132,7 +132,7 @@ fn test_concurrent_subscribe_unsubscribe() {
             thread::spawn(move || {
                 for _ in 0..iterations {
                     let counter = Arc::new(AtomicU64::new(0));
-                    let cnt = counter.clone();
+                    let cnt = counter;
                     let guard = cell.subscribe(move |_| {
                         cnt.fetch_add(1, Ordering::Relaxed);
                     });
@@ -240,7 +240,7 @@ fn subscribe_racing_set_never_strands() {
 
         let sub_cell = cell.clone();
         let sub_saw = saw_target.clone();
-        let sub_first = first.clone();
+        let sub_first = first;
         let sub_barrier = barrier.clone();
         let sub_completed = completed.clone();
         let sub = thread::spawn(move || {
@@ -265,8 +265,8 @@ fn subscribe_racing_set_never_strands() {
         });
 
         let set_cell = cell.clone();
-        let set_barrier = barrier.clone();
-        let set_completed = completed.clone();
+        let set_barrier = barrier;
+        let set_completed = completed;
         let setter = thread::spawn(move || {
             set_barrier.wait();
             set_cell.set(R);
@@ -307,7 +307,7 @@ fn subscribe_result_racing_set_never_strands() {
 
         let sub_cell = cell.clone();
         let sub_saw = saw_target.clone();
-        let sub_first = first.clone();
+        let sub_first = first;
         let sub_start = start.clone();
         let sub_completed = completed.clone();
         let subscriber = thread::spawn(move || {
@@ -330,9 +330,9 @@ fn subscribe_result_racing_set_never_strands() {
             drop(guard);
         });
 
-        let set_cell = cell.clone();
-        let set_start = start.clone();
-        let set_completed = completed.clone();
+        let set_cell = cell;
+        let set_start = start;
+        let set_completed = completed;
         let setter = thread::spawn(move || {
             set_start.wait();
             set_cell.set(TARGET);
@@ -806,7 +806,7 @@ fn barrage_rapid_chain_creation_destruction() {
 
                     // Subscribe, trigger some updates, then drop
                     let count = Arc::new(AtomicU64::new(0));
-                    let cnt = count.clone();
+                    let cnt = count;
                     let guard = chain.subscribe(move |_| {
                         cnt.fetch_add(1, Ordering::Relaxed);
                     });
@@ -1078,7 +1078,7 @@ fn barrage_mixed_lifetimes() {
                     // Create short-lived derived cells
                     let temp = source.clone().map(|x| x + 1).materialize();
                     let count = Arc::new(AtomicU64::new(0));
-                    let c = count.clone();
+                    let c = count;
                     let guard = temp.subscribe(move |_| {
                         c.fetch_add(1, Ordering::Relaxed);
                     });
