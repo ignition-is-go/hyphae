@@ -55,28 +55,93 @@ heights: a join fires `t` once, after every input is final for `t`.
 
 ## 4. How a node learns that earlier tickets cannot reach it
 
-Through its inputs' watermarks, read when it wants to fire. There is no
-message per edge per ticket.
+### Why the pull walk was replaced
 
-- **A delivering input proves itself.** When `a` fires `t` and pushes to `c`,
-  `a` has also passed `t`, so `w(a) ≥ t+1` is written in the same step. A chain
-  of single-input nodes needs no other step.
-- **A silent input is pulled.** A join `c` holding `t` from `a` reads `w(b)` for
-  its other input `b`. If `w(b) ≤ t`, `c` refreshes `b`, which reads `b`'s
-  inputs, down to nodes whose cached watermark is already past `t` or to `S`.
-  Each refresh moves a watermark forward over every ticket seen so far, so the
-  cost is per refresh, not per ticket.
-- **A real blocker is parked on.** If the walk finds a node `x` that holds
-  pending work at or below `t`, `c` registers on `x` and stops. `x` wakes its
-  registered nodes after it fires. Register, then re-check, so no wake is lost.
+The first version pulled a silent input's watermark by walking its ancestors.
+The shadow measurement on rship setup traffic (`epoch-shadow` 7466369,
+`settle/shadow.rs`, 6 runs, 633 s) failed the gate:
 
-What crosses node boundaries: one read of `S` (written once per ticket by the
-admitter) and atomic reads of ancestors' watermarks. No lock and no write to
-shared state. **This walk is the non-local part of the design.** In the worst
-case a join with a silent input reads that input's ancestor cone. It is a
-read-only, memoized walk, and it stops at the first node already past `t`. Its
-cost under rship load is unmeasured; it is the first number to get (section 11,
-step 2).
+- 47.8% of fires needed a walk, at 0.62 walks per fire.
+- 99.6% of joins hit a silent input.
+- A walk visited 7 nodes at p50, 80 at p99, and 2,560 at most. It cost 2 µs at
+  p50 and 49 µs at p99.
+- 64.8% of walks ran all the way to `S`.
+- The total was about 175 node reads, roughly 84 µs, per ticket of about 21
+  fires.
+
+Memoization failed because a quiet input's cached watermark is a number, and
+`S` moves past it on every ticket.
+
+### Quiet certificates
+
+Most walks proved one fact: nothing in the input's ancestry is pending. That
+fact changes only when a ticket is **seeded** into the ancestry. Pending work
+spreads only along edges, so it can enter an ancestry from outside only at a
+seed. A push from `y` to `z` means `y` was already pending, and `y` is an
+ancestor of everything `z` is.
+
+So each node carries a mark: `NONE`, `TENTATIVE`, or `QUIET`.
+
+- **Meaning.** `QUIET(n)` promises that no node in `n`'s ancestry, `n`
+  included, holds pending work below `S`. The set of `QUIET` nodes is closed
+  upward: a node is `QUIET` only if all its inputs are.
+- **Read (the hot path).** A join reads a quiet input's watermark as `S`: one
+  atomic load of the mark, and `S`, which it already holds. This is O(1), with
+  no walk, and it stays valid across any number of tickets that do not touch
+  the ancestry.
+- **Invalidate (at seeding).** Admitting ticket `t` at node `x` pushes `t` into
+  `x`, sets `x` to `NONE`, and walks `x`'s descendants, clearing every
+  non-`NONE` mark. It stops at `NONE` nodes, because by closure nothing below
+  them is marked. `S` passes `t` only after the walk ends. A reader that sees
+  `S > t` therefore sees the cleared marks.
+- **Validate (on demand).** When a join finds a silent input not `QUIET`, it
+  marks the input's not-yet-`QUIET` ancestors bottom-up. For each node it does
+  four steps:
+  1. Check that the node has no pending work and that every input is `QUIET`.
+  2. Write `TENTATIVE`.
+  3. Re-check the same conditions.
+  4. `compare_exchange(TENTATIVE, QUIET)`.
+
+  An invalidation clears `TENTATIVE` too, so a seed that lands anywhere in
+  between makes the exchange fail. Readers trust only `QUIET`.
+- **Fallback.** A node that is not `QUIET` uses its numeric watermark. A fire
+  refreshes the firing node's watermark from its inputs at O(inputs), so a
+  busy chain keeps its numbers fresh as it fires. A real blocker is parked on,
+  as before.
+
+**Cost per fire:** O(1) for each `QUIET` input, O(1) for an input that just
+delivered, and O(inputs) for the refresh. **Walks:** validation visits only
+nodes that are not yet `QUIET`. Each such node was cleared by a seed, and each
+clear follows at most one validation. So the total walk work is at most twice
+the number of (seed, previously validated descendant) pairs. Cost is paid per
+seed into an ancestry, not per fire.
+
+**The rship pattern** is joins whose other input is quiet for a long time. The
+quiet side is validated once, then read in O(1) on every later fire until
+something is seeded into its ancestry. Nothing global is read except `S`.
+Nothing waits on unrelated tickets, because the mark is exact for the node's
+own ancestry.
+
+**What is still unmeasured, and is the next gate:**
+
+1. **Seed hit rate.** How often a seed lands in a quiet input's ancestry
+   between two checks. A store collection written every ticket that sits
+   above many joins would re-clear and re-validate them on every write. The
+   shadow can count, for each validation, whether a seed landed in its
+   ancestry since the previous one.
+2. **Invalidation length on the admission path.** `S` cannot pass the ticket
+   until its walk ends. A long walk therefore holds back every later ticket,
+   though it clears only nodes that were validated since the last seed there.
+
+**Leads considered and rejected:**
+
+- **A per-height or per-region frontier.** A node at height h waits for every
+  earlier ticket to clear all heights below h, including tickets that cannot
+  reach it. That puts a probe behind the timer tick again.
+- **Announcing every pending ticket downstream.** Announcing along the edges a
+  ticket takes says nothing about silent inputs. Announcing along every static
+  edge is a cone walk per ticket. Quiet certificates announce only at seeds,
+  and only to marked nodes.
 
 **Promise safety, the one invariant everything rests on:** a node never
 receives a ticket below its watermark or at or below `p(n)`. The checker
@@ -364,7 +429,21 @@ with collection rows. This covers a first
 demand, a drop, a rebuild after a drop, and store writes in flight during a
 build. A 5-ticket run (3,125 sequences) was still going after 15 minutes at about 100 MB and was stopped; it found no failure before it was stopped.
 
-Checked in all three:
+**`quiet_model.rs`.** It checks quiet certificates. Sources X, Y and Z feed
+P = X, B = P + 10·Y, and the join C = Z + 1000·B. B is C's quiet input. The
+seeder (seed, then one invalidation step per action, then publish `S`) and the
+validator (check, write `TENTATIVE`, re-check, compare-exchange, one action
+each) interleave with each other and with the fires. Every 3-ticket sequence:
+27 sequences, 6,699,249 states, 60 s. Extra checks:
+
+- In every state, a `QUIET` node has no pending work below `S` in its
+  ancestry.
+- No push lands in a `QUIET` node.
+- From every reachable state, some path completes. Validation can fail and
+  retry, so progress here is checked under fairness rather than by
+  acyclicity.
+
+Checked in all of them:
 
 1. **Per-node ticket order.** Every fire is above `p(n)`.
 2. **Promise safety.** No push lands at or below `p` or below the target's
@@ -395,6 +474,11 @@ time:
 | (family) no backfill into a new row | not serializable: store updates after the build are lost |
 | (family) no anchor edge from the store to Fam | ticket 1 reaches the new row after it completed |
 | (family, collection) a row diff is also told at the switch ticket | the diff stream double-tells ticket 0 |
+| (quiet) `S` is published before invalidation ends | node P is quiet while X holds ticket 1 |
+| (quiet) invalidation clears only direct dependents | node B is quiet while X holds ticket 1 |
+| (quiet) validation writes `QUIET` with no re-check | X is quiet while it holds ticket 1 |
+| (quiet) the promote is a blind store, not a compare-exchange | X is quiet while it holds ticket 1 |
+| (quiet) validation ignores the inputs' marks | P is quiet while X holds ticket 1 |
 
 Two family variants pass, and both are correct: keeping every row forever, and
 dropping a row when the reader fires (sound only for stateless rows).
@@ -479,10 +563,9 @@ estimates.
 2. **Declare the internal edges** (about 150 lines): `cell_map.rs:214`, the
    collection diff and length cells, and myko projections. Check: opt1's
    escape hook reports no internal escapes.
-3. **Shadow tickets** (about 300 lines). Assign tickets, keep per-node `p` and
-   watermarks next to today's settle, and assert per-node order. Count how
-   many ancestor reads each join's watermark pull needs. Check: the harness
-   numbers for the pull cost. This is the gate for section 4.
+3. **Shadow tickets** (done: `epoch-shadow` 7466369). The pull walk failed
+   its gate. Next, add quiet certificates to the shadow and measure the seed
+   hit rate and invalidation lengths (section 4). This is the new gate.
 4. **Pending lists keyed by ticket, and two-entry history** (about 500 lines)
    in `CellInner` and `SourceInner`. Check: the hyphae suite.
 5. **The fire rule, parking and waking, and per-ticket completion** (about
