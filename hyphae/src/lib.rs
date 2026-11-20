@@ -196,7 +196,7 @@ pub use constructors::{
     interval_precise_with_elapsed, interval_precise_with_elapsed_source, interval_source,
 };
 pub use family::{
-    Family, FamilyRow, KeyedFamily, Lease, LookupExt, LookupKey, LookupSetExt, family,
+    Family, FamilyRow, KeySet, KeyedFamily, Lease, LookupExt, LookupKey, LookupSetExt, family,
 };
 pub use map_query::{MapQuery, MapQueryShareExt, SharedMapQuery};
 pub use nested_map::NestedMap;

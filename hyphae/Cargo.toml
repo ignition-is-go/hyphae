@@ -37,6 +37,7 @@ deep-bench = []
 
 [dependencies]
 anyhow = "1"
+indexmap = "2"
 arc-swap.workspace = true
 crossbeam = "0.8"
 dashmap.workspace = true

@@ -6,6 +6,7 @@ use std::{
     },
 };
 
+use indexmap::{IndexMap, IndexSet};
 use parking_lot::Mutex;
 
 use crate::{
@@ -347,25 +348,58 @@ fn set_join_follows_keys_and_rows() {
     let keys = Cell::new(BTreeSet::from([0u32]));
     let joined = keys.clone().lookup_set(rows.clone());
     let seen = record(&joined);
-    assert_eq!(joined.get(), BTreeMap::from([(0, 10)]));
+    assert_eq!(joined.get(), IndexMap::from([(0, 10)]));
 
     keys.set(BTreeSet::from([0, 1]));
-    assert_eq!(joined.get(), BTreeMap::from([(0, 10), (1, 11)]));
+    assert_eq!(joined.get(), IndexMap::from([(0, 10), (1, 11)]));
 
     batch(|| {
         store.set(2);
         keys.set(BTreeSet::from([1, 2]));
     });
-    assert_eq!(joined.get(), BTreeMap::from([(1, 21), (2, 22)]));
+    assert_eq!(joined.get(), IndexMap::from([(1, 21), (2, 22)]));
     flush();
     assert!(!rows.contains(&0));
 
     store.set(3);
-    assert_eq!(joined.get(), BTreeMap::from([(1, 31), (2, 32)]));
+    assert_eq!(joined.get(), IndexMap::from([(1, 31), (2, 32)]));
     let seen = seen.lock().clone();
-    assert_eq!(seen.last(), Some(&BTreeMap::from([(1, 31), (2, 32)])));
+    assert_eq!(seen.last(), Some(&IndexMap::from([(1, 31), (2, 32)])));
     assert!(
-        !seen.contains(&BTreeMap::from([(1, 11), (2, 22)])),
+        !seen.contains(&IndexMap::from([(1, 11), (2, 22)])),
         "a batch's key and row changes are told together: {seen:?}"
+    );
+}
+
+/// A key with no `Ord`, like a myko report or view param.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct Param(&'static str);
+
+#[test]
+fn set_join_takes_hash_only_keys_in_set_order() {
+    let store = Cell::new(1);
+    let rows = {
+        let store = store.clone();
+        family(move |p: &Param| {
+            let len = i32::try_from(p.0.len()).unwrap_or(i32::MAX);
+            store
+                .clone()
+                .map(move |s: &i32| s.saturating_mul(10).saturating_add(len))
+                .materialize()
+        })
+    };
+    let keys = Cell::new(IndexSet::from([Param("ccc"), Param("a")]));
+    let joined = keys.clone().lookup_set(rows);
+    let order = |m: IndexMap<Param, i32>| m.into_iter().collect::<Vec<_>>();
+    assert_eq!(
+        order(joined.get()),
+        vec![(Param("ccc"), 13), (Param("a"), 11)]
+    );
+
+    keys.set(IndexSet::from([Param("bb"), Param("ccc")]));
+    store.set(2);
+    assert_eq!(
+        order(joined.get()),
+        vec![(Param("bb"), 22), (Param("ccc"), 23)]
     );
 }

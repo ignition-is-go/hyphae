@@ -22,7 +22,7 @@
 //! that same settle keeps the row and any state it holds.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap},
     hash::Hash,
     sync::{
         Arc, Weak,
@@ -30,6 +30,7 @@ use std::{
     },
 };
 
+use indexmap::{IndexMap, IndexSet};
 use parking_lot::Mutex;
 use uuid::Uuid;
 
@@ -543,12 +544,30 @@ fn switch_map_row<F, RK, V, RM>(
     drop(current);
 }
 
+/// A key set [`LookupSetExt::lookup_set`] can join over. Its iteration order
+/// is the order of the joined map, so it must be deterministic.
+pub trait KeySet<K: 'static>: CellValue {
+    fn keys(&self) -> impl Iterator<Item = &K>;
+}
+
+impl<K: CellValue + Ord> KeySet<K> for BTreeSet<K> {
+    fn keys(&self) -> impl Iterator<Item = &K> {
+        self.iter()
+    }
+}
+
+impl<K: CellValue + Hash + Eq> KeySet<K> for IndexSet<K> {
+    fn keys(&self) -> impl Iterator<Item = &K> {
+        self.iter()
+    }
+}
+
 /// Join a family over a reactive key set.
 pub trait LookupSetExt<K> {
-    /// The value of every row whose key is in the set, by key. A row enters
-    /// and leaves the map with its key, and the map updates when a row in it
-    /// changes.
-    fn lookup_set<F, T, RM>(self, family: F) -> Cell<BTreeMap<K, T>, CellImmutable>
+    /// The value of every row whose key is in the set, by key, in the set's
+    /// iteration order. A row enters and leaves the map with its key, and the
+    /// map updates when a row in it changes.
+    fn lookup_set<F, T, RM>(self, family: F) -> Cell<IndexMap<K, T>, CellImmutable>
     where
         F: Family<Key = K, Row = Cell<T, RM>>,
         T: CellValue,
@@ -562,12 +581,12 @@ struct Member<T> {
 }
 
 struct Members<K, T> {
-    rows: Mutex<BTreeMap<K, Member<T>>>,
+    rows: Mutex<IndexMap<K, Member<T>>>,
     attaches: AtomicU64,
 }
 
-impl<K: Ord + Clone, T: Clone> Members<K, T> {
-    fn snapshot(rows: &BTreeMap<K, Member<T>>) -> BTreeMap<K, T> {
+impl<K: Hash + Eq + Clone, T: Clone> Members<K, T> {
+    fn snapshot(rows: &IndexMap<K, Member<T>>) -> IndexMap<K, T> {
         rows.iter()
             .filter_map(|(key, member)| {
                 member
@@ -579,26 +598,27 @@ impl<K: Ord + Clone, T: Clone> Members<K, T> {
     }
 }
 
-impl<K, M> LookupSetExt<K> for Cell<BTreeSet<K>, M>
+impl<K, S, M> LookupSetExt<K> for Cell<S, M>
 where
-    K: CellValue + Hash + Eq + Ord,
+    K: CellValue + Hash + Eq,
+    S: KeySet<K>,
     M: Send + Sync + 'static,
 {
-    fn lookup_set<F, T, RM>(self, family: F) -> Cell<BTreeMap<K, T>, CellImmutable>
+    fn lookup_set<F, T, RM>(self, family: F) -> Cell<IndexMap<K, T>, CellImmutable>
     where
         F: Family<Key = K, Row = Cell<T, RM>>,
         T: CellValue,
         RM: Send + Sync + 'static,
     {
-        let out = Cell::<BTreeMap<K, T>, CellMutable>::new(BTreeMap::new()).combine_latest();
+        let out = Cell::<IndexMap<K, T>, CellMutable>::new(IndexMap::new()).combine_latest();
         let members = Arc::new(Members {
-            rows: Mutex::new(BTreeMap::new()),
+            rows: Mutex::new(IndexMap::new()),
             attaches: AtomicU64::new(0),
         });
         let weak = out.downgrade();
         let key_guard = self.subscribe(move |signal| {
             if let Signal::Value(keys) = signal {
-                switch_set(&weak, &members, &family, keys);
+                switch_set(&weak, &members, &family, &**keys);
             }
         });
         out.own(key_guard);
@@ -606,32 +626,35 @@ where
     }
 }
 
-fn switch_set<F, K, T, RM>(
-    weak: &WeakCell<BTreeMap<K, T>, CellMutable>,
+fn switch_set<F, K, S, T, RM>(
+    weak: &WeakCell<IndexMap<K, T>, CellMutable>,
     members: &Arc<Members<K, T>>,
     family: &F,
-    keys: &BTreeSet<K>,
+    keys: &S,
 ) where
     F: Family<Key = K, Row = Cell<T, RM>>,
-    K: CellValue + Hash + Eq + Ord,
+    K: CellValue + Hash + Eq,
+    S: KeySet<K>,
     T: CellValue,
     RM: Send + Sync + 'static,
 {
     let Some(out) = weak.upgrade() else { return };
     let (left, entered) = {
         let mut rows = members.rows.lock();
-        let left: Vec<Uuid> = rows
-            .extract_if(.., |key, _| !keys.contains(key))
-            .map(|(_, member)| member.guard_key)
-            .collect();
+        // Rebuild in the set's order, keeping members that stay.
+        let mut next = IndexMap::with_capacity(rows.len());
         let mut entered = Vec::new();
-        for key in keys {
-            if rows.contains_key(key) {
+        for key in keys.keys() {
+            if next.contains_key(key) {
+                continue;
+            }
+            if let Some(member) = rows.swap_remove(key) {
+                next.insert(key.clone(), member);
                 continue;
             }
             let attach = members.attaches.fetch_add(1, Ordering::Relaxed);
             let guard_key = Uuid::new_v4();
-            rows.insert(
+            next.insert(
                 key.clone(),
                 Member {
                     attach,
@@ -641,6 +664,10 @@ fn switch_set<F, K, T, RM>(
             );
             entered.push((key.clone(), attach, guard_key));
         }
+        let left: Vec<Uuid> = std::mem::replace(&mut *rows, next)
+            .into_values()
+            .map(|member| member.guard_key)
+            .collect();
         drop(rows);
         (left, entered)
     };
