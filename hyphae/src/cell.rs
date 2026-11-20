@@ -650,14 +650,11 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
     }
 
     fn bind_owner(&self, id: Uuid, owner: Weak<dyn Node>) -> Option<bool> {
-        if let Some(sub) = self.inner.subscribers.lock().get(&id) {
+        let sub = self.inner.subscribers.lock().get(&id);
+        if let Some(sub) = sub {
             return Some(sub.bind(owner));
         }
-        self.inner
-            .result_subscribers
-            .lock()
-            .get(&id)
-            .map(|_| false)
+        self.inner.result_subscribers.lock().get(&id).map(|_| false)
     }
 
     fn subscriber_count(&self) -> usize {

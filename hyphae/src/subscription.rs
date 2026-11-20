@@ -139,7 +139,10 @@ impl SubscriptionGuard {
             _ => {
                 let id = Uuid::new_v4();
                 let sources = guards.iter().map(|guard| guard.source.clone()).collect();
-                let binds = guards.iter().flat_map(|guard| guard.binds.clone()).collect();
+                let binds = guards
+                    .iter()
+                    .flat_map(|guard| guard.binds.clone())
+                    .collect();
                 let source = Arc::new(CompositeDepNode { id, sources });
                 let mut guards = Some(guards);
                 let mut combined = Self::new(id, source, move || {

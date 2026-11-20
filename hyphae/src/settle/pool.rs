@@ -39,10 +39,14 @@ static SLEEP: Mutex<()> = Mutex::new(());
 static WAKE: Condvar = Condvar::new();
 static SPAWNED: Mutex<usize> = Mutex::new(0);
 
-/// Kept for source compatibility: there are no waves.
+static WAVE_MIN: AtomicUsize = AtomicUsize::new(1);
+
+/// Kept for source compatibility: there are no waves, and the value is
+/// unused. Returns the previous value.
 #[doc(hidden)]
-pub const fn set_wave_min(nodes: usize) -> usize {
-    nodes
+#[allow(clippy::must_use_candidate, reason = "callers set it for its effect")]
+pub fn set_wave_min(nodes: usize) -> usize {
+    WAVE_MIN.swap(nodes.max(1), Ordering::AcqRel)
 }
 
 /// Set the number of pool threads and return the previous value. For tests.
@@ -69,8 +73,9 @@ fn spawn_workers() {
             log::error!("hyphae: cannot start a settle pool thread: {error}");
             return;
         }
-        *spawned += 1;
+        *spawned = spawned.saturating_add(1);
     }
+    drop(spawned);
 }
 
 fn worker(index: usize) {
@@ -80,7 +85,7 @@ fn worker(index: usize) {
                 admit_drain();
             }
             if let Some(node) = READY.pop() {
-                run(&node, true);
+                run(node, true);
                 continue;
             }
         }
@@ -126,7 +131,7 @@ pub(super) fn help_until(done: &dyn Fn() -> bool, idle_ends: bool) {
         if idle_ends && fired >= IDLE_BUDGET {
             return;
         }
-        fired += 1;
+        fired = fired.saturating_add(1);
         if done() {
             return;
         }
@@ -134,7 +139,7 @@ pub(super) fn help_until(done: &dyn Fn() -> bool, idle_ends: bool) {
             admit_drain();
         }
         if let Some(node) = READY.pop() {
-            run(&node, false);
+            run(node, false);
             continue;
         }
         if idle_ends && INBOX.is_empty() {

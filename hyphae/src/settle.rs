@@ -272,6 +272,10 @@ pub struct NodeCore {
     parked: Mutex<Vec<Weak<dyn Node>>>,
     /// The nodes that have a declared edge into this one.
     inputs: Mutex<Vec<Weak<Self>>>,
+    /// The nodes with a declared edge from this one.
+    outputs: Mutex<Vec<Weak<Self>>>,
+    /// The quiet certificate (`docs/settle-epochs.md` section 4).
+    mark: AtomicU8,
 }
 
 impl NodeCore {
@@ -287,19 +291,36 @@ impl NodeCore {
             sched: AtomicU8::new(IDLE),
             parked: Mutex::new(Vec::new()),
             inputs: Mutex::new(Vec::new()),
+            outputs: Mutex::new(Vec::new()),
+            mark: AtomicU8::new(watermark::NOT_QUIET),
         })
     }
 
-    /// Declare an edge from `input` into this node.
-    pub(crate) fn add_input(&self, input: &Arc<Self>) {
-        let mut inputs = self.inputs.lock();
-        inputs.retain(|existing| existing.strong_count() > 0);
-        let address = Arc::as_ptr(input);
-        if inputs.iter().any(|existing| existing.as_ptr() == address) {
-            return;
+    /// Declare an edge from `input` into this node. The node's ancestry
+    /// grows, so its quiet certificate and its descendants' are cleared.
+    pub(crate) fn add_input(self: &Arc<Self>, input: &Arc<Self>) {
+        {
+            let mut inputs = self.inputs.lock();
+            inputs.retain(|existing| existing.strong_count() > 0);
+            let address = Arc::as_ptr(input);
+            if inputs.iter().any(|existing| existing.as_ptr() == address) {
+                return;
+            }
+            inputs.push(Arc::downgrade(input));
         }
-        inputs.push(Arc::downgrade(input));
+        {
+            let mut outputs = input.outputs.lock();
+            outputs.retain(|existing| existing.strong_count() > 0);
+            outputs.push(Arc::downgrade(self));
+        }
         EDGE_GEN.fetch_add(1, Ordering::Release);
+        watermark::invalidate(self);
+    }
+
+    /// No delivery pending or in flight.
+    fn idle(&self) -> bool {
+        let pending = self.pending.lock();
+        pending.items.is_empty() && pending.inflight == NONE
     }
 
     /// Push `item` at `ticket`. Fails when the node has fired the ticket or
@@ -310,11 +331,18 @@ impl NodeCore {
             return Err(item);
         }
         let at = pending.items.partition_point(|d| d.ticket <= ticket);
-        let stamp = match at.checked_sub(1).map(|i| &pending.items[i]) {
+        let stamp = match at.checked_sub(1).and_then(|i| pending.items.get(i)) {
             Some(last) if arrival && last.ticket == ticket => stamp.max(last.stamp),
             _ => stamp,
         };
-        pending.items.insert(at, Delivery { ticket, stamp, item });
+        pending.items.insert(
+            at,
+            Delivery {
+                ticket,
+                stamp,
+                item,
+            },
+        );
         drop(pending);
         slot(ticket).count.fetch_add(1, Ordering::AcqRel);
         Ok(())
@@ -367,7 +395,7 @@ struct Slot {
     epoch: AtomicU64,
     /// The scoped event sets this ticket carries.
     carriers: AtomicU64,
-    panic: Mutex<Option<Box<dyn Any + Send>>>,
+    panic: Mutex<Option<(Stamp, Box<dyn Any + Send>)>>,
 }
 
 static SLOTS: LazyLock<Box<[Slot]>> = LazyLock::new(|| {
@@ -383,8 +411,9 @@ static SLOTS: LazyLock<Box<[Slot]>> = LazyLock::new(|| {
 });
 
 fn slot(ticket: u64) -> &'static Slot {
-    #[allow(clippy::cast_possible_truncation, reason = "masked to the ring")]
-    &SLOTS[(ticket % RING) as usize]
+    let index = usize::try_from(ticket % RING).unwrap_or_default();
+    #[allow(clippy::indexing_slicing, reason = "the index is below the ring size")]
+    &SLOTS[index]
 }
 
 /// `S`: every ticket below it has been seeded.
@@ -400,13 +429,19 @@ fn is_complete(ticket: u64) -> bool {
     COMPLETED.load(Ordering::Acquire) > ticket || is_done_slot(ticket)
 }
 
-fn record_panic(ticket: u64, payload: Box<dyn Any + Send>) {
+/// Keep the panic a one-ticket settle would have raised first: the one from
+/// the lowest stamp.
+fn record_panic(ticket: u64, stamp: Stamp, payload: Box<dyn Any + Send>) {
     let mut held = slot(ticket).panic.lock();
-    if held.is_none() {
-        *held = Some(payload);
+    let earlier = held.as_ref().is_none_or(|(kept, _)| stamp < *kept);
+    let dropped = if earlier {
+        held.replace((stamp, payload)).map(|(_, payload)| payload)
     } else {
-        drop(held);
-        log::error!("hyphae: a second callback panicked in ticket {ticket}");
+        Some(payload)
+    };
+    drop(held);
+    if dropped.is_some() {
+        log::error!("hyphae: more than one callback panicked in ticket {ticket}");
     }
 }
 
@@ -426,7 +461,8 @@ fn complete(ticket: u64) {
         if c >= SEEDED.load(Ordering::Acquire) || !is_done_slot(c) {
             break;
         }
-        let _ = COMPLETED.compare_exchange(c, c + 1, Ordering::AcqRel, Ordering::Acquire);
+        let _ =
+            COMPLETED.compare_exchange(c, c.saturating_add(1), Ordering::AcqRel, Ordering::Acquire);
     }
     if let Some(epoch) = epoch
         && carriers > 0
@@ -585,6 +621,12 @@ pub struct SettleStats {
     /// Owned subscriptions whose callback runs at the source's fire because
     /// it could not be bound to its owner.
     pub unbound_owned: u64,
+    /// Readiness checks of an input answered by its quiet certificate.
+    pub quiet_hits: u64,
+    /// Nodes certified quiet.
+    pub validated: u64,
+    /// Quiet certificates cleared by seeds and new edges.
+    pub invalidated: u64,
 }
 
 static EVENT_SETS: AtomicU64 = AtomicU64::new(0);
@@ -605,6 +647,9 @@ static SIDE_READS: AtomicU64 = AtomicU64::new(0);
 static UNDECLARED: AtomicU64 = AtomicU64::new(0);
 static LATE_EDGE: AtomicU64 = AtomicU64::new(0);
 static UNBOUND_OWNED: AtomicU64 = AtomicU64::new(0);
+static QUIET_HITS: AtomicU64 = AtomicU64::new(0);
+static VALIDATED: AtomicU64 = AtomicU64::new(0);
+static INVALIDATED: AtomicU64 = AtomicU64::new(0);
 
 /// Read the process-wide settle counters.
 #[must_use]
@@ -628,6 +673,9 @@ pub fn stats() -> SettleStats {
         undeclared_writes: UNDECLARED.load(Ordering::Relaxed),
         late_edge_writes: LATE_EDGE.load(Ordering::Relaxed),
         unbound_owned: UNBOUND_OWNED.load(Ordering::Relaxed),
+        quiet_hits: QUIET_HITS.load(Ordering::Relaxed),
+        validated: VALIDATED.load(Ordering::Relaxed),
+        invalidated: INVALIDATED.load(Ordering::Relaxed),
         ..SettleStats::default()
     }
 }
@@ -788,24 +836,30 @@ pub(crate) fn push_current(target: &Arc<dyn Node>, arrival: bool, item: Item) {
             index,
             touched,
         }) => {
-            *index += 1;
+            *index = index.saturating_add(1);
             let stamp = Stamp {
                 index: *index,
                 ..Stamp::SEED
             };
             touched.push(Arc::downgrade(target));
-            target
+            let pushed = target
                 .node_core()
                 .push(*ticket, stamp, arrival, item)
-                .map_err(|_| *ticket)
+                .map_err(|_| *ticket);
+            // A seed is the only way pending work enters an ancestry from
+            // outside it. `S` passes the ticket after this.
+            watermark::invalidate(target.node_core());
+            pushed
         }
         Some(Ctx::Firing(firing)) => {
-            firing.stamp.index += 1;
+            firing.stamp.index = firing.stamp.index.saturating_add(1);
             firing.touched.push(Arc::downgrade(target));
-            target
+            let pushed = target
                 .node_core()
                 .push(firing.ticket, firing.stamp, arrival, item)
-                .map_err(|_| firing.ticket)
+                .map_err(|_| firing.ticket);
+            watermark::invalidate_if_marked(target.node_core());
+            pushed
         }
         _ => Err(NONE),
     });
@@ -834,7 +888,7 @@ pub(crate) fn defer_to_owner(owner: &Arc<dyn Node>, make: impl FnOnce() -> Item)
         {
             return false;
         }
-        firing.stamp.index += 1;
+        firing.stamp.index = firing.stamp.index.saturating_add(1);
         let origin = Arc::clone(&firing.core);
         let item = make();
         let wrapped: Item = Box::new(move || {
@@ -854,7 +908,10 @@ pub(crate) fn defer_to_owner(owner: &Arc<dyn Node>, make: impl FnOnce() -> Item)
         });
         // The owner is below the firing node along a declared edge, so it
         // cannot pass this ticket while this node holds it.
-        let pushed = core.push(firing.ticket, firing.stamp, false, wrapped).is_ok();
+        let pushed = core
+            .push(firing.ticket, firing.stamp, false, wrapped)
+            .is_ok();
+        watermark::invalidate_if_marked(core);
         debug_assert!(pushed, "hyphae: promise safety: owner passed the ticket");
         firing.touched.push(Arc::downgrade(owner));
         pushed
@@ -959,22 +1016,27 @@ fn evaluate(node: &Arc<dyn Node>) {
 
 /// Fire the lowest pending ticket of `node`, which this thread has claimed
 /// and found ready, then evaluate it again.
-pub(crate) fn run(node: &Arc<dyn Node>, on_pool: bool) {
+pub(crate) fn run(owned: Arc<dyn Node>, on_pool: bool) {
+    let node = &owned;
     let core = Arc::clone(node.node_core());
     let taken = {
         let mut pending = core.pending.lock();
-        pending.items.first().map(|first| first.ticket).map(|ticket| {
-            debug_assert!(
-                pending.processed == NONE || pending.processed < ticket,
-                "hyphae: per-node order: ticket {ticket} fired after {}",
-                pending.processed
-            );
-            let split = pending.items.partition_point(|d| d.ticket == ticket);
-            let rest = pending.items.split_off(split);
-            let items = std::mem::replace(&mut pending.items, rest);
-            pending.inflight = ticket;
-            (ticket, items)
-        })
+        pending
+            .items
+            .first()
+            .map(|first| first.ticket)
+            .map(|ticket| {
+                debug_assert!(
+                    pending.processed == NONE || pending.processed < ticket,
+                    "hyphae: per-node order: ticket {ticket} fired after {}",
+                    pending.processed
+                );
+                let split = pending.items.partition_point(|d| d.ticket == ticket);
+                let rest = pending.items.split_off(split);
+                let items = std::mem::replace(&mut pending.items, rest);
+                pending.inflight = ticket;
+                (ticket, items)
+            })
     };
     let Some((ticket, mut items)) = taken else {
         evaluate(node);
@@ -983,16 +1045,17 @@ pub(crate) fn run(node: &Arc<dyn Node>, on_pool: bool) {
     items.sort_by_key(|d| d.stamp);
     let count = i64::try_from(items.len()).unwrap_or(i64::MAX);
     let started = crate::platform::Instant::now();
+    let stamp = Stamp {
+        height: node.node_height(),
+        node: core.seq,
+        index: 0,
+    };
     let previous = CTX.with_borrow_mut(|ctx| {
         ctx.replace(Ctx::Firing(Firing {
             ticket,
             core: Arc::clone(&core),
             origin: None,
-            stamp: Stamp {
-                height: node.node_height(),
-                node: core.seq,
-                index: 0,
-            },
+            stamp,
             phase: Phase::Collect,
             touched: Vec::new(),
         }))
@@ -1000,7 +1063,7 @@ pub(crate) fn run(node: &Arc<dyn Node>, on_pool: bool) {
     for delivery in items {
         if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(delivery.item))
         {
-            record_panic(ticket, payload);
+            record_panic(ticket, stamp, payload);
         }
     }
     CTX.with_borrow_mut(|ctx| {
@@ -1011,7 +1074,7 @@ pub(crate) fn run(node: &Arc<dyn Node>, on_pool: bool) {
     if let Err(payload) =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| node.emit(ticket)))
     {
-        record_panic(ticket, payload);
+        record_panic(ticket, stamp, payload);
     }
     let touched = CTX.with_borrow_mut(|ctx| match std::mem::replace(ctx, previous) {
         Some(Ctx::Firing(firing)) => firing.touched,
@@ -1024,18 +1087,27 @@ pub(crate) fn run(node: &Arc<dyn Node>, on_pool: bool) {
     if on_pool {
         POOL_FIRES.fetch_add(1, Ordering::Relaxed);
     }
+    let in_w = watermark::refresh_bound(&core);
     {
         let mut pending = core.pending.lock();
         pending.processed = ticket;
         pending.inflight = NONE;
         let next = pending.min();
-        core.watermark
-            .fetch_max(next.min(ticket.saturating_add(1)), Ordering::AcqRel);
+        // Every input is past `ticket`, so `in_w` exceeds it.
+        core.watermark.fetch_max(
+            next.min(in_w.max(ticket.saturating_add(1))),
+            Ordering::AcqRel,
+        );
+        drop(pending);
     }
     poke_all(touched);
     core.wake_parked();
-    consumed(ticket, count);
     evaluate(node);
+    // Release this fire's references before the ticket can complete, so a
+    // writer that wakes to it sees the graph as the fire left it.
+    drop(core);
+    drop(owned);
+    consumed(ticket, count);
 }
 
 fn poke_all(touched: Vec<Weak<dyn Node>>) {
@@ -1124,7 +1196,9 @@ pub(crate) fn admit_drain() {
                 }
                 None => {
                     drop(gate);
-                    if SEEDED.load(Ordering::Acquire) - COMPLETED.load(Ordering::Acquire)
+                    if SEEDED
+                        .load(Ordering::Acquire)
+                        .saturating_sub(COMPLETED.load(Ordering::Acquire))
                         >= RING - 1
                     {
                         break true;
@@ -1174,19 +1248,21 @@ fn seed(arrival: Arrival) -> u64 {
         if let Err(payload) =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| write.apply()))
         {
-            record_panic(ticket, payload);
+            record_panic(ticket, Stamp::SEED, payload);
         }
     }
     let touched = CTX.with_borrow_mut(|ctx| match std::mem::replace(ctx, previous) {
         Some(Ctx::Seeding { touched, .. }) => touched,
         _ => Vec::new(),
     });
-    SEEDED.store(ticket + 1, Ordering::Release);
+    SEEDED.store(ticket.saturating_add(1), Ordering::Release);
     if let Some(waiter) = &arrival.waiter {
         waiter.ticket.store(ticket, Ordering::Release);
     }
     MAX_IN_FLIGHT.fetch_max(
-        (ticket + 1).saturating_sub(COMPLETED.load(Ordering::Acquire)),
+        ticket
+            .saturating_add(1)
+            .saturating_sub(COMPLETED.load(Ordering::Acquire)),
         Ordering::Relaxed,
     );
     poke_all(touched);
@@ -1242,7 +1318,7 @@ impl Queued {
                 pool::help_until(&mine, false);
                 settle_backlog();
                 let ticket = waiter.ticket.load(Ordering::Acquire);
-                let panic = slot(ticket).panic.lock().take();
+                let panic = slot(ticket).panic.lock().take().map(|(_, payload)| payload);
                 if let Some(payload) = panic {
                     std::panic::resume_unwind(payload);
                 }

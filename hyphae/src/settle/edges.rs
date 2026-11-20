@@ -24,11 +24,12 @@ enum Mode {
     Panic,
 }
 
-static MODE: LazyLock<Mode> = LazyLock::new(|| match std::env::var("HYPHAE_EDGE_CHECK").as_deref() {
-    Ok("panic") => Mode::Panic,
-    Ok("warn") => Mode::Warn,
-    _ => Mode::Off,
-});
+static MODE: LazyLock<Mode> =
+    LazyLock::new(|| match std::env::var("HYPHAE_EDGE_CHECK").as_deref() {
+        Ok("panic") => Mode::Panic,
+        Ok("warn") => Mode::Warn,
+        _ => Mode::Off,
+    });
 
 static WARNED: LazyLock<Mutex<FxHashSet<(u8, usize)>>> = LazyLock::new(Mutex::default);
 
@@ -76,10 +77,7 @@ pub(super) fn undeclared(target: &dyn Node) {
         "hyphae: a callback wrote the node created at {} with no declared edge from the firing node",
         site(target.node_caller())
     );
-    #[allow(clippy::panic, reason = "the check is opt-in")]
-    if mode == Mode::Panic {
-        panic!("{message}");
-    }
+    assert!(mode != Mode::Panic, "{message}");
     if once(0, target.node_caller()) {
         log::warn!("{message}");
         eprintln!("{message}");
@@ -102,14 +100,18 @@ pub(super) fn late(target: &dyn Node) {
 /// An owned subscription of the owner created at `owner` could not be bound
 /// to it, so its callback runs at the source's fire. A known hole: operator
 /// state shared across inputs is then not ordered by ticket.
-pub(crate) fn unbound_owned(owner: Option<&'static Location<'static>>) {
+pub fn unbound_owned(owner: Option<&'static Location<'static>>) {
     super::UNBOUND_OWNED.fetch_add(1, Ordering::Relaxed);
     let name = site(owner);
-    *UNBOUND_SITES.lock().entry(name.clone()).or_insert(0) += 1;
-    #[allow(clippy::panic, reason = "the check is opt-in")]
-    if *MODE == Mode::Panic {
-        panic!("hyphae: an owned subscription of the node created at {name} cannot be bound to its owner");
-    }
+    UNBOUND_SITES
+        .lock()
+        .entry(name.clone())
+        .and_modify(|count| *count = count.saturating_add(1))
+        .or_insert(1);
+    assert!(
+        *MODE != Mode::Panic,
+        "hyphae: an owned subscription of the node created at {name} cannot be bound to its owner"
+    );
 }
 
 /// Owned subscriptions that could not be bound, by owner creation site.
