@@ -26,6 +26,8 @@ Record the revision, command, toolchain, environment, confidence interval, and d
 
 [`rship-scale.md`](rship-scale.md) describes the suite that runs hyphae inside a graph shaped like the rship server at load-test scale: its scenarios, its reduced-scale tests, the timed runs behind the `scale-bench` feature, the checked-in baseline in [`rship-scale-baseline.json`](rship-scale-baseline.json), and how to compare with it or replace it.
 
+[`rship-scale-cost-model.md`](rship-scale-cost-model.md) is what the suite measured on v3.1.12: the cost of each primitive at that scale, how a write's cost grows with what it reaches, what contending writers lose, and the patterns to use and avoid.
+
 ```sh
 cargo test -p hyphae --features scheduler --test rship_scale
 scripts/rship_scale.py run
