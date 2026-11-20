@@ -59,6 +59,17 @@ fn leaves(root: &Cell<u64, CellMutable>, width: u64) -> Vec<Cell<u64, CellImmuta
 
 /// Busy for longer the earlier the leaf, so that under waves a later leaf
 /// finishes before an earlier one.
+/// Flush until `flag` is set. `flush` waits for the tickets taken before it,
+/// and feedback tickets can be taken after it, so one flush is not enough.
+fn settle_until(flag: &AtomicBool) {
+    for _ in 0..1_000 {
+        if flag.load(Ordering::SeqCst) {
+            return;
+        }
+        flush();
+    }
+}
+
 fn stagger(index: u64, width: u64) {
     let busy = Duration::from_micros(width.saturating_sub(index).saturating_mul(20));
     let started = Instant::now();
@@ -341,7 +352,7 @@ fn a_scoped_epoch_finishes_after_its_scope_and_its_last_event_set() {
     drop(scope);
     // The leaves' writes to `feedback` are later tickets that carry the
     // epoch; the writer is owed only its own ticket.
-    settle::flush();
+    settle_until(&finished);
     assert!(finished.load(Ordering::SeqCst));
     assert!(
         !early.load(Ordering::SeqCst),
@@ -355,7 +366,7 @@ fn a_scoped_epoch_finishes_after_its_scope_and_its_last_event_set() {
     enqueue(&[], Some(scope.epoch()), || root.set(2));
     drop(scope);
     assert!(!finished.load(Ordering::SeqCst), "a set is still queued");
-    flush();
+    settle_until(&finished);
     assert!(finished.load(Ordering::SeqCst));
     assert!(!early.load(Ordering::SeqCst));
 }
