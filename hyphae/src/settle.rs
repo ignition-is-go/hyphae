@@ -356,11 +356,11 @@ impl NodeCore {
             }
             gated.push((Arc::downgrade(src), Arc::downgrade(gate)));
         }
-        {
-            let mut outputs = src.outputs.lock();
-            outputs.retain(|existing| existing.strong_count() > 0);
-            outputs.push(Arc::downgrade(self));
-        }
+        // Not an output of `src`: clearing and validation follow ungated
+        // edges only, so a seed above the family node leaves this node's
+        // quiet mark alone. It can reach this node only through `gate`,
+        // whose delivery clears the mark (`docs/settle-epochs-model/
+        // quiet_model.rs`, GATE=1).
         EDGE_GEN.fetch_add(1, Ordering::Release);
         watermark::invalidate(self);
     }
