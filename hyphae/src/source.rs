@@ -59,6 +59,8 @@ pub(crate) struct SourceInner<T> {
     pub(crate) subscribers: parking_lot::Mutex<Arc<Vec<(Uuid, Arc<Subscriber<T>>)>>>,
     /// Owned subscription guards (e.g. upstream timers feeding this source).
     pub(crate) owned: Mutex<FxHashMap<Uuid, SubscriptionGuard>>,
+    /// The nodes that own a subscription to this source.
+    pub(crate) dependents: Mutex<Vec<std::sync::Weak<dyn crate::settle::Node>>>,
     /// Whether this source has completed (no more values will be emitted).
     pub(crate) completed: AtomicBool,
     /// Events waiting for this source's turn in the settle in progress.
@@ -128,6 +130,7 @@ impl<T: CellValue> Source<T> {
             id: Uuid::new_v4(),
             subscribers: parking_lot::Mutex::new(Arc::new(Vec::new())),
             owned: Mutex::new(FxHashMap::default()),
+            dependents: Mutex::new(Vec::new()),
             completed: AtomicBool::new(false),
             pending: Mutex::new(Vec::new()),
             queued: AtomicBool::new(false),
@@ -302,7 +305,13 @@ impl<T: CellValue> crate::settle::Node for SourceInner<T> {
     fn bump_height_epoch(&self) {}
 
     fn node_dependents(&self) -> Vec<Weak<dyn crate::settle::Node>> {
-        Vec::new()
+        let mut dependents = self.dependents.lock();
+        dependents.retain(|dependent| dependent.strong_count() > 0);
+        dependents.clone()
+    }
+
+    fn node_caller(&self) -> Option<&'static Location<'static>> {
+        Some(self.caller)
     }
 }
 
@@ -387,6 +396,18 @@ impl<T: Send + Sync> DepNode for Source<T> {
 
     fn owned_count(&self) -> usize {
         self.inner.owned.lock().len()
+    }
+
+    fn add_dependent(&self, dependent: std::sync::Weak<dyn crate::settle::Node>) {
+        let mut dependents = self.inner.dependents.lock();
+        dependents.retain(|existing| existing.strong_count() > 0);
+        let address = dependent.as_ptr().cast::<()>();
+        if !dependents
+            .iter()
+            .any(|existing| existing.as_ptr().cast::<()>() == address)
+        {
+            dependents.push(dependent);
+        }
     }
 }
 

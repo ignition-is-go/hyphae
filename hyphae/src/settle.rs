@@ -29,7 +29,10 @@ use uuid::Uuid;
 
 use crate::traits::DepNode;
 
+mod edges;
 mod wave;
+
+pub use edges::new_ticket;
 
 pub use wave::{set_wave_min, set_workers};
 
@@ -186,6 +189,10 @@ pub trait Node: Send + Sync {
     fn bump_height_epoch(&self);
     /// The nodes whose height depends on this one. Dead entries are pruned.
     fn node_dependents(&self) -> Vec<Weak<dyn Node>>;
+    /// Where the node was created, for diagnostics.
+    fn node_caller(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
 }
 
 /// One typed write, queued until a settle seeds it.
@@ -659,7 +666,7 @@ impl Drop for Backlogged {
 /// fired yet in this settle, and no earlier write to the target is still
 /// queued in `backlog`. A write inside a [`batch`] never joins: the batch
 /// keeps its writes together.
-pub(crate) fn position(target: impl FnOnce() -> u64, backlog: &Backlog) -> Position {
+pub(crate) fn position(target: &dyn Node, backlog: &Backlog) -> Position {
     let Some(firing) = ACTIVE.with_borrow(|active| active.as_ref().map(|active| active.firing))
     else {
         return Position::Queue(None);
@@ -669,7 +676,11 @@ pub(crate) fn position(target: impl FnOnce() -> u64, backlog: &Backlog) -> Posit
     }
     match firing {
         None => Position::Joins,
-        Some(firing) if backlog.is_empty() && target() > firing.height => Position::Joins,
+        Some(firing) if backlog.is_empty() && target.node_height() > firing.height => {
+            #[cfg(debug_assertions)]
+            edges::check_join(target);
+            Position::Joins
+        }
         Some(_) => Position::Queue(Some(backlog.add())),
     }
 }
@@ -1025,6 +1036,11 @@ fn fire_entries(entries: &[Entry]) -> Option<Box<dyn Any + Send>> {
                 });
             }
         });
+        #[cfg(debug_assertions)]
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            edges::firing(entry.node.clone(), || node.fire());
+        }));
+        #[cfg(not(debug_assertions))]
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| node.fire()));
         if let Err(payload) = outcome
             && first_panic.is_none()

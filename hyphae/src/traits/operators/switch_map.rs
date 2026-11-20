@@ -149,8 +149,7 @@ where
             Arc::clone(&switch_lock),
             0,
         );
-        let first_guard = first_prepared.activate(&first_callback);
-        cell.own_keyed(inner_guard_key, first_guard);
+        first_prepared.activate_owned(&cell, inner_guard_key, &first_callback);
 
         // Single subscription to outer handles both value switching and completion tracking
         let weak = cell.downgrade();
@@ -204,8 +203,7 @@ where
                         Arc::clone(&switch_lock_outer),
                         my_gen,
                     );
-                    let value_guard = prepared.activate(&value_callback);
-                    c.own_keyed(inner_guard_key, value_guard);
+                    prepared.activate_owned(&c, inner_guard_key, &value_callback);
                 }
                 Signal::Complete => {
                     if mark_outer_complete(&state_for_outer)
@@ -221,8 +219,7 @@ where
                 }
             }
         });
-        let outer_guard = outer_prepared.activate(&outer_callback);
-        cell.own(outer_guard);
+        outer_prepared.activate_owned(&cell, Uuid::new_v4(), &outer_callback);
 
         cell.subscribe(move |signal| callback(signal))
     }

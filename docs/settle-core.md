@@ -395,6 +395,22 @@ the write was deferred.
 
 A callback never waits, so a feedback write cannot deadlock the holder.
 
+### Edge check
+
+A write that joins must also travel a declared edge: the target must be
+reachable from the firing node through the dependents that `own` and
+`own_keyed` register. Pipelined tickets (`docs/settle-epochs.md`, section 6)
+cannot let an undeclared write join its ticket. Debug builds check this on
+every joined write and panic on one with no edge, naming the creation sites
+of both nodes. `HYPHAE_EDGE_CHECK=warn` logs each pair of sites once instead,
+and `HYPHAE_EDGE_CHECK=off` turns the check off. Release builds compile it
+out. A write meant to start its own ticket goes inside `settle::new_ticket`,
+which exempts it.
+
+hyphae declares every internal edge where the node is built, before the node
+can receive a live write: prepared pipeline installs, `CellMap` outputs, and
+`SharedMapQuery` consumers.
+
 ## 7. What a caller can observe
 
 - A write through `set`, `emit`, a collection mutation, or `batch` is settled

@@ -26,10 +26,7 @@ use std::{cell::RefCell, collections::hash_map::Entry, hash::Hash};
 use parking_lot::ReentrantMutex;
 use rustc_hash::FxHashMap;
 
-use crate::{
-    cell::Cell,
-    settle::{Node, Position},
-};
+use crate::{cell::Cell, settle::Position};
 
 /// One key with changes that subscribers have not been told.
 struct Told<V> {
@@ -241,7 +238,7 @@ pub fn joins_settle<T: crate::traits::CellValue, M>(cell: &Cell<T, M>) -> bool {
     // A `Queue` position counts this write as queued until it is dropped,
     // which is here: the caller queues a publish request, not this write.
     matches!(
-        crate::settle::position(|| cell.inner.node_height(), &cell.inner.backlog),
+        crate::settle::position(cell.inner.as_ref(), &cell.inner.backlog),
         Position::Joins
     )
 }

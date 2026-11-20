@@ -5,6 +5,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
+use uuid::Uuid;
 
 use parking_lot::Mutex;
 
@@ -76,8 +77,7 @@ where
                         }
                     }
                 });
-            let guard = source.activate(&source_callback);
-            derived.own(guard);
+            source.activate_owned(&derived, Uuid::new_v4(), &source_callback);
         }
         derived.subscribe(move |signal| callback(signal))
     }

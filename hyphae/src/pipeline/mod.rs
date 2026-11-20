@@ -27,6 +27,7 @@
 //! downstream operators (`map`, `tap`, ...) propagate `S` through the chain.
 
 use std::sync::{Arc, OnceLock};
+use uuid::Uuid;
 
 use parking_lot::Mutex;
 
@@ -238,6 +239,20 @@ impl<T: CellValue> PreparedInstall<T> {
         &self.initial
     }
 
+    /// Declare the edge from this install's source to `owner`, then
+    /// activate, and give `owner` the guard under `key`. The edge exists
+    /// before the first live signal can write `owner`.
+    pub(crate) fn activate_owned<O: CellValue, M>(
+        self,
+        owner: &Cell<O, M>,
+        key: Uuid,
+        callback: &Arc<dyn Fn(&Signal<T>) + Send + Sync>,
+    ) {
+        owner.declare_source(self.guard.source());
+        let guard = self.activate(callback);
+        owner.own_keyed(key, guard);
+    }
+
     pub(crate) fn activate(
         self,
         callback: &Arc<dyn Fn(&Signal<T>) + Send + Sync>,
@@ -311,8 +326,7 @@ pub trait PipelineSeed<T: CellValue>: PipelineInstall<T> {
                 cell.notify(signal.clone());
             }
         });
-        let guard = prepared.activate(&callback);
-        cell.own(guard);
+        prepared.activate_owned(&cell, Uuid::new_v4(), &callback);
         cell.lock()
     }
 }
