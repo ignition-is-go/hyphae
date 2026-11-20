@@ -3,26 +3,35 @@
 //! Node `n` fires its lowest pending ticket `t` when no pending entry
 //! `u <= t` at another node can reach `n`. Two structures answer it:
 //!
-//! - **The label index.** Every node has a key in a topological order of the
-//!   declared edges, and a label: sorted key spans that cover every node it
-//!   reaches. Keys are allocated tree-cover style: a new node takes half of
-//!   its first input's free key space, so the input's span, and through it
-//!   every ancestor's label, already covers it. Every other edge adds the
-//!   target's label to the source and to the source's ancestors, eagerly. An
-//!   edge into a node whose key is not above the input's re-keys the node
-//!   into the gap between its inputs and outputs (a family row built after
-//!   its reader). When no gap or no free space is left, or the spans added by
-//!   non-tree edges grow, the index is rebuilt from the declared edges.
-//!   Labels are never shrunk when a node or edge goes away: a stale span only
-//!   adds waiting.
+//! - **The label index.** Every node has two slots in one ordered list, a
+//!   start and an end, kept in an order-maintenance structure (list
+//!   labelling: an insert takes the midpoint key, and a full key range is
+//!   relabelled locally, over the smallest aligned window sparse enough).
+//!   Starts follow a topological order of the declared edges. A new node's
+//!   pair goes right after its first input's start, inside that input's
+//!   pair, so the input and every ancestor that covers it already cover the
+//!   new node. A label is a list of slot pairs `[start, end]` covering every
+//!   node a node reaches; relabelling keeps the order, so labels never need
+//!   rewriting. Every other edge adds the target's label to the source and
+//!   its ancestors, eagerly. An edge into a node whose start is not after
+//!   the input's (a family row built after its reader) gives the node a new
+//!   pair right after its latest input's start, when that is still before
+//!   every output. Only a true order conflict, a label overflow, or too many
+//!   dead slots lays the list out again, as a compaction.
+//!   Labels are never shrunk when a node or edge goes away: a stale pair
+//!   only adds waiting.
 //! - **The frontier.** For each ticket in flight, the nodes that hold it
 //!   pending. A readiness check scans the entries at or below its ticket and
-//!   rejects most by key order: `f` cannot reach `n` when `key(f) >= key(n)`.
+//!   rejects most by order: `f` cannot reach `n` when `key(f) >= key(n)`.
 //!
 //! A gated edge `src -> n` (a family into its reader) is not in the labels.
 //! It counts at ticket `t` only while its gate's delivery of `t` is pending
 //! at `n`, which is when `n` is the node asking: the caller passes the open
 //! gates, and an entry at `src`, or one that reaches `src`, blocks.
+//!
+//! Locks, in order: the frontier, then `ORDER`, then a node's label. A node
+//! drops (and takes the frontier lock) only where no `ORDER` write guard and
+//! no frontier guard is held.
 
 use std::{
     collections::BTreeMap,
@@ -30,78 +39,191 @@ use std::{
         Arc, LazyLock, Weak,
         atomic::{AtomicU64, Ordering},
     },
+    time::Instant,
 };
 
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock, RwLockUpgradableReadGuard};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::NodeCore;
 
-/// The key of a node no declared edge has touched. Nothing reaches it.
+/// The slot of a node no declared edge has touched. Nothing reaches it.
 pub(super) const UNASSIGNED: u64 = u64::MAX;
-
-/// Root nodes take key chunks from the upper half; a rebuild lays every
-/// node out in the lower half.
-const ROOT_BASE: u64 = 1 << 63;
-const ROOT_CHUNK: u64 = 1 << 32;
 
 pub(super) static LABEL_QUERIES: AtomicU64 = AtomicU64::new(0);
 pub(super) static FRONTIER_SCANNED: AtomicU64 = AtomicU64::new(0);
 pub(super) static MAX_FRONTIER: AtomicU64 = AtomicU64::new(0);
-pub(super) static REBUILDS: AtomicU64 = AtomicU64::new(0);
+/// Compactions, by cause, and their total time.
+pub(super) static REBUILD_CONFLICT: AtomicU64 = AtomicU64::new(0);
+pub(super) static REBUILD_OVERFLOW: AtomicU64 = AtomicU64::new(0);
+pub(super) static REBUILD_DEAD: AtomicU64 = AtomicU64::new(0);
+pub(super) static REBUILD_NANOS: AtomicU64 = AtomicU64::new(0);
+/// Local relabels of the order, and the slots they moved.
+pub(super) static RELABELS: AtomicU64 = AtomicU64::new(0);
+pub(super) static RELABELED_SLOTS: AtomicU64 = AtomicU64::new(0);
+/// Nodes given a new pair because an edge landed out of order.
+pub(super) static REKEYS: AtomicU64 = AtomicU64::new(0);
 pub(super) static CYCLES: AtomicU64 = AtomicU64::new(0);
-/// Back edges a rebuild left out of the labels, `(from site, to site) -> count`.
+/// Back edges a compaction left out of the labels, `(from site, to site) ->
+/// count`.
 static CYCLE_SITES: LazyLock<Mutex<FxHashMap<(String, String), u64>>> =
     LazyLock::new(Mutex::default);
 
-/// A node's reach label.
-#[derive(Default)]
-pub(super) struct Label {
-    /// Keys `[lo, hi)` not yet given to a tree child.
-    free: (u64, u64),
-    /// Sorted, disjoint key spans `[lo, hi)` covering every node this one
-    /// reaches over the labelled edges, itself included.
-    spans: Vec<(u64, u64)>,
+/// Every compaction, whatever its cause.
+pub(super) fn rebuilds() -> u64 {
+    REBUILD_CONFLICT.load(Ordering::Relaxed)
+        + REBUILD_OVERFLOW.load(Ordering::Relaxed)
+        + REBUILD_DEAD.load(Ordering::Relaxed)
 }
 
-impl Label {
-    fn covers(&self, key: u64) -> bool {
-        let at = self.spans.partition_point(|span| span.1 <= key);
-        self.spans.get(at).is_some_and(|span| span.0 <= key)
+// ============================================================================
+// The order
+// ============================================================================
+
+/// The ordered list of slots. A slot's key is its position: keys change on
+/// a relabel, order never does.
+pub(super) struct Order {
+    keys: Vec<u64>,
+    by_key: BTreeMap<u64, u32>,
+}
+
+pub(super) static ORDER: RwLock<Order> = RwLock::new(Order {
+    keys: Vec::new(),
+    by_key: BTreeMap::new(),
+});
+
+impl Order {
+    fn key(&self, slot: u32) -> u64 {
+        self.keys.get(slot as usize).copied().unwrap_or(UNASSIGNED)
     }
 
-    fn covers_all(&self, spans: &[(u64, u64)]) -> bool {
+    /// The key of `node`'s start slot.
+    fn of(&self, node: &NodeCore) -> u64 {
+        u32::try_from(node.slot.load(Ordering::Acquire)).map_or(UNASSIGNED, |slot| self.key(slot))
+    }
+
+    fn slots(&self) -> usize {
+        self.keys.len()
+    }
+
+    fn new_slot(&mut self, key: u64) -> u32 {
+        let slot = u32::try_from(self.keys.len()).unwrap_or(u32::MAX);
+        self.keys.push(key);
+        self.by_key.insert(key, slot);
+        slot
+    }
+
+    /// A new slot right after `after`, or at the front of the list: a root
+    /// has no inputs, so it is before every node it will feed.
+    fn insert_after(&mut self, after: Option<u32>) -> u32 {
+        if self.by_key.is_empty() {
+            return self.new_slot(1 << 62);
+        }
+        loop {
+            let lo = after.map_or(0, |slot| self.key(slot));
+            let hi = self
+                .by_key
+                .range(lo.saturating_add(1)..)
+                .next()
+                .map_or(UNASSIGNED, |(key, _)| *key);
+            if lo.checked_add(1).is_some_and(|next| next < hi) {
+                return self.new_slot(lo.saturating_add(hi.saturating_sub(lo) / 2));
+            }
+            self.relabel(if after.is_some() { lo } else { hi });
+        }
+    }
+
+    /// Spread the keys of the smallest aligned window around `key` whose
+    /// density is below the threshold for its size (list labelling): the
+    /// window doubles until it is sparse enough, so the cost is amortized
+    /// `O(log n)` per insert.
+    fn relabel(&mut self, key: u64) {
+        RELABELS.fetch_add(1, Ordering::Relaxed);
+        for bits in 1..64u32 {
+            let size = 1u64 << bits;
+            let lo = key & !(size.saturating_sub(1));
+            let hi = lo.saturating_add(size);
+            let slots: Vec<u32> = self.by_key.range(lo..hi).map(|(_, s)| *s).collect();
+            let count = slots.len().saturating_add(2);
+            // Density at most 1.5^-bits, the threshold of Bender et al.
+            #[allow(clippy::cast_precision_loss, clippy::cast_possible_wrap)]
+            let room = (size as f64) * 1.5f64.powi(-(bits as i32));
+            #[allow(clippy::cast_precision_loss)]
+            let sparse = (count as f64) <= room.max(2.0);
+            if !sparse && bits < 63 {
+                continue;
+            }
+            let step = (hi.saturating_sub(lo)) / u64::try_from(count).unwrap_or(u64::MAX);
+            // Clear the window first: a new key can equal an old one of a
+            // slot not yet moved.
+            for slot in &slots {
+                self.by_key.remove(&self.key(*slot));
+            }
+            for (i, slot) in slots.iter().enumerate() {
+                let key = lo.saturating_add(
+                    step.saturating_mul(u64::try_from(i).unwrap_or(0).saturating_add(1)),
+                );
+                if let Some(old) = self.keys.get_mut(*slot as usize) {
+                    *old = key;
+                }
+                self.by_key.insert(key, *slot);
+            }
+            RELABELED_SLOTS.fetch_add(u64::try_from(slots.len()).unwrap_or(0), Ordering::Relaxed);
+            return;
+        }
+    }
+
+    fn covers(&self, spans: &[(u32, u32)], key: u64) -> bool {
+        let at = spans.partition_point(|span| self.key(span.1) < key);
+        spans.get(at).is_some_and(|span| self.key(span.0) <= key)
+    }
+
+    fn covers_all(&self, label: &[(u32, u32)], spans: &[(u32, u32)]) -> bool {
         spans.iter().all(|&(lo, hi)| {
-            let at = self.spans.partition_point(|span| span.1 <= lo);
-            self.spans
+            let (lo, hi) = (self.key(lo), self.key(hi));
+            let at = label.partition_point(|span| self.key(span.1) < lo);
+            label
                 .get(at)
-                .is_some_and(|span| span.0 <= lo && hi <= span.1)
+                .is_some_and(|span| self.key(span.0) <= lo && hi <= self.key(span.1))
         })
     }
 
-    /// Add `spans`; returns how many spans the label grew by.
-    fn merge(&mut self, spans: &[(u64, u64)]) -> u64 {
-        let before = self.spans.len();
-        let mut all: Vec<(u64, u64)> = self.spans.iter().chain(spans).copied().collect();
-        all.sort_unstable();
-        let mut merged: Vec<(u64, u64)> = Vec::with_capacity(all.len());
+    /// Add `spans` to `label`; returns how many pairs the label grew by.
+    fn merge(&self, label: &mut Vec<(u32, u32)>, spans: &[(u32, u32)]) -> u64 {
+        let before = label.len();
+        let mut all: Vec<(u32, u32)> = label.iter().chain(spans).copied().collect();
+        all.sort_unstable_by_key(|span| self.key(span.0));
+        let mut merged: Vec<(u32, u32)> = Vec::with_capacity(all.len());
         for (lo, hi) in all {
             match merged.last_mut() {
-                Some(last) if lo <= last.1 => last.1 = last.1.max(hi),
+                Some(last) if self.key(lo) <= self.key(last.1) => {
+                    if self.key(hi) > self.key(last.1) {
+                        last.1 = hi;
+                    }
+                }
                 _ => merged.push((lo, hi)),
             }
         }
-        self.spans = merged;
-        u64::try_from(self.spans.len().saturating_sub(before)).unwrap_or(u64::MAX)
+        *label = merged;
+        u64::try_from(label.len().saturating_sub(before)).unwrap_or(u64::MAX)
     }
 }
 
-fn key(node: &NodeCore) -> u64 {
-    node.key.load(Ordering::Acquire)
+/// A node's reach label: slot pairs covering every node it reaches over the
+/// labelled edges, itself included, sorted and disjoint in list order.
+#[derive(Default)]
+pub(super) struct Label {
+    /// The node's own end slot.
+    end: u32,
+    spans: Vec<(u32, u32)>,
 }
 
 fn live(list: &Mutex<Vec<Weak<NodeCore>>>) -> Vec<Arc<NodeCore>> {
     list.lock().iter().filter_map(Weak::upgrade).collect()
+}
+
+fn start(node: &NodeCore) -> Option<u32> {
+    u32::try_from(node.slot.load(Ordering::Acquire)).ok()
 }
 
 // ============================================================================
@@ -109,24 +231,25 @@ fn live(list: &Mutex<Vec<Weak<NodeCore>>>) -> Vec<Arc<NodeCore>> {
 // ============================================================================
 
 struct Index {
-    /// Every node that has been given a key.
+    /// Every node that has been given a slot.
     nodes: Vec<Weak<NodeCore>>,
     /// Live nodes after the last prune of `nodes`.
     pruned_at: usize,
-    next_root: u64,
-    /// Spans added by non-tree edges since the last rebuild.
+    /// Pairs added by non-tree edges since the last compaction.
     overflow: u64,
-    /// The overflow that triggers a rebuild.
-    limit: u64,
 }
 
 static INDEX: Mutex<Index> = Mutex::new(Index {
     nodes: Vec::new(),
     pruned_at: 0,
-    next_root: ROOT_BASE,
     overflow: 0,
-    limit: 4096,
 });
+
+enum Cause {
+    Conflict,
+    Overflow,
+    Dead,
+}
 
 /// Index the declared edge `input -> node`. Both endpoints' labels are
 /// current when it returns, so a row build that declares the edge holds the
@@ -134,7 +257,7 @@ static INDEX: Mutex<Index> = Mutex::new(Index {
 pub(super) fn add_edge(input: &Arc<NodeCore>, node: &Arc<NodeCore>) {
     let mut index = INDEX.lock();
     for end in [input, node] {
-        if key(end) == UNASSIGNED {
+        if start(end).is_none() {
             index.nodes.push(Arc::downgrade(end));
         }
     }
@@ -142,64 +265,96 @@ pub(super) fn add_edge(input: &Arc<NodeCore>, node: &Arc<NodeCore>) {
         index.nodes.retain(|node| node.strong_count() > 0);
         index.pruned_at = index.nodes.len();
     }
-    if !index.place(input, node) || index.overflow > index.limit {
-        index.rebuild();
+    let placed = index.place(input, node);
+    let live = u64::try_from(index.pruned_at.max(index.nodes.len())).unwrap_or(u64::MAX);
+    let cause = if !placed {
+        Some(Cause::Conflict)
+    } else if index.overflow > live.saturating_mul(8).max(4096) {
+        Some(Cause::Overflow)
+    } else if u64::try_from(ORDER.read().slots()).unwrap_or(0) > live.saturating_mul(8).max(1 << 16) {
+        Some(Cause::Dead)
+    } else {
+        None
+    };
+    if let Some(cause) = cause {
+        index.rebuild(&cause);
     }
     #[cfg(debug_assertions)]
-    assert_edge(input, node);
+    assert_edge(&ORDER.read(), input, node);
 }
 
 impl Index {
-    /// Give `input -> node` its labels without a rebuild. False when there
-    /// is no key space for it.
+    /// Give `input -> node` its labels without a compaction. False on an
+    /// order conflict: the node's latest input is not before its outputs.
     fn place(&mut self, input: &Arc<NodeCore>, node: &Arc<NodeCore>) -> bool {
-        if key(input) == UNASSIGNED && !self.root(input) {
-            return false;
-        }
-        if key(node) == UNASSIGNED {
-            return child(input, node);
-        }
-        if key(input) < key(node) {
-            self.propagate(node, &mut Vec::new());
+        let order = ORDER.upgradable_read();
+        let mut order = if start(input).is_none() {
+            let mut order = RwLockUpgradableReadGuard::upgrade(order);
+            pair(&mut order, input, None);
+            parking_lot::RwLockWriteGuard::downgrade_to_upgradable(order)
+        } else {
+            order
+        };
+        if start(node).is_none() {
+            let mut write = RwLockUpgradableReadGuard::upgrade(order);
+            pair(&mut write, node, start(input));
             return true;
         }
-        self.rekey(node)
-    }
-
-    fn root(&mut self, node: &NodeCore) -> bool {
-        let lo = self.next_root;
-        let Some(hi) = lo.checked_add(ROOT_CHUNK).filter(|hi| *hi < UNASSIGNED) else {
+        if order.of(input) < order.of(node) {
+            self.propagate(&order, node, &mut Vec::new());
+            return true;
+        }
+        // The node moves to right after its latest input's start, which must
+        // still be before every output.
+        let inputs = live(&node.inputs);
+        let latest = inputs.iter().max_by_key(|input| order.of(input)).map(Arc::clone);
+        let first_out = live(&node.outputs).iter().map(|output| order.of(output)).min();
+        let Some(latest) = latest else { return false };
+        if first_out.is_some_and(|out| out <= order.of(&latest)) {
             return false;
+        }
+        REKEYS.fetch_add(1, Ordering::Relaxed);
+        order = {
+            let mut write = RwLockUpgradableReadGuard::upgrade(order);
+            // The old pair stays, still covering the node's tree subtree.
+            let old = std::mem::take(&mut node.label.lock().spans);
+            pair(&mut write, node, start(&latest));
+            let mut label = node.label.lock();
+            let mut spans = std::mem::take(&mut label.spans);
+            write.merge(&mut spans, &old);
+            label.spans = spans;
+            drop(label);
+            parking_lot::RwLockWriteGuard::downgrade_to_upgradable(write)
         };
-        self.next_root = hi;
-        *node.label.lock() = Label {
-            free: (lo.saturating_add(1), hi),
-            spans: vec![(lo, hi)],
-        };
-        node.key.store(lo, Ordering::Release);
+        let mut keep = Vec::new();
+        self.propagate(&order, node, &mut keep);
+        drop(order);
+        drop(keep);
         true
     }
 
     /// Add `node`'s label to its inputs and their ancestors, up the
-    /// labelled edges, stopping where it is already covered.
-    ///
-    /// Every node it visits stays in `keep`: a caller holding the frontier
-    /// lock drops them after it, since a node's drop takes that lock.
-    fn propagate(&mut self, node: &Arc<NodeCore>, keep: &mut Vec<Arc<NodeCore>>) {
+    /// labelled edges, stopping where it is already covered. Every node it
+    /// visits stays in `keep` until the caller has released `ORDER`.
+    fn propagate(&mut self, order: &Order, node: &Arc<NodeCore>, keep: &mut Vec<Arc<NodeCore>>) {
         let spans = node.label.lock().spans.clone();
         let mut seen: FxHashSet<usize> = FxHashSet::default();
         let mut stack = vec![Arc::clone(node)];
         while let Some(below) = stack.pop() {
-            let below_key = key(&below);
+            let below_key = order.of(&below);
             for input in live(&below.inputs) {
-                if key(&input) >= below_key || !seen.insert(Arc::as_ptr(&input).addr()) {
+                if order.of(&input) >= below_key || !seen.insert(Arc::as_ptr(&input).addr()) {
+                    keep.push(input);
                     continue;
                 }
                 let mut label = input.label.lock();
-                if label.covers_all(&spans) {
+                if order.covers_all(&label.spans, &spans) {
+                    drop(label);
+                    keep.push(input);
                     continue;
                 }
-                self.overflow = self.overflow.saturating_add(label.merge(&spans));
+                let added = order.merge(&mut label.spans, &spans);
+                self.overflow = self.overflow.saturating_add(added);
                 drop(label);
                 stack.push(input);
             }
@@ -207,39 +362,19 @@ impl Index {
         }
     }
 
-    /// Move `node` into the gap between its inputs and its outputs, and
-    /// label its inputs with it. False when there is no gap.
-    fn rekey(&mut self, node: &Arc<NodeCore>) -> bool {
-        let lo = live(&node.inputs).iter().map(|input| key(input)).max().unwrap_or(0);
-        let hi = live(&node.outputs)
-            .iter()
-            .map(|output| key(output))
-            .min()
-            .unwrap_or(UNASSIGNED);
-        if hi.saturating_sub(lo) < 2 {
-            return false;
+    /// Lay the whole list out again from the declared edges: starts in
+    /// reverse postorder of a depth-first search, each tree subtree nested
+    /// in its root's pair, labels closed over the edges that are not back
+    /// edges. A compaction: an order conflict, label overflow and dead slots
+    /// call it, never the fire path's steady state.
+    fn rebuild(&mut self, cause: &Cause) {
+        let started = Instant::now();
+        match cause {
+            Cause::Conflict => &REBUILD_CONFLICT,
+            Cause::Overflow => &REBUILD_OVERFLOW,
+            Cause::Dead => &REBUILD_DEAD,
         }
-        let at = lo.saturating_add(hi.saturating_sub(lo) / 2);
-        let mut keep = Vec::new();
-        // Readers compare keys and labels: they see the move whole.
-        let frontier = FRONTIER.lock();
-        {
-            let mut label = node.label.lock();
-            label.merge(&[(at, at.saturating_add(1))]);
-            label.free = (at, at);
-        }
-        node.key.store(at, Ordering::Release);
-        self.propagate(node, &mut keep);
-        drop(frontier);
-        drop(keep);
-        true
-    }
-
-    /// Lay out every node again from the declared edges: keys in reverse
-    /// postorder of a depth-first search, so each tree subtree is one span,
-    /// and labels closed over the edges that are not back edges.
-    fn rebuild(&mut self) {
-        REBUILDS.fetch_add(1, Ordering::Relaxed);
+        .fetch_add(1, Ordering::Relaxed);
         let nodes: Vec<Arc<NodeCore>> = self.nodes.iter().filter_map(Weak::upgrade).collect();
         self.nodes = nodes.iter().map(Arc::downgrade).collect();
         self.pruned_at = nodes.len();
@@ -258,108 +393,134 @@ impl Index {
             })
             .collect();
         let count = nodes.len();
-        let (post, tree_size, back) = depth_first(&outs);
+        let (post, tree, back) = depth_first(&outs);
         for &(from, to) in &back {
             if let (Some(from), Some(to)) = (nodes.get(from), nodes.get(to)) {
                 record_cycle(from, to);
             }
         }
         let back: FxHashSet<(usize, usize)> = back.into_iter().collect();
-        let spacing = ROOT_BASE
-            .checked_div(u64::try_from(count).unwrap_or(u64::MAX).saturating_add(1))
-            .unwrap_or(1);
-        let mut rank = vec![0u64; count];
-        for (i, &v) in post.iter().enumerate() {
-            if let Some(slot) = rank.get_mut(v) {
-                *slot = u64::try_from(count.saturating_sub(1).saturating_sub(i)).unwrap_or(0);
+        // The slot sequence: a node's start, its tree children's subtrees in
+        // reverse visit order, its end. Starts then follow reverse postorder.
+        let mut sequence: Vec<(usize, bool)> = Vec::with_capacity(count.saturating_mul(2));
+        let mut roots: Vec<usize> = (0..count).filter(|v| tree.get(*v).is_some_and(|t| t.0.is_none())).collect();
+        roots.reverse();
+        for root in roots {
+            let mut stack = vec![(root, false)];
+            while let Some((v, done)) = stack.pop() {
+                if done {
+                    sequence.push((v, false));
+                    continue;
+                }
+                sequence.push((v, true));
+                stack.push((v, true));
+                // Pushed in visit order, so popped in reverse visit order.
+                for &child in tree.get(v).map(|t| t.1.as_slice()).unwrap_or_default() {
+                    stack.push((child, false));
+                }
             }
         }
-        let mut labels: Vec<Label> = (0..count).map(|_| Label::default()).collect();
+        let spacing = (1u64 << 63)
+            .checked_div(u64::try_from(sequence.len()).unwrap_or(u64::MAX).saturating_add(1))
+            .unwrap_or(1);
+        let mut order = Order {
+            keys: Vec::with_capacity(sequence.len()),
+            by_key: BTreeMap::new(),
+        };
+        let mut slots = vec![(0u32, 0u32); count];
+        for (i, &(v, is_start)) in sequence.iter().enumerate() {
+            let key = spacing.saturating_mul(u64::try_from(i).unwrap_or(0).saturating_add(1));
+            let slot = order.new_slot(key);
+            if let Some(pair) = slots.get_mut(v) {
+                if is_start { pair.0 = slot } else { pair.1 = slot }
+            }
+        }
+        let mut labels: Vec<Vec<(u32, u32)>> = vec![Vec::new(); count];
         for &v in &post {
-            let lo = rank.get(v).copied().unwrap_or(0).saturating_mul(spacing);
-            let size = tree_size.get(v).copied().unwrap_or(1);
-            let mut label = Label {
-                free: (lo.saturating_add(1), lo.saturating_add(spacing)),
-                spans: vec![(lo, lo.saturating_add(size.saturating_mul(spacing)))],
-            };
+            let mut label = vec![slots.get(v).copied().unwrap_or_default()];
             for &w in outs.get(v).into_iter().flatten() {
                 if !back.contains(&(v, w))
                     && let Some(below) = labels.get(w)
                 {
-                    let spans = below.spans.clone();
-                    label.merge(&spans);
+                    let below = below.clone();
+                    order.merge(&mut label, &below);
                 }
             }
             if let Some(slot) = labels.get_mut(v) {
                 *slot = label;
             }
         }
-        // Readers see the new layout whole. No node drops under the lock:
-        // `nodes` holds them all, and a node's drop takes it.
-        let frontier = FRONTIER.lock();
-        for ((node, label), rank) in nodes.iter().zip(labels).zip(rank) {
-            node.key.store(rank.saturating_mul(spacing), Ordering::Release);
-            *node.label.lock() = label;
+        {
+            // Readers see the new layout whole. No node drops under the
+            // guard: `nodes` holds them all.
+            let mut current = ORDER.write();
+            *current = order;
+            for ((node, spans), (start, end)) in nodes.iter().zip(labels).zip(slots) {
+                node.slot.store(u64::from(start), Ordering::Release);
+                *node.label.lock() = Label { end, spans };
+            }
         }
-        drop(frontier);
-        self.next_root = ROOT_BASE;
         self.overflow = 0;
-        self.limit = u64::try_from(count).unwrap_or(u64::MAX).saturating_mul(8).max(4096);
+        REBUILD_NANOS.fetch_add(
+            u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
         // The edges the layout read; one declared since then is indexed by
         // its own `add_edge`, queued behind the index lock.
         #[cfg(debug_assertions)]
-        for (v, node) in nodes.iter().enumerate() {
-            for &w in outs.get(v).into_iter().flatten() {
-                if !back.contains(&(v, w))
-                    && let Some(output) = nodes.get(w)
-                {
-                    assert_edge(node, output);
+        {
+            let order = ORDER.read();
+            for (v, node) in nodes.iter().enumerate() {
+                for &w in outs.get(v).into_iter().flatten() {
+                    if !back.contains(&(v, w))
+                        && let Some(output) = nodes.get(w)
+                    {
+                        assert_edge(&order, node, output);
+                    }
                 }
             }
         }
     }
 }
 
-/// Give `node`, which has no key, half of `parent`'s free key space.
-fn child(parent: &NodeCore, node: &NodeCore) -> bool {
-    let mut label = parent.label.lock();
-    let (lo, hi) = label.free;
-    let half = hi.saturating_sub(lo) / 2;
-    if half < 2 {
-        return false;
-    }
-    let mid = lo.saturating_add(half);
-    label.free = (mid, hi);
+/// Give `node` a fresh pair of slots right after `after` (inside that
+/// node's pair), or at the end of the list, and make the pair its label.
+fn pair(order: &mut Order, node: &NodeCore, after: Option<u32>) {
+    let start = order.insert_after(after);
+    let end = order.insert_after(Some(start));
+    let mut label = node.label.lock();
+    label.end = end;
+    let mut spans = std::mem::take(&mut label.spans);
+    order.merge(&mut spans, &[(start, end)]);
+    label.spans = spans;
     drop(label);
-    *node.label.lock() = Label {
-        free: (lo.saturating_add(1), mid),
-        spans: vec![(lo, mid)],
-    };
-    node.key.store(lo, Ordering::Release);
-    true
+    node.slot.store(u64::from(start), Ordering::Release);
 }
 
-/// A depth-first search over `outs`: the postorder, each node's tree subtree
-/// size, and the back edges.
-fn depth_first(outs: &[Vec<usize>]) -> (Vec<usize>, Vec<u64>, Vec<(usize, usize)>) {
+/// A depth-first search over `outs`: the postorder, each node's tree parent
+/// and tree children in visit order, and the back edges.
+#[allow(clippy::type_complexity)]
+fn depth_first(
+    outs: &[Vec<usize>],
+) -> (Vec<usize>, Vec<(Option<usize>, Vec<usize>)>, Vec<(usize, usize)>) {
     const WHITE: u8 = 0;
     const GRAY: u8 = 1;
     const BLACK: u8 = 2;
     let count = outs.len();
     let mut color = vec![WHITE; count];
-    let mut size = vec![1u64; count];
+    let mut tree: Vec<(Option<usize>, Vec<usize>)> = vec![(None, Vec::new()); count];
     let mut post = Vec::with_capacity(count);
     let mut back = Vec::new();
-    for start in 0..count {
-        if color.get(start) != Some(&WHITE) {
+    for root in 0..count {
+        if color.get(root) != Some(&WHITE) {
             continue;
         }
-        let mut stack: Vec<(usize, usize, Option<usize>)> = vec![(start, 0, None)];
-        if let Some(c) = color.get_mut(start) {
+        let mut stack: Vec<(usize, usize)> = vec![(root, 0)];
+        if let Some(c) = color.get_mut(root) {
             *c = GRAY;
         }
         while let Some(top) = stack.last_mut() {
-            let (v, next, parent) = *top;
+            let (v, next) = *top;
             if let Some(&w) = outs.get(v).and_then(|o| o.get(next)) {
                 top.1 = next.saturating_add(1);
                 match color.get(w).copied() {
@@ -367,7 +528,13 @@ fn depth_first(outs: &[Vec<usize>]) -> (Vec<usize>, Vec<u64>, Vec<(usize, usize)
                         if let Some(c) = color.get_mut(w) {
                             *c = GRAY;
                         }
-                        stack.push((w, 0, Some(v)));
+                        if let Some(t) = tree.get_mut(w) {
+                            t.0 = Some(v);
+                        }
+                        if let Some(t) = tree.get_mut(v) {
+                            t.1.push(w);
+                        }
+                        stack.push((w, 0));
                     }
                     Some(GRAY) => back.push((v, w)),
                     _ => {}
@@ -379,15 +546,9 @@ fn depth_first(outs: &[Vec<usize>]) -> (Vec<usize>, Vec<u64>, Vec<(usize, usize)
                 *c = BLACK;
             }
             post.push(v);
-            if let Some(parent) = parent {
-                let grown = size.get(v).copied().unwrap_or(1);
-                if let Some(s) = size.get_mut(parent) {
-                    *s = s.saturating_add(grown);
-                }
-            }
         }
     }
-    (post, size, back)
+    (post, tree, back)
 }
 
 /// Record a back edge `from -> to` that the labels leave out.
@@ -417,21 +578,19 @@ pub(super) fn cycle_sites() -> Vec<((String, String), u64)> {
 }
 
 /// The labels cover the declared edge `input -> node`: the input is first in
-/// key order and its label holds the node's.
+/// the order and its label holds the node's.
 #[cfg(debug_assertions)]
-fn assert_edge(input: &NodeCore, node: &NodeCore) {
-    let (ki, kn) = (key(input), key(node));
+fn assert_edge(order: &Order, input: &NodeCore, node: &NodeCore) {
+    let (ki, kn) = (order.of(input), order.of(node));
     if ki >= kn {
-        // A back edge, left out of the labels by the last rebuild.
+        // A back edge, left out of the labels by the last compaction.
         return;
     }
     let spans = node.label.lock().spans.clone();
     let label = input.label.lock();
     assert!(
-        label.covers(kn) && label.covers_all(&spans),
-        "hyphae: reach index: the label of an input (key {ki}, {:?}) does not cover its \
-         output (key {kn}, {spans:?})",
-        label.spans
+        order.covers(&label.spans, kn) && order.covers_all(&label.spans, &spans),
+        "hyphae: reach index: the label of an input does not cover its output"
     );
 }
 
@@ -490,10 +649,11 @@ pub(super) fn blocker(
     let mut keep: Vec<Arc<NodeCore>> = Vec::new();
     let found = {
         let frontier = FRONTIER.lock();
-        let target = key(node);
+        let order = ORDER.read();
+        let target = order.of(node);
         let gate_keys: Vec<(usize, u64)> = gates
             .iter()
-            .map(|gate| (Arc::as_ptr(gate).addr(), key(gate)))
+            .map(|gate| (Arc::as_ptr(gate).addr(), order.of(gate)))
             .collect();
         let mut found = None;
         'scan: for nodes in frontier.tickets.range(..=ticket).map(|(_, nodes)| nodes) {
@@ -504,11 +664,11 @@ pub(super) fn blocker(
                     continue;
                 }
                 let Some(held) = held.upgrade() else { continue };
-                let from = key(&held);
+                let from = order.of(&held);
                 let mut reaches = |to: u64| {
                     from < to && {
                         queries = queries.saturating_add(1);
-                        held.label.lock().covers(to)
+                        order.covers(&held.label.lock().spans, to)
                     }
                 };
                 if reaches(target)
@@ -520,6 +680,8 @@ pub(super) fn blocker(
                 keep.push(held);
             }
         }
+        drop(order);
+        drop(frontier);
         found
     };
     drop(keep);
@@ -553,8 +715,12 @@ pub(super) fn assert_ready(node: &Arc<NodeCore>, ticket: u64, gates: &[Arc<NodeC
             "hyphae: readiness rule: ticket {ticket} fired while an open gated input holds an entry at or below it"
         );
         while let Some(at) = stack.pop() {
-            for output in live(&at.outputs) {
-                if key(&at) >= key(&output) || !seen.insert(Arc::as_ptr(&output).addr()) {
+            let outputs = live(&at.outputs);
+            let order = ORDER.read();
+            let ahead: Vec<bool> = outputs.iter().map(|o| order.of(&at) < order.of(o)).collect();
+            drop(order);
+            for (output, ahead) in outputs.into_iter().zip(ahead) {
+                if !ahead || !seen.insert(Arc::as_ptr(&output).addr()) {
                     continue;
                 }
                 assert!(

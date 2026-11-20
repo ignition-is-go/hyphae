@@ -47,7 +47,7 @@ fn run(path: &str) {
             .saturating_sub(COMPLETED.load(Ordering::Acquire));
         let _ = writeln!(
             file,
-            "{now:.3} event_sets={} tickets={} fires={} node_fires={} pool_fires={} waits={} deferred_writes={} fire_nanos={} flush_sets={} max_in_flight={} in_flight={in_flight} backlog={} interval_max_fire_nanos={hold} label_queries={} frontier_scanned={} max_frontier={} index_rebuilds={} parks={} side_reads={} undeclared_writes={} unbound_owned={} cycles={}",
+            "{now:.3} event_sets={} tickets={} fires={} node_fires={} pool_fires={} waits={} deferred_writes={} fire_nanos={} flush_sets={} max_in_flight={} in_flight={in_flight} backlog={} interval_max_fire_nanos={hold} label_queries={} frontier_scanned={} max_frontier={} index_rebuilds={} rebuild_conflicts={} rebuild_overflows={} rebuild_dead={} rebuild_nanos={} relabels={} relabeled_slots={} rekeys={} parks={} side_reads={} undeclared_writes={} unbound_owned={} cycles={}",
             s.event_sets,
             s.tickets,
             s.fires,
@@ -63,6 +63,13 @@ fn run(path: &str) {
             s.frontier_scanned,
             s.max_frontier,
             s.index_rebuilds,
+            s.rebuild_conflicts,
+            s.rebuild_overflows,
+            s.rebuild_dead,
+            s.rebuild_nanos,
+            s.relabels,
+            s.relabeled_slots,
+            s.rekeys,
             s.parks,
             s.side_reads,
             s.undeclared_writes,

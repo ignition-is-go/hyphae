@@ -272,8 +272,8 @@ pub struct NodeCore {
     seq: u64,
     this: Weak<Self>,
     pending: Mutex<Pending>,
-    /// The node's key in the reach index's topological order.
-    key: AtomicU64,
+    /// The node's start slot in the reach index's order.
+    slot: AtomicU64,
     /// The reach index's label: the keys of every node this one reaches.
     label: Mutex<reach::Label>,
     /// [`IDLE`], or claimed by one thread that is evaluating or firing it.
@@ -323,7 +323,7 @@ impl NodeCore {
                 inflight: NONE,
                 processed: NONE,
             }),
-            key: AtomicU64::new(reach::UNASSIGNED),
+            slot: AtomicU64::new(reach::UNASSIGNED),
             label: Mutex::default(),
             sched: AtomicU8::new(IDLE),
             parked: Mutex::new(Vec::new()),
@@ -1034,8 +1034,22 @@ pub struct SettleStats {
     pub frontier_scanned: u64,
     /// The most `(ticket, node)` entries the frontier held at one time.
     pub max_frontier: u64,
-    /// Times the reach index was laid out again.
+    /// Times the reach index was laid out again (all causes).
     pub index_rebuilds: u64,
+    /// Compactions after an edge landed against the order with no room to
+    /// move its target.
+    pub rebuild_conflicts: u64,
+    /// Compactions after non-tree label pairs grew past eight per live node.
+    pub rebuild_overflows: u64,
+    /// Compactions after dead slots grew past eight per live node.
+    pub rebuild_dead: u64,
+    /// Nanoseconds spent in compactions.
+    pub rebuild_nanos: u64,
+    /// Local relabels of the order, and the slots they moved.
+    pub relabels: u64,
+    pub relabeled_slots: u64,
+    /// Nodes given a new place because an edge landed against the order.
+    pub rekeys: u64,
     /// Times a node parked on a blocker.
     pub parks: u64,
     /// `get()` and subscribe-time reads made inside a callback.
@@ -1084,7 +1098,14 @@ pub fn stats() -> SettleStats {
         label_queries: reach::LABEL_QUERIES.load(Ordering::Relaxed),
         frontier_scanned: reach::FRONTIER_SCANNED.load(Ordering::Relaxed),
         max_frontier: reach::MAX_FRONTIER.load(Ordering::Relaxed),
-        index_rebuilds: reach::REBUILDS.load(Ordering::Relaxed),
+        index_rebuilds: reach::rebuilds(),
+        rebuild_conflicts: reach::REBUILD_CONFLICT.load(Ordering::Relaxed),
+        rebuild_overflows: reach::REBUILD_OVERFLOW.load(Ordering::Relaxed),
+        rebuild_dead: reach::REBUILD_DEAD.load(Ordering::Relaxed),
+        rebuild_nanos: reach::REBUILD_NANOS.load(Ordering::Relaxed),
+        relabels: reach::RELABELS.load(Ordering::Relaxed),
+        relabeled_slots: reach::RELABELED_SLOTS.load(Ordering::Relaxed),
+        rekeys: reach::REKEYS.load(Ordering::Relaxed),
         parks: PARKS.load(Ordering::Relaxed),
         side_reads: SIDE_READS.load(Ordering::Relaxed),
         undeclared_writes: UNDECLARED.load(Ordering::Relaxed),
