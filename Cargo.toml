@@ -31,6 +31,9 @@ panic_in_result_fn = "deny"
 panic = "deny"
 exit = "deny"
 as_conversions = "deny"
+# The suggested `assert_eq!(value, [] as [T; 0])` names the element type at
+# every call and reads worse than `assert!(value.is_empty())`.
+assert_is_empty = "allow"
 # Reactive combinators and keyed signal maps nest generics deeply; the layered
 # types are the natural shape here, so don't fail the lint pipeline on them.
 type_complexity = "allow"
