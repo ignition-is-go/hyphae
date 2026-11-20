@@ -332,7 +332,7 @@ impl NodeCore {
             outputs.push(Arc::downgrade(self));
         }
         EDGE_GEN.fetch_add(1, Ordering::Release);
-        watermark::invalidate(self);
+        watermark::invalidate(self, watermark::Cause::Edge);
     }
 
     pub(crate) fn set_caller(&self, caller: Option<&'static Location<'static>>) {
@@ -362,7 +362,7 @@ impl NodeCore {
         // whose delivery clears the mark (`docs/settle-epochs-model/
         // quiet_model.rs`, GATE=1).
         EDGE_GEN.fetch_add(1, Ordering::Release);
-        watermark::invalidate(self);
+        watermark::invalidate(self, watermark::Cause::Edge);
     }
 
     /// The gated sources open at `ticket`: those whose gate delivered it.
@@ -1149,7 +1149,7 @@ pub(crate) fn push_current(target: &Arc<dyn Node>, arrival: bool, item: Item) {
                 .map_err(|_| *ticket);
             // A seed is the only way pending work enters an ancestry from
             // outside it. `S` passes the ticket after this.
-            watermark::invalidate(target.node_core());
+            watermark::invalidate(target.node_core(), watermark::Cause::Seed);
             pushed
         }
         Some(Ctx::Firing(firing)) => {

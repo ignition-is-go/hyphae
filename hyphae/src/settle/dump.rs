@@ -47,7 +47,7 @@ fn run(path: &str) {
             .saturating_sub(COMPLETED.load(Ordering::Acquire));
         let _ = writeln!(
             file,
-            "{now:.3} event_sets={} tickets={} fires={} node_fires={} pool_fires={} waits={} deferred_writes={} fire_nanos={} flush_sets={} max_in_flight={} in_flight={in_flight} backlog={} interval_max_fire_nanos={hold} walks={} walk_nodes={} parks={} side_reads={} undeclared_writes={} unbound_owned={} quiet_hits={} validated={} invalidated={} cycles={}",
+            "{now:.3} event_sets={} tickets={} fires={} node_fires={} pool_fires={} waits={} deferred_writes={} fire_nanos={} flush_sets={} max_in_flight={} in_flight={in_flight} backlog={} interval_max_fire_nanos={hold} walks={} walk_nodes={} parks={} side_reads={} undeclared_writes={} unbound_owned={} quiet_hits={} validated={} invalidated={} cycles={} sampled_clearings={} sampled_validations={}",
             s.event_sets,
             s.tickets,
             s.fires,
@@ -69,7 +69,21 @@ fn run(path: &str) {
             s.validated,
             s.invalidated,
             s.cycles,
+            super::watermark::diag::SAMPLED_CLEARINGS.load(Ordering::Relaxed),
+            super::watermark::diag::SAMPLED_VALIDATIONS.load(Ordering::Relaxed),
         );
+        for (suffix, lines) in [
+            ("clears", super::watermark::diag::clear_lines()),
+            ("validations", super::watermark::diag::validation_lines()),
+        ] {
+            if lines.len() > 2
+                && let Ok(mut out) = std::fs::File::create(format!("{path}.{suffix}"))
+            {
+                for line in lines {
+                    let _ = writeln!(out, "{line}");
+                }
+            }
+        }
         let cycles = super::watermark::cycle_sites();
         if !cycles.is_empty()
             && let Ok(mut out) = std::fs::File::create(format!("{path}.cycles"))

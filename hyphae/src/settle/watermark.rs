@@ -56,7 +56,12 @@ pub(super) fn input_past(
     if input.watermark.load(Ordering::Acquire) > ticket {
         return Ok(());
     }
-    if validate(input, &mut FxHashSet::default()) {
+    let mut certified = 0;
+    let valid = validate(input, &mut FxHashSet::default(), &mut certified);
+    if certified > 0 && diag::sampled() {
+        diag::validation(core.caller.get().copied(), input.caller.get().copied(), certified);
+    }
+    if valid {
         return Ok(());
     }
     WALKS.fetch_add(1, Ordering::Relaxed);
@@ -83,13 +88,137 @@ pub(super) fn refresh_bound(core: &NodeCore) -> u64 {
 /// Clear the certificates of `node` and of every certified descendant. A
 /// node that is not certified has no certified descendant, so the walk stops
 /// there.
-pub(super) fn invalidate(node: &Arc<NodeCore>) {
+pub(super) fn invalidate(node: &Arc<NodeCore>, cause: Cause) {
+    let sample = diag::sampled();
+    let start = node.caller.get().copied();
+    let mut cleared = 0u64;
     let mut stack = vec![Arc::clone(node)];
     while let Some(node) = stack.pop() {
         if node.mark.swap(NOT_QUIET, Ordering::AcqRel) != NOT_QUIET {
             INVALIDATED.fetch_add(1, Ordering::Relaxed);
+            cleared += 1;
+            if sample {
+                diag::cleared(node.caller.get().copied());
+            }
             stack.extend(node.outputs.lock().iter().filter_map(Weak::upgrade));
         }
+    }
+    if sample {
+        diag::clearing(cause, start, cleared);
+    }
+}
+
+/// What started a clearing walk.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(super) enum Cause {
+    /// A ticket seeded at the node.
+    Seed,
+    /// A push from a fire found a marked node.
+    Push,
+    /// An edge declared into the node.
+    Edge,
+}
+
+/// Sampled clearing walks and validations, by creation site, behind
+/// `HYPHAE_SETTLE_STATS_OUT`: one event in [`diag::EVERY`].
+pub(super) mod diag {
+    use std::{
+        panic::Location,
+        sync::{
+            LazyLock,
+            atomic::{AtomicU64, Ordering},
+        },
+    };
+
+    use parking_lot::Mutex;
+    use rustc_hash::FxHashMap;
+
+    use super::Cause;
+
+    pub(crate) const EVERY: u64 = 64;
+
+    type Site = Option<&'static Location<'static>>;
+
+    static ON: LazyLock<bool> = LazyLock::new(|| std::env::var_os("HYPHAE_SETTLE_STATS_OUT").is_some());
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static SAMPLED_CLEARINGS: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static SAMPLED_VALIDATIONS: AtomicU64 = AtomicU64::new(0);
+
+    /// Walk start (cause, site) -> (walks, nodes cleared, longest walk).
+    static STARTS: LazyLock<Mutex<FxHashMap<(Cause, usize), (Site, u64, u64, u64)>>> =
+        LazyLock::new(Mutex::default);
+    /// Cleared site -> times cleared.
+    static CLEARED: LazyLock<Mutex<FxHashMap<usize, (Site, u64)>>> = LazyLock::new(Mutex::default);
+    /// (reader site, input site) -> (validations, nodes certified, deepest).
+    static READS: LazyLock<Mutex<FxHashMap<(usize, usize), (Site, Site, u64, u64, u64)>>> =
+        LazyLock::new(Mutex::default);
+
+    fn key(site: Site) -> usize {
+        site.map_or(0, |site| std::ptr::from_ref(site).addr())
+    }
+
+    pub(crate) fn sampled() -> bool {
+        *ON && COUNTER.fetch_add(1, Ordering::Relaxed) % EVERY == 0
+    }
+
+    pub(crate) fn cleared(site: Site) {
+        let mut cleared = CLEARED.lock();
+        let entry = cleared.entry(key(site)).or_insert((site, 0));
+        entry.1 += 1;
+    }
+
+    pub(crate) fn clearing(cause: Cause, start: Site, length: u64) {
+        SAMPLED_CLEARINGS.fetch_add(1, Ordering::Relaxed);
+        let mut starts = STARTS.lock();
+        let entry = starts.entry((cause, key(start))).or_insert((start, 0, 0, 0));
+        entry.1 += 1;
+        entry.2 += length;
+        entry.3 = entry.3.max(length);
+    }
+
+    pub(crate) fn validation(reader: Site, input: Site, depth: u64) {
+        SAMPLED_VALIDATIONS.fetch_add(1, Ordering::Relaxed);
+        let mut reads = READS.lock();
+        let entry = reads
+            .entry((key(reader), key(input)))
+            .or_insert((reader, input, 0, 0, 0));
+        entry.2 += 1;
+        entry.3 += depth;
+        entry.4 = entry.4.max(depth);
+    }
+
+    fn site(site: Site) -> String {
+        site.map_or_else(|| "<unknown>".to_owned(), ToString::to_string)
+    }
+
+    /// Lines for `<path>.clears`, most nodes cleared first.
+    pub(crate) fn clear_lines() -> Vec<String> {
+        let mut starts: Vec<_> = STARTS.lock().iter().map(|(k, v)| (k.0, *v)).collect();
+        starts.sort_by_key(|(_, v)| std::cmp::Reverse(v.2));
+        let mut lines: Vec<String> = vec![format!(
+            "# sampled 1/{EVERY}: walks cleared_total longest cause start_site"
+        )];
+        lines.extend(starts.iter().take(200).map(|(cause, (start, walks, total, longest))| {
+            format!("{walks} {total} {longest} {cause:?} {}", site(*start))
+        }));
+        let mut cleared: Vec<_> = CLEARED.lock().values().copied().collect();
+        cleared.sort_by_key(|v| std::cmp::Reverse(v.1));
+        lines.push("# cleared site: times".to_owned());
+        lines.extend(cleared.iter().take(200).map(|(s, n)| format!("{n} {}", site(*s))));
+        lines
+    }
+
+    /// Lines for `<path>.validations`, most nodes certified first.
+    pub(crate) fn validation_lines() -> Vec<String> {
+        let mut reads: Vec<_> = READS.lock().values().copied().collect();
+        reads.sort_by_key(|v| std::cmp::Reverse(v.3));
+        let mut lines = vec![format!(
+            "# sampled 1/{EVERY}: validations certified_total deepest reader_site <- input_site"
+        )];
+        lines.extend(reads.iter().take(200).map(|(reader, input, n, total, deepest)| {
+            format!("{n} {total} {deepest} {} <- {}", site(*reader), site(*input))
+        }));
+        lines
     }
 }
 
@@ -98,14 +227,14 @@ pub(super) fn invalidate(node: &Arc<NodeCore>) {
 /// node is in the target's ancestry and holds the ticket.
 pub(super) fn invalidate_if_marked(node: &Arc<NodeCore>) {
     if node.mark.load(Ordering::Acquire) != NOT_QUIET {
-        invalidate(node);
+        invalidate(node, Cause::Push);
     }
 }
 
 /// Certify `node` quiet, ancestors first: nothing in its ancestry holds
 /// pending work. Check, mark tentative, check again, then promote; a seed in
 /// between clears the tentative mark and the promotion fails.
-fn validate(node: &Arc<NodeCore>, seen: &mut FxHashSet<usize>) -> bool {
+fn validate(node: &Arc<NodeCore>, seen: &mut FxHashSet<usize>, certified: &mut u64) -> bool {
     if quiet(node) {
         return true;
     }
@@ -113,7 +242,7 @@ fn validate(node: &Arc<NodeCore>, seen: &mut FxHashSet<usize>) -> bool {
         return false;
     }
     let ancestors = inputs(node);
-    if !ancestors.iter().all(|input| validate(input, seen)) {
+    if !ancestors.iter().all(|input| validate(input, seen, certified)) {
         return false;
     }
     let holds = |node: &NodeCore| node.idle() && ancestors.iter().all(|input| quiet(input));
@@ -130,6 +259,7 @@ fn validate(node: &Arc<NodeCore>, seen: &mut FxHashSet<usize>) -> bool {
         .is_ok();
     if promoted {
         VALIDATED.fetch_add(1, Ordering::Relaxed);
+        *certified += 1;
     }
     promoted
 }
