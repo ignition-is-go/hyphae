@@ -84,6 +84,20 @@ pub(super) fn undeclared(target: &dyn Node) {
     }
 }
 
+/// A write along an edge declared during the ticket reached a node already
+/// past it, and became a new ticket. Logged once per creation site.
+pub(super) fn late(target: &dyn Node) {
+    if *MODE != Mode::Off && once(1, target.node_caller()) {
+        let message = format!(
+            "hyphae: late edge: a write to the node created at {} became a new ticket; \
+             its edge was declared during a ticket",
+            site(target.node_caller())
+        );
+        log::warn!("{message}");
+        eprintln!("{message}");
+    }
+}
+
 /// An owned subscription of the owner created at `owner` could not be bound
 /// to it, so its callback runs at the source's fire. A known hole: operator
 /// state shared across inputs is then not ordered by ticket.

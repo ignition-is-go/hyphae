@@ -357,6 +357,20 @@ semantics**: with the edge those writes join ticket N, as they do now. Without
 it they are still correct, but they land one ticket later, and a join
 downstream sees an extra intermediate state. Safety does not need it.
 
+### Late edges (temporary)
+
+An edge declared into a live node during a ticket is a late edge: the node
+may already have promised past the ticket, so a write along it cannot join.
+Today such a write becomes a new ticket, and the site that built the node is
+logged once (`settle::edges::late`). A bound callback whose owner has passed
+the ticket runs at its source's fire instead.
+
+TODO: this fallback goes once the lifecycle rule holds: nodes are created
+and dropped only between tickets, as roots on a thread outside any settle,
+or inside a family's fire, as rows. A debug build will then panic at the
+construction site of a node built inside a callback, so no edge is declared
+into a live node during a ticket, and the late-edge path becomes an assert.
+
 ### Coverage of today's uses
 
 A separate audit maps every `switch_map`, `flat_map`, and dynamic-graph site in

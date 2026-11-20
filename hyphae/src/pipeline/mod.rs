@@ -119,13 +119,40 @@ where
     fn materialize_pipeline(self) -> Cell<Option<T>, CellImmutable> {
         let cell = Cell::<Option<T>, CellMutable>::new(None);
         let weak = cell.downgrade();
+        // Signals wait here until the cell owns the guard, which declares the
+        // edge they travel: a write before it would have no edge.
+        let waiting: Arc<Mutex<Option<Vec<Signal<T>>>>> = Arc::new(Mutex::new(Some(Vec::new())));
+        let held = waiting.clone();
         let callback: Arc<dyn Fn(&Signal<T>) + Send + Sync> = Arc::new(move |signal| {
+            if let Some(queued) = held.lock().as_mut() {
+                queued.push(signal.clone());
+                return;
+            }
             if let Some(cell) = weak.upgrade() {
                 cell.notify(signal.map(|value| Some(value.clone())));
             }
         });
         let guard = self.install(callback);
         cell.own(guard);
+        // Drain in order, notifying with the lock released: a notify can
+        // fire this pipeline on this thread, and its callback takes the lock.
+        // A signal arriving meanwhile joins the queue, which closes only
+        // once it is empty.
+        loop {
+            let batch = {
+                let mut waiting = waiting.lock();
+                match waiting.as_mut() {
+                    Some(queued) if !queued.is_empty() => std::mem::take(queued),
+                    _ => {
+                        *waiting = None;
+                        break;
+                    }
+                }
+            };
+            for signal in batch {
+                cell.notify(signal.map(|value| Some(value.clone())));
+            }
+        }
         cell.lock()
     }
 }

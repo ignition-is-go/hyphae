@@ -1138,13 +1138,15 @@ pub(crate) fn position(target: &dyn Node, backlog: &Backlog) -> Position {
                 return Position::Queue(Some(backlog.add()));
             }
             // A target downstream of the firing node along a declared edge
-            // cannot have promised past the ticket the firing node holds.
+            // cannot have promised past the ticket the firing node holds,
+            // unless the edge was declared during the ticket. That is a late
+            // edge: the write becomes a new ticket, and the site is logged.
+            // TODO: the lifecycle rule (nodes built only between tickets or
+            // as family rows) removes late edges; then this is an assert.
             let joinable = core.can_join(firing.ticket);
-            debug_assert!(
-                joinable,
-                "hyphae: promise safety: a write along a declared edge reached a node past ticket {}",
-                firing.ticket
-            );
+            if !joinable {
+                edges::late(target);
+            }
             // An earlier write to the target still queued keeps the target's
             // write order: this one queues behind it.
             if backlog.is_empty() && joinable {
@@ -1231,14 +1233,11 @@ pub(crate) fn defer_to_owner(owner: &Arc<dyn Node>, make: impl FnOnce() -> Item)
             return false;
         }
         // The owner is below the firing node along a declared edge, so it
-        // cannot have passed the ticket the firing node holds.
-        let joinable = core.can_join(firing.ticket);
-        debug_assert!(
-            joinable,
-            "hyphae: promise safety: an owner passed ticket {} before its source fired it",
-            firing.ticket
-        );
-        if !joinable {
+        // has not passed the ticket unless the edge is late; then the
+        // callback runs at the source's fire. TODO: an assert once the
+        // lifecycle rule removes late edges.
+        if !core.can_join(firing.ticket) {
+            edges::late(owner.as_ref());
             return false;
         }
         firing.stamp.index = firing.stamp.index.saturating_add(1);
