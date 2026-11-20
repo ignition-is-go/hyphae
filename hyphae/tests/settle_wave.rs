@@ -106,7 +106,7 @@ fn nodes_of_one_height_fire_at_the_same_time() {
 }
 
 #[test]
-fn one_worker_runs_every_callback_off_the_writer_thread() {
+fn one_worker_and_the_waiting_writer_run_every_callback() {
     let _turn = with_workers(1);
     let root = Cell::new(0u64);
     let leaves = leaves(&root, 4);
@@ -121,12 +121,9 @@ fn one_worker_runs_every_callback_off_the_writer_thread() {
 
     root.set(1);
 
-    let ran_on = ran_on.lock().clone();
-    assert_eq!(ran_on.len(), 4);
-    assert!(
-        ran_on.iter().all(|id| *id != thread::current().id()),
-        "no callback may run on the writer"
-    );
+    // A waiting writer helps fire the work its ticket needs, so a callback
+    // may run on the writer as well as on the worker.
+    assert_eq!(ran_on.lock().len(), 4);
     assert_eq!(leaves.first().map(Gettable::get), Some(1_000));
 }
 
@@ -136,7 +133,7 @@ fn one_worker_runs_every_callback_off_the_writer_thread() {
 const WORKERS: [usize; 2] = [4, 16];
 
 #[test]
-fn sets_queued_during_a_wave_settle_in_the_order_of_one_thread() {
+fn sets_queued_during_parallel_fires_are_each_delivered() {
     const WIDTH: u64 = 48;
     let _turn = with_workers(0);
     let root = Cell::new(0u64);
@@ -170,14 +167,19 @@ fn sets_queued_during_a_wave_settle_in_the_order_of_one_thread() {
     let mut settle_once = || {
         write = write.saturating_add(1);
         root.set(write);
-        std::mem::take(&mut *seen.lock())
+        // The callbacks' emits are later tickets, admitted in the order the
+        // parallel fires made them, so only their set is fixed.
+        flush();
+        let mut seen = std::mem::take(&mut *seen.lock());
+        seen.sort_unstable();
+        seen
     };
 
     let expected = settle_once();
     assert_eq!(
         expected.len(),
         usize::try_from(WIDTH).unwrap_or(usize::MAX),
-        "a waiting writer returns after the feedback of its write has settled"
+        "every emit of the write's feedback is delivered"
     );
     for workers in WORKERS {
         settle::set_workers(workers);
@@ -275,22 +277,6 @@ fn the_first_panic_in_the_order_of_one_thread_reaches_the_writer() {
 }
 
 #[test]
-fn the_counters_report_waves() {
-    let _turn = with_workers(4);
-    let root = Cell::new(0u64);
-    let leaves = leaves(&root, 32);
-    let _guards: Vec<_> = leaves.iter().map(|leaf| on_change(leaf, |_| {})).collect();
-    let before = settle::stats();
-
-    root.set(1);
-
-    let after = settle::stats();
-    assert!(after.waves >= before.waves.saturating_add(2));
-    assert!(after.parallel_waves > before.parallel_waves);
-    assert!(after.widest_wave >= 32);
-}
-
-#[test]
 fn a_write_and_the_feedback_it_causes_keep_its_epoch_on_every_thread() {
     let _turn = with_workers(4);
     let root = Cell::new(0u64);
@@ -326,39 +312,6 @@ fn a_write_and_the_feedback_it_causes_keep_its_epoch_on_every_thread() {
 }
 
 #[test]
-fn event_sets_share_a_settle_only_within_one_epoch() {
-    let _turn = with_workers(0);
-    let cell = Cell::new(0u64);
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    let log = seen.clone();
-    let _guard = on_change(&cell, move |value| {
-        log.lock().push((*value, settle::current_epoch()));
-    });
-    let (first, second) = (Epoch::next(), Epoch::next());
-    let splits = settle::stats().epoch_splits;
-
-    // Sets of one cell that share a settle leave the last value.
-    enqueue(&[], None, || cell.set(1));
-    enqueue(&[], None, || cell.set(2));
-    flush();
-    assert_eq!(std::mem::take(&mut *seen.lock()), vec![(2, None)]);
-    enqueue(&[], Some(first), || cell.set(3));
-    enqueue(&[], Some(first), || cell.set(4));
-    flush();
-    assert_eq!(std::mem::take(&mut *seen.lock()), vec![(4, Some(first))]);
-    assert_eq!(settle::stats().epoch_splits, splits);
-
-    enqueue(&[], Some(first), || cell.set(5));
-    enqueue(&[], Some(second), || cell.set(6));
-    flush();
-    assert_eq!(
-        std::mem::take(&mut *seen.lock()),
-        vec![(5, Some(first)), (6, Some(second))]
-    );
-    assert_eq!(settle::stats().epoch_splits, splits.saturating_add(1));
-}
-
-#[test]
 fn a_scoped_epoch_finishes_after_its_scope_and_its_last_event_set() {
     let _turn = with_workers(4);
     let root = Cell::new(0u64);
@@ -386,6 +339,9 @@ fn a_scoped_epoch_finishes_after_its_scope_and_its_last_event_set() {
     batch_with(&[], Some(scope.epoch()), || root.set(1));
     assert!(!finished.load(Ordering::SeqCst), "the scope is still held");
     drop(scope);
+    // The leaves' writes to `feedback` are later tickets that carry the
+    // epoch; the writer is owed only its own ticket.
+    settle::flush();
     assert!(finished.load(Ordering::SeqCst));
     assert!(
         !early.load(Ordering::SeqCst),

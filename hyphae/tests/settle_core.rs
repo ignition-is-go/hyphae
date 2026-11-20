@@ -424,7 +424,11 @@ fn a_long_feedback_chain_behind_a_waiting_writer_stays_cheap() {
     });
     let epoch = scope.epoch();
     let writer = thread::spawn(move || {
-        hyphae::batch_with(&[], Some(epoch), || first.iter().for_each(|cell| cell.set(1)));
+        hyphae::batch_with(&[], Some(epoch), || {
+            if let Some(cell) = &first {
+                cell.set(1);
+            }
+        });
     });
     thread::sleep(Duration::from_millis(200));
     let started = Instant::now();

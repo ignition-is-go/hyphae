@@ -1,10 +1,12 @@
 //! Loom model of the park-then-recheck protocol in `settle.rs`
 //! (`poke`, `evaluate`, and the wake at the end of `run`).
 //!
-//! The scheduler code uses std atomics and parking_lot, which loom cannot
+//! The scheduler code uses std atomics and `parking_lot`, which loom cannot
 //! instrument, so this test restates the protocol step for step over loom
 //! types. Keep the two in sync: the claim states, the order "register on
 //! the blocker, then re-check it", and the dirty-claim release.
+
+#![allow(clippy::unwrap_used, reason = "a poisoned loom lock is a model failure")]
 
 use loom::sync::{
     Arc, Mutex,

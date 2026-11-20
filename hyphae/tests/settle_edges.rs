@@ -46,6 +46,8 @@ fn undeclared_callback_write_trips_and_marked_one_does_not() {
         }
     });
     trigger.set(2);
+    // A writer is owed its own ticket only; the marked write is a later one.
+    settle::flush();
     assert_eq!(target.get(), 2);
 
     let source = Cell::new(1);
