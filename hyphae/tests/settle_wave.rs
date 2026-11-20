@@ -25,7 +25,6 @@ static TURN: Mutex<()> = Mutex::new(());
 /// fires on the holder.
 fn with_workers(workers: usize) -> MutexGuard<'static, ()> {
     let turn = TURN.lock();
-    settle::set_wave_min(1);
     settle::set_workers(workers);
     turn
 }
@@ -447,11 +446,3 @@ fn a_thread_knows_whether_it_is_delivering_a_write() {
     assert!(!settle::is_settling());
 }
 
-#[test]
-fn a_switch_setter_returns_the_value_it_replaced() {
-    let _turn = with_workers(3);
-    assert_eq!(settle::set_workers(5), 3);
-    assert_eq!(settle::set_workers(0), 5);
-    assert_eq!(settle::set_wave_min(7), 1);
-    assert_eq!(settle::set_wave_min(1), 7);
-}

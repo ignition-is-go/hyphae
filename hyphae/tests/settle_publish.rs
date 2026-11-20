@@ -33,7 +33,6 @@ static TURN: Mutex<()> = Mutex::new(());
 /// two or more nodes on eight threads.
 fn in_both_modes(scenario: impl Fn()) {
     let _turn = TURN.lock();
-    settle::set_wave_min(1);
     for workers in [0, 8] {
         settle::set_workers(workers);
         scenario();

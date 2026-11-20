@@ -12,7 +12,7 @@ use std::{
 
 use hyphae::{
     Cell, CellMap, Epoch, Gettable, JoinExt, MapDiff, MapExt, MapQuery, Materialize, MergeExt,
-    Mutable, ProjectCellExt, SettleKey, Signal, Source, Watchable, batch, batch_with, enqueue,
+    Mutable, ProjectCellExt, Signal, Source, Watchable, batch, batch_with, enqueue,
     flush, submit,
 };
 use parking_lot::Mutex;
@@ -123,7 +123,7 @@ fn a_cell_fires_at_most_once_per_settle() {
     assert_eq!(sum.get(), 36);
     // Other tests in this process settle too, so only a lower bound on runs
     // is exact here; the single delivery above is the per-cell assertion.
-    assert!(after.runs > before.runs);
+    assert!(after.tickets > before.tickets);
 }
 
 #[test]
@@ -207,7 +207,7 @@ fn event_sets_are_delivered_one_ticket_each_in_order() {
         submit(&[], None, || shared.set(value));
     }
     for value in 1..=3u64 {
-        submit(&[SettleKey::Exclusive(7)], None, || exclusive.set(value));
+        submit(&[], None, || exclusive.set(value));
     }
     held.release();
 

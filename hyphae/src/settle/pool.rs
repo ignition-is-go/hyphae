@@ -39,15 +39,6 @@ static SLEEP: Mutex<()> = Mutex::new(());
 static WAKE: Condvar = Condvar::new();
 static SPAWNED: Mutex<usize> = Mutex::new(0);
 
-static WAVE_MIN: AtomicUsize = AtomicUsize::new(1);
-
-/// Kept for source compatibility: there are no waves, and the value is
-/// unused. Returns the previous value.
-#[doc(hidden)]
-#[allow(clippy::must_use_candidate, reason = "callers set it for its effect")]
-pub fn set_wave_min(nodes: usize) -> usize {
-    WAVE_MIN.swap(nodes.max(1), Ordering::AcqRel)
-}
 
 /// Set the number of pool threads and return the previous value. For tests.
 #[doc(hidden)]

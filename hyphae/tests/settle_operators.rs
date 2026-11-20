@@ -24,7 +24,6 @@ const ROUNDS: u64 = 2_000;
 fn waves_on() {
     static ON: Once = Once::new();
     ON.call_once(|| {
-        hyphae::settle::set_wave_min(1);
         hyphae::settle::set_workers(8);
     });
 }

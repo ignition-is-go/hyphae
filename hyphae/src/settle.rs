@@ -36,16 +36,13 @@ mod watermark;
 
 pub(crate) use edges::unbound_owned;
 pub use edges::{new_ticket, unbound_sites};
-pub use pool::{set_wave_min, set_workers};
+pub use pool::set_workers;
 
 /// Marks an event set that must settle alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SettleKey {
     /// No constraint.
     Shared,
-    /// Kept for source compatibility. Every event set is its own ticket, so
-    /// two event sets never share a delivery and this key adds nothing.
-    Exclusive(u64),
     /// Seeded only after every earlier ticket has completed. Nothing after it
     /// is seeded until it has completed.
     Barrier,
@@ -880,33 +877,25 @@ pub struct SettleStats {
     /// Event sets submitted.
     pub event_sets: u64,
     /// Tickets seeded.
-    pub runs: u64,
+    pub tickets: u64,
     /// Fanouts delivered.
     pub fires: u64,
-    /// Always 0: a node fires each ticket once.
-    pub duplicate_fires: u64,
-    /// Always 0: there is no settle lock.
-    pub lock_misses: u64,
     /// Writers that waited for their ticket.
-    pub lock_waits: u64,
+    pub waits: u64,
     /// Writes made during a ticket that became a later ticket.
     pub deferred_writes: u64,
     /// Nanoseconds spent firing nodes.
-    pub settle_nanos: u64,
+    pub fire_nanos: u64,
     /// The longest single node fire, in nanoseconds.
-    pub max_hold_nanos: u64,
-    /// Always 0.
-    pub handovers: u64,
+    pub max_fire_nanos: u64,
     /// Tickets that [`flush`] took.
     pub flush_sets: u64,
     /// Node fires.
-    pub waves: u64,
+    pub node_fires: u64,
     /// Node fires on pool threads.
-    pub parallel_waves: u64,
+    pub pool_fires: u64,
     /// The most tickets seeded and not completed at one time.
-    pub widest_wave: u64,
-    /// Always 0.
-    pub epoch_splits: u64,
+    pub max_in_flight: u64,
     /// Watermark walks that a readiness check started.
     pub walks: u64,
     /// Nodes those walks visited.
@@ -964,16 +953,16 @@ static INVALIDATED: AtomicU64 = AtomicU64::new(0);
 pub fn stats() -> SettleStats {
     SettleStats {
         event_sets: EVENT_SETS.load(Ordering::Relaxed),
-        runs: TICKETS.load(Ordering::Relaxed),
+        tickets: TICKETS.load(Ordering::Relaxed),
         fires: FIRES.load(Ordering::Relaxed),
-        lock_waits: WAITS.load(Ordering::Relaxed),
+        waits: WAITS.load(Ordering::Relaxed),
         deferred_writes: DEFERRED_WRITES.load(Ordering::Relaxed),
-        settle_nanos: FIRE_NANOS.load(Ordering::Relaxed),
-        max_hold_nanos: MAX_FIRE_NANOS.load(Ordering::Relaxed),
+        fire_nanos: FIRE_NANOS.load(Ordering::Relaxed),
+        max_fire_nanos: MAX_FIRE_NANOS.load(Ordering::Relaxed),
         flush_sets: FLUSH_SETS.load(Ordering::Relaxed),
-        waves: NODE_FIRES.load(Ordering::Relaxed),
-        parallel_waves: POOL_FIRES.load(Ordering::Relaxed),
-        widest_wave: MAX_IN_FLIGHT.load(Ordering::Relaxed),
+        node_fires: NODE_FIRES.load(Ordering::Relaxed),
+        pool_fires: POOL_FIRES.load(Ordering::Relaxed),
+        max_in_flight: MAX_IN_FLIGHT.load(Ordering::Relaxed),
         walks: WALKS.load(Ordering::Relaxed),
         walk_nodes: WALK_NODES.load(Ordering::Relaxed),
         parks: PARKS.load(Ordering::Relaxed),
@@ -985,7 +974,6 @@ pub fn stats() -> SettleStats {
         validated: VALIDATED.load(Ordering::Relaxed),
         invalidated: INVALIDATED.load(Ordering::Relaxed),
         cycles: CYCLES.load(Ordering::Relaxed),
-        ..SettleStats::default()
     }
 }
 
