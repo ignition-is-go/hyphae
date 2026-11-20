@@ -158,7 +158,11 @@ fn passed(
     if min <= ticket {
         return Err(Arc::clone(m));
     }
-    m.watermark.fetch_max(low.min(min), Ordering::AcqRel);
+    let previous = m.watermark.fetch_max(low.min(min), Ordering::AcqRel);
+    debug_assert!(
+        min >= previous,
+        "hyphae: promise safety: watermark {previous} was above pending {min}"
+    );
     drop(pending);
     Ok(())
 }

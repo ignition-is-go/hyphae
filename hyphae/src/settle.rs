@@ -936,6 +936,12 @@ fn readiness(core: &Arc<NodeCore>) -> Readiness {
             Some(first) => first.ticket,
         }
     };
+    // A ticket still being seeded is not fireable: `in_w` is capped by `S`,
+    // and its other seeds may not have landed. The seeder pokes every node
+    // it seeded once `S` passes the ticket.
+    if ticket >= SEEDED.load(Ordering::Acquire) {
+        return Readiness::Idle;
+    }
     match watermark::in_w_past(core, ticket) {
         Ok(()) => Readiness::Ready,
         Err(blocker) => Readiness::Blocked(blocker, ticket),
@@ -1042,6 +1048,15 @@ pub(crate) fn run(owned: Arc<dyn Node>, on_pool: bool) {
         evaluate(node);
         return;
     };
+    #[cfg(debug_assertions)]
+    for input in core.inputs.lock().iter().filter_map(Weak::upgrade) {
+        let held = input.pending.lock().min();
+        debug_assert!(
+            held > ticket,
+            "hyphae: fire rule: ticket {ticket} fired while an input holds {held} (mark {})",
+            input.mark.load(Ordering::Acquire)
+        );
+    }
     items.sort_by_key(|d| d.stamp);
     let count = i64::try_from(items.len()).unwrap_or(i64::MAX);
     let started = crate::platform::Instant::now();
@@ -1094,9 +1109,13 @@ pub(crate) fn run(owned: Arc<dyn Node>, on_pool: bool) {
         pending.inflight = NONE;
         let next = pending.min();
         // Every input is past `ticket`, so `in_w` exceeds it.
-        core.watermark.fetch_max(
+        let promised = core.watermark.fetch_max(
             next.min(in_w.max(ticket.saturating_add(1))),
             Ordering::AcqRel,
+        );
+        debug_assert!(
+            next >= promised.max(next.min(in_w.max(ticket.saturating_add(1)))),
+            "hyphae: promise safety: watermark published above pending {next}"
         );
         drop(pending);
     }
