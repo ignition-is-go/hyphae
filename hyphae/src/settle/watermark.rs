@@ -10,7 +10,7 @@ use std::sync::{Arc, Weak, atomic::Ordering};
 
 use rustc_hash::FxHashSet;
 
-use super::{INVALIDATED, NodeCore, QUIET_HITS, SEEDED, VALIDATED, WALK_NODES, WALKS};
+use super::{CYCLES, INVALIDATED, NodeCore, QUIET_HITS, SEEDED, VALIDATED, WALK_NODES, WALKS};
 
 pub(super) const NOT_QUIET: u8 = 0;
 const TENTATIVE: u8 = 1;
@@ -140,8 +140,11 @@ fn passed(
     }
     if !seen.insert(Arc::as_ptr(m).addr()) {
         // Visited in this walk and not past `ticket`: it is on the current
-        // path, which is a cycle.
-        return Err(Arc::clone(m));
+        // path, so this edge closes a cycle. The design assumes the declared
+        // graph is acyclic; a back edge is ignored, as heights ignore it, and
+        // counted.
+        CYCLES.fetch_add(1, Ordering::Relaxed);
+        return Ok(());
     }
     *cost = cost.saturating_add(1);
     let mut low = SEEDED.load(Ordering::Acquire);

@@ -47,7 +47,7 @@ fn run(path: &str) {
             .saturating_sub(COMPLETED.load(Ordering::Acquire));
         let _ = writeln!(
             file,
-            "{now:.3} event_sets={} tickets={} fires={} node_fires={} pool_fires={} lock_waits={} deferred_writes={} settle_nanos={} flush_sets={} max_in_flight={} in_flight={in_flight} backlog={} interval_max_hold_nanos={hold} walks={} walk_nodes={} parks={} side_reads={} undeclared_writes={} late_edge_writes={} unbound_owned={} quiet_hits={} validated={} invalidated={}",
+            "{now:.3} event_sets={} tickets={} fires={} node_fires={} pool_fires={} lock_waits={} deferred_writes={} settle_nanos={} flush_sets={} max_in_flight={} in_flight={in_flight} backlog={} interval_max_hold_nanos={hold} walks={} walk_nodes={} parks={} side_reads={} undeclared_writes={} late_edge_writes={} unbound_owned={} quiet_hits={} validated={} invalidated={} cycles={}",
             s.event_sets,
             s.runs,
             s.fires,
@@ -69,6 +69,7 @@ fn run(path: &str) {
             s.quiet_hits,
             s.validated,
             s.invalidated,
+            s.cycles,
         );
         let sites = super::edges::unbound_sites();
         if !sites.is_empty()
