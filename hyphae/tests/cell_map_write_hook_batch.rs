@@ -1,6 +1,5 @@
 //! Write hooks run inside an open batch, while diff delivery is deferred.
 //! An integration test because `batch` is process-wide.
-#![cfg(feature = "scheduler")]
 
 use std::sync::Arc;
 

@@ -27,17 +27,22 @@
 //! - **Seeding.** Registration write-locks every shard, replays each current
 //!   entry as a `MapWrite::Insert`, and installs the hook before releasing
 //!   them. Every concurrent write is in the replay or in a later call, never
-//!   both. Writers to the map wait for the replay: about 4 ms for 100,000
-//!   rows and 34 ms for 500,000 rows with a hook that fills a `DashMap`.
+//!   both. Writers to the map wait for the replay: measured about 4 ms for
+//!   100,000 rows and 29 to 34 ms for 500,000 rows with a hook that fills a
+//!   `DashMap`.
 //! - **Restrictions.** The hook must not read or write the same map, or
 //!   register or drop a write hook on it: those calls take the shard lock the
 //!   hook already holds and deadlock. Keep it short; it blocks readers and
 //!   writers of the keys in its shard. While any hook is registered, the
-//!   equality check that suppresses equal writes runs under the lock too, so
-//!   a deep `PartialEq` on large values lengthens the hold. Old values and
+//!   equality check that suppresses equal writes runs first under the shard
+//!   read lock, which blocks other writers of the shard but not its readers,
+//!   and runs again under the write lock only if the shard was written in
+//!   between. Old values and
 //!   removed entries are dropped after the lock is released, as without a
 //!   hook.
-//! - **Cost.** With no hook, a write pays one relaxed atomic load.
+//! - **Cost.** With no hook, a write pays a relaxed atomic load under the
+//!   lock it already holds. With hooks, it also pays the read-locked
+//!   equality check, a per-shard counter, and the callbacks.
 //! - **Lifetime.** Dropping the returned guard removes the hook. Several hooks
 //!   may be registered; each sees every write.
 //!
