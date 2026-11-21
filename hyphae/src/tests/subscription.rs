@@ -142,7 +142,8 @@ fn test_indexed_registry_survives_subscription_churn() {
 
     // Repeatedly subscribe a transient observer and drop it, driving a notify
     // each round — the exact subscribe → notify → unsubscribe churn.
-    for i in 0..1_000u64 {
+    // From 1: a write of 0 would repeat the initial value and not be emitted.
+    for i in 1..=1_000u64 {
         let transient_hits = Arc::new(AtomicU64::new(0));
         let t = transient_hits.clone();
         let guard = source.subscribe(move |signal| {

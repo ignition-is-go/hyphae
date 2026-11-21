@@ -506,6 +506,11 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
                 terminal,
                 Box::new(move || {
                     if let Some(cell) = cell.upgrade() {
+                        // Compared here, after coalescing, against the
+                        // value the cell holds when the op runs.
+                        if cell.repeats(&signal) {
+                            return;
+                        }
                         cell.write_value(&signal);
                         cell.fanout(&signal);
                     }
@@ -520,6 +525,9 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         // distinct symbols instead of one folded `notify`. Outside a scheduler
         // batch (the default, and always on wasm) they run back-to-back: the
         // exact synchronous eager-push path, with no behavioral change.
+        if self.repeats(&signal) {
+            return;
+        }
         self.write_value(&signal);
         self.fanout(&signal);
         // `notify` owns its signal because scheduler-enabled builds may move it
@@ -531,6 +539,22 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
 
     /// Settle this cell's current value — or its terminal completed/errored
     /// state — from `signal`. Brief mutex work only; runs no subscriber fanout.
+    /// True when `signal` carries the value this cell already holds. A
+    /// repeated value is neither stored nor fanned out: a repeated result
+    /// does not propagate. Completion and errors always pass.
+    ///
+    /// A type with a single value, such as `()`, is the exception. A write
+    /// to such a cell cannot change it, so the write itself is the signal
+    /// (`sample`'s ticker is a `Cell<()>`), and every one passes.
+    fn repeats(&self, signal: &Signal<T>) -> bool {
+        match signal {
+            Signal::Value(value) => {
+                std::mem::size_of::<T>() != 0 && **self.inner.value.lock() == **value
+            }
+            Signal::Complete | Signal::Error(_) => false,
+        }
+    }
+
     #[cfg_attr(feature = "profiling", inline(never))]
     fn write_value(&self, signal: &Signal<T>) {
         match signal {

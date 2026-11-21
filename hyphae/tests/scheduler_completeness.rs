@@ -65,7 +65,9 @@ fn no_op_is_dropped_or_stranded_under_sustained_contention() {
     // observed. On a plain coalescing cell, "some updates get last-write-wins
     // dropped" is correct behavior by design, not a bug, so it couldn't tell
     // "working as intended" apart from "silently stranded."
-    let sink = no_coalesce(|| Cell::<u64, CellMutable>::new(0));
+    // Starts at a value no thread writes: thread 0's first write is 0, and a
+    // write of the value the cell holds is not emitted.
+    let sink = no_coalesce(|| Cell::<u64, CellMutable>::new(u64::MAX));
     let observed = Arc::new(AtomicU64::new(0));
     let obs = observed.clone();
     let seen_first = Arc::new(AtomicBool::new(false));

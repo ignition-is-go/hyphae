@@ -1,4 +1,3 @@
-use parking_lot::Mutex;
 use std::{
     collections::HashMap,
     hash::Hash,
@@ -7,6 +6,8 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+
+use parking_lot::Mutex;
 
 use super::CellValue;
 use crate::{
@@ -310,9 +311,10 @@ mod tests {
         assert_eq!(emissions.load(Ordering::SeqCst), 2);
         assert_eq!(transition_count.load(Ordering::SeqCst), 1);
 
-        // Another valid transition
+        // Another valid transition. Its handler returns `true` again, the
+        // value the output already holds, so nothing is emitted.
         source.set(State::Ready);
-        assert_eq!(emissions.load(Ordering::SeqCst), 3);
+        assert_eq!(emissions.load(Ordering::SeqCst), 2);
     }
 
     #[test]
@@ -485,8 +487,11 @@ mod tests {
         source.set(State::Idle); // false - filtered
         assert_eq!(emission_count.load(Ordering::SeqCst), 2);
 
-        source.set(State::Loading); // true again - emits
-        assert_eq!(emission_count.load(Ordering::SeqCst), 3);
+        // `true` again. The filtered cell still holds `Some(true)` from the
+        // first trigger, because the `false` results between never reached
+        // it, so this repeat is not emitted.
+        source.set(State::Loading);
+        assert_eq!(emission_count.load(Ordering::SeqCst), 2);
         assert_eq!(triggers.get(), Some(true));
     }
 }

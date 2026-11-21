@@ -458,8 +458,9 @@ fn stress_high_frequency_updates() {
         cell.set(i);
     }
 
-    // Should have received all updates (plus initial)
-    assert_eq!(update_count.load(Ordering::Relaxed), num_updates + 1);
+    // The initial value, and every update but the first: `set(0)` repeats
+    // the initial value and is not emitted.
+    assert_eq!(update_count.load(Ordering::Relaxed), num_updates);
 }
 
 #[test]
@@ -515,7 +516,8 @@ fn stress_deep_chain() {
 
     // Final value should be source + depth
     assert_eq!(current.get(), 999 + depth);
-    assert_eq!(notification_count.load(Ordering::Relaxed), 1001); // initial + 1000 updates
+    // The initial value and 999 updates: `set(0)` repeats the initial value.
+    assert_eq!(notification_count.load(Ordering::Relaxed), 1000);
 }
 
 #[test]
@@ -540,7 +542,8 @@ fn stress_wide_fan_out() {
     }
 
     for (count, _) in &counts {
-        assert_eq!(count.load(Ordering::Relaxed), 1001); // initial + 1000
+        // The initial value and 999 updates: `set(0)` repeats the initial value.
+        assert_eq!(count.load(Ordering::Relaxed), 1000);
     }
 }
 
@@ -1126,8 +1129,9 @@ fn barrage_extreme_fan_out() {
     }
 
     let total = total_notifications.load(Ordering::Relaxed);
-    // Should have: fan_out initial + fan_out * 1000 updates
-    assert_eq!(total, u64_value(fan_out) * 1001);
+    // fan_out initial values and fan_out * 999 updates: `set(0)` repeats the
+    // initial value.
+    assert_eq!(total, u64_value(fan_out) * 1000);
 
     drop(guards);
 }
