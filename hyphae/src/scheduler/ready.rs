@@ -371,6 +371,11 @@ impl ReadyQueue {
         (!groups.is_empty()).then_some(groups)
     }
 
+    /// Whether `id` has an operation waiting here.
+    pub(super) fn holds(&mut self, id: Uuid, height: u64) -> bool {
+        self.scheduled.contains_key(&id) || self.frontier.get_mut(&(height, id)).is_some()
+    }
+
     pub(super) fn min_height(&self) -> Option<u64> {
         self.frontier.first_key_value().map(|(&(height, _), _)| height)
     }

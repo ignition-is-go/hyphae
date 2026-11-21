@@ -504,6 +504,7 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
                 self.inner.id,
                 dependency,
                 terminal,
+                std::any::type_name::<T>(),
                 Box::new(move || {
                     if let Some(cell) = cell.upgrade() {
                         cell.write_value(&signal);

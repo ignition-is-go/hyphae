@@ -93,3 +93,46 @@ fn deep_work_runs_before_input_that_arrived_after_it() {
         "the deep chain waited for {waited} later arrivals; it was admitted with the first"
     );
 }
+
+#[test]
+fn a_later_write_inside_the_round_is_not_overtaken_by_an_earlier_arrival() {
+    use hyphae::Gettable;
+
+    let trigger = Cell::new(0_i64);
+    let target = Cell::new(0_i64);
+
+    let (request, requests) = mpsc::channel::<()>();
+    let (done, acks) = mpsc::channel::<()>();
+    let writer_cell = target.clone();
+    let writer = std::thread::spawn(move || {
+        for () in requests {
+            batch(|| writer_cell.set(1));
+            let _ = done.send(());
+        }
+    });
+
+    let armed = Arc::new(AtomicBool::new(false));
+    let trigger_armed = armed.clone();
+    let inside = target.clone();
+    let acks = std::sync::Mutex::new(acks);
+    let request = std::sync::Mutex::new(Some(request));
+    let _trigger = trigger.subscribe(move |signal| {
+        if !trigger_armed.load(Ordering::SeqCst) || !matches!(signal, Signal::Value(_)) {
+            return;
+        }
+        // The other thread writes first; this op writes second.
+        if let Some(sender) = request.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+            sender.send(()).expect("writer thread is alive");
+            acks.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .recv()
+                .expect("writer thread acknowledges");
+        }
+        inside.set(2);
+    });
+
+    armed.store(true, Ordering::SeqCst);
+    batch(|| trigger.set(1));
+    writer.join().expect("writer thread exits");
+    assert_eq!(target.get(), 2, "the write made last is the value that stands");
+}

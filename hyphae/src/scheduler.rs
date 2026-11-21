@@ -37,6 +37,11 @@
 //! a round that takes longer admits a next round that has coalesced more.
 //! `no_coalesce` cells keep every op, in arrival order, across rounds.
 //!
+//! A cell's writes always run in the order they were made. If a cell has a
+//! write waiting in `arrived` and an op of the current round writes it again,
+//! the newer write joins the older one in `arrived` and both wait for the next
+//! round.
+//!
 //! Each round is one glitch-free sweep: every height-`k` cell in it settles
 //! before any height-`k+1` subscriber runs. A cell written in two rounds
 //! settles once per round, in round order.
@@ -251,7 +256,11 @@ impl SharedTick {
         coalesce: bool,
         run: Box<dyn FnOnce() + Send>,
     ) -> Option<PendingRun> {
-        let queue = if IN_ROUND.get() {
+        // A cell's writes run in the order they were made. A write from
+        // inside the round to a cell that already has an earlier write waiting
+        // in `arrived` joins it there; in `ready` it would run first and the
+        // earlier write would then overwrite it.
+        let queue = if IN_ROUND.get() && !self.arrived.holds(id, height) {
             &mut self.ready
         } else {
             &mut self.arrived
@@ -380,7 +389,13 @@ pub(crate) fn tick_active() -> bool {
 /// terminal takes a later position in its cell group, so the value drains
 /// first and the terminal after it. The queue preserves arrival order for
 /// later operations too; completion only takes effect when its operation runs.
-pub(crate) fn enqueue(id: Uuid, node: &dyn DepNode, terminal: bool, run: Box<dyn FnOnce() + Send>) {
+pub(crate) fn enqueue(
+    id: Uuid,
+    node: &dyn DepNode,
+    terminal: bool,
+    kind: &'static str,
+    run: Box<dyn FnOnce() + Send>,
+) {
     let mut guard = TICK.lock();
     // Defer only if a batch is open somewhere, or a drain is in flight (a
     // popped op's fanout must land in the current drain's queue, not cascade
@@ -393,6 +408,9 @@ pub(crate) fn enqueue(id: Uuid, node: &dyn DepNode, terminal: bool, run: Box<dyn
         return;
     }
     let height = compute_height(node);
+    if height == 0 {
+        round_stats::source(kind, IN_ROUND.get());
+    }
     let coalesce = !node.no_coalesce() && !terminal;
     let displaced = guard.enqueue_locked(id, height, coalesce, run);
     drop(guard);
@@ -483,13 +501,14 @@ mod round_stats {
             if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
                 let _ = writeln!(
                     file,
-                    "t={} rounds={} waves={} ops={} longest_us={} heights={}",
+                    "t={} rounds={} waves={} ops={} longest_us={} heights={} sources={}",
                     now / 1000,
                     ROUNDS.swap(0, Ordering::Relaxed),
                     WAVES.swap(0, Ordering::Relaxed),
                     OPS.swap(0, Ordering::Relaxed),
                     LONGEST.swap(0, Ordering::Relaxed),
-                    heights()
+                    heights(),
+                    sources().replace(' ', "")
                 );
             }
         }
@@ -506,6 +525,33 @@ mod round_stats {
             BY_HEIGHT[slot].fetch_add(ops as u64, Ordering::Relaxed);
             CELLS_BY_HEIGHT[slot].fetch_add(cells as u64, Ordering::Relaxed);
         }
+    }
+
+    static SOURCES: LazyLock<std::sync::Mutex<std::collections::HashMap<(&'static str, bool), u64>>> =
+        LazyLock::new(Default::default);
+
+    pub(super) fn source(kind: &'static str, in_round: bool) {
+        if PATH.is_some() {
+            *SOURCES
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry((kind, in_round))
+                .or_default() += 1;
+        }
+    }
+
+    fn sources() -> String {
+        let mut all: Vec<_> = SOURCES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain()
+            .collect();
+        all.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+        all.iter()
+            .take(25)
+            .map(|((kind, in_round), count)| format!("{count}{}{kind}", if *in_round { "@in:" } else { "@ext:" }))
+            .collect::<Vec<_>>()
+            .join(";;")
     }
 
     fn heights() -> String {
