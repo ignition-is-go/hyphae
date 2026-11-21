@@ -177,11 +177,11 @@ where
         // With a hook, compare under a read lock first, so a deep `PartialEq`
         // blocks other writers of the shard but not its readers. The write
         // lock reuses the answer unless the shard was written in between.
-        let checked = hooks.active().then(|| {
-            let shard = data.determine_map(&key);
+        let shard = hooks.active().then(|| data.determine_map(&key));
+        let checked = shard.map(|shard| {
             let writes = hooks.writes(shard);
             let equal = data.get(&key).map(|current| current.value() == &value);
-            (shard, writes, equal)
+            (writes, equal)
         });
         match data.entry(key) {
             Entry::Occupied(mut entry) => {
@@ -189,11 +189,9 @@ where
                 // Without a hook, callers that suppress equal writes compare
                 // after the lock is released, as they always have.
                 let equal = hooks.active().then(|| {
-                    let shard = data.determine_map(entry.key());
-                    let reused = checked.and_then(|(checked_shard, writes, equal)| {
-                        (checked_shard == shard && hooks.writes(shard) == writes)
-                            .then_some(equal)
-                            .flatten()
+                    let shard = shard.unwrap_or_else(|| data.determine_map(entry.key()));
+                    let reused = checked.and_then(|(writes, equal)| {
+                        (hooks.writes(shard) == writes).then_some(equal).flatten()
                     });
                     hooks.wrote(shard);
                     reused.unwrap_or_else(|| &old == entry.get())
@@ -211,7 +209,7 @@ where
             Entry::Vacant(entry) => {
                 let stored = entry.insert(value);
                 if hooks.active() {
-                    hooks.wrote(data.determine_map(stored.key()));
+                    hooks.wrote(shard.unwrap_or_else(|| data.determine_map(stored.key())));
                     hooks.fire(MapWrite::Insert {
                         key: stored.key(),
                         value: stored.value(),
