@@ -7,7 +7,6 @@ use std::{
     time::Duration,
 };
 
-use rayon::prelude::*;
 
 /// A single scheduled timer, owned by the shared [`Reactor`].
 struct TimerEntry {
@@ -227,11 +226,6 @@ pub fn spawn_interval(
         count: 1,
         tick: Box::new(tick),
     });
-}
-
-/// Fan out `f` across `items` in parallel using rayon.
-pub fn par_for_each<T: Sync>(items: &[T], f: impl Fn(&T) + Send + Sync) {
-    items.par_iter().for_each(f);
 }
 
 #[cfg(test)]

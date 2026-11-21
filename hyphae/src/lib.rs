@@ -208,7 +208,7 @@ pub use traits::{
     JoinRegion, JoinStage, JoinedValuesPlan, KeyChange, LastExt, LastStage, LeftJoinExt,
     LeftJoinPlan, LeftSemiJoinExt, MapEntriesExt, MapErrExt, MapExt, MapLast, MapOkExt,
     MapValuesExt, MapValuesPlan, MergeExt, MergeMapExt, MultiLeftJoinExt, Mutable,
-    OptionalRightKey, OwnedIndex, PairwiseExt, ParallelCell, ParallelExt, ProjectCellExt, Push,
+    OptionalRightKey, OwnedIndex, PairwiseExt, ProjectCellExt, Push,
     ReactiveKeys, ReactiveMap, RelationPlan, ReplaceLastProject, RequiredRightKey, RetryExt,
     RightJoinKey, SampleExt, ScanExt, SelectCellExt, SelectExt, SharedRelationIndex, SkipExt,
     SkipWhileExt, StageList, StateMachineBuilder, StateTransitionExt, SwitchMapExt, TakeExt,

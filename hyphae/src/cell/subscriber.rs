@@ -39,8 +39,8 @@ use crate::signal::Signal;
 /// - `One` — the single subscriber inline; cloning is one `Arc` bump, no heap.
 /// - `Many` — today's path: an `Arc<Vec>` cloned by ref-count bump.
 ///
-/// [`as_slice`](SubSnapshot::as_slice) unifies the three for the consumer
-/// (sequential fanout and `par_for_each` alike): `One` yields a length-1 slice
+/// [`as_slice`](SubSnapshot::as_slice) unifies the three for the fanout:
+/// `One` yields a length-1 slice
 /// via [`std::slice::from_ref`] over its inline tuple, so no variant needs a
 /// backing `Vec`.
 pub(crate) enum SubSnapshot<S> {
