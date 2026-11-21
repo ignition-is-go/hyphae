@@ -361,7 +361,7 @@ fn height_dfs(node: &dyn DepNode, stack: &mut FxHashSet<Uuid>) -> u64 {
 /// This is the single check `notify` pays on the synchronous hot path when
 /// no batch is open.
 pub(crate) fn tick_active() -> bool {
-    TICK_ACTIVE.load(Ordering::Relaxed)
+    TICK_ACTIVE.load(Ordering::Relaxed) || owner::enabled()
 }
 
 /// Defer `run` for cell `id` (height computed from `node`) if a batch is open
@@ -381,6 +381,12 @@ pub(crate) fn tick_active() -> bool {
 /// first and the terminal after it. The queue preserves arrival order for
 /// later operations too; completion only takes effect when its operation runs.
 pub(crate) fn enqueue(id: Uuid, node: &dyn DepNode, terminal: bool, run: Box<dyn FnOnce() + Send>) {
+    if owner::enabled() {
+        let height = compute_height(node);
+        let coalesce = !node.no_coalesce() && !terminal;
+        owner::post(id, height, coalesce, run);
+        return;
+    }
     let mut guard = TICK.lock();
     // Defer only if a batch is open somewhere, or a drain is in flight (a
     // popped op's fanout must land in the current drain's queue, not cascade
@@ -519,6 +525,114 @@ mod round_stats {
             .join(",")
     }
 }
+
+/// PROTOTYPE: with `HYPHAE_OWNER=1`, a write only posts. One owner thread
+/// does all propagation, a round at a time. A batch posts its writes together
+/// when its outermost frame closes, so they always land in one round. No
+/// caller drains, and a write is not settled when its call returns; use
+/// [`settle`] to wait.
+pub(super) mod owner {
+    use std::{cell::RefCell, sync::LazyLock};
+
+    use parking_lot::Condvar;
+    use uuid::Uuid;
+
+    use super::{BATCH_NEST, IN_ROUND, TICK, run_wave};
+
+    type Run = Box<dyn FnOnce() + Send>;
+
+    static ENABLED: LazyLock<bool> =
+        LazyLock::new(|| std::env::var("HYPHAE_OWNER").is_ok_and(|value| value == "1"));
+    static WAKE: Condvar = Condvar::new();
+    static IDLE: Condvar = Condvar::new();
+    static STARTED: std::sync::Once = std::sync::Once::new();
+
+    thread_local! {
+        static POSTED: RefCell<Vec<(Uuid, u64, bool, Run)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    #[inline]
+    pub(crate) fn enabled() -> bool {
+        *ENABLED
+    }
+
+    fn start() {
+        STARTED.call_once(|| {
+            std::thread::Builder::new()
+                .name("hyphae-owner".into())
+                .spawn(|| {
+                    let mut guard = TICK.lock();
+                    loop {
+                        if let Some(groups) = guard.pop_min_height_groups() {
+                            guard.draining = true;
+                            drop(guard);
+                            drop(run_wave(groups));
+                            guard = TICK.lock();
+                        } else {
+                            guard.draining = false;
+                            IDLE.notify_all();
+                            WAKE.wait(&mut guard);
+                        }
+                    }
+                })
+                .expect("spawn hyphae owner thread");
+        });
+    }
+
+    pub(super) fn post(id: Uuid, height: u64, coalesce: bool, run: Run) {
+        if !IN_ROUND.get() && BATCH_NEST.get() > 0 {
+            POSTED.with(|posted| posted.borrow_mut().push((id, height, coalesce, run)));
+            return;
+        }
+        start();
+        let mut guard = TICK.lock();
+        let displaced = guard.enqueue_locked(id, height, coalesce, run);
+        drop(guard);
+        WAKE.notify_one();
+        drop(displaced);
+    }
+
+    pub(super) fn batch<R>(f: impl FnOnce() -> R) -> R {
+        let outermost = BATCH_NEST.with(|nest| {
+            let depth = nest.get().saturating_add(1);
+            nest.set(depth);
+            depth == 1
+        });
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        BATCH_NEST.with(|nest| nest.set(nest.get().saturating_sub(1)));
+        if outermost && !IN_ROUND.get() {
+            let posted = POSTED.with(|posted| std::mem::take(&mut *posted.borrow_mut()));
+            if !posted.is_empty() {
+                start();
+                let mut displaced = Vec::new();
+                let mut guard = TICK.lock();
+                for (id, height, coalesce, run) in posted {
+                    displaced.extend(guard.enqueue_locked(id, height, coalesce, run));
+                }
+                drop(guard);
+                WAKE.notify_one();
+                drop(displaced);
+            }
+        }
+        match result {
+            Ok(value) => value,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
+    /// Block until everything posted so far has propagated.
+    pub fn settle() {
+        if !enabled() || IN_ROUND.get() {
+            return;
+        }
+        let mut guard = TICK.lock();
+        while guard.draining || !guard.is_empty() {
+            IDLE.wait(&mut guard);
+        }
+    }
+}
+
+pub use owner::settle;
 
 /// Marks this thread as running an op of the current round for as long as it
 /// lives, and restores the previous mark on drop.
@@ -736,6 +850,9 @@ pub(crate) fn birth_no_coalesce() -> bool {
 ///
 /// See the module docs for the deferred semantics.
 pub fn batch<R>(f: impl FnOnce() -> R) -> R {
+    if owner::enabled() {
+        return owner::batch(f);
+    }
     let outermost = BATCH_NEST.with(|n| {
         let v = n.get().saturating_add(1);
         n.set(v);
