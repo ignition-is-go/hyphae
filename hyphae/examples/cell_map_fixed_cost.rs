@@ -104,24 +104,77 @@ fn run_op(map: &CellMap<u64, u64>, name: &str) {
             black_box(sum);
         }
         "entries" => drop(black_box(map.entries().materialize().get())),
-        "subscribe_diffs" => drop(black_box(map.subscribe_diffs(|diff: &MapDiff<u64, u64>| {
-            black_box(diff);
-        }))),
+        "subscribe_diffs" => drop(black_box(map.subscribe_diffs(
+            |diff: &MapDiff<u64, u64>| {
+                black_box(diff);
+            },
+        ))),
         "insert" => drop(black_box(map.insert(u64::MAX, 1))),
+        "update" => {
+            let next = map.get_value(&0).map_or(0, |v| v.wrapping_add(1));
+            drop(black_box(map.insert(0, next)));
+        }
+        "insert_remove" => {
+            drop(black_box(map.insert(u64::MAX, 1)));
+            drop(black_box(map.remove(&u64::MAX)));
+        }
         "get_value" => drop(black_box(map.get_value(&0))),
         _ => {}
     }
 }
 
-/// `op <name> <rows> <reps>`: run one operation `reps` times after setup, for
-/// `perf stat` runs whose difference against `reps = 0` excludes the setup.
+/// `op <name> <rows> <reps> [hook]`: run one operation `reps` times after
+/// setup, for `perf stat` runs whose difference against `reps = 0` excludes
+/// the setup. `hook` is `none` (default), `noop`, or `index`.
 fn op_only(args: &[String]) {
     let name = args.first().map_or("snapshot", String::as_str);
     let parse = |i: usize| args.get(i).and_then(|a| a.parse::<u64>().ok()).unwrap_or(0);
     let map = filled(parse(1));
-    for _ in 0..parse(2) {
+    let _hook = hook(&map, args.get(3).map_or("none", String::as_str));
+    let before = counts();
+    let reps = parse(2);
+    for _ in 0..reps {
         run_op(&map, name);
     }
+    let after = counts();
+    if reps > 0 {
+        eprintln!(
+            "{name}: {:.2} allocs/op, {:.1} bytes/op",
+            (after.calls - before.calls) as f64 / reps as f64,
+            (after.bytes - before.bytes) as f64 / reps as f64,
+        );
+    }
+}
+
+/// Write hook for a measurement: `noop`, or `index`, which mirrors every
+/// write into a second sharded map, as a secondary index would.
+fn hook(
+    map: &CellMap<u64, u64>,
+    kind: &str,
+) -> Option<(hyphae::SubscriptionGuard, Arc<dashmap::DashMap<u64, u64>>)> {
+    use hyphae::cell_map::MapWrite;
+    let index = Arc::new(dashmap::DashMap::with_shard_amount(32));
+    let guard = match kind {
+        "noop" => map.register_write_hook(|write| {
+            black_box(write);
+        }),
+        "index" => {
+            let index = index.clone();
+            map.register_write_hook(move |write| match write {
+                MapWrite::Insert { key, value }
+                | MapWrite::Update {
+                    key, new: value, ..
+                } => {
+                    index.insert(*key, *value);
+                }
+                MapWrite::Remove { key, .. } => {
+                    index.remove(key);
+                }
+            })
+        }
+        _ => return None,
+    };
+    Some((guard, index))
 }
 
 fn costs() {
@@ -147,7 +200,10 @@ fn costs() {
         let report = |name: &str, (allocs, bytes, ns): (f64, f64, f64)| {
             println!("{rows}\t{name}\t{allocs:.1}\t{bytes:.0}\t{ns:.0}");
         };
-        report("snapshot", measure(reps, || drop(black_box(map.snapshot()))));
+        report(
+            "snapshot",
+            measure(reps, || drop(black_box(map.snapshot()))),
+        );
         report(
             "for_each",
             measure(reps, || {
@@ -156,7 +212,10 @@ fn costs() {
                 black_box(sum);
             }),
         );
-        report("entries", measure(reps, || drop(black_box(map.entries().materialize().get()))));
+        report(
+            "entries",
+            measure(reps, || drop(black_box(map.entries().materialize().get()))),
+        );
         report(
             "subscribe_diffs",
             measure(reps, || {
@@ -189,12 +248,14 @@ fn contention() {
     const LARGE_ROWS: u64 = 100_000;
     const SMALL_MAPS: usize = 4_096;
     let only: Option<usize> = std::env::args().nth(2).and_then(|a| a.parse().ok());
+    let hook_kind = std::env::args().nth(3).unwrap_or_else(|| "none".into());
     println!("threads\tlarge Mwrites/s\treader get_value ns\tsmall Mwrites/s");
     for threads in [1usize, 4, 8, 24] {
         if only.is_some_and(|only| only != threads) {
             continue;
         }
         let large = filled(LARGE_ROWS);
+        let _hook = hook(&large, &hook_kind);
         let stop = AtomicBool::new(false);
         let mut reader_ns = 0.0;
         let mut large_secs = 0.0;
