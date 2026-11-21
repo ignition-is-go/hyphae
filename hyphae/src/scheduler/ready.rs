@@ -371,6 +371,10 @@ impl ReadyQueue {
         (!groups.is_empty()).then_some(groups)
     }
 
+    pub(super) fn min_height(&self) -> Option<u64> {
+        self.frontier.first_key_value().map(|(&(height, _), _)| height)
+    }
+
     #[inline]
     pub(super) fn is_empty(&self) -> bool {
         self.frontier.is_empty()

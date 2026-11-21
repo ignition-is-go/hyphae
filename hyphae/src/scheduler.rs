@@ -278,8 +278,14 @@ impl SharedTick {
     fn pop_min_height_groups(&mut self) -> Option<Vec<Vec<Box<dyn FnOnce() + Send>>>> {
         if self.ready.is_empty() {
             std::mem::swap(&mut self.ready, &mut self.arrived);
+            round_stats::round();
         }
-        self.ready.pop_min_height_groups()
+        let height = self.ready.min_height().unwrap_or(0);
+        let groups = self.ready.pop_min_height_groups();
+        if let Some(groups) = &groups {
+            round_stats::wave(height, groups.len(), groups.iter().map(Vec::len).sum());
+        }
+        groups
     }
 }
 
@@ -439,6 +445,79 @@ fn wave_threshold() -> usize {
 #[doc(hidden)]
 pub fn set_wave_threshold_for_test(groups: usize) {
     WAVE_THRESHOLD.store(groups, Ordering::Relaxed);
+}
+
+/// DIAGNOSTIC (not for merge): with `HYPHAE_ROUND_STATS=<file>`, append one
+/// line a second: rounds, waves, ops, longest round in microseconds.
+mod round_stats {
+    use std::{
+        io::Write,
+        sync::{
+            LazyLock,
+            atomic::{AtomicU64, Ordering},
+        },
+        time::Instant,
+    };
+
+    static PATH: LazyLock<Option<String>> = LazyLock::new(|| std::env::var("HYPHAE_ROUND_STATS").ok());
+    static START: LazyLock<Instant> = LazyLock::new(Instant::now);
+    static ROUNDS: AtomicU64 = AtomicU64::new(0);
+    static WAVES: AtomicU64 = AtomicU64::new(0);
+    static OPS: AtomicU64 = AtomicU64::new(0);
+    static ROUND_BEGAN: AtomicU64 = AtomicU64::new(0);
+    static LONGEST: AtomicU64 = AtomicU64::new(0);
+    static REPORTED: AtomicU64 = AtomicU64::new(0);
+
+    fn now() -> u64 {
+        u64::try_from(START.elapsed().as_micros()).unwrap_or(u64::MAX)
+    }
+
+    pub(super) fn round() {
+        let Some(path) = PATH.as_deref() else { return };
+        let now = now();
+        let began = ROUND_BEGAN.swap(now, Ordering::Relaxed);
+        LONGEST.fetch_max(now.saturating_sub(began), Ordering::Relaxed);
+        ROUNDS.fetch_add(1, Ordering::Relaxed);
+        if now.saturating_sub(REPORTED.load(Ordering::Relaxed)) >= 1_000_000 {
+            REPORTED.store(now, Ordering::Relaxed);
+            if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                let _ = writeln!(
+                    file,
+                    "t={} rounds={} waves={} ops={} longest_us={} heights={}",
+                    now / 1000,
+                    ROUNDS.swap(0, Ordering::Relaxed),
+                    WAVES.swap(0, Ordering::Relaxed),
+                    OPS.swap(0, Ordering::Relaxed),
+                    LONGEST.swap(0, Ordering::Relaxed),
+                    heights()
+                );
+            }
+        }
+    }
+
+    static BY_HEIGHT: [AtomicU64; 512] = [const { AtomicU64::new(0) }; 512];
+    static CELLS_BY_HEIGHT: [AtomicU64; 512] = [const { AtomicU64::new(0) }; 512];
+
+    pub(super) fn wave(height: u64, cells: usize, ops: usize) {
+        if PATH.is_some() {
+            WAVES.fetch_add(1, Ordering::Relaxed);
+            OPS.fetch_add(ops as u64, Ordering::Relaxed);
+            let slot = usize::try_from(height).unwrap_or(511).min(511);
+            BY_HEIGHT[slot].fetch_add(ops as u64, Ordering::Relaxed);
+            CELLS_BY_HEIGHT[slot].fetch_add(cells as u64, Ordering::Relaxed);
+        }
+    }
+
+    fn heights() -> String {
+        (0..512)
+            .filter_map(|slot| {
+                let ops = BY_HEIGHT[slot].swap(0, Ordering::Relaxed);
+                let cells = CELLS_BY_HEIGHT[slot].swap(0, Ordering::Relaxed);
+                (ops > 0).then(|| format!("{slot}:{ops}/{cells}"))
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    }
 }
 
 /// Marks this thread as running an op of the current round for as long as it
