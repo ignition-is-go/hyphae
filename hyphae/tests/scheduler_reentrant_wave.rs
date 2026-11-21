@@ -9,7 +9,6 @@
 //! drainer) and never try to open/drain a second window from under the
 //! drainer's feet — which would either deadlock on `TICK` or strand the
 //! reentrant work.
-#![cfg(feature = "scheduler")]
 
 use std::sync::{
     Arc,

@@ -6,7 +6,6 @@
 //! map — and the source subscription feeding `len_cell` — drop at the end of the
 //! statement, silently freezing the count. This surfaced as `CountAll` cells
 //! stuck at 0 on canary.71.
-#![cfg(feature = "scheduler")]
 
 use hyphae::{CellMap, Gettable, MapQuery, Materialize, SelectExt, batch};
 

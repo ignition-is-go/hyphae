@@ -78,7 +78,6 @@ where
         // an add+remove pair of the same value; see CellMap::new for the full
         // rationale.
         let diffs_cell = Cell::new(None);
-        #[cfg(feature = "scheduler")]
         let diffs_cell = diffs_cell.no_coalesce();
         Self {
             inner: Arc::new(CellSetInner {

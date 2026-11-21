@@ -324,7 +324,7 @@ def main():
     build = commands.add_parser("prepare", help="compile and freeze provenance-bound benchmark executables")
     build.add_argument("--output", type=Path, required=True)
     build.add_argument("--benches", default=",".join(SUITE))
-    build.add_argument("--features", default="scheduler")
+    build.add_argument("--features", default="")
     build.set_defaults(action=prepare)
     run = commands.add_parser("measure", help="measure executables from a prepare manifest")
     run.add_argument("--prepared", type=Path, required=True, help="path to prepare manifest.json")

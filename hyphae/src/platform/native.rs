@@ -20,7 +20,7 @@ struct TimerEntry {
 /// Process-wide timer reactor: every [`spawn_interval`]/[`spawn_delayed`] call
 /// registers a [`TimerEntry`] here instead of spawning its own OS thread.
 ///
-/// This is load-bearing for hyphae's `scheduler` feature, not just a thread-
+/// This is load-bearing for hyphae's scheduler, not just a thread-
 /// count optimization. The scheduler's glitch-free coalescing/height-ordering
 /// (`crate::scheduler`) is a *thread-local* guarantee — it only holds for
 /// propagation that happens on one thread. Two timer-driven `Source`s that

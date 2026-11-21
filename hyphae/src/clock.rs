@@ -18,9 +18,8 @@
 //!   [`IntervalTickSource`] wraps `platform::spawn_interval`. A future
 //!   `PllTickSource` will slew this grid to phase-lock to PTP.
 //!
-//! Nothing here changes hyphae's synchronous default. The traits are consumed
-//! only by the opt-in [`crate::scheduler`] (both gated behind the `scheduler`
-//! feature); the clock is intended to be **handle-scoped**, not a process
+//! Nothing here changes how an unbatched write propagates. The traits are
+//! consumed only by [`crate::scheduler`]; the clock is intended to be **handle-scoped**, not a process
 //! global, so multiple engines can run on independent timebases.
 
 use std::{

@@ -1,6 +1,5 @@
 //! Count and verify every update in two concurrent, ordered pipelines.
 
-#[cfg(feature = "scheduler")]
 mod probe {
     use std::{
         env,
@@ -124,12 +123,6 @@ mod probe {
     }
 }
 
-#[cfg(feature = "scheduler")]
 fn main() -> Result<(), String> {
     probe::run()
-}
-
-#[cfg(not(feature = "scheduler"))]
-fn main() {
-    eprintln!("Run with --features scheduler");
 }

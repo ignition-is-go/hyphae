@@ -1,4 +1,4 @@
-//! `no_coalesce` opt-out for the propagation scheduler (`scheduler` feature).
+//! `no_coalesce` opt-out for the propagation scheduler.
 //!
 //! The scheduler's default is last-write-wins coalescing per cell under
 //! [`batch`] — correct for behavior cells, but it silently drops intermediate
@@ -11,7 +11,6 @@
 //! The accumulator sink is deliberately hand-rolled (event state in a
 //! subscriber closure) because that is exactly rship's shape: the place a
 //! dropped intermediate corrupts a fold.
-#![cfg(feature = "scheduler")]
 
 use std::sync::{
     Arc,

@@ -18,7 +18,6 @@
 //!   concurrent wave execution than counting arrivals.
 //! - No `batch()` call — including a "joiner" that isn't the drainer for its
 //!   active window — ever gets stuck waiting forever.
-#![cfg(feature = "scheduler")]
 
 use parking_lot::Mutex;
 use std::{

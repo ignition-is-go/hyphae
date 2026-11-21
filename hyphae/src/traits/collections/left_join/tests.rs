@@ -375,7 +375,6 @@ fn right_changes_publish_impacted_left_rows_in_insertion_order() {
     assert_eq!(keys, vec![9, 3, 7]);
 }
 
-#[cfg(feature = "scheduler")]
 #[test]
 fn large_parallel_join_batch_settles_synchronously_in_input_order() {
     const ROWS: u64 = 10_000;
@@ -815,7 +814,6 @@ fn repeated_optional_fk_relationship_tracks_some_none_transitions() {
     assert_eq!(joined.get_value(&"u1".to_string()), Some((0, 0)));
 }
 
-#[cfg(feature = "scheduler")]
 #[test]
 fn large_sharded_optional_fk_batch_omits_absent_routes() {
     const ROWS: usize = 66_000;

@@ -1,4 +1,4 @@
-//! Cross-thread contention bench for the scheduler (`--features scheduler`).
+//! Cross-thread contention bench for the scheduler.
 //!
 //! `scheduler.rs`'s microbench (`diamond/batched`) measures one thread
 //! calling `batch()` repeatedly — it validates the per-call overhead of the

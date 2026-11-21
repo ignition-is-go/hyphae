@@ -33,7 +33,6 @@ pub(crate) use wasm::{Instant, par_for_each, spawn_delayed, spawn_interval};
 /// the single seam through which time can later be routed to an injected
 /// (e.g. PTP-disciplined) clock. Monotonic and non-decreasing; the absolute
 /// value is meaningless — only differences are.
-#[cfg(feature = "scheduler")]
 pub fn now_nanos() -> u64 {
     use std::sync::OnceLock;
     static BASE: OnceLock<Instant> = OnceLock::new();

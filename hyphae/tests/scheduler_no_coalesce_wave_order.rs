@@ -11,7 +11,6 @@
 //! concurrently. `run_wave`'s independence invariant assumes each op writes a
 //! distinct cell; N same-cell event ops violate it. This test pins down whether
 //! that reorders or overlaps event delivery.
-#![cfg(feature = "scheduler")]
 
 use std::sync::{
     Arc,

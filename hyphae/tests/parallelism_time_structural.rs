@@ -1,5 +1,5 @@
 //! Wide-parallel-wave correctness for hyphae's time-based and structural
-//! operators under the opt-in `scheduler` feature.
+//! operators under the scheduler.
 //!
 //! # What a "wave-parallel hazard" actually is here
 //!
@@ -46,7 +46,6 @@
 //!     audit.
 //!   - Genuine torn-value (Template-A) candidates: NONE — all are single-input
 //!     or sequential-two-input, documented above.
-#![cfg(feature = "scheduler")]
 
 use std::{
     sync::{

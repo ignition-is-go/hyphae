@@ -1,4 +1,4 @@
-//! Phase 0 gate for the opt-in propagation scheduler (`scheduler` feature).
+//! Phase 0 gate for the propagation scheduler.
 //!
 //! Two properties, both asserted against the public API:
 //!   1. A synchronous diamond re-solves its sink **twice** per source change
@@ -8,7 +8,6 @@
 //!      the value from the *long* path, not a stale short-path glitch.
 //!
 //! The whole file compiles to nothing unless the feature is on.
-#![cfg(feature = "scheduler")]
 
 use std::sync::{
     Arc, Mutex,

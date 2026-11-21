@@ -11,7 +11,6 @@
 //! exactly-known value on each side of every pair, so correct pairing is
 //! computable and checked strictly; a single mis-pair desyncs the indices and
 //! every later iteration's assert fails.
-#![cfg(feature = "scheduler")]
 
 use hyphae::{Cell, Gettable, Materialize, Mutable, ZipExt, batch};
 

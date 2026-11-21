@@ -65,8 +65,7 @@ pub(crate) struct SourceInner<T> {
     /// fan-out in a scheduler [`batch`](crate::batch), so one emit is one
     /// coalesced propagation pass across all subscribers. Set via
     /// [`Source::batched`]; default `false` (eager per-subscriber fan-out, the
-    /// documented hot path). Only meaningful under the `scheduler` feature.
-    #[cfg(feature = "scheduler")]
+    /// documented hot path).
     pub(crate) batched: AtomicBool,
     /// Source location where this source was created (`#[track_caller]`).
     #[allow(dead_code)]
@@ -130,7 +129,6 @@ impl<T: CellValue> Source<T> {
             subscribers: parking_lot::Mutex::new(Arc::new(Vec::new())),
             owned: Mutex::new(FxHashMap::default()),
             completed: AtomicBool::new(false),
-            #[cfg(feature = "scheduler")]
             batched: AtomicBool::new(false),
             caller: Location::caller(),
         });
@@ -187,9 +185,6 @@ impl<T: CellValue> Source<T> {
     /// tick depth inc/dec + drain per emit. Turn it on for many-subscriber
     /// fan-out sources (interval/clock timers feeding a wide reactive graph);
     /// leave it off for point-to-point sources.
-    ///
-    /// Requires the `scheduler` feature (batching is meaningless without it).
-    #[cfg(feature = "scheduler")]
     #[must_use]
     pub fn batched(self) -> Self {
         self.inner.batched.store(true, Ordering::Relaxed);
@@ -259,7 +254,6 @@ impl<T: CellValue> Source<T> {
         // Subscriber callbacks must not panic — same contract as Cell::notify.
         // When batched, the whole fan-out is one propagation pass so downstream
         // diamonds coalesce; otherwise each subscriber cascades eagerly (default).
-        #[cfg(feature = "scheduler")]
         if self.inner.batched.load(Ordering::Relaxed) {
             crate::scheduler::batch(|| {
                 for (_id, sub) in subs.iter() {
@@ -281,7 +275,6 @@ impl<T: CellValue> Source<T> {
         }
         let signal: Signal<T> = Signal::Complete;
         let subs = Arc::clone(&*self.inner.subscribers.lock());
-        #[cfg(feature = "scheduler")]
         if self.inner.batched.load(Ordering::Relaxed) {
             crate::scheduler::batch(|| {
                 for (_id, sub) in subs.iter() {

@@ -16,7 +16,6 @@
 //! iteration sets a fresh, exactly-known value on both sides of every pair, so
 //! the correct settled output is computable and checked strictly — a torn
 //! survivor (new value on one side, stale on the other) fails the assert.
-#![cfg(feature = "scheduler")]
 
 use hyphae::{CellMap, MapQuery, batch, traits::InnerJoinExt};
 

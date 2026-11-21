@@ -1,4 +1,3 @@
-#![cfg(feature = "scheduler")]
 
 use std::{
     fmt,
