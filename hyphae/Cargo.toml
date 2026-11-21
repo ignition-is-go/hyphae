@@ -17,9 +17,8 @@ path = "src/lib.rs"
 [features]
 default = []
 async = ["flume", "futures-core"]
-# Opt-in deferred/ordered/glitch-free propagation under an explicit `batch()`
-# boundary, plus the `clock`/`TickSource` seam for frame-locked ticking. Off by
-# default: the synchronous eager-push path is unchanged when this is disabled.
+# No effect. The scheduler is always compiled; the name stays so manifests
+# that still list it keep resolving.
 scheduler = []
 # Opt-in calibration-only branch counters for join-region benchmarks. Every
 # counter call is cfg-elided unless explicitly enabled.
@@ -108,26 +107,23 @@ harness = false
 [[bench]]
 name = "scheduler"
 harness = false
-required-features = ["scheduler"]
 
 [[bench]]
 name = "scheduler_contention"
 harness = false
-required-features = ["scheduler"]
 
 [[bench]]
 name = "region_threshold_calibration"
 harness = false
-required-features = ["scheduler", "region-calibration"]
+required-features = ["region-calibration"]
 
 [[test]]
 name = "region_threshold_truth_table"
-required-features = ["scheduler", "region-calibration"]
+required-features = ["region-calibration"]
 
 [[bench]]
 name = "runtime_baseline"
 harness = false
-required-features = ["scheduler"]
 
 [[bench]]
 name = "wave_calibration"

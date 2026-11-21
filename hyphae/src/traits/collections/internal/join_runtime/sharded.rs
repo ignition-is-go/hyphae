@@ -13,7 +13,7 @@ use super::state::{
 
 #[allow(clippy::missing_const_for_fn)]
 pub(super) fn query_shard_count() -> usize {
-    #[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(pool) = crate::executor::worker_pool() {
         return pool.current_num_threads().max(1);
     }
@@ -461,7 +461,7 @@ where
     let work = routed
         .iter()
         .fold(0_usize, |sum, diffs| sum.saturating_add(diffs.len()));
-    #[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if work >= 8_192
         && shards.len() > 1
         && let Some(pool) = crate::executor::worker_pool()

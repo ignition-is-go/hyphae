@@ -14,7 +14,7 @@ use hyphae::{
 static SCHEDULER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// `tick_active()` (whether a `batch()` is open) is a process-wide flag under
-/// the `scheduler` feature (see `hyphae::scheduler`'s cross-thread docs), so
+/// the scheduler (see `hyphae::scheduler`'s cross-thread docs), so
 /// the synchronous-path test below needs no OTHER test's `batch()` call open
 /// concurrently on another thread — otherwise this test's diamond would take
 /// the deferred/coalesced path instead of the synchronous one it's measuring.
@@ -95,7 +95,6 @@ fn no_pass_no_report() {
     assert!(take_report().is_none(), "no pass was open, so no report");
 }
 
-#[cfg(feature = "scheduler")]
 #[test]
 fn batch_collapses_the_refire_the_pass_measures() {
     use hyphae::batch;

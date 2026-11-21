@@ -9,8 +9,7 @@
 //!
 //! Monotonic time comes from `performance.now()` (through `web-time`). There
 //! are no OS threads, so the `precise` flag on [`spawn_interval`] is ignored
-//! (`setTimeout` is millisecond-resolution and subject to browser throttling)
-//! and [`par_for_each`] runs sequentially.
+//! (`setTimeout` is millisecond-resolution and subject to browser throttling).
 
 use std::time::Duration;
 
@@ -50,10 +49,4 @@ pub fn spawn_interval(
             }
         }
     });
-}
-
-/// Fan out `f` across `items`. wasm is single-threaded, so this runs
-/// sequentially — the API matches the native rayon fan-out.
-pub fn par_for_each<T: Sync>(items: &[T], f: impl Fn(&T) + Send + Sync) {
-    items.iter().for_each(f);
 }

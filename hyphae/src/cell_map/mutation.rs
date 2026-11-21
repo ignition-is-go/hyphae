@@ -37,7 +37,6 @@ where
         // so no `batch` caller can trip that; the cost is at most an extra
         // fanout pass for snapshot-rebuild subscribers under `batch`, never a
         // wrong result.
-        #[cfg(feature = "scheduler")]
         let diffs_cell = diffs_cell.no_coalesce();
         let len_cell = Cell::new(0);
 

@@ -7,7 +7,6 @@ use std::{
     time::Duration,
 };
 
-use rayon::prelude::*;
 
 /// A single scheduled timer, owned by the shared [`Reactor`].
 struct TimerEntry {
@@ -20,7 +19,7 @@ struct TimerEntry {
 /// Process-wide timer reactor: every [`spawn_interval`]/[`spawn_delayed`] call
 /// registers a [`TimerEntry`] here instead of spawning its own OS thread.
 ///
-/// This is load-bearing for hyphae's `scheduler` feature, not just a thread-
+/// This is load-bearing for hyphae's scheduler, not just a thread-
 /// count optimization. The scheduler's glitch-free coalescing/height-ordering
 /// (`crate::scheduler`) is a *thread-local* guarantee — it only holds for
 /// propagation that happens on one thread. Two timer-driven `Source`s that
@@ -227,11 +226,6 @@ pub fn spawn_interval(
         count: 1,
         tick: Box::new(tick),
     });
-}
-
-/// Fan out `f` across `items` in parallel using rayon.
-pub fn par_for_each<T: Sync>(items: &[T], f: impl Fn(&T) + Send + Sync) {
-    items.par_iter().for_each(f);
 }
 
 #[cfg(test)]

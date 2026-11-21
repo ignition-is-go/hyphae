@@ -50,7 +50,6 @@ impl DepNode for CompositeDepNode {
         self.sources.clone()
     }
 
-    #[cfg(feature = "scheduler")]
     fn add_height_dependent(&self, dep: std::sync::Weak<dyn crate::cell::HeightInvalidate>) {
         for source in &self.sources {
             source.add_height_dependent(dep.clone());

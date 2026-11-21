@@ -1,9 +1,8 @@
-//! Opt-in propagation scheduler — deferred, ordered, glitch-free flushes under
-//! an explicit [`batch`] boundary.
+//! Propagation scheduler — deferred, ordered, glitch-free flushes under an
+//! explicit [`batch`] boundary.
 //!
-//! Gated behind the `scheduler` feature. When the feature is off, or when code
-//! runs outside a [`batch`], propagation takes hyphae's exact synchronous
-//! eager-push path — this module changes nothing about the default.
+//! Outside a [`batch`] (and outside a drain), propagation takes hyphae's
+//! synchronous eager-push path on the writing thread.
 //!
 //! # Model
 //!
@@ -311,7 +310,7 @@ fn height_dfs(node: &dyn DepNode, stack: &mut FxHashSet<Uuid>) -> u64 {
 
 /// Whether a batch is active on any thread. Cheap — one relaxed atomic load.
 /// This is the single check `notify` pays on the synchronous hot path when
-/// the `scheduler` feature is on but no batch is open.
+/// no batch is open.
 pub(crate) fn tick_active() -> bool {
     TICK_ACTIVE.load(Ordering::Relaxed)
 }
@@ -446,8 +445,7 @@ fn run_wave(groups: Vec<Vec<Box<dyn FnOnce() + Send>>>) -> Vec<Box<dyn std::any:
 
 /// wasm is single-threaded — no real parallelism to exploit, and no
 /// cross-thread race to guard against either, but this module still needs to
-/// compile and behave correctly there (the `scheduler` feature isn't
-/// native-only). Groups run in order, ops within each in arrival order.
+/// compile and behave correctly there. Groups run in order, ops within each in arrival order.
 #[cfg(target_arch = "wasm32")]
 fn run_wave(groups: Vec<Vec<Box<dyn FnOnce() + Send>>>) -> Vec<Box<dyn std::any::Any + Send>> {
     groups
@@ -596,8 +594,7 @@ pub(crate) fn birth_no_coalesce() -> bool {
 /// threads' unrelated work already queued alongside this call's — and then
 /// `f`'s panic is resumed to its caller.
 ///
-/// Outside the `scheduler` feature this is a behavior-preserving passthrough;
-/// see the module docs for the deferred semantics when the feature is on.
+/// See the module docs for the deferred semantics.
 pub fn batch<R>(f: impl FnOnce() -> R) -> R {
     let outermost = BATCH_NEST.with(|n| {
         let v = n.get().saturating_add(1);

@@ -7,33 +7,31 @@
 //!
 //! This module exposes a single API with two implementations:
 //!
-//! - **native** ([`native`]): threads + [`std::time::Instant`] + `spin_sleep`
-//!   + `rayon`.
-//! - **wasm** ([`wasm`]): `setTimeout`/`setInterval` via `gloo-timers`,
-//!   `performance.now()` via `web-time`, and a sequential fan-out fallback.
+//! - **native** ([`native`]): threads + [`std::time::Instant`] + `spin_sleep`.
+//! - **wasm** ([`wasm`]): `setTimeout`/`setInterval` via `gloo-timers` and
+//!   `performance.now()` via `web-time`.
 //!
 //! Keeping the surface identical across targets is what lets the timer-based
 //! operators (`delay`, `debounce`, `throttle`, `timeout`, `audit`,
-//! `buffer_time`, the `interval` constructors) and `ParallelExt` compile and
+//! `buffer_time`, the `interval` constructors) compile and
 //! *run* in the browser — a prerequisite for bridging hyphae cells to
 //! front-end signal libraries such as Leptos.
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 #[cfg(not(target_arch = "wasm32"))]
-pub use native::{Instant, par_for_each, spawn_delayed, spawn_interval};
+pub use native::{Instant, spawn_delayed, spawn_interval};
 
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 #[cfg(target_arch = "wasm32")]
-pub(crate) use wasm::{Instant, par_for_each, spawn_delayed, spawn_interval};
+pub(crate) use wasm::{Instant, spawn_delayed, spawn_interval};
 
 /// Monotonic nanoseconds since a fixed, process-wide base captured on first
 /// call. This is the default timebase for [`crate::clock::MonotonicClock`] and
 /// the single seam through which time can later be routed to an injected
 /// (e.g. PTP-disciplined) clock. Monotonic and non-decreasing; the absolute
 /// value is meaningless — only differences are.
-#[cfg(feature = "scheduler")]
 pub fn now_nanos() -> u64 {
     use std::sync::OnceLock;
     static BASE: OnceLock<Instant> = OnceLock::new();

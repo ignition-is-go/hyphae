@@ -40,7 +40,6 @@
 //!   switched-in inner's, the result settles STALE. Expected to FAIL
 //!   (stale-inner survivor), though the window is narrow — the generation gate
 //!   plus seq-ordering catches most interleavings.
-#![cfg(feature = "scheduler")]
 
 use std::sync::{
     Arc,

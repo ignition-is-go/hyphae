@@ -11,7 +11,6 @@
 //! shares one drain. Assertions run after every thread has joined, so the
 //! scheduler is quiescent (the last batch to close at depth 0 drains to
 //! completion) and every graph is fully settled.
-#![cfg(feature = "scheduler")]
 
 use std::{sync::Arc, thread};
 

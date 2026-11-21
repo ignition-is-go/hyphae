@@ -1,4 +1,4 @@
-//! Phase 0 scheduler micro-bench (`--features scheduler`).
+//! Phase 0 scheduler micro-bench.
 //!
 //! - `single_cell/synchronous` — one `set` + one subscriber, no batch. The
 //!   unscheduled hot path with the feature compiled in; compare against

@@ -6,7 +6,6 @@
 //! widens the wave hard (so rayon genuinely runs many old-inner-vs-switch races
 //! at once) and runs an order of magnitude longer, to give a surviving hole the
 //! maximum chance to surface.
-#![cfg(feature = "scheduler")]
 
 use hyphae::{Cell, Gettable, Materialize, Mutable, SwitchMapExt, batch};
 

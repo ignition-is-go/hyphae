@@ -225,7 +225,6 @@ fn old_values_are_the_published_payload_after_an_equal_source_reset() {
     assert_eq!(joined.get_value(&(0, 0)).map(|v| v.0.payload), Some("new"));
 }
 
-#[cfg(feature = "scheduler")]
 #[test]
 fn concurrent_pair_roots_settle_on_the_latest_values() {
     let _serial = scheduler_test_serial();

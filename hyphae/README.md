@@ -154,9 +154,8 @@ deterministic by logical input/emission ordinal and synchronously settled before
 the initiating source mutation returns. Hash-map and initial-snapshot iteration
 order are not API contracts.
 
-With the `scheduler` feature on native targets, eligible expensive join regions
-adaptively use Hyphae's shared dedicated Rayon pool. Builds without `scheduler`
-and wasm execute sequentially. `HYPHAE_WORKER_THREADS=0` disables the native
+On native targets, eligible expensive join regions adaptively use Hyphae's
+shared dedicated Rayon pool. Wasm executes them sequentially. `HYPHAE_WORKER_THREADS=0` disables the native
 pool; `HYPHAE_WAVE_THREADS` remains a compatibility fallback.
 
 ## Async Support

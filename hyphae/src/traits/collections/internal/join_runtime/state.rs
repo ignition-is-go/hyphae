@@ -710,7 +710,7 @@ pub(super) fn commit_keyed_value<LK, OV>(
     }
 }
 
-#[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 fn compute_keyed_parallel<LK, LV, RK, RV, JK, OV, FO>(
     pool: &rayon::ThreadPool,
     state: &JoinState<LK, LV, RK, RV, JK, LK, OV, impl RelationIndexStorage<RK, RV, JK>>,
@@ -781,7 +781,7 @@ where
         estimated_work >= PARALLEL_JOIN_WORK_ENTER
     };
 
-    #[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if state.parallel_active
         && let Some(pool) = crate::executor::worker_pool()
     {

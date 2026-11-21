@@ -25,7 +25,6 @@
 //! Every iteration sets a fresh, exactly-known value on both sides of every
 //! pair, so the correct settled output is computable and checked strictly — a
 //! torn survivor fails the assert.
-#![cfg(feature = "scheduler")]
 
 use hyphae::{
     CellMap, MapQuery, batch,

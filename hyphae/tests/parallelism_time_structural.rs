@@ -1,5 +1,5 @@
 //! Wide-parallel-wave correctness for hyphae's time-based and structural
-//! operators under the opt-in `scheduler` feature.
+//! operators under the scheduler.
 //!
 //! # What a "wave-parallel hazard" actually is here
 //!
@@ -46,7 +46,6 @@
 //!     audit.
 //!   - Genuine torn-value (Template-A) candidates: NONE — all are single-input
 //!     or sequential-two-input, documented above.
-#![cfg(feature = "scheduler")]
 
 use std::{
     sync::{
@@ -619,49 +618,4 @@ fn retry_wide_parallel_wave_value_passthrough() {
             );
         }
     }
-}
-
-// NOTE: `parallel()` fans OUT to its own subscribers via rayon directly, inside
-// the source op — it bypasses the scheduler queue for its fan-out. Driving WIDE
-// independent sources in one batch makes a wide height-0 wave (itself on rayon)
-// whose ops each run parallel's nested rayon fan-out: rayon-within-rayon. This
-// checks that nested parallel dispatch delivers each source's value to its own
-// subscriber intact, with no cross-instance leak. Not a torn-value candidate
-// (single input, per-instance subscriber set).
-#[test]
-fn parallel_wide_parallel_input_wave_correct() {
-    let _serial = scheduler_test_serial();
-    let sources: Vec<Cell<i64, _>> = (0..WIDE).map(|_| Cell::new(0i64)).collect();
-    let cells: Vec<_> = sources.iter().map(hyphae::ParallelExt::parallel).collect();
-
-    let slots: Vec<Arc<AtomicI64>> = (0..WIDE)
-        .map(|_| Arc::new(AtomicI64::new(i64::MIN)))
-        .collect();
-    let mut guards = Vec::new();
-    for (cell, slot) in cells.iter().zip(&slots) {
-        let slot = slot.clone();
-        guards.push(cell.subscribe(move |sig| {
-            if let Signal::Value(v) = sig {
-                slot.store(**v, Ordering::SeqCst);
-            }
-        }));
-    }
-
-    for it in 1..=STRUCTURAL_ITERS {
-        batch(|| {
-            for (i, s) in sources.iter().enumerate() {
-                s.set(it * 1000 + index_value(i));
-            }
-        });
-        // parallel's fan-out is synchronous within the wave op, so all slots
-        // are settled by the time the outermost same-thread batch returns.
-        for (i, slot) in slots.iter().enumerate() {
-            assert_eq!(
-                slot.load(Ordering::SeqCst),
-                it * 1000 + index_value(i),
-                "parallel instance {i} delivered a wrong value under a wide wave (iter {it})"
-            );
-        }
-    }
-    drop(guards);
 }

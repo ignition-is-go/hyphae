@@ -1,7 +1,7 @@
 //! Wave-parallel regression harness for hyphae's single-input transform
 //! operators.
 //!
-//! hyphae's opt-in `scheduler` feature defers `batch(|| ...)` notifies into a
+//! hyphae's scheduler defers `batch(|| ...)` notifies into a
 //! height-ordered queue and, once a height's wave reaches
 //! `PARALLEL_WAVE_THRESHOLD` (8) ops, dispatches that whole wave across rayon
 //! IN PARALLEL. This file pins down two properties of the single-input
@@ -39,7 +39,6 @@
 //! concurrently with itself — assertions the reorder bug currently breaks.
 //! These are the regression sentinels: they go green when the parallel wave is
 //! made event-order-safe for `no_coalesce` subgraphs.
-#![cfg(feature = "scheduler")]
 use std::sync::{
     Arc,
     atomic::{AtomicI64, AtomicUsize, Ordering},
