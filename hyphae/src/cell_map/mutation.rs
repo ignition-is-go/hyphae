@@ -49,6 +49,7 @@ where
                 key_cells: OnceLock::new(),
                 key_cell_slots: AtomicUsize::new(0),
                 prune_ops: AtomicUsize::new(0),
+                write_hooks: super::write_hook::WriteHooks::new(),
                 diffs_cell,
                 len_cell,
                 owned: Mutex::new(Vec::new()),
@@ -141,10 +142,12 @@ where
     /// Insert a key-value pair, returning the old value if present.
     pub fn insert(&self, key: K, value: V) -> Option<V> {
         self.maybe_prune_key_cells();
-        let old = self.inner.data.insert(key.clone(), value.clone());
+        let stored = self.store(key.clone(), value.clone());
 
         // No-op update: same key/value should not emit a diff or notify observers.
-        if old.as_ref().is_some_and(|old_value| old_value == &value) {
+        let unchanged = stored.unchanged(&value);
+        let old = stored.into_old();
+        if unchanged {
             return old;
         }
 
@@ -179,10 +182,11 @@ where
 
         let mut changes = Vec::with_capacity(entries.len());
         for (key, value) in entries {
-            let old = self.inner.data.insert(key.clone(), value.clone());
-            if old.as_ref().is_some_and(|old_value| old_value == &value) {
+            let stored = self.store(key.clone(), value.clone());
+            if stored.unchanged(&value) {
                 continue;
             }
+            let old = stored.into_old();
             let diff = old.map_or_else(
                 || MapDiff::Insert {
                     key: key.clone(),
@@ -212,7 +216,7 @@ where
     /// Remove a key, returning the old value if present.
     pub fn remove(&self, key: &K) -> Option<V> {
         self.maybe_prune_key_cells();
-        let removed = self.inner.data.remove(key);
+        let removed = self.delete(key);
 
         if let Some((k, old_value)) = removed {
             let observed = self.observed_key_cell(&k);
@@ -246,7 +250,7 @@ where
         let original_len = self.inner.data.len();
         let mut changes = Vec::new();
         for key in keys {
-            let removed = self.inner.data.remove(&key);
+            let removed = self.delete(&key);
             if let Some((k, old_value)) = removed {
                 changes.push(MapDiff::Remove {
                     key: k.clone(),
@@ -295,7 +299,7 @@ where
             .collect();
 
         for key in &keys_to_remove {
-            if let Some((k, old_value)) = self.inner.data.remove(key) {
+            if let Some((k, old_value)) = self.delete(key) {
                 changes.push(MapDiff::Remove {
                     key: k.clone(),
                     old_value,
@@ -308,10 +312,11 @@ where
 
         // Insert/update entries
         for (key, value) in entries {
-            let old = self.inner.data.insert(key.clone(), value.clone());
-            if old.as_ref().is_some_and(|old_value| old_value == &value) {
+            let stored = self.store(key.clone(), value.clone());
+            if stored.unchanged(&value) {
                 continue;
             }
+            let old = stored.into_old();
             changes.push(old.map_or_else(
                 || MapDiff::Insert {
                     key: key.clone(),
@@ -354,13 +359,13 @@ where
                 let previous_len = self.inner.data.len();
                 let stale_keys: Vec<K> = self.collect(|key, _| key.clone());
                 for key in stale_keys {
-                    self.inner.data.remove(&key);
+                    self.delete(&key);
                     if let Some(cell) = self.observed_key_cell(&key) {
                         cell.set(None);
                     }
                 }
                 for (key, value) in entries {
-                    self.inner.data.insert(key.clone(), value.clone());
+                    drop(self.store(key.clone(), value.clone()));
                     if let Some(cell) = self.observed_key_cell(key) {
                         cell.set(Some(value.clone()));
                     }
@@ -369,14 +374,14 @@ where
                 false
             }
             MapDiff::Insert { key, value } => {
-                let inserted = self.inner.data.insert(key.clone(), value.clone()).is_none();
+                let inserted = self.store(key.clone(), value.clone()).into_old().is_none();
                 if let Some(cell) = self.observed_key_cell(key) {
                     cell.set(Some(value.clone()));
                 }
                 inserted
             }
             MapDiff::Remove { key, .. } => {
-                let removed = self.inner.data.remove(key).is_some();
+                let removed = self.delete(key).is_some();
                 if let Some(cell) = self.observed_key_cell(key) {
                     cell.set(None);
                 }
@@ -392,9 +397,8 @@ where
                     return;
                 }
                 let inserted = self
-                    .inner
-                    .data
-                    .insert(key.clone(), new_value.clone())
+                    .store(key.clone(), new_value.clone())
+                    .into_old()
                     .is_none();
                 if let Some(cell) = self.observed_key_cell(key) {
                     cell.set(Some(new_value.clone()));
@@ -434,26 +438,26 @@ where
                 MapDiff::Initial { entries } => {
                     let keys: Vec<K> = map.collect(|key, _| key.clone());
                     for key in keys {
-                        map.inner.data.remove(&key);
+                        map.delete(&key);
                         if let Some(cell) = map.observed_key_cell(&key) {
                             cell.set(None);
                         }
                     }
                     for (key, value) in entries {
-                        map.inner.data.insert(key.clone(), value.clone());
+                        drop(map.store(key.clone(), value.clone()));
                         if let Some(cell) = map.observed_key_cell(key) {
                             cell.set(Some(value.clone()));
                         }
                     }
                 }
                 MapDiff::Insert { key, value } => {
-                    map.inner.data.insert(key.clone(), value.clone());
+                    drop(map.store(key.clone(), value.clone()));
                     if let Some(cell) = map.observed_key_cell(key) {
                         cell.set(Some(value.clone()));
                     }
                 }
                 MapDiff::Remove { key, .. } => {
-                    map.inner.data.remove(key);
+                    map.delete(key);
                     if let Some(cell) = map.observed_key_cell(key) {
                         cell.set(None);
                     }
@@ -467,7 +471,7 @@ where
                     {
                         return None;
                     }
-                    map.inner.data.insert(key.clone(), new_value.clone());
+                    drop(map.store(key.clone(), new_value.clone()));
                     if let Some(cell) = map.observed_key_cell(key) {
                         cell.set(Some(new_value.clone()));
                     }

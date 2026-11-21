@@ -2,6 +2,79 @@
 //!
 //! `CellMap` wraps a concurrent `HashMap` where each entry can be individually observed.
 //! Changes to keys trigger reactive updates to observers.
+//!
+//! # Write hooks
+//!
+//! [`CellMap::register_write_hook`] keeps a secondary index exactly in step
+//! with a map. Diff subscribers are deferred while a batch is open; a write
+//! hook is not. The contract:
+//!
+//! - **Coverage.** The hook sees every change to the map's data, from every
+//!   mutating method, one [`MapWrite`] per changed key, with the old value on
+//!   every update and remove. A write the map suppresses as equal is not
+//!   reported. `Initial` diffs passed to `apply_diff_owned` or `apply_batch`
+//!   report a `Remove` then an `Insert` for each key they rewrite, because
+//!   that is what the map does: a reader of the map sees the key absent in
+//!   between, and so does the index.
+//! - **Ordering.** The hook runs on the writing thread, under the write lock
+//!   of the shard that holds the key, after the map holds the new value and
+//!   before the write returns, whether or not a batch is open. A read of that
+//!   key waits on the same lock, so for a single key the map and the index
+//!   never disagree: a reader that sees a row in the map then finds it in the
+//!   index, and a reader that finds a row in the index then reads it from the
+//!   map. For one key, hook calls arrive in the order the map applies the
+//!   writes. Different keys are not ordered.
+//! - **Seeding.** Registration write-locks every shard, replays each current
+//!   entry as a `MapWrite::Insert`, and installs the hook before releasing
+//!   them. Every concurrent write is in the replay or in a later call, never
+//!   both. Writers to the map wait for the replay: about 4 ms for 100,000
+//!   rows and 34 ms for 500,000 rows with a hook that fills a `DashMap`.
+//! - **Restrictions.** The hook must not read or write the same map, or
+//!   register or drop a write hook on it: those calls take the shard lock the
+//!   hook already holds and deadlock. Keep it short; it blocks readers and
+//!   writers of the keys in its shard. While any hook is registered, the
+//!   equality check that suppresses equal writes runs under the lock too, so
+//!   a deep `PartialEq` on large values lengthens the hold. Old values and
+//!   removed entries are dropped after the lock is released, as without a
+//!   hook.
+//! - **Cost.** With no hook, a write pays one relaxed atomic load.
+//! - **Lifetime.** Dropping the returned guard removes the hook. Several hooks
+//!   may be registered; each sees every write.
+//!
+//! ```
+//! use std::{collections::{HashMap, HashSet}, sync::{Arc, Mutex}};
+//! use hyphae::{CellMap, cell_map::MapWrite};
+//!
+//! #[derive(Clone, Debug, PartialEq)]
+//! struct Task { owner: &'static str }
+//!
+//! let tasks = CellMap::<u32, Task>::new();
+//! tasks.insert(1, Task { owner: "ada" });
+//!
+//! // owner -> task ids, kept exact by the hook.
+//! let by_owner: Arc<Mutex<HashMap<&'static str, HashSet<u32>>>> = Arc::default();
+//! let index = by_owner.clone();
+//! let _guard = tasks.register_write_hook(move |write| {
+//!     let mut index = index.lock().unwrap();
+//!     let (key, old, new) = match write {
+//!         MapWrite::Insert { key, value } => (key, None, Some(value)),
+//!         MapWrite::Update { key, old, new } => (key, Some(old), Some(new)),
+//!         MapWrite::Remove { key, old } => (key, Some(old), None),
+//!     };
+//!     if let Some(old) = old {
+//!         index.entry(old.owner).or_default().remove(key);
+//!     }
+//!     if let Some(new) = new {
+//!         index.entry(new.owner).or_default().insert(*key);
+//!     }
+//! });
+//!
+//! tasks.insert(2, Task { owner: "ada" });
+//! tasks.insert(1, Task { owner: "lin" });
+//! let index = by_owner.lock().unwrap();
+//! assert_eq!(index["ada"], HashSet::from([2]));
+//! assert_eq!(index["lin"], HashSet::from([1]));
+//! ```
 
 use std::{
     hash::Hash,
@@ -26,9 +99,11 @@ use crate::{
 mod diff;
 mod mutation;
 mod projection;
+mod write_hook;
 
 pub use diff::MapDiff;
 use projection::{EntryProjection, KeyProjection, ProjectionOwner, ValueProjection};
+pub use write_hook::MapWrite;
 
 struct PointCellSlot<V: CellValue> {
     state: Mutex<PointCellState<V>>,
@@ -114,6 +189,8 @@ where
     key_cell_slots: AtomicUsize,
     /// Mutation counter driving amortized pruning of dead `key_cells` weaks.
     prune_ops: AtomicUsize,
+    /// Synchronous hooks run under the shard lock of every data write.
+    write_hooks: write_hook::WriteHooks<K, V>,
     /// Cell for diff notifications.
     pub(crate) diffs_cell: Cell<MapDiff<K, V>, CellMutable>,
     /// Cell for length.
@@ -612,3 +689,6 @@ mod owned_guard_tests;
 
 #[cfg(test)]
 mod lazy_point_cache_tests;
+
+#[cfg(test)]
+mod write_hook_tests;
