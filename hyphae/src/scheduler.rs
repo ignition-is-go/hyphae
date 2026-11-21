@@ -20,6 +20,27 @@
 //! value instead of once per input arrival. That is the glitch-freedom: the
 //! redundant re-fires a synchronous diamond makes are collapsed.
 //!
+//! # Rounds
+//!
+//! The queue holds two frontiers. `ready` is the **round** being drained: the
+//! ops admitted when the round began, plus everything their fanout enqueues.
+//! `arrived` collects every op enqueued from outside the round, by a thread
+//! that is not running one of its ops. A drain runs `ready` to its greatest
+//! height, and only when it is empty does `arrived` become the next round.
+//!
+//! So an op admitted in one round runs before any op that arrived after the
+//! round began, whatever their heights. Without this a single height-ordered
+//! queue serves the lowest height first forever: input that keeps arriving at
+//! height 0 is always ahead of a height-100 op already waiting, and the deep
+//! op runs only when the input stops. Writers never wait for a round; their
+//! ops coalesce in `arrived`, last write wins per cell, exactly as before, so
+//! a round that takes longer admits a next round that has coalesced more.
+//! `no_coalesce` cells keep every op, in arrival order, across rounds.
+//!
+//! Each round is one glitch-free sweep: every height-`k` cell in it settles
+//! before any height-`k+1` subscriber runs. A cell written in two rounds
+//! settles once per round, in round order.
+//!
 //! # Cross-thread model
 //!
 //! The tick queue is process-wide, not per-thread. This is load-bearing, not
@@ -173,6 +194,11 @@ thread_local! {
     /// because it tracks one call stack's nesting; the cross-thread batch
     /// count is [`SharedTick::depth`].
     static BATCH_NEST: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// Whether THIS thread is running an op of the round being drained. An
+    /// enqueue made here is a consequence of that round and joins it; an
+    /// enqueue made anywhere else is new input and waits for the next round
+    /// (see the module docs, "Rounds").
+    static IN_ROUND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 // Height-cache invalidation is **per-node**, not global. Each cell carries its
@@ -190,7 +216,11 @@ thread_local! {
 /// per-thread one that silently doesn't hold at the seams where two threads'
 /// timers/dispatch converge on a shared cell.
 struct SharedTick {
+    /// The round being drained: its admitted ops and their fanout.
     ready: ReadyQueue,
+    /// Input that arrived since the round was admitted. It becomes the next
+    /// round when `ready` runs empty.
+    arrived: ReadyQueue,
     /// Number of currently-open [`batch`] calls, summed across every thread.
     /// Together with `draining` it gates whether a fresh `notify` defers:
     /// deferral is on whenever `depth > 0 || draining` (a batch is open
@@ -221,7 +251,16 @@ impl SharedTick {
         coalesce: bool,
         run: Box<dyn FnOnce() + Send>,
     ) -> Option<PendingRun> {
-        self.ready.enqueue(id, height, coalesce, run)
+        let queue = if IN_ROUND.get() {
+            &mut self.ready
+        } else {
+            &mut self.arrived
+        };
+        queue.enqueue(id, height, coalesce, run)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.ready.is_empty() && self.arrived.is_empty()
     }
 
     /// Remove every op at the current minimum height, **grouped by cell id**,
@@ -237,6 +276,9 @@ impl SharedTick {
     /// also have terminal or event operations in its group.
     #[inline]
     fn pop_min_height_groups(&mut self) -> Option<Vec<Vec<Box<dyn FnOnce() + Send>>>> {
+        if self.ready.is_empty() {
+            std::mem::swap(&mut self.ready, &mut self.arrived);
+        }
         self.ready.pop_min_height_groups()
     }
 }
@@ -244,6 +286,7 @@ impl SharedTick {
 static TICK: LazyLock<Mutex<SharedTick>> = LazyLock::new(|| {
     Mutex::new(SharedTick {
         ready: ReadyQueue::new(),
+        arrived: ReadyQueue::new(),
         depth: 0,
         draining: false,
     })
@@ -398,6 +441,22 @@ pub fn set_wave_threshold_for_test(groups: usize) {
     WAVE_THRESHOLD.store(groups, Ordering::Relaxed);
 }
 
+/// Marks this thread as running an op of the current round for as long as it
+/// lives, and restores the previous mark on drop.
+struct RoundGuard(bool);
+
+impl RoundGuard {
+    fn enter() -> Self {
+        Self(IN_ROUND.replace(true))
+    }
+}
+
+impl Drop for RoundGuard {
+    fn drop(&mut self) {
+        IN_ROUND.set(self.0);
+    }
+}
+
 /// Run one height's worth of ops, grouped by cell (see
 /// [`SharedTick::pop_min_height_groups`]). Distinct groups are distinct cells at
 /// the same height: height is `1 + max(dep.height)`, so if one group's cell
@@ -419,6 +478,7 @@ pub fn set_wave_threshold_for_test(groups: usize) {
 #[cfg(not(target_arch = "wasm32"))]
 fn run_wave(groups: Vec<Vec<Box<dyn FnOnce() + Send>>>) -> Vec<Box<dyn std::any::Any + Send>> {
     fn run_group(group: Vec<Box<dyn FnOnce() + Send>>) -> Vec<Box<dyn std::any::Any + Send>> {
+        let _round = RoundGuard::enter();
         group
             .into_iter()
             .filter_map(|run| std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).err())
@@ -448,6 +508,7 @@ fn run_wave(groups: Vec<Vec<Box<dyn FnOnce() + Send>>>) -> Vec<Box<dyn std::any:
 /// compile and behave correctly there. Groups run in order, ops within each in arrival order.
 #[cfg(target_arch = "wasm32")]
 fn run_wave(groups: Vec<Vec<Box<dyn FnOnce() + Send>>>) -> Vec<Box<dyn std::any::Any + Send>> {
+    let _round = RoundGuard::enter();
     groups
         .into_iter()
         .flatten()
@@ -618,7 +679,7 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
     let claimed_drain = {
         let mut guard = TICK.lock();
         guard.depth = guard.depth.saturating_sub(1);
-        let claim = outermost && !guard.draining && !guard.ready.is_empty();
+        let claim = outermost && !guard.draining && !guard.is_empty();
         if claim {
             guard.draining = true;
         }
