@@ -8,8 +8,9 @@ use std::{
 
 use super::{CellValue, Watchable};
 use crate::{
-    cell::{Cell, CellMutable},
-    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed},
+    pipeline::{
+        Definite, GuardOwner, Pipeline, PipelineInstall, PipelineSeed, materialize_mutable,
+    },
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -29,8 +30,12 @@ where
     I: PipelineInstall<U> + PipelineSeed<U>,
 {
     fn install(&self, callback: Arc<dyn Fn(&Signal<U>) + Send + Sync>) -> SubscriptionGuard {
+        materialize_mutable(self).subscribe(move |signal| callback(signal))
+    }
+
+    fn install_into(&self, owner: &Arc<GuardOwner>, emit: Arc<dyn Fn(&Signal<U>) + Send + Sync>) {
         let first_inner = (self.f)(&self.source.seed());
-        let cell = Cell::<U, CellMutable>::new(first_inner.seed());
+        emit(&Signal::value(first_inner.seed()));
 
         // Complete when outer completes AND all inner cells complete
         // Track: outer_complete flag + count of active (non-complete) inner cells
@@ -47,32 +52,17 @@ where
         let completed_emitted = Arc::new(AtomicBool::new(false));
 
         // Subscribe to first inner
-        let weak = cell.downgrade();
-        let oc = outer_complete.clone();
-        let ai = active_inners.clone();
-        let ce = completed_emitted.clone();
-        let first_inner_guard = first_inner.install(Arc::new(move |signal| {
-            if let Some(c) = weak.upgrade() {
-                match signal {
-                    Signal::Value(_) => c.notify(signal.clone()),
-                    Signal::Complete => {
-                        let remaining = ai.fetch_sub(1, Ordering::SeqCst).saturating_sub(1);
-                        if remaining == 0
-                            && oc.load(Ordering::SeqCst)
-                            && !ce.swap(true, Ordering::SeqCst)
-                        {
-                            c.notify(Signal::Complete);
-                        }
-                    }
-                    Signal::Error(e) => c.notify(Signal::Error(e.clone())),
-                }
-            }
-        }));
-        cell.own(first_inner_guard);
+        let first_inner_guard = first_inner.install(inner_callback(
+            Arc::clone(&emit),
+            outer_complete.clone(),
+            active_inners.clone(),
+            completed_emitted.clone(),
+        ));
+        owner.own(first_inner_guard);
 
         // When outer changes, subscribe to new inner (without unsubscribing from previous)
         // Note: merge_map accumulates subscriptions by design - each inner cell stays subscribed
-        let weak_outer = cell.downgrade();
+        let owner_outer = Arc::clone(owner);
         let f = self.f.clone();
         let first = Arc::new(AtomicBool::new(true));
         let oc2 = outer_complete.clone();
@@ -85,9 +75,9 @@ where
                         return;
                     }
 
-                    let Some(c) = weak_outer.upgrade() else {
+                    if !owner_outer.is_alive() {
                         return;
-                    };
+                    }
 
                     // Increment active count before creating inner
                     ai2.fetch_add(1, Ordering::SeqCst);
@@ -95,50 +85,50 @@ where
                     let inner = f(outer_value.as_ref());
 
                     // Subscribe to new inner - these subscriptions accumulate
-                    let weak_inner = weak_outer.clone();
-                    let oc_inner = oc2.clone();
-                    let ai_inner = ai2.clone();
-                    let ce_inner = ce2.clone();
-                    let inner_guard = inner.install(Arc::new(move |signal| {
-                        if let Some(c) = weak_inner.upgrade() {
-                            match signal {
-                                Signal::Value(_) => c.notify(signal.clone()),
-                                Signal::Complete => {
-                                    let remaining =
-                                        ai_inner.fetch_sub(1, Ordering::SeqCst).saturating_sub(1);
-                                    if remaining == 0
-                                        && oc_inner.load(Ordering::SeqCst)
-                                        && !ce_inner.swap(true, Ordering::SeqCst)
-                                    {
-                                        c.notify(Signal::Complete);
-                                    }
-                                }
-                                Signal::Error(e) => c.notify(Signal::Error(e.clone())),
-                            }
-                        }
-                    }));
-                    c.own(inner_guard);
+                    let inner_guard = inner.install(inner_callback(
+                        Arc::clone(&emit),
+                        oc2.clone(),
+                        ai2.clone(),
+                        ce2.clone(),
+                    ));
+                    owner_outer.own(inner_guard);
                 }
                 Signal::Complete => {
                     outer_complete.store(true, Ordering::SeqCst);
                     if active_inners.load(Ordering::SeqCst) == 0
-                        && let Some(c) = weak_outer.upgrade()
+                        && owner_outer.is_alive()
                         && !ce2.swap(true, Ordering::SeqCst)
                     {
-                        c.notify(Signal::Complete);
+                        emit(&Signal::Complete);
                     }
                 }
-                Signal::Error(e) => {
-                    if let Some(c) = weak_outer.upgrade() {
-                        c.notify(Signal::Error(e.clone()));
-                    }
-                }
+                Signal::Error(e) => emit(&Signal::Error(e.clone())),
             }
         }));
-        cell.own(outer_guard);
-
-        cell.subscribe(move |signal| callback(signal))
+        owner.own(outer_guard);
     }
+}
+
+fn inner_callback<U: CellValue>(
+    emit: Arc<dyn Fn(&Signal<U>) + Send + Sync>,
+    outer_complete: Arc<AtomicBool>,
+    active_inners: Arc<AtomicUsize>,
+    completed_emitted: Arc<AtomicBool>,
+) -> Arc<dyn Fn(&Signal<U>) + Send + Sync> {
+    Arc::new(move |signal| match signal {
+        Signal::Value(_) | Signal::Error(_) => emit(signal),
+        Signal::Complete => {
+            let remaining = active_inners
+                .fetch_sub(1, Ordering::SeqCst)
+                .saturating_sub(1);
+            if remaining == 0
+                && outer_complete.load(Ordering::SeqCst)
+                && !completed_emitted.swap(true, Ordering::SeqCst)
+            {
+                emit(signal);
+            }
+        }
+    })
 }
 
 impl<S, T, U, F, I> PipelineSeed<U> for MergeMapPipeline<S, T, U, F, I>
@@ -184,7 +174,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
-    use crate::{Gettable, MapExt, Materialize};
+    use crate::{Cell, Gettable, MapExt, Materialize};
 
     #[test]
     fn merge_map_does_not_build_an_inner_until_materialized() {
