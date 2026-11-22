@@ -4,6 +4,9 @@
 //! is the hop's cost on the scheduler queue. An operator materialized directly
 //! costs one fanout per delivered value. A trailing `map`/`deduped` keeps its
 //! own cell, so it runs once per settled value rather than per upstream notify.
+//!
+//! `fanouts` runs its write twice, so every write produces a new value: a
+//! repeated value is dropped at a deduping cell and would count nothing.
 #![cfg(feature = "profiling")]
 
 use hyphae::{
@@ -33,17 +36,23 @@ fn fanouts(write: impl Fn()) -> (u64, u64) {
 fn switch_map_hop_costs_one_fanout_per_value() {
     let _serial = serial();
     let outer = Cell::new(0u64);
-    let inner = Cell::new(10u64);
-    let i = inner.clone();
-    let out = outer.clone().switch_map(move |_| i.clone()).materialize();
+    let even = Cell::new(10u64);
+    let odd = Cell::new(1_000u64);
+    let (e, o) = (even.clone(), odd);
+    let out = outer
+        .clone()
+        .switch_map(move |n| if n % 2 == 0 { e.clone() } else { o.clone() })
+        .materialize();
     let _g = out.subscribe(|_| {});
 
-    let inner_write = fanouts(|| inner.set(inner.get() + 1));
+    let inner_write = fanouts(|| even.set(even.get() + 1));
+    // Each switch lands on the other inner, so the output really changes and
+    // a deduping cell cannot drop it.
     let outer_write = fanouts(|| outer.set(outer.get() + 1));
     // Source fanout + exactly one downstream fanout.
     assert_eq!(inner_write, (2, 2), "inner write");
     assert_eq!(outer_write, (2, 2), "outer write (switch)");
-    assert_eq!(out.get(), inner.get());
+    assert_eq!(out.get(), even.get());
 }
 
 #[test]
@@ -103,8 +112,12 @@ fn join_vec_costs_one_fanout() {
     let cells = [Cell::new(1u64), Cell::new(2u64), Cell::new(3u64)];
     let out = join_vec(cells.to_vec()).materialize();
     let _g = out.subscribe(|_| {});
-    assert_eq!(fanouts(|| cells[1].set(20)), (2, 2), "member write");
-    assert_eq!(out.get(), vec![1, 20, 3]);
+    assert_eq!(
+        fanouts(|| cells[1].set(cells[1].get() + 1)),
+        (2, 2),
+        "member write"
+    );
+    assert_eq!(out.get(), vec![1, 4, 3]);
 }
 
 #[test]
@@ -115,6 +128,10 @@ fn merge_map_costs_one_fanout() {
     let i = inner.clone();
     let out = outer.merge_map(move |_| i.clone()).materialize();
     let _g = out.subscribe(|_| {});
-    assert_eq!(fanouts(|| inner.set(11)), (2, 2), "inner write");
-    assert_eq!(out.get(), 11);
+    assert_eq!(
+        fanouts(|| inner.set(inner.get() + 1)),
+        (2, 2),
+        "inner write"
+    );
+    assert_eq!(out.get(), 12);
 }
