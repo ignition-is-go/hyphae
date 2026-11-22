@@ -411,9 +411,11 @@ pub(crate) fn enqueue(
     if height == 0 {
         round_stats::source(kind, IN_ROUND.get());
     }
+    let in_round = IN_ROUND.get();
     let coalesce = !node.no_coalesce() && !terminal;
     let displaced = guard.enqueue_locked(id, height, coalesce, run);
     drop(guard);
+    call_sites::sample(id, node, kind, height, in_round, displaced.is_some());
     // Captured values can own Cells whose final Drop re-enters scheduler paths.
     // Never destroy a superseded closure while holding the process-wide tick.
     drop(displaced);
@@ -465,6 +467,109 @@ pub fn set_wave_threshold_for_test(groups: usize) {
     WAVE_THRESHOLD.store(groups, Ordering::Relaxed);
 }
 
+/// DIAGNOSTIC (not for merge): with `HYPHAE_CALL_SITES=<file>`, capture the
+/// stack of 1 in `HYPHAE_CALL_SITES_EVERY` (default 2000) deferred enqueues,
+/// counted separately for in-drain and external enqueues, and append each to
+/// the file from a writer thread. A sample is the enqueue that schedules an op,
+/// so samples at height >= 1 attribute derived-cell op executions to the code
+/// that scheduled them (`coalesced=true` marks one that replaced a queued op).
+mod call_sites {
+    use std::{
+        backtrace::Backtrace,
+        io::Write,
+        sync::{
+            LazyLock, Mutex,
+            atomic::{AtomicU64, Ordering},
+            mpsc::{Sender, channel},
+        },
+    };
+
+    struct Sample {
+        id: uuid::Uuid,
+        deps: usize,
+        name: Option<String>,
+        kind: &'static str,
+        height: u64,
+        in_round: bool,
+        coalesced: bool,
+        seq: u64,
+        stack: Backtrace,
+    }
+
+    static EVERY: LazyLock<Option<u64>> = LazyLock::new(|| {
+        std::env::var("HYPHAE_CALL_SITES").ok()?;
+        Some(super::env_usize("HYPHAE_CALL_SITES_EVERY").map_or(2000, |n| n.max(1) as u64))
+    });
+    static IN_DRAIN: AtomicU64 = AtomicU64::new(0);
+    static EXTERNAL: AtomicU64 = AtomicU64::new(0);
+    static WRITER: LazyLock<Mutex<Sender<Sample>>> = LazyLock::new(|| {
+        let (tx, rx) = channel::<Sample>();
+        let path = std::env::var("HYPHAE_CALL_SITES").unwrap_or_default();
+        std::thread::Builder::new()
+            .name("hyphae-call-sites".into())
+            .spawn(move || {
+                let Ok(mut file) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                else {
+                    return;
+                };
+                let start = std::time::Instant::now();
+                for s in rx {
+                    let _ = writeln!(
+                        file,
+                        "=== t_ms={} cell={} deps={} name={:?} kind={} height={} in_round={} coalesced={} seq={}\n{}",
+                        start.elapsed().as_millis(),
+                        s.id,
+                        s.deps,
+                        s.name,
+                        s.kind,
+                        s.height,
+                        s.in_round,
+                        s.coalesced,
+                        s.seq,
+                        s.stack
+                    );
+                }
+            })
+            .expect("spawn call-site writer");
+        Mutex::new(tx)
+    });
+
+    pub(super) fn sample(
+        id: uuid::Uuid,
+        node: &dyn super::DepNode,
+        kind: &'static str,
+        height: u64,
+        in_round: bool,
+        coalesced: bool,
+    ) {
+        let Some(every) = *EVERY else { return };
+        let counter = if in_round { &IN_DRAIN } else { &EXTERNAL };
+        let seq = counter.fetch_add(1, Ordering::Relaxed);
+        if seq % every != 0 {
+            return;
+        }
+        let stack = Backtrace::force_capture();
+        let tx = WRITER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let _ = tx.send(Sample {
+            id,
+            deps: node.deps().len(),
+            name: node.name(),
+            kind,
+            height,
+            in_round,
+            coalesced,
+            seq,
+            stack,
+        });
+    }
+}
+
 /// DIAGNOSTIC (not for merge): with `HYPHAE_ROUND_STATS=<file>`, append one
 /// line a second: rounds, waves, ops, longest round in microseconds.
 mod round_stats {
@@ -477,7 +582,8 @@ mod round_stats {
         time::Instant,
     };
 
-    static PATH: LazyLock<Option<String>> = LazyLock::new(|| std::env::var("HYPHAE_ROUND_STATS").ok());
+    static PATH: LazyLock<Option<String>> =
+        LazyLock::new(|| std::env::var("HYPHAE_ROUND_STATS").ok());
     static START: LazyLock<Instant> = LazyLock::new(Instant::now);
     static ROUNDS: AtomicU64 = AtomicU64::new(0);
     static WAVES: AtomicU64 = AtomicU64::new(0);
@@ -498,7 +604,11 @@ mod round_stats {
         ROUNDS.fetch_add(1, Ordering::Relaxed);
         if now.saturating_sub(REPORTED.load(Ordering::Relaxed)) >= 1_000_000 {
             REPORTED.store(now, Ordering::Relaxed);
-            if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
                 let _ = writeln!(
                     file,
                     "t={} rounds={} waves={} ops={} longest_us={} heights={} sources={}",
@@ -527,8 +637,9 @@ mod round_stats {
         }
     }
 
-    static SOURCES: LazyLock<std::sync::Mutex<std::collections::HashMap<(&'static str, bool), u64>>> =
-        LazyLock::new(Default::default);
+    static SOURCES: LazyLock<
+        std::sync::Mutex<std::collections::HashMap<(&'static str, bool), u64>>,
+    > = LazyLock::new(Default::default);
 
     pub(super) fn source(kind: &'static str, in_round: bool) {
         if PATH.is_some() {
@@ -549,7 +660,9 @@ mod round_stats {
         all.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
         all.iter()
             .take(25)
-            .map(|((kind, in_round), count)| format!("{count}{}{kind}", if *in_round { "@in:" } else { "@ext:" }))
+            .map(|((kind, in_round), count)| {
+                format!("{count}{}{kind}", if *in_round { "@in:" } else { "@ext:" })
+            })
             .collect::<Vec<_>>()
             .join(";;")
     }
