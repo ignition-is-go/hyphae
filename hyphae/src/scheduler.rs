@@ -153,6 +153,7 @@ use uuid::Uuid;
 
 use crate::traits::DepNode;
 
+mod diag;
 mod frontier;
 mod ready;
 
@@ -249,6 +250,17 @@ static TICK: LazyLock<Mutex<SharedTick>> = LazyLock::new(|| {
     })
 });
 
+/// Locks the tick, timing the acquisition for `HYPHAE_OP_WAITS` (diagnostic).
+fn lock_tick(site: usize) -> parking_lot::MutexGuard<'static, SharedTick> {
+    if !diag::waits_on() {
+        return TICK.lock();
+    }
+    let asked = std::time::Instant::now();
+    let guard = TICK.lock();
+    diag::lock_wait(site, asked.elapsed());
+    guard
+}
+
 /// Fast, lock-free "should a fresh notify defer" flag, kept in sync with
 /// `depth > 0 || draining` under the same critical sections that mutate
 /// either. `notify`'s hot path ([`tick_active`]) reads this instead of
@@ -332,7 +344,7 @@ pub(crate) fn tick_active() -> bool {
 /// first and the terminal after it. The queue preserves arrival order for
 /// later operations too; completion only takes effect when its operation runs.
 pub(crate) fn enqueue(id: Uuid, node: &dyn DepNode, terminal: bool, run: Box<dyn FnOnce() + Send>) {
-    let mut guard = TICK.lock();
+    let mut guard = lock_tick(0);
     // Defer only if a batch is open somewhere, or a drain is in flight (a
     // popped op's fanout must land in the current drain's queue, not cascade
     // eagerly). Otherwise run synchronously on this thread — the default
@@ -345,8 +357,10 @@ pub(crate) fn enqueue(id: Uuid, node: &dyn DepNode, terminal: bool, run: Box<dyn
     }
     let height = compute_height(node);
     let coalesce = !node.no_coalesce() && !terminal;
-    let displaced = guard.enqueue_locked(id, height, coalesce, run);
+    let in_drain = guard.draining;
+    let displaced = guard.enqueue_locked(id, height, coalesce, diag::wrap(height, run));
     drop(guard);
+    diag::sample(node, height, in_drain, displaced.is_some());
     // Captured values can own Cells whose final Drop re-enters scheduler paths.
     // Never destroy a superseded closure while holding the process-wide tick.
     drop(displaced);
@@ -386,6 +400,10 @@ static WAVE_THRESHOLD: LazyLock<AtomicUsize> = LazyLock::new(|| {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn wave_threshold() -> usize {
+    WAVE_THRESHOLD.load(Ordering::Relaxed)
+}
+
+fn wave_threshold_any() -> usize {
     WAVE_THRESHOLD.load(Ordering::Relaxed)
 }
 
@@ -485,9 +503,10 @@ fn run_wave(groups: Vec<Vec<Box<dyn FnOnce() + Send>>>) -> Vec<Box<dyn std::any:
 fn drain() -> Option<Box<dyn std::any::Any + Send>> {
     let mut first_panic: Option<Box<dyn std::any::Any + Send>> = None;
     let mut waves = 0usize;
+    let mut stint = diag::Stint::begin();
     loop {
         let groups = {
-            let mut guard = TICK.lock();
+            let mut guard = lock_tick(1);
             // Bounded rotation: after a stint's worth of waves, hand the drain
             // off *if another batch is still open* (`depth > 0`, so a close is
             // coming to reclaim it). This caps any single `batch()` call's
@@ -501,6 +520,9 @@ fn drain() -> Option<Box<dyn std::any::Any + Send>> {
                 guard.draining = false;
                 refresh_tick_active(&guard);
                 drop(guard);
+                if let Some(stint) = stint {
+                    stint.end(true);
+                }
                 return first_panic;
             }
             if let Some(groups) = guard.pop_min_height_groups() {
@@ -510,9 +532,17 @@ fn drain() -> Option<Box<dyn std::any::Any + Send>> {
                 guard.draining = false;
                 refresh_tick_active(&guard);
                 drop(guard);
+                if let Some(stint) = stint {
+                    stint.end(false);
+                }
                 return first_panic;
             }
         };
+        if let Some(stint) = stint.as_mut() {
+            let parallel =
+                cfg!(not(target_arch = "wasm32")) && groups.len() >= wave_threshold_any();
+            stint.wave(groups.len(), groups.iter().map(Vec::len).sum(), parallel);
+        }
         let panics = run_wave(groups);
         if first_panic.is_none() {
             first_panic = panics.into_iter().next();
@@ -601,8 +631,13 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
         n.set(v);
         v == 1
     });
+    let opened_us = if outermost && diag::tracing() {
+        diag::now_us()
+    } else {
+        0
+    };
     {
-        let mut guard = TICK.lock();
+        let mut guard = lock_tick(2);
         guard.depth = guard.depth.saturating_add(1);
         refresh_tick_active(&guard);
         drop(guard);
@@ -616,14 +651,19 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
     // pending work — the empty-check and the `draining = true` claim happen
     // together under the lock, which is what makes the hand-off strand-free.
     let claimed_drain = {
-        let mut guard = TICK.lock();
+        let mut guard = lock_tick(3);
         guard.depth = guard.depth.saturating_sub(1);
         let claim = outermost && !guard.draining && !guard.ready.is_empty();
+        let draining_at_close = guard.draining;
         if claim {
             guard.draining = true;
         }
+        let depth_after = guard.depth;
         refresh_tick_active(&guard);
         drop(guard);
+        if outermost && diag::tracing() {
+            diag::batch_close(opened_us, claim, draining_at_close, depth_after);
+        }
         claim
     };
     BATCH_NEST.with(|n| n.set(n.get().saturating_sub(1)));
