@@ -11,8 +11,10 @@ use uuid::Uuid;
 
 use super::{CellValue, Watchable};
 use crate::{
-    cell::{Cell, CellMutable, WeakCell},
-    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed, prepare_install},
+    pipeline::{
+        Definite, GuardOwner, Pipeline, PipelineInstall, PipelineSeed, materialize_mutable,
+        prepare_install,
+    },
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -72,7 +74,7 @@ fn mark_outer_complete(state: &AtomicU64) -> bool {
 }
 
 fn inner_callback<U: CellValue>(
-    weak: WeakCell<U, CellMutable>,
+    emit: Arc<dyn Fn(&Signal<U>) + Send + Sync>,
     state: Arc<AtomicU64>,
     switch_lock: Arc<Mutex<()>>,
     generation: u64,
@@ -82,15 +84,10 @@ fn inner_callback<U: CellValue>(
         if state.load(Ordering::SeqCst) & GEN_MASK != generation {
             return;
         }
-        if let Some(cell) = weak.upgrade() {
-            match signal {
-                Signal::Value(_) => cell.notify(signal.clone()),
-                Signal::Complete if mark_inner_complete(&state, generation) => {
-                    cell.notify(Signal::Complete);
-                }
-                Signal::Complete => {}
-                Signal::Error(error) => cell.notify(Signal::Error(error.clone())),
-            }
+        match signal {
+            Signal::Value(_) | Signal::Error(_) => emit(signal),
+            Signal::Complete if mark_inner_complete(&state, generation) => emit(signal),
+            Signal::Complete => {}
         }
     })
 }
@@ -110,13 +107,20 @@ where
     I: PipelineInstall<U> + PipelineSeed<U>,
 {
     fn install(&self, callback: Arc<dyn Fn(&Signal<U>) + Send + Sync>) -> SubscriptionGuard {
+        materialize_mutable(self).subscribe(move |signal| callback(signal))
+    }
+
+    /// The materializing cell is the switch's output: values from the current
+    /// inner are emitted straight into `emit`, and the outer and inner guards
+    /// live on that cell.
+    fn install_into(&self, owner: &Arc<GuardOwner>, emit: Arc<dyn Fn(&Signal<U>) + Send + Sync>) {
         // Subscribe to the selector before choosing its initial value. This
         // closes the old seed/build-inner/subscribe window in which a topology
         // update could become the replay that we then blindly discarded.
         let outer_prepared = prepare_install(&self.source);
         let first_inner = (self.f)(outer_prepared.initial());
         let first_prepared = prepare_install(&first_inner);
-        let cell = Cell::<U, CellMutable>::new(first_prepared.initial().clone());
+        emit(&Signal::value(first_prepared.initial().clone()));
 
         // Stable key for the inner subscription guard so switch_map replaces (not accumulates)
         let inner_guard_key = Uuid::new_v4();
@@ -147,16 +151,16 @@ where
 
         // Subscribe to first inner (generation 0)
         let first_callback = inner_callback(
-            cell.downgrade(),
+            Arc::clone(&emit),
             Arc::clone(&state),
             Arc::clone(&switch_lock),
             0,
         );
         let first_guard = first_prepared.activate(&first_callback);
-        cell.own_keyed(inner_guard_key, first_guard);
+        owner.own_keyed(inner_guard_key, first_guard);
 
         // Single subscription to outer handles both value switching and completion tracking
-        let weak = cell.downgrade();
+        let owner_outer = Arc::clone(owner);
         let f = self.f.clone();
         let state_for_outer = state;
         let switch_lock_outer = switch_lock;
@@ -172,7 +176,9 @@ where
                     #[cfg(feature = "profiling")]
                     let _reknit_span = ::tracing::trace_span!("hyphae.switch_map").entered();
 
-                    let Some(c) = weak.upgrade() else { return };
+                    if !owner_outer.is_alive() {
+                        return;
+                    }
 
                     // Increment generation, clear inner_complete, preserve
                     // outer_complete — under `switch_lock` so it's atomic against
@@ -193,36 +199,28 @@ where
                     {
                         let _switch = switch_lock_outer.lock();
                         if state_for_outer.load(Ordering::SeqCst) & GEN_MASK == my_gen {
-                            c.notify(Signal::value(prepared.initial().clone()));
+                            emit(&Signal::value(prepared.initial().clone()));
                         }
                     }
                     let value_callback = inner_callback(
-                        weak.clone(),
+                        Arc::clone(&emit),
                         Arc::clone(&state_for_outer),
                         Arc::clone(&switch_lock_outer),
                         my_gen,
                     );
                     let value_guard = prepared.activate(&value_callback);
-                    c.own_keyed(inner_guard_key, value_guard);
+                    owner_outer.own_keyed(inner_guard_key, value_guard);
                 }
                 Signal::Complete => {
-                    if mark_outer_complete(&state_for_outer)
-                        && let Some(cell) = weak.upgrade()
-                    {
-                        cell.notify(Signal::Complete);
+                    if mark_outer_complete(&state_for_outer) {
+                        emit(&Signal::Complete);
                     }
                 }
-                Signal::Error(e) => {
-                    if let Some(c) = weak.upgrade() {
-                        c.notify(Signal::Error(e.clone()));
-                    }
-                }
+                Signal::Error(error) => emit(&Signal::Error(error.clone())),
             }
         });
         let outer_guard = outer_prepared.activate(&outer_callback);
-        cell.own(outer_guard);
-
-        cell.subscribe(move |signal| callback(signal))
+        owner.own(outer_guard);
     }
 }
 
@@ -269,7 +267,10 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
 
     use super::*;
-    use crate::{Gettable, MapExt, Materialize, Mutable};
+    use crate::{
+        Gettable, MapExt, Materialize, Mutable,
+        cell::{Cell, CellMutable},
+    };
 
     #[test]
     fn switch_map_does_not_build_an_inner_until_materialized() {

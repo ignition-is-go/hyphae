@@ -10,8 +10,10 @@ use parking_lot::Mutex;
 
 use super::{CellValue, Watchable};
 use crate::{
-    cell::{Cell, CellMutable},
-    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed, prepare_install},
+    pipeline::{
+        Definite, GuardOwner, Pipeline, PipelineInstall, PipelineSeed, materialize_mutable,
+        prepare_install,
+    },
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -31,19 +33,31 @@ where
             callback(&Signal::Complete);
             return SubscriptionGuard::combine(vec![]);
         }
+        materialize_mutable(self).subscribe(move |signal| callback(signal))
+    }
+
+    fn install_into(
+        &self,
+        owner: &Arc<GuardOwner>,
+        emit: Arc<dyn Fn(&Signal<Vec<T>>) + Send + Sync>,
+    ) {
+        if self.sources.is_empty() {
+            owner.own(self.install(emit));
+            return;
+        }
         let prepared = self.sources.iter().map(prepare_install).collect::<Vec<_>>();
         let initial = prepared
             .iter()
             .map(|source| source.initial().clone())
             .collect::<Vec<_>>();
-        let latest = Arc::new(Mutex::new(initial.clone()));
-        let derived = Cell::<Vec<T>, CellMutable>::new(initial);
+        emit(&Signal::value(initial.clone()));
+        let latest = Arc::new(Mutex::new(initial));
         let completed = Arc::new(AtomicUsize::new(0));
         let count = self.sources.len();
         for (index, source) in prepared.into_iter().enumerate() {
             let latest = latest.clone();
             let completed = completed.clone();
-            let weak = derived.downgrade();
+            let emit = Arc::clone(&emit);
             let source_callback: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
                 Arc::new(move |signal| match signal {
                     Signal::Value(value) => {
@@ -51,28 +65,18 @@ where
                         if let Some(slot) = latest.get_mut(index) {
                             *slot = value.as_ref().clone();
                         }
-                        if let Some(derived) = weak.upgrade() {
-                            derived.notify(Signal::value(latest.clone()));
-                        }
+                        emit(&Signal::value(latest.clone()));
                     }
                     Signal::Complete
                         if completed.fetch_add(1, Ordering::SeqCst).saturating_add(1) == count =>
                     {
-                        if let Some(derived) = weak.upgrade() {
-                            derived.notify(Signal::Complete);
-                        }
+                        emit(&Signal::Complete);
                     }
                     Signal::Complete => {}
-                    Signal::Error(error) => {
-                        if let Some(derived) = weak.upgrade() {
-                            derived.notify(Signal::Error(error.clone()));
-                        }
-                    }
+                    Signal::Error(error) => emit(&Signal::Error(error.clone())),
                 });
-            let guard = source.activate(&source_callback);
-            derived.own(guard);
+            owner.own(source.activate(&source_callback));
         }
-        derived.subscribe(move |signal| callback(signal))
     }
 }
 impl<P, T> PipelineSeed<Vec<T>> for JoinVecPipeline<P, T>
