@@ -155,16 +155,18 @@ fn no_coalesce_events_pass_a_switch_each_in_order() {
 }
 
 #[test]
-fn equal_inner_values_are_forwarded_not_deduplicated() {
+fn equal_inner_values_are_deduplicated() {
     let _serial = serial();
     let sel = Cell::new(0u64);
     let inner = Cell::new(5u64);
     let i = inner.clone();
     let out = sel.clone().switch_map(move |_| i.clone()).materialize();
     let (seen, _g) = record(&out);
+    // Cells drop a value equal to the one they hold: `inner` drops the
+    // repeated 5, and the output drops the 5 the switch re-delivers.
     inner.set(5);
     sel.set(1);
-    assert_eq!(*seen.lock(), vec![5, 5, 5]);
+    assert_eq!(*seen.lock(), vec![5]);
 }
 
 #[test]
