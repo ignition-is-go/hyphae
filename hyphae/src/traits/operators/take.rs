@@ -5,13 +5,9 @@
 //! so `take(1)` materializes to a `Cell<T>` holding the source's initial value
 //! and immediately complete.
 
-use std::{
-    marker::PhantomData,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-};
+use std::{cell::RefCell, marker::PhantomData, sync::Arc};
+
+use parking_lot::ReentrantMutex;
 
 use super::CellValue;
 use crate::{
@@ -35,29 +31,49 @@ where
     T: CellValue,
 {
     fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
-        let remaining = Arc::new(AtomicUsize::new(self.count));
-        let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> = Arc::new(move |signal: &Signal<T>| {
-            match signal {
-                Signal::Value(_) => {
-                    let prev = remaining
-                        .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1));
-                    match prev {
-                        Ok(1) => {
-                            callback(signal);
-                            callback(&Signal::Complete);
+        // `n` counts emissions downstream. The output cell drops a value equal
+        // to the one it holds, so a repeat of the last forwarded value is not
+        // an emission and must not consume the budget. Deciding and forwarding
+        // under one lock keeps the forwarded order identical to the decision
+        // order, so the output cell's last value is always `last` here, even
+        // when concurrent writers reach this stage out of order. The lock is
+        // reentrant so a subscriber may write the source synchronously.
+        let state = Arc::new(ReentrantMutex::new(RefCell::new(TakeState::<T> {
+            remaining: self.count,
+            last: None,
+        })));
+        let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
+            Arc::new(move |signal: &Signal<T>| match signal {
+                Signal::Value(value) => {
+                    let guard = state.lock();
+                    let completes = {
+                        let mut state = guard.borrow_mut();
+                        if state.last.as_ref() == Some(&**value) {
+                            return;
                         }
-                        Ok(_) => callback(signal),
-                        Err(_) => {
-                            // already exhausted
-                        }
+                        let Some(remaining) = state.remaining.checked_sub(1) else {
+                            return;
+                        };
+                        state.remaining = remaining;
+                        state.last = Some((**value).clone());
+                        remaining == 0
+                    };
+                    callback(signal);
+                    if completes {
+                        callback(&Signal::Complete);
                     }
+                    drop(guard);
                 }
                 Signal::Complete => callback(&Signal::Complete),
                 Signal::Error(e) => callback(&Signal::Error(e.clone())),
-            }
-        });
+            });
         self.source.install(wrapped)
     }
+}
+
+struct TakeState<T> {
+    remaining: usize,
+    last: Option<T>,
 }
 
 impl<S, T, Sd> PipelineSeed<T> for TakePipeline<S, T, Sd>
@@ -126,7 +142,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{Cell, Materialize, Mutable, traits::Watchable};
+    use crate::{Cell, Gettable, Materialize, Mutable, traits::Watchable};
 
     #[test]
     fn test_take_limits_emissions() {
@@ -172,5 +188,56 @@ mod tests {
 
         assert!(taken.is_complete());
         assert!(completed.load(AtomicOrdering::SeqCst));
+    }
+
+    /// An upstream that repeats a value (here `map`, which does not dedupe)
+    /// hands `take` an input the output cell drops. That input is not an
+    /// emission and must not count, or `take(3)` completes after two values.
+    #[test]
+    fn test_take_ignores_repeats_of_last_emission() {
+        use crate::MapExt;
+
+        let source = Cell::new(0u64);
+        let taken = source.clone().map(|v| v / 2).take(3).materialize();
+        let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let s = seen.clone();
+        let _guard = taken.subscribe(move |signal| s.lock().push(signal.clone()));
+
+        for i in 1..8 {
+            source.set(i);
+        }
+
+        let seen = seen.lock().clone();
+        let values: Vec<u64> = seen
+            .iter()
+            .filter_map(|signal| match signal {
+                Signal::Value(v) => Some(**v),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(values, vec![0, 1, 2]);
+        assert!(matches!(seen.last(), Some(Signal::Complete)));
+        assert_eq!(taken.get(), 2);
+    }
+
+    /// A subscriber may write the source synchronously from inside a `take`
+    /// emission without deadlocking, and the nested emission still counts.
+    #[test]
+    fn test_take_allows_reentrant_source_writes() {
+        let source = Cell::new(0u64);
+        let taken = source.clone().take(3).materialize();
+        let count = Arc::new(AtomicU64::new(0));
+        let c = count.clone();
+        let writer = source;
+        let _guard = taken.subscribe(move |signal| {
+            if let Signal::Value(v) = signal {
+                c.fetch_add(1, AtomicOrdering::SeqCst);
+                if **v < 5 {
+                    writer.set(**v + 1);
+                }
+            }
+        });
+        assert_eq!(count.load(AtomicOrdering::SeqCst), 3);
+        assert_eq!(taken.get(), 2);
     }
 }

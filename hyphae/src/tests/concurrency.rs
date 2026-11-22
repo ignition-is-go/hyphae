@@ -1215,3 +1215,48 @@ fn barrage_worst_case_contention() {
 
     assert_eq!(writes + reads, u64_value(num_threads * ops_per_thread));
 }
+
+/// Concurrent writers can deliver an equal value twice in a row to `take`;
+/// the second is not an emission, so it must not consume the budget.
+#[test]
+fn test_concurrent_take_counts_only_emissions_stress() {
+    use crate::TakeExt;
+
+    for _ in 0..200 {
+        let source = Cell::new(0u64);
+        let taken = source.clone().take(5).materialize();
+        let values = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let completes = Arc::new(AtomicUsize::new(0));
+        let (v, c) = (values.clone(), completes.clone());
+        let _guard = taken.subscribe(move |signal| match signal {
+            Signal::Value(value) => v.lock().push(**value),
+            Signal::Complete => {
+                c.fetch_add(1, Ordering::SeqCst);
+            }
+            Signal::Error(_) => {}
+        });
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let source = source.clone();
+                thread::spawn(move || {
+                    for i in 0..10 {
+                        source.set(i % 3);
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            assert!(handle.join().is_ok(), "writer panicked");
+        }
+        let values = values.lock().clone();
+        assert_eq!(completes.load(Ordering::SeqCst), 1, "values: {values:?}");
+        assert_eq!(values.len(), 5, "values: {values:?}");
+        assert!(
+            values
+                .iter()
+                .zip(values.iter().skip(1))
+                .all(|(a, b)| a != b),
+            "values: {values:?}"
+        );
+    }
+}
