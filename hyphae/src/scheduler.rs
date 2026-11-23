@@ -435,7 +435,7 @@ fn run_wave(groups: Vec<Vec<Box<dyn FnOnce() + Send>>>) -> Vec<Box<dyn std::any:
     if groups.len() < wave_threshold() {
         return run_sequential(groups);
     }
-    match crate::executor::worker_pool() {
+    match crate::executor::dispatch_pool() {
         Some(pool) => {
             use rayon::prelude::*;
             pool.install(|| groups.into_par_iter().flat_map_iter(run_group).collect())
