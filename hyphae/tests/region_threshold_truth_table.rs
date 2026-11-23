@@ -24,15 +24,20 @@ fn assert_case(
     if !initially_active {
         apply(fixture, generation, 989);
     }
+    assert_eq!(measure_update(fixture, generation, rows), expected);
+}
+
+fn measure_update(
+    fixture: &workload::ApplicationFixture,
+    generation: &mut u64,
+    rows: u64,
+) -> Snapshot {
     let updates = workload::calibration_update_batch(generation.saturating_add(1), false, rows);
     let sentinel = updates.first().expect("nonempty frozen batch").0;
     *generation = generation.saturating_add(1);
     let before = hyphae::region_calibration::snapshot();
     fixture.source.insert_many(updates);
-    assert_eq!(
-        hyphae::region_calibration::snapshot().since(before),
-        expected
-    );
+    let dispatch = hyphae::region_calibration::snapshot().since(before);
     assert_eq!(
         fixture
             .output
@@ -41,6 +46,7 @@ fn assert_case(
             .generation,
         *generation
     );
+    dispatch
 }
 
 #[test]
@@ -103,4 +109,22 @@ fn frozen_cost_brackets_and_dispatch_truth_table() {
             },
         );
     }
+    let inside = hyphae::executor::with_inline_execution(|| {
+        measure_update(&fixture, &mut generation, 2_062)
+    });
+    assert_eq!(
+        (
+            inside.left_serial_dispatches,
+            inside.left_parallel_dispatches
+        ),
+        (1, 0)
+    );
+    let outside = measure_update(&fixture, &mut generation, 2_062);
+    assert_eq!(
+        (
+            outside.left_serial_dispatches,
+            outside.left_parallel_dispatches
+        ),
+        (0, 1)
+    );
 }
