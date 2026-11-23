@@ -1,27 +1,26 @@
 //! Shared native worker pool for coarse Hyphae runtime work.
 //!
-//! This module exists only with the `scheduler` feature. Scheduler waves and
-//! eligible compiled join regions use one lazily constructed, dedicated Rayon
+//! Scheduler waves and eligible compiled join regions use one dedicated Rayon
 //! pool rather than the process-global pool or independent pools. Wasm never
 //! constructs it, and map queries without `scheduler` compile a sequential
 //! path. Native configuration checks `HYPHAE_WORKER_THREADS` first, then the
 //! compatibility fallback `HYPHAE_WAVE_THREADS`; zero disables the pool. The
 //! default is available parallelism capped at four workers.
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
 use std::sync::LazyLock;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
 const DEFAULT_THREADS_CAP: usize = 4;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
 fn env_usize(key: &str) -> Option<usize> {
     std::env::var(key)
         .ok()
         .and_then(|value| value.trim().parse().ok())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
 static WORKER_THREADS: LazyLock<usize> = LazyLock::new(|| {
     env_usize("HYPHAE_WORKER_THREADS")
         .or_else(|| env_usize("HYPHAE_WAVE_THREADS"))
@@ -31,7 +30,7 @@ static WORKER_THREADS: LazyLock<usize> = LazyLock::new(|| {
         })
 });
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
 static WORKER_POOL: LazyLock<Option<rayon::ThreadPool>> = LazyLock::new(|| {
     let threads = *WORKER_THREADS;
     if threads == 0 {
@@ -48,18 +47,47 @@ static WORKER_POOL: LazyLock<Option<rayon::ThreadPool>> = LazyLock::new(|| {
 /// workload. `None` means parallel execution was explicitly disabled or pool
 /// construction failed. Callers perform their cost and balance gates before
 /// requesting the pool.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn worker_pool() -> Option<&'static rayon::ThreadPool> {
+#[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
+pub(crate) fn worker_pool() -> Option<&'static rayon::ThreadPool> {
     WORKER_POOL.as_ref()
 }
 
 /// Return the configured worker count without constructing the lazy pool.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn configured_worker_threads() -> usize {
+#[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
+pub(crate) fn configured_worker_threads() -> usize {
     *WORKER_THREADS
 }
 
-#[cfg(target_arch = "wasm32")]
-pub const fn configured_worker_threads() -> usize {
+#[cfg(all(feature = "scheduler", target_arch = "wasm32"))]
+pub(crate) const fn configured_worker_threads() -> usize {
     1
+}
+
+#[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
+thread_local! {
+    static INLINE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Keep this thread's scheduler waves and compiled joins off the shared worker pool.
+///
+/// Use when workers may be waiting for a resource held by the caller.
+/// This does not affect explicitly parallel operators or user-spawned work.
+/// Nested calls and unwinding restore the previous dispatch policy.
+pub fn with_inline_execution<R>(run: impl FnOnce() -> R) -> R {
+    #[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
+    let _restore = {
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                INLINE.set(self.0);
+            }
+        }
+        Restore(INLINE.replace(true))
+    };
+    run()
+}
+
+#[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
+pub(crate) fn dispatch_pool() -> Option<&'static rayon::ThreadPool> {
+    if INLINE.get() { None } else { worker_pool() }
 }

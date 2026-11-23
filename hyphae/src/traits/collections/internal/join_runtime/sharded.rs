@@ -464,7 +464,7 @@ where
     #[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
     if work >= 8_192
         && shards.len() > 1
-        && let Some(pool) = crate::executor::worker_pool()
+        && let Some(pool) = crate::executor::dispatch_pool()
     {
         use rayon::prelude::*;
         return pool.install(|| {

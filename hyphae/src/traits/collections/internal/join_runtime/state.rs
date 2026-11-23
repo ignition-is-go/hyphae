@@ -783,7 +783,7 @@ where
 
     #[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
     if state.parallel_active
-        && let Some(pool) = crate::executor::worker_pool()
+        && let Some(pool) = crate::executor::dispatch_pool()
     {
         let desired = compute_keyed_parallel(pool, state, &right, impacted, compute_value);
         drop(right);

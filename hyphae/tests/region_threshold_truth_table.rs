@@ -53,7 +53,7 @@ fn frozen_cost_brackets_and_dispatch_truth_table() {
     assert_eq!(2_062_usize * 97, 200_014);
     assert_eq!(2_063_usize * 97, 200_111);
 
-    let fixture = workload::build_fixture();
+    let fixture = hyphae::executor::with_inline_execution(workload::build_fixture);
     let mut generation = 0;
     for rows in [989, 990, 991, 2_061] {
         assert_case(

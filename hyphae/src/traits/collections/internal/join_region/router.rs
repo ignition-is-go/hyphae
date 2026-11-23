@@ -486,7 +486,7 @@ where
 
         #[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
         let per_shard = if run_parallel {
-            if let Some(pool) = crate::executor::worker_pool() {
+            if let Some(pool) = crate::executor::dispatch_pool() {
                 #[cfg(feature = "region-calibration")]
                 crate::region_calibration::left_parallel_dispatch();
                 use rayon::prelude::*;
