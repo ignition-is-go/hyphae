@@ -86,13 +86,11 @@
 
 #![allow(clippy::redundant_pub_crate)]
 
-#[cfg(not(target_arch = "wasm32"))]
-use std::sync::Weak;
 use std::{
     cell::RefCell,
     collections::VecDeque,
     sync::{
-        Arc,
+        Arc, LazyLock, Weak,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
 };
@@ -215,6 +213,17 @@ impl DomainInner {
         }
     }
 }
+
+impl Drop for DomainInner {
+    fn drop(&mut self) {
+        CHILDREN.lock().remove(&self.id);
+    }
+}
+
+/// Every live child domain by id, for [`Domain::propagating`] to name the
+/// domain whose propagation a thread is running.
+static CHILDREN: LazyLock<Mutex<FxHashMap<u64, Weak<DomainInner>>>> =
+    LazyLock::new(|| Mutex::new(FxHashMap::default()));
 
 /// Set once the first child domain exists. Until then every domain check on a
 /// hot path is this one relaxed load.
@@ -684,6 +693,7 @@ impl Domain {
             #[cfg(not(target_arch = "wasm32"))]
             worker: Mutex::new(None),
         });
+        CHILDREN.lock().insert(id, Arc::downgrade(&inner));
         DOMAINS_IN_USE.store(true, Ordering::Relaxed);
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -710,6 +720,58 @@ impl Domain {
     #[must_use]
     pub fn current() -> Self {
         Self::from_inner(ambient_child())
+    }
+
+    /// The domain whose propagation the calling thread is running, or `None`
+    /// when it is running none. The handle does not own the domain.
+    ///
+    /// A thread runs a domain's propagation while it delivers a write of
+    /// that domain to subscribers, and a callback sees this answer for as
+    /// long as it runs:
+    ///
+    /// - **Inside a wave.** A subscriber or operator callback called while a
+    ///   batch of domain `D` drains gets `D`, on whichever thread drains,
+    ///   the shared worker pool's threads included.
+    /// - **Inside an eager cascade.** A callback called because a cell, map
+    ///   or source of `D` was written outside a batch gets `D`.
+    /// - **Inside a hand-off unit.** Everything a child's worker runs for
+    ///   child `C` gets `C`: a delivery of a root write to one of `C`'s
+    ///   hand-off subscribers, a closure given to [`hand_off`](Self::hand_off)
+    ///   and a timer callback registered in `C`. The root propagation that
+    ///   produced the unit is over by then, or runs on another thread.
+    /// - **Inside [`enter`](Self::enter) or [`batch`](Self::batch) with no
+    ///   propagation.** `None`. Those make a domain ambient: they decide
+    ///   where cells are born and which tick a batch opens on. The closure
+    ///   they run is not a propagation, so it may write any domain. The
+    ///   drain a batch runs when it closes is a wave.
+    /// - **On an idle thread.** `None`. This includes the callback a new
+    ///   subscription gets with the current value when it is made outside a
+    ///   propagation.
+    ///
+    /// When it is `Some`, a write to another domain from this thread panics
+    /// with [`DomainError::CrossDomainWrite`]. From root's propagation,
+    /// [`hand_off`](Self::hand_off) reaches a child. When it is `None` the
+    /// thread may write any domain.
+    ///
+    /// Propagations are tracked from the moment the first child domain is
+    /// created, for the rest of the process. A program that has never
+    /// created one always gets `None`, and so does a thread that was already
+    /// inside a root propagation when the first child was created, until
+    /// that propagation ends. The write rule has the same start.
+    #[must_use]
+    pub fn propagating() -> Option<Self> {
+        let id = PROPAGATING
+            .try_with(std::cell::Cell::get)
+            .unwrap_or(OUTSIDE);
+        match id {
+            OUTSIDE => None,
+            ROOT_ID => Some(Self::root()),
+            child => CHILDREN
+                .lock()
+                .get(&child)
+                .and_then(Weak::upgrade)
+                .map(|domain| Self::from_inner(Some(domain))),
+        }
     }
 
     pub(crate) const fn from_inner(inner: Option<Arc<DomainInner>>) -> Self {
