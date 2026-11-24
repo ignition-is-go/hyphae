@@ -209,8 +209,8 @@ fn a_childs_timer_callback_is_in_the_child() {
 fn a_scope_entered_inside_a_propagation_does_not_change_it() {
     let _serial = ROOT_TICK_SERIAL.lock();
     let child = Domain::child();
-    // Each cell's subscriber enters the other domain's scope.
-    for (written, entered) in [(Domain::root(), child.clone()), (child, Domain::root())] {
+    // Root's subscriber enters the child's scope, the child's its own.
+    for (written, entered) in [(Domain::root(), child.clone()), (child.clone(), child)] {
         let inside: Log<(Option<Domain>, Domain)> = Log::default();
         let cell = written.enter(|| Cell::new(0i64));
         let _guard = written.enter(|| {
@@ -273,3 +273,37 @@ trait Pipe: Sized {
 }
 
 impl<T> Pipe for T {}
+
+#[test]
+fn entering_root_or_a_sibling_from_a_childs_propagation_panics() {
+    let _serial = ROOT_TICK_SERIAL.lock();
+    let child = Domain::child();
+    let sibling = Domain::child();
+    for entered in [Domain::root(), sibling] {
+        let cell = child.enter(|| Cell::new(0i64));
+        let refused: Log<String> = Log::default();
+        let _guard = child.enter(|| {
+            let (entered, refused) = (entered.clone(), Arc::clone(&refused));
+            cell.subscribe(move |value| {
+                if !matches!(value, hyphae::Signal::Value(value) if **value != 0) {
+                    return;
+                }
+                let entered = entered.clone();
+                let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || entered.enter(|| ())));
+                let message = panicked
+                    .err()
+                    .and_then(|payload| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_default();
+                refused.lock().push(message);
+            })
+        });
+
+        cell.set(1);
+
+        let refused = refused.lock().last().cloned().unwrap_or_default();
+        assert!(
+            refused.contains(&hyphae::scheduler::DomainError::EnterAgainstFlow.to_string()),
+            "entering {entered:?} from the child's wave: {refused:?}"
+        );
+    }
+}

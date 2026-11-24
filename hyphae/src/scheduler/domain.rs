@@ -799,7 +799,19 @@ impl Domain {
     /// subscription. Build a child's graph inside this scope. Cells that the
     /// child's own operators create later, while one of its waves runs, join
     /// it without a scope.
+    ///
+    /// # Panics
+    ///
+    /// With [`DomainError::EnterAgainstFlow`] when called from inside a
+    /// child's propagation for root or for another child. Cells born there
+    /// would belong to a domain this wave cannot write, against the one-way
+    /// flow from root into children. Entering a child from root's
+    /// propagation, from that child's own, or from outside any propagation
+    /// is allowed.
     pub fn enter<R>(&self, f: impl FnOnce() -> R) -> R {
+        if in_use() && check_origin(id_of(self.inner.as_ref())).is_err() {
+            reject(DomainError::EnterAgainstFlow);
+        }
         let _scope = enter(self.inner.as_ref());
         f()
     }
@@ -968,6 +980,9 @@ pub enum DomainError {
     /// A thread running a propagation called a function that waits for
     /// propagation to finish.
     WaitInsidePropagation,
+    /// A thread running a child's propagation entered root or another child,
+    /// where the cells it would create belong to a domain it cannot write.
+    EnterAgainstFlow,
 }
 
 impl std::fmt::Display for DomainError {
@@ -989,6 +1004,10 @@ impl std::fmt::Display for DomainError {
                 "a write from inside one scheduling domain's propagation cannot target another \
                  domain; from root use `Domain::hand_off`, and route a child's result through \
                  code that runs outside any propagation"
+            }
+            Self::EnterAgainstFlow => {
+                "`Domain::enter` from inside a child domain's propagation can only enter that \
+                 child; build root or sibling state outside the wave, or from root's propagation"
             }
             Self::WaitInsidePropagation => {
                 "`Domain::flush` cannot be called from inside a propagation, which it would wait \
