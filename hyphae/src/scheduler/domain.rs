@@ -86,11 +86,13 @@
 
 #![allow(clippy::redundant_pub_crate)]
 
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::Weak;
 use std::{
     cell::RefCell,
     collections::VecDeque,
     sync::{
-        Arc, Weak,
+        Arc,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
 };
@@ -277,6 +279,7 @@ pub(crate) fn ambient_id() -> u64 {
 }
 
 /// Whether this thread is working inside a child domain.
+#[cfg(not(target_arch = "wasm32"))]
 #[inline]
 pub(crate) fn in_child_domain() -> bool {
     ambient_id() != ROOT_ID
@@ -533,26 +536,18 @@ fn push(target: &Arc<DomainInner>, segment: Segment) -> Option<Segment> {
 }
 
 /// The domain that owns a timer registered on this thread now, when it is a
-/// child. Such a timer's callback runs on that child's worker.
+/// child. Such a timer's callback runs on that child's worker. wasm has no
+/// worker, and a timer there runs where the platform fires it.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn timer_owner() -> Option<Weak<DomainInner>> {
     ambient_child().map(|owner| Arc::downgrade(&owner))
 }
 
 /// Run `task` on `owner`'s tick: on its worker thread, as a unit of its own.
 /// Returns `false` when the domain is closed and the task was dropped.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn run_task(owner: &Arc<DomainInner>, task: HandOffOp) -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        push(owner, Segment::Eager(task)).is_none()
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        if owner.is_closed() {
-            return false;
-        }
-        apply(owner, Segment::Eager(task));
-        true
-    }
+    push(owner, Segment::Eager(task)).is_none()
 }
 
 pub(super) fn log_panic(context: &str, payload: &(dyn std::any::Any + Send)) {
@@ -765,10 +760,16 @@ impl Domain {
     }
 
     /// Queue `f` to run on this child domain's tick, on its worker thread, and
-    /// return without waiting for it. `f` runs in root order: after every root
-    /// write handed to this domain before the call, and before every one
-    /// handed over after it. Called from a root batch's propagation, `f`
-    /// belongs to the unit that batch hands over.
+    /// return without waiting for it. `f` takes its place in the child's one
+    /// queue: after everything root had handed to this domain when the call
+    /// was made, and before everything handed over later. Called from a root
+    /// batch's propagation, `f` belongs to the unit that batch hands over.
+    ///
+    /// A root write is handed over when its propagation runs. A `batch` that
+    /// returns has propagated, unless another thread was draining root at
+    /// that moment, in which case that thread finishes it. A caller that
+    /// needs `f` to follow a root batch it just made therefore either is the
+    /// only thread batching root, or calls `hand_off` from a root subscriber.
     ///
     /// This is the one way to act on a child from inside root's propagation,
     /// and the way to route work to a child without running it on the calling

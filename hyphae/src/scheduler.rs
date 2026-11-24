@@ -194,7 +194,17 @@ thread_local! {
     /// outermost batch of that domain closes, all at once. Until then no
     /// drain, on any thread, can run part of the batch.
     static OPEN_BATCHES: RefCell<Vec<OpenBatch>> = const { RefCell::new(Vec::new()) };
+    /// Length of [`OPEN_BATCHES`], readable without borrowing it. A thread
+    /// that holds no batch pays one load to learn it has nothing to stage.
+    static OPEN_BATCH_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The staging list of this thread's last committed batch, kept so the
+    /// next batch does not allocate one.
+    static SPARE_STAGING: std::cell::Cell<Vec<Staged>> = const { std::cell::Cell::new(Vec::new()) };
 }
+
+/// Largest staging list kept for reuse. A batch that staged more gives its
+/// memory back.
+const SPARE_STAGING_LIMIT: usize = 256;
 
 /// One write staged by an open batch.
 struct Staged {
@@ -223,6 +233,7 @@ impl OpenBatch {
     /// Stage `op`. A coalescing write whose cell's latest staged write also
     /// coalesces takes that write's place, exactly as the tick would coalesce
     /// the two, and the superseded write is returned for the caller to drop.
+    #[inline]
     fn stage(&mut self, op: Staged) -> Option<PendingRun> {
         let indexed = self.staged.len() > STAGED_SCAN;
         if indexed && self.latest.is_empty() {
@@ -263,9 +274,10 @@ fn open_batch(domain: u64) {
             open.push(OpenBatch {
                 domain,
                 nest: 1,
-                staged: Vec::new(),
+                staged: SPARE_STAGING.take(),
                 latest: FxHashMap::default(),
             });
+            OPEN_BATCH_COUNT.set(open.len());
         }
     });
 }
@@ -278,7 +290,12 @@ fn close_batch(domain: u64) -> Option<Vec<Staged>> {
         let index = open.iter().position(|batch| batch.domain == domain)?;
         let batch = open.get_mut(index)?;
         batch.nest = batch.nest.saturating_sub(1);
-        (batch.nest == 0).then(|| open.swap_remove(index).staged)
+        if batch.nest > 0 {
+            return None;
+        }
+        let staged = open.swap_remove(index).staged;
+        OPEN_BATCH_COUNT.set(open.len());
+        Some(staged)
     })
 }
 
@@ -291,24 +308,22 @@ fn stage(
     terminal: bool,
     run: PendingRun,
 ) -> Result<(), PendingRun> {
-    let holds_batch =
-        OPEN_BATCHES.with(|open| open.borrow().iter().any(|batch| batch.domain == domain));
-    if !holds_batch {
+    if OPEN_BATCH_COUNT.get() == 0 {
         return Err(run);
     }
     // Walking the dependencies can drop a node, and a dropping node can write.
     // Neither may happen while the staging list is borrowed.
-    let staged = Staged {
-        id,
-        height: compute_height(node),
-        coalesce: !node.no_coalesce() && !terminal,
-        run,
-    };
-    let superseded = OPEN_BATCHES.with(|open| {
-        let mut open = open.borrow_mut();
+    let height = compute_height(node);
+    let coalesce = !node.no_coalesce() && !terminal;
+    let superseded = OPEN_BATCHES.with_borrow_mut(|open| {
         match open.iter_mut().find(|batch| batch.domain == domain) {
-            Some(batch) => Ok(batch.stage(staged)),
-            None => Err(staged.run),
+            Some(batch) => Ok(batch.stage(Staged {
+                id,
+                height,
+                coalesce,
+                run,
+            })),
+            None => Err(run),
         }
     })?;
     // A superseded write can own the last handle of a cell, whose drop may
@@ -324,10 +339,15 @@ struct SuspendedBatch(Option<OpenBatch>);
 
 impl SuspendedBatch {
     fn of(domain: u64) -> Self {
+        if OPEN_BATCH_COUNT.get() == 0 {
+            return Self(None);
+        }
         Self(OPEN_BATCHES.with(|open| {
             let mut open = open.borrow_mut();
             let index = open.iter().position(|batch| batch.domain == domain)?;
-            Some(open.swap_remove(index))
+            let batch = open.swap_remove(index);
+            OPEN_BATCH_COUNT.set(open.len());
+            Some(batch)
         }))
     }
 }
@@ -335,7 +355,11 @@ impl SuspendedBatch {
 impl Drop for SuspendedBatch {
     fn drop(&mut self) {
         if let Some(batch) = self.0.take() {
-            OPEN_BATCHES.with(|open| open.borrow_mut().push(batch));
+            OPEN_BATCHES.with(|open| {
+                let mut open = open.borrow_mut();
+                open.push(batch);
+                OPEN_BATCH_COUNT.set(open.len());
+            });
         }
     }
 }
@@ -379,7 +403,10 @@ impl SharedTick {
     /// cell is already queued, its previous op is dropped (last-write-wins).
     /// When false (a `no_coalesce` cell), every op is kept as a distinct
     /// arrival-ordered key so event semantics survive.
-    #[inline]
+    ///
+    /// Kept out of line so its two callers, [`enqueue`] and a batch's commit,
+    /// share one copy with the queue's insert path inlined into it.
+    #[inline(never)]
     fn enqueue_locked(
         &mut self,
         id: Uuid,
@@ -428,6 +455,7 @@ static TICK_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Set `TICK_ACTIVE` from the authoritative state under the lock. Call after
 /// any mutation of `depth` or `draining`.
+#[inline]
 fn refresh_active(active: &AtomicBool, t: &SharedTick) {
     active.store(t.depth > 0 || t.draining, Ordering::Relaxed);
 }
@@ -468,6 +496,7 @@ impl<'a> TickRef<'a> {
         )
     }
 
+    #[inline]
     fn refresh_active(self, t: &SharedTick) {
         refresh_active(self.active, t);
     }
@@ -887,44 +916,9 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
 
 /// [`batch`] on `domain`'s tick (`None` is root).
 pub(crate) fn batch_in<R>(domain: Option<&Arc<DomainInner>>, f: impl FnOnce() -> R) -> R {
-    let tick = TickRef::of(domain);
-    open_batch(tick.id);
-    {
-        let mut guard = tick.queue.lock();
-        guard.depth = guard.depth.saturating_add(1);
-        tick.refresh_active(&guard);
-        drop(guard);
-    }
-
+    begin_batch(domain);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
-
-    // Close this batch. A thread's OUTERMOST batch commits everything it
-    // staged in one step under the lock, so a drain sees the whole batch or
-    // none of it, and then decides whether to drain: only if no drain is
-    // already in flight and there is pending work. The empty-check and the
-    // `draining = true` claim happen together under the lock, which is what
-    // makes the hand-off strand-free.
-    let staged = close_batch(tick.id);
-    let outermost = staged.is_some();
-    let mut displaced = Vec::new();
-    let claimed_drain = {
-        let mut guard = tick.queue.lock();
-        guard.depth = guard.depth.saturating_sub(1);
-        for op in staged.into_iter().flatten() {
-            displaced.extend(guard.enqueue_locked(op.id, op.height, op.coalesce, op.run));
-        }
-        let claim = outermost && !guard.draining && !guard.ready.is_empty();
-        if claim {
-            guard.draining = true;
-        }
-        tick.refresh_active(&guard);
-        drop(guard);
-        claim
-    };
-    // A superseded closure can own a cell whose drop re-enters the scheduler.
-    drop(displaced);
-
-    let drain_panic = if claimed_drain { drain(domain) } else { None };
+    let drain_panic = end_batch(domain);
 
     match result {
         Ok(value) => {
@@ -936,6 +930,58 @@ pub(crate) fn batch_in<R>(domain: Option<&Arc<DomainInner>>, f: impl FnOnce() ->
         // `f`'s own panic is the caller-relevant one and takes precedence.
         Err(payload) => std::panic::resume_unwind(payload),
     }
+}
+
+/// Open one batch of `domain` on this thread.
+fn begin_batch(domain: Option<&Arc<DomainInner>>) {
+    let tick = TickRef::of(domain);
+    open_batch(tick.id);
+    let mut guard = tick.queue.lock();
+    guard.depth = guard.depth.saturating_add(1);
+    tick.refresh_active(&guard);
+    drop(guard);
+}
+
+/// Close one batch of `domain` on this thread, and drain if this close claims
+/// the drain. Returns the first panic a drained op raised.
+///
+/// A thread's OUTERMOST batch commits everything it staged in one step under
+/// the lock, so a drain sees the whole batch or none of it, and then decides
+/// whether to drain: only if no drain is already in flight and there is
+/// pending work. The empty-check and the `draining = true` claim happen
+/// together under the lock, which is what makes the hand-off strand-free.
+fn end_batch(domain: Option<&Arc<DomainInner>>) -> Option<Box<dyn std::any::Any + Send>> {
+    let tick = TickRef::of(domain);
+    let mut staged = close_batch(tick.id);
+    let outermost = staged.is_some();
+    let mut displaced = Vec::new();
+    let claimed_drain = {
+        let mut guard = tick.queue.lock();
+        guard.depth = guard.depth.saturating_sub(1);
+        if let Some(staged) = staged.as_mut() {
+            for op in staged.drain(..) {
+                if let Some(old) = guard.enqueue_locked(op.id, op.height, op.coalesce, op.run) {
+                    displaced.push(old);
+                }
+            }
+        }
+        let claim = outermost && !guard.draining && !guard.ready.is_empty();
+        if claim {
+            guard.draining = true;
+        }
+        tick.refresh_active(&guard);
+        drop(guard);
+        claim
+    };
+    // A superseded closure can own a cell whose drop re-enters the scheduler.
+    drop(displaced);
+    if let Some(staged) = staged
+        && staged.capacity() <= SPARE_STAGING_LIMIT
+    {
+        SPARE_STAGING.set(staged);
+    }
+
+    if claimed_drain { drain(domain) } else { None }
 }
 
 /// Block until `domain`'s tick has no drain in flight and no queued op,

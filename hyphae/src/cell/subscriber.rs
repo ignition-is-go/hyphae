@@ -168,6 +168,10 @@ pub(crate) struct SubscriberRegistry<S> {
     index: SubIndex<S>,
     snapshot: SubSnapshot<S>,
     dirty: bool,
+    /// Whether a hand-off subscriber was ever registered. A fanout whose
+    /// registry never held one delivers every subscriber inline without
+    /// looking at each.
+    crossing: bool,
 }
 
 impl<S> SubscriberRegistry<S> {
@@ -176,7 +180,18 @@ impl<S> SubscriberRegistry<S> {
             index: SubIndex::Zero,
             snapshot: SubSnapshot::Zero,
             dirty: false,
+            crossing: false,
         }
+    }
+
+    /// Record that the subscriber about to be inserted is a hand-off one.
+    pub(super) const fn mark_crossing(&mut self) {
+        self.crossing = true;
+    }
+
+    #[inline]
+    pub(super) const fn crossing(&self) -> bool {
+        self.crossing
     }
 
     /// Insert a subscriber. O(1). Returns any Arc it displaced (normally `None`,

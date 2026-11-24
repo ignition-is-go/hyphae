@@ -553,62 +553,85 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
             return;
         }
 
+        // Until the first child domain exists every cell is a root cell: the
+        // cell's own domain is never read and the path below is the whole of
+        // `notify`.
+        if crate::scheduler::domain::in_use() {
+            self.notify_in_domain(signal);
+            return;
+        }
+
         // Scheduler interception. Inside a `batch` (or a drain) this defers
         // the value-settle + fanout into the height-ordered tick queue and
         // returns; the drain runs them in order at the batch boundary. One
         // relaxed atomic load when no batch is open.
-        //
-        // Until the first child domain exists every cell is a root cell and
-        // the cell's own domain is never read.
-        let domains = crate::scheduler::domain::in_use();
-        let domain = if domains {
-            let domain = self.inner.domain.as_ref();
-            crate::scheduler::domain::assert_write(domain);
-            domain
-        } else {
-            None
-        };
-        if crate::scheduler::tick_active(domain) {
-            // Weak: the queued op must not be what keeps this cell alive. If
-            // its source is rewritten before the op runs, the rewrite reaches
-            // the cell through the op's reference and queues a fresh op that
-            // holds it again, so a cell nobody uses any more never drops, never
-            // unsubscribes, and keeps recomputing for as long as the queue
-            // stays busy. A cell with no other holder has no subscribers left
-            // to tell, so skipping its op changes nothing observable.
-            let cell = self.downgrade();
-            // A terminal signal must not coalesce over a value it follows (an
-            // emit-then-complete operator would otherwise lose its final value
-            // under `batch`) — see [`crate::scheduler::enqueue`].
-            let terminal = !matches!(signal, Signal::Value(_));
-            let signal = signal;
-            let dependency: &dyn crate::traits::DepNode = self;
-            crate::scheduler::enqueue(
-                domain,
-                self.inner.id,
-                dependency,
-                terminal,
-                Box::new(move || {
-                    if let Some(cell) = cell.upgrade() {
-                        cell.write_value(&signal);
-                        cell.fanout(&signal);
-                    }
-                }),
-            );
+        if crate::scheduler::tick_active(None) {
+            self.defer(None, signal);
             return;
         }
+        self.settle(signal);
+    }
 
-        // Two phases, split so the (opt-in) scheduler can settle a cell's value
-        // in height order *before* running its fanout — glitch-free coalescing —
-        // and so sampling profilers resolve the value-write and the fanout as
-        // distinct symbols instead of one folded `notify`. Outside a scheduler
-        // batch (the default, and always on wasm) they run back-to-back: the
-        // exact synchronous eager-push path, with no behavioral change.
-        //
-        // Once a child domain exists, the cascade runs as this cell's domain's
-        // propagation: cells its operators create join that domain, and a
+    /// [`notify`](Self::notify) once a child domain exists: the same two
+    /// paths on this cell's own tick, as this cell's domain's propagation.
+    #[inline(never)]
+    fn notify_in_domain(&self, signal: Signal<T>) {
+        let domain = self.inner.domain.as_ref();
+        crate::scheduler::domain::assert_write(domain);
+        if crate::scheduler::tick_active(domain) {
+            self.defer(domain, signal);
+            return;
+        }
+        // Cells the cascade's operators create join this cell's domain, and a
         // callback that writes another domain is rejected.
-        let _scope = domains.then(|| crate::scheduler::domain::propagate(domain));
+        let _scope = crate::scheduler::domain::propagate(domain);
+        self.settle(signal);
+    }
+
+    /// Queue the value-settle and fanout on `domain`'s tick.
+    #[inline]
+    fn defer(
+        &self,
+        domain: Option<&Arc<crate::scheduler::domain::DomainInner>>,
+        signal: Signal<T>,
+    ) {
+        // Weak: the queued op must not be what keeps this cell alive. If
+        // its source is rewritten before the op runs, the rewrite reaches
+        // the cell through the op's reference and queues a fresh op that
+        // holds it again, so a cell nobody uses any more never drops, never
+        // unsubscribes, and keeps recomputing for as long as the queue
+        // stays busy. A cell with no other holder has no subscribers left
+        // to tell, so skipping its op changes nothing observable.
+        let cell = self.downgrade();
+        // A terminal signal must not coalesce over a value it follows (an
+        // emit-then-complete operator would otherwise lose its final value
+        // under `batch`) — see [`crate::scheduler::enqueue`].
+        let terminal = !matches!(signal, Signal::Value(_));
+        let dependency: &dyn crate::traits::DepNode = self;
+        crate::scheduler::enqueue(
+            domain,
+            self.inner.id,
+            dependency,
+            terminal,
+            Box::new(move || {
+                if let Some(cell) = cell.upgrade() {
+                    cell.write_value(&signal);
+                    cell.fanout(&signal);
+                }
+            }),
+        );
+    }
+
+    /// Settle the value and fan it out on the calling thread.
+    ///
+    /// Two phases, split so the (opt-in) scheduler can settle a cell's value
+    /// in height order *before* running its fanout — glitch-free coalescing —
+    /// and so sampling profilers resolve the value-write and the fanout as
+    /// distinct symbols instead of one folded `notify`. Outside a scheduler
+    /// batch (the default, and always on wasm) they run back-to-back: the
+    /// exact synchronous eager-push path, with no behavioral change.
+    #[inline]
+    fn settle(&self, signal: Signal<T>) {
         self.write_value(&signal);
         self.fanout(&signal);
         // `notify` owns its signal because scheduler-enabled builds may move it
@@ -675,10 +698,13 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         // already-cloned snapshot). The displaced old snapshot drops *outside*
         // the lock — it may hold the last ref to an unsubscribed subscriber
         // whose drop cascades into upstream cell drops.
-        let subs = {
-            let (subs, old_snapshot) = self.inner.subscribers.lock().snapshot();
+        let (subs, handing_off) = {
+            let mut registry = self.inner.subscribers.lock();
+            let (subs, old_snapshot) = registry.snapshot();
+            let crossing = registry.crossing();
+            drop(registry);
             drop(old_snapshot);
-            subs
+            (subs, crossing)
         };
 
         // Subscriber callbacks must not panic — see `Watchable::subscribe` docs.
@@ -686,7 +712,7 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         // rest of this fanout, which is a bug in the subscriber that should surface
         // loudly rather than be silently swallowed.
         for (_subscriber_id, sub) in subs.as_slice() {
-            if let Some(child) = sub.hand_off() {
+            if handing_off && let Some(child) = sub.hand_off() {
                 // A child's subscription to this root cell: the delivery
                 // crosses the boundary and runs on the child's own tick.
                 if sub.seed_started() {
@@ -708,14 +734,17 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         // this loop). Use `subscribe_result` when you want a structured error
         // channel instead of `panic!`.
         // Same snapshot pattern as `subscribers` above.
-        let result_subs = {
-            let (result_subs, old_snapshot) = self.inner.result_subscribers.lock().snapshot();
+        let (result_subs, handing_off) = {
+            let mut registry = self.inner.result_subscribers.lock();
+            let (result_subs, old_snapshot) = registry.snapshot();
+            let crossing = registry.crossing();
+            drop(registry);
             drop(old_snapshot);
-            result_subs
+            (result_subs, crossing)
         };
 
         for (subscriber_id, sub) in result_subs.as_slice() {
-            if let Some(child) = sub.hand_off() {
+            if handing_off && let Some(child) = sub.hand_off() {
                 if !sub.seed_started() {
                     continue;
                 }
@@ -805,7 +834,13 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
         // subscriber's drop can cascade into upstream cell drops that touch
         // other cell mutexes, and running that under this lock allowed two
         // concurrently-dropping cells to deadlock.
-        let displaced = self.inner.subscribers.lock().insert(id, sub.clone());
+        let displaced = {
+            let mut registry = self.inner.subscribers.lock();
+            if sub.hand_off().is_some() {
+                registry.mark_crossing();
+            }
+            registry.insert(id, sub.clone())
+        };
         drop(displaced);
         let boundary = self.register_boundary(sub.hand_off(), id);
 
@@ -900,7 +935,13 @@ impl<T: CellValue, U: Send + Sync + 'static> WatchableResult<T> for Cell<T, U> {
         // update racing subscription cannot fall between the replay and the
         // registry insert. Result callbacks use the same initialization queue
         // to preserve replay-before-live ordering.
-        let displaced = self.inner.result_subscribers.lock().insert(id, sub.clone());
+        let displaced = {
+            let mut registry = self.inner.result_subscribers.lock();
+            if sub.hand_off().is_some() {
+                registry.mark_crossing();
+            }
+            registry.insert(id, sub.clone())
+        };
         drop(displaced);
         let boundary = self.register_boundary(sub.hand_off(), id);
 
