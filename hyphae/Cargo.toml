@@ -117,6 +117,10 @@ name = "scheduling_domains"
 harness = false
 
 [[bench]]
+name = "write_paths"
+harness = false
+
+[[bench]]
 name = "region_threshold_calibration"
 harness = false
 required-features = ["region-calibration"]
