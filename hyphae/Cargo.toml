@@ -113,6 +113,10 @@ name = "scheduler_contention"
 harness = false
 
 [[bench]]
+name = "scheduling_domains"
+harness = false
+
+[[bench]]
 name = "region_threshold_calibration"
 harness = false
 required-features = ["region-calibration"]
