@@ -655,7 +655,6 @@ fn next_segment(domain: &Weak<DomainInner>, mailbox: &Mailbox) -> Option<Segment
 fn run_worker(domain: &Weak<DomainInner>, mailbox: &Mailbox) {
     while let Some(segment) = next_segment(domain, mailbox) {
         match domain.upgrade() {
-            Some(domain) if domain.failed() => drop(segment),
             Some(domain) => {
                 apply(&domain, segment);
                 // The unit is fully propagated before the next one starts, so
