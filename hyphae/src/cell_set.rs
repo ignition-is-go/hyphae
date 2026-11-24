@@ -2,15 +2,23 @@
 //!
 //! `CellSet` wraps a concurrent `HashSet` where membership changes can be observed.
 
-use std::{hash::Hash, marker::PhantomData, sync::Arc};
+use std::{
+    hash::Hash,
+    marker::PhantomData,
+    sync::{
+        Arc,
+        atomic::{AtomicIsize, Ordering},
+    },
+};
 
 use dashmap::DashSet;
 
 use crate::{
-    cell::{Cell, CellImmutable, CellMutable, WeakCell},
+    cell::{Cell, CellImmutable, CellMutable, EffectAt, WeakCell},
     pipeline::{Definite, Materialize},
+    scheduler::order::{Sequenced, Touched, WriteOrder, key_hash},
     signal::Signal,
-    traits::{CellValue, Gettable, Mutable, Watchable},
+    traits::{CellValue, Mutable, Watchable},
 };
 
 /// Diff notification for set changes.
@@ -34,6 +42,13 @@ where
     diffs_cell: Cell<Option<SetDiff<T>>, CellMutable>,
     /// Cell for length.
     len_cell: Cell<usize, CellMutable>,
+    /// Values the length cell has been told about: inserts less removes
+    /// over every delivered write.
+    delivered_len: AtomicIsize,
+    /// Sets the length cell to each count in the order they were reached.
+    len: Sequenced<usize>,
+    /// The order values are stored in and their diffs delivered in.
+    order: Arc<WriteOrder>,
 }
 
 /// A reactive `HashSet` with membership observability.
@@ -85,6 +100,9 @@ where
                 membership_cells: dashmap::DashMap::new(),
                 diffs_cell,
                 len_cell: Cell::new(0),
+                delivered_len: AtomicIsize::new(0),
+                len: Sequenced::default(),
+                order: WriteOrder::new(),
             }),
             _marker: PhantomData,
         }
@@ -92,44 +110,87 @@ where
 
     /// Insert a value, returning true if it was newly inserted.
     pub fn insert(&self, value: T) -> bool {
-        let is_new = self.inner.data.insert(value.clone());
-
-        if is_new {
-            // Notify membership observers (O(1))
-            if let Some(weak) = self.inner.membership_cells.get(&value)
-                && let Some(cell) = weak.upgrade()
-            {
-                cell.set(true);
-            }
-            self.inner.diffs_cell.set(Some(SetDiff::Insert(value)));
-            self.inner.len_cell.set(self.inner.data.len());
-        }
-
-        is_new
+        self.inner.order.write(
+            self.inner.diffs_cell.inner.domain.as_ref(),
+            Touched::Key(key_hash(&value)),
+            || {
+                let inserted = self.inner.data.insert(value.clone());
+                (
+                    inserted,
+                    inserted.then(|| (self.membership_cell(&value), value)),
+                )
+            },
+            |_| false,
+            |(member, value)| self.inserted(member, value),
+            || {
+                let set = self.clone();
+                Box::new(move |(member, value)| set.inserted(member, value))
+            },
+        )
     }
 
     /// Remove a value, returning true if it was present.
     pub fn remove(&self, value: &T) -> bool {
-        let was_present = self.inner.data.remove(value).is_some();
+        // The removed value drops once the write has released the set.
+        let removed = self.inner.order.write(
+            self.inner.diffs_cell.inner.domain.as_ref(),
+            Touched::Key(key_hash(value)),
+            || {
+                let removed = self.inner.data.remove(value);
+                let member = removed.as_ref().map(|_| self.membership_cell(value));
+                (removed, member)
+            },
+            |_| false,
+            |member| self.removed(member, value.clone()),
+            || {
+                let (set, value) = (self.clone(), value.clone());
+                Box::new(move |member| set.removed(member, value))
+            },
+        );
+        removed.is_some()
+    }
 
-        if was_present {
-            // Emit diff (O(1) - just notifies subscribers)
-            self.inner
-                .diffs_cell
-                .set(Some(SetDiff::Remove(value.clone())));
-
-            // Update len (O(1))
-            self.inner.len_cell.set(self.inner.data.len());
-
-            // Notify membership observers (O(1))
-            if let Some(weak) = self.inner.membership_cells.get(value)
-                && let Some(cell) = weak.upgrade()
-            {
-                cell.set(false);
-            }
+    fn inserted(&self, member: Option<Cell<bool, CellMutable>>, value: T) {
+        if let Some(cell) = member {
+            cell.set(true);
         }
+        self.emit(SetDiff::Insert(value), 1);
+    }
 
-        was_present
+    fn removed(&self, member: Option<Cell<bool, CellMutable>>, value: T) {
+        self.emit(SetDiff::Remove(value), -1);
+        if let Some(cell) = member {
+            cell.set(false);
+        }
+    }
+
+    fn membership_cell(&self, value: &T) -> Option<Cell<bool, CellMutable>> {
+        self.inner
+            .membership_cells
+            .get(value)
+            .and_then(|weak| weak.upgrade())
+    }
+
+    /// Send `diff` to the diff subscribers, then the length the set has once
+    /// every delivered diff is counted.
+    fn emit(&self, diff: SetDiff<T>, grown: isize) {
+        let set = Arc::downgrade(&self.inner);
+        self.inner
+            .diffs_cell
+            .set_with(Some(diff), EffectAt::AfterFanout, move || {
+                if let Some(set) = set.upgrade() {
+                    set.len.publish(
+                        || {
+                            let len = set
+                                .delivered_len
+                                .fetch_add(grown, Ordering::Relaxed)
+                                .saturating_add(grown);
+                            Some(usize::try_from(len).unwrap_or(0))
+                        },
+                        |len| set.len_cell.set(len),
+                    );
+                }
+            });
     }
 
     /// Lock the set to prevent further mutations.
@@ -191,6 +252,12 @@ where
         // Build initial values from current data (O(N) once)
         let initial: Vec<T> = self.inner.data.iter().map(|r| r.clone()).collect();
 
+        // The list is kept here, not read back from the cell: inside a batch
+        // the cell is settled only after every diff of the batch has been
+        // applied. Each list takes its turn in the step that computes it,
+        // so two threads delivering different values leave both.
+        let values = parking_lot::Mutex::new(initial.clone());
+        let outputs = Sequenced::default();
         let cell = Cell::new(initial);
         // Weak cell + strong parent keepalive, with the CELL owning the guard —
         // the same shape every `CellMap` observable uses. The previous form had
@@ -217,16 +284,21 @@ where
                 && let Some(diff) = arc_opt.as_ref()
                 && let Some(cell) = weak_cell.upgrade()
             {
-                let mut values = cell.get();
-                match diff {
-                    SetDiff::Insert(value) => {
-                        values.push(value.clone());
-                    }
-                    SetDiff::Remove(value) => {
-                        values.retain(|v| v != value);
-                    }
-                }
-                cell.set(values);
+                outputs.publish(
+                    || {
+                        let mut values = values.lock();
+                        match diff {
+                            SetDiff::Insert(value) => {
+                                values.push(value.clone());
+                            }
+                            SetDiff::Remove(value) => {
+                                values.retain(|v| v != value);
+                            }
+                        }
+                        Some(values.clone())
+                    },
+                    |values| cell.set(values),
+                );
             }
         });
 

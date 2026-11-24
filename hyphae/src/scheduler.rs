@@ -63,6 +63,13 @@
 //! may re-enter `enqueue`/`batch` for their own fanout/nesting, which would
 //! deadlock against a self-held lock otherwise.
 //!
+//! A `CellMap` or `CellSet` stores its rows when a write is made, before the
+//! batch that made the write commits. Two batches that store rows for the
+//! same key commit as one group, in one step, when the later of them closes,
+//! so the diffs of a key reach the queue in the order its rows were stored.
+//! A batch that closes first leaves its writes with the group and returns.
+//! It never waits. See [`order`].
+//!
 //! This means `batch()`'s "settled by the time this call returns" guarantee
 //! still holds for same-thread nesting (the outer frame on the same call
 //! stack drains before it returns, as before) but is *not* guaranteed for two
@@ -174,10 +181,12 @@ use crate::traits::DepNode;
 
 pub mod domain;
 mod frontier;
+pub(crate) mod order;
 mod ready;
 
 use domain::DomainInner;
 pub use domain::{Domain, DomainError};
+use order::{Claim, Groups, Writer};
 use ready::{PendingRun, ReadyQueue};
 
 thread_local! {
@@ -200,6 +209,8 @@ thread_local! {
     /// The staging list of this thread's last committed batch, kept so the
     /// next batch does not allocate one.
     static SPARE_STAGING: std::cell::Cell<Vec<Staged>> = const { std::cell::Cell::new(Vec::new()) };
+    /// The claim list of this thread's last committed batch, kept likewise.
+    static SPARE_CLAIMS: std::cell::Cell<Vec<Claim>> = const { std::cell::Cell::new(Vec::new()) };
 }
 
 /// Largest staging list kept for reuse. A batch that staged more gives its
@@ -211,6 +222,9 @@ struct Staged {
     id: Uuid,
     height: u64,
     coalesce: bool,
+    /// The batch's [`OpenBatch::stamp`] when this was last written. Orders
+    /// the writes of batches that commit as one group.
+    stamp: u64,
     run: PendingRun,
 }
 
@@ -223,6 +237,23 @@ struct OpenBatch {
     /// Index in `staged` of each cell's latest write and whether it coalesces.
     /// Empty until `staged` outgrows [`STAGED_SCAN`].
     latest: FxHashMap<Uuid, (usize, bool)>,
+    /// Stamp of the last row this batch stored under a
+    /// [`WriteOrder`](order::WriteOrder), 0 before the first. A stamp is
+    /// later than that of every row stored before it in the same store and
+    /// of every earlier one of this batch.
+    stamp: u64,
+    /// This batch as a pending writer. `None` until it stores such a row.
+    writer: Option<Arc<Writer>>,
+    /// The stores it holds keys pending on, released when its writes are in
+    /// the tick.
+    claims: Vec<Claim>,
+}
+
+/// What a thread's outermost batch held when it closed.
+struct ClosedBatch {
+    staged: Vec<Staged>,
+    writer: Option<Arc<Writer>>,
+    claims: Vec<Claim>,
 }
 
 /// Longest staging list searched linearly for a cell's latest write. Most
@@ -234,7 +265,8 @@ impl OpenBatch {
     /// coalesces takes that write's place, exactly as the tick would coalesce
     /// the two, and the superseded write is returned for the caller to drop.
     #[inline]
-    fn stage(&mut self, op: Staged) -> Option<PendingRun> {
+    fn stage(&mut self, mut op: Staged) -> Option<PendingRun> {
+        op.stamp = self.stamp;
         let indexed = self.staged.len() > STAGED_SCAN;
         if indexed && self.latest.is_empty() {
             for (index, staged) in self.staged.iter().enumerate() {
@@ -254,6 +286,9 @@ impl OpenBatch {
             && let Some(slot) = self.staged.get_mut(index)
         {
             slot.height = op.height;
+            // The cell now holds this write, so it follows whatever another
+            // batch of the same group wrote before it.
+            slot.stamp = op.stamp;
             return Some(std::mem::replace(&mut slot.run, op.run));
         }
         if indexed {
@@ -276,15 +311,26 @@ fn open_batch(domain: u64) {
                 nest: 1,
                 staged: SPARE_STAGING.take(),
                 latest: FxHashMap::default(),
+                stamp: 0,
+                writer: None,
+                claims: SPARE_CLAIMS.take(),
             });
             OPEN_BATCH_COUNT.set(open.len());
         }
     });
 }
 
-/// Close one batch of `domain` on this thread. Returns the staged writes when
-/// it was the thread's outermost batch of that domain.
-fn close_batch(domain: u64) -> Option<Vec<Staged>> {
+/// Run `f` on this thread's open batch of `domain`, if it holds one.
+fn with_open_batch<R>(domain: u64, f: impl FnOnce(&mut OpenBatch) -> R) -> Option<R> {
+    if OPEN_BATCH_COUNT.get() == 0 {
+        return None;
+    }
+    OPEN_BATCHES.with_borrow_mut(|open| open.iter_mut().find(|batch| batch.domain == domain).map(f))
+}
+
+/// Close one batch of `domain` on this thread. Returns what it held when it
+/// was the thread's outermost batch of that domain.
+fn close_batch(domain: u64) -> Option<ClosedBatch> {
     OPEN_BATCHES.with(|open| {
         let mut open = open.borrow_mut();
         let index = open.iter().position(|batch| batch.domain == domain)?;
@@ -293,9 +339,13 @@ fn close_batch(domain: u64) -> Option<Vec<Staged>> {
         if batch.nest > 0 {
             return None;
         }
-        let staged = open.swap_remove(index).staged;
+        let batch = open.swap_remove(index);
         OPEN_BATCH_COUNT.set(open.len());
-        Some(staged)
+        Some(ClosedBatch {
+            staged: batch.staged,
+            writer: batch.writer,
+            claims: batch.claims,
+        })
     })
 }
 
@@ -321,6 +371,7 @@ fn stage(
                 id,
                 height,
                 coalesce,
+                stamp: 0,
                 run,
             })),
             None => Err(run),
@@ -396,9 +447,31 @@ struct SharedTick {
     /// this flag, so a thread that keeps opening batches can never starve the
     /// drainer (there is no "wait for the queue to quiesce" loop to starve).
     draining: bool,
+    /// Batches that must commit together to keep a store's diffs in the
+    /// order its rows were stored (see [`order`]).
+    groups: Groups,
 }
 
 impl SharedTick {
+    fn new() -> Self {
+        Self {
+            ready: ReadyQueue::new(),
+            depth: 0,
+            draining: false,
+            groups: Groups::default(),
+        }
+    }
+
+    /// Put `staged` in the queue in order, collecting the closures it
+    /// supersedes for the caller to drop once the tick is unlocked.
+    fn commit(&mut self, staged: &mut Vec<Staged>, displaced: &mut Vec<PendingRun>) {
+        for op in staged.drain(..) {
+            if let Some(old) = self.enqueue_locked(op.id, op.height, op.coalesce, op.run) {
+                displaced.push(old);
+            }
+        }
+    }
+
     /// Enqueue `run` for cell `id` at `height`. When `coalesce` is true and the
     /// cell is already queued, its previous op is dropped (last-write-wins).
     /// When false (a `no_coalesce` cell), every op is kept as a distinct
@@ -434,13 +507,7 @@ impl SharedTick {
     }
 }
 
-static TICK: LazyLock<Mutex<SharedTick>> = LazyLock::new(|| {
-    Mutex::new(SharedTick {
-        ready: ReadyQueue::new(),
-        depth: 0,
-        draining: false,
-    })
-});
+static TICK: LazyLock<Mutex<SharedTick>> = LazyLock::new(|| Mutex::new(SharedTick::new()));
 
 /// Fast, lock-free "should a fresh notify defer" flag, kept in sync with
 /// `depth > 0 || draining` under the same critical sections that mutate
@@ -882,6 +949,14 @@ pub(crate) fn birth_no_coalesce() -> bool {
 /// closes, so no drain on another thread can run some of them while `f` is
 /// still running.
 ///
+/// A row `f` writes to a `CellMap` or `CellSet` is stored at once, so `f`
+/// and every other thread read it back from the map before the batch closes.
+/// Its diff is part of the batch. When another thread's open batch wrote the
+/// same key, the two batches reach the tick together, once both have closed,
+/// with that key's diffs in the order the rows were stored. The one that
+/// closes first returns without waiting, and its writes are delivered when
+/// the other closes.
+///
 /// Nested `batch` calls — genuinely nested on the same thread's call stack,
 /// or a different thread racing this one — join the same shared tick rather
 /// than opening a second one. Draining is claimed at a thread's *outermost*
@@ -950,20 +1025,27 @@ fn begin_batch(domain: Option<&Arc<DomainInner>>) {
 /// whether to drain: only if no drain is already in flight and there is
 /// pending work. The empty-check and the `draining = true` claim happen
 /// together under the lock, which is what makes the hand-off strand-free.
+///
+/// A batch that stored rows another unfinished writer's rows precede or
+/// follow belongs to a commit group (see [`order`]). It commits with the
+/// group: when it is not the last member to finish it leaves its writes with
+/// the group and returns, and the last member puts all of them in the tick in
+/// this same step.
 fn end_batch(domain: Option<&Arc<DomainInner>>) -> Option<Box<dyn std::any::Any + Send>> {
     let tick = TickRef::of(domain);
-    let mut staged = close_batch(tick.id);
-    let outermost = staged.is_some();
+    let mut closed = close_batch(tick.id);
+    let outermost = closed.is_some();
     let mut displaced = Vec::new();
     let claimed_drain = {
         let mut guard = tick.queue.lock();
         guard.depth = guard.depth.saturating_sub(1);
-        if let Some(staged) = staged.as_mut() {
-            for op in staged.drain(..) {
-                if let Some(old) = guard.enqueue_locked(op.id, op.height, op.coalesce, op.run) {
-                    displaced.push(old);
-                }
+        if let Some(closed) = closed.as_mut() {
+            if let Some(writer) = closed.writer.as_ref() {
+                guard
+                    .groups
+                    .finish(writer, true, &mut closed.staged, &mut closed.claims);
             }
+            guard.commit(&mut closed.staged, &mut displaced);
         }
         let claim = outermost && !guard.draining && !guard.ready.is_empty();
         if claim {
@@ -975,13 +1057,47 @@ fn end_batch(domain: Option<&Arc<DomainInner>>) -> Option<Box<dyn std::any::Any 
     };
     // A superseded closure can own a cell whose drop re-enters the scheduler.
     drop(displaced);
-    if let Some(staged) = staged
-        && staged.capacity() <= SPARE_STAGING_LIMIT
-    {
-        SPARE_STAGING.set(staged);
+    if let Some(mut closed) = closed {
+        closed.claims.drain(..).for_each(Claim::release);
+        if closed.claims.capacity() <= SPARE_STAGING_LIMIT {
+            SPARE_CLAIMS.set(closed.claims);
+        }
+        if let Some(writer) = closed.writer {
+            Writer::retire(writer);
+        }
+        if closed.staged.capacity() <= SPARE_STAGING_LIMIT {
+            SPARE_STAGING.set(closed.staged);
+        }
     }
 
     if claimed_drain { drain(domain) } else { None }
+}
+
+/// The deliveries `writer`'s thread made outside a batch have returned, and
+/// other writers joined it meanwhile. Leave their group, and when that
+/// leaves nobody open, put what the group held in `domain`'s tick and drain
+/// it.
+fn finish_delivering(domain: Option<&Arc<DomainInner>>, writer: &Arc<Writer>) {
+    let tick = TickRef::of(domain);
+    let (mut staged, mut claims, mut displaced) = (Vec::new(), Vec::new(), Vec::new());
+    let claimed_drain = {
+        let mut guard = tick.queue.lock();
+        guard.groups.finish(writer, false, &mut staged, &mut claims);
+        let committed = !staged.is_empty();
+        guard.commit(&mut staged, &mut displaced);
+        let claim = committed && !guard.draining;
+        if claim {
+            guard.draining = true;
+        }
+        tick.refresh_active(&guard);
+        drop(guard);
+        claim
+    };
+    drop(displaced);
+    claims.into_iter().for_each(Claim::release);
+    if claimed_drain && let Some(payload) = drain(domain) {
+        domain::log_panic("propagation", payload.as_ref());
+    }
 }
 
 /// Block until `domain`'s tick has no drain in flight and no queued op,

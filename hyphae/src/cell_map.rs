@@ -3,6 +3,40 @@
 //! `CellMap` wraps a concurrent `HashMap` where each entry can be individually observed.
 //! Changes to keys trigger reactive updates to observers.
 //!
+//! # Write order
+//!
+//! A write stores its row at once and tells subscribers afterwards: on the
+//! writing thread when no batch is open, when the batch commits otherwise.
+//! Reads of the map (`get_value`, `contains_key`, `snapshot`, the value
+//! `insert` returns, a write hook) therefore see a row as soon as it is
+//! written, from any thread, including inside the batch that wrote it. The
+//! cells derived from the map (its diffs, per-key observers, length, and
+//! every query built on them) see it when it is delivered.
+//!
+//! For every key, diffs are delivered in the order the rows were stored,
+//! whichever threads wrote them and whichever of those held a batch open.
+//! Once every writer has returned and propagation has finished, each derived
+//! structure equals what it would compute from the map's rows. No writer
+//! waits for another's subscribers:
+//!
+//! - Two batches that write the same key commit together, when the later of
+//!   them closes. The one that closes first returns, and its writes are
+//!   delivered with the other's. Batches that share no key commit
+//!   independently.
+//! - A write made outside a batch to a key an open batch has written is
+//!   delivered when that batch commits.
+//! - A write made outside a batch to a key another thread is delivering
+//!   outside a batch returns at once, and that thread delivers it when its
+//!   own subscribers have returned.
+//! - Any other write made outside a batch is delivered as an unbatched cell
+//!   write is: before the write returns, or by the next drain when a batch
+//!   is open or a drain is running on the map's tick. Two threads that write
+//!   different keys this way run their subscribers at the same time.
+//!
+//! The length cell counts delivered rows, so it never runs ahead of the
+//! diffs. The length, entries, keys and items cells take each value in the
+//! order it was computed, also when two threads deliver at once.
+//!
 //! # Write hooks
 //!
 //! [`CellMap::register_write_hook`] keeps a secondary index exactly in step
@@ -200,6 +234,13 @@ where
     pub(crate) diffs_cell: Cell<MapDiff<K, V>, CellMutable>,
     /// Cell for length.
     len_cell: Cell<usize, CellMutable>,
+    /// Rows the length cell has been told about: rows added less rows
+    /// removed over every delivered write.
+    delivered_len: std::sync::atomic::AtomicIsize,
+    /// Sets the length cell to each count in the order they were reached.
+    len: crate::scheduler::order::Sequenced<usize>,
+    /// The order rows are stored in and their diffs delivered in.
+    order: Arc<crate::scheduler::order::WriteOrder>,
     /// Subscription guards owned by this map (dropped when map drops).
     owned: Mutex<Vec<SubscriptionGuard>>,
     /// Optional name for debugging. Cold path — set once via `with_name`,
@@ -281,6 +322,7 @@ where
 
         let weak_cell = cell.downgrade();
         let map_keepalive = self.inner.clone();
+        let outputs = crate::scheduler::order::Sequenced::default();
         let skip_replay = matches!(replay, OutputReplay::Skip).then(|| AtomicBool::new(true));
         let guard = source.subscribe(move |signal| {
             let _ = &map_keepalive;
@@ -293,10 +335,11 @@ where
             let Some(cell) = weak_cell.upgrade() else {
                 return;
             };
-            if let Signal::Value(value) = signal
-                && let Some(output) = update(value.as_ref())
-            {
-                cell.set(output);
+            if let Signal::Value(value) = signal {
+                // Two threads can deliver diffs of different keys at once.
+                // Each output is computed and takes its turn in one step,
+                // so the cell ends on the one computed last.
+                outputs.publish(|| update(value.as_ref()), |output| cell.set(output));
             }
         });
         cell.own(guard);

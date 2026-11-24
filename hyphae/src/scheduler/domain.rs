@@ -101,7 +101,7 @@ use parking_lot::{Condvar, Mutex};
 use rustc_hash::FxHashMap;
 use uuid::Uuid;
 
-use super::{ReadyQueue, SharedTick};
+use super::SharedTick;
 
 /// The root domain's id. Child ids start at 1.
 pub(crate) const ROOT_ID: u64 = 0;
@@ -675,11 +675,7 @@ impl Domain {
         });
         let inner = Arc::new(DomainInner {
             id,
-            tick: Mutex::new(SharedTick {
-                ready: ReadyQueue::new(),
-                depth: 0,
-                draining: false,
-            }),
+            tick: Mutex::new(SharedTick::new()),
             active: AtomicBool::new(false),
             released: Condvar::new(),
             mailbox: Arc::clone(&mailbox),
@@ -816,6 +812,11 @@ impl Domain {
     ///
     /// The calling thread first waits for root's propagation to finish, and
     /// runs it itself if no other thread is.
+    ///
+    /// A map or set write that follows another thread's write to the same key
+    /// is not in root's propagation until that thread's batch closes, or its
+    /// delivery returns when it wrote outside a batch. `flush` does not wait
+    /// for such a write.
     ///
     /// # Panics
     ///

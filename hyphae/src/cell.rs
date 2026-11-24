@@ -25,6 +25,13 @@ pub struct CellMutable;
 #[derive(Debug, Clone)]
 pub struct CellImmutable;
 
+/// When the effect of [`Cell::set_with`] runs.
+#[derive(Clone, Copy)]
+pub(crate) enum EffectAt {
+    BeforeFanout,
+    AfterFanout,
+}
+
 /// The inner data of a Cell, wrapped in Arc for shared ownership.
 pub(crate) struct CellInner<T> {
     pub(crate) id: Uuid,
@@ -586,6 +593,47 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         // callback that writes another domain is rejected.
         let _scope = crate::scheduler::domain::propagate(domain);
         self.settle(signal);
+    }
+
+    /// Set the value and run `effect` on the thread that delivers it, just
+    /// before or just after the fanout, so the effect takes the write's
+    /// place in delivery order instead of the order `set` was called in.
+    pub(crate) fn set_with(&self, value: T, at: EffectAt, effect: impl FnOnce() + Send + 'static) {
+        let signal = Signal::value(value);
+        let deliver = move |cell: Option<&Self>| {
+            if matches!(at, EffectAt::BeforeFanout) {
+                effect();
+                if let Some(cell) = cell {
+                    cell.settle(signal);
+                }
+            } else {
+                if let Some(cell) = cell {
+                    cell.settle(signal);
+                }
+                effect();
+            }
+        };
+        if self.inner.completed.load(Ordering::SeqCst) || self.inner.errored.load(Ordering::SeqCst)
+        {
+            return deliver(None);
+        }
+        let in_use = crate::scheduler::domain::in_use();
+        let domain = self.inner.domain.as_ref().filter(|_| in_use);
+        crate::scheduler::domain::assert_write(domain);
+        if crate::scheduler::tick_active(domain) {
+            let cell = self.downgrade();
+            let dependency: &dyn crate::traits::DepNode = self;
+            crate::scheduler::enqueue(
+                domain,
+                self.inner.id,
+                dependency,
+                false,
+                Box::new(move || deliver(cell.upgrade().as_ref())),
+            );
+            return;
+        }
+        let _scope = crate::scheduler::domain::propagate_if_in_use(domain);
+        deliver(Some(self));
     }
 
     /// Queue the value-settle and fanout on `domain`'s tick.
