@@ -836,6 +836,14 @@ fn run_wave(
 /// child, before it releases. Every release wakes the threads waiting in
 /// [`quiesce`] for that tick.
 fn drain(domain: Option<&Arc<DomainInner>>) -> Option<Box<dyn std::any::Any + Send>> {
+    let panicked = drain_waves(domain);
+    if let Some(payload) = panicked.as_ref() {
+        domain::caught_panic(domain, "propagation", payload.as_ref());
+    }
+    panicked
+}
+
+fn drain_waves(domain: Option<&Arc<DomainInner>>) -> Option<Box<dyn std::any::Any + Send>> {
     let tick = TickRef::of(domain);
     let _scope = domain::propagate_if_in_use(domain);
     let _suspended = SuspendedBatch::of(tick.id);
@@ -1095,8 +1103,9 @@ fn finish_delivering(domain: Option<&Arc<DomainInner>>, writer: &Arc<Writer>) {
     };
     drop(displaced);
     claims.into_iter().for_each(Claim::release);
-    if claimed_drain && let Some(payload) = drain(domain) {
-        domain::log_panic("propagation", payload.as_ref());
+    if claimed_drain {
+        // A panic in the drain has been reported; nobody here resumes it.
+        drop(drain(domain));
     }
 }
 
@@ -1121,8 +1130,6 @@ fn quiesce(domain: Option<&Arc<DomainInner>>) {
         guard.draining = true;
         tick.refresh_active(&guard);
         drop(guard);
-        if let Some(payload) = drain(domain) {
-            domain::log_panic("propagation", payload.as_ref());
-        }
+        drop(drain(domain));
     }
 }

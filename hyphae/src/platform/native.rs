@@ -272,13 +272,21 @@ fn child_interval(
         }
         let tick = Arc::clone(&tick);
         let state = Arc::clone(&state);
+        let owner_for_panic = Arc::downgrade(&owner);
         crate::scheduler::domain::run_task(
             &owner,
             Box::new(move || {
                 // A panicking tick stays scheduled, as on the reactor.
                 let keep =
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (tick.lock())(count)))
-                        .unwrap_or(true);
+                        .unwrap_or_else(|payload| {
+                            crate::scheduler::domain::caught_panic(
+                                owner_for_panic.upgrade().as_ref(),
+                                "timer callback",
+                                payload.as_ref(),
+                            );
+                            true
+                        });
                 state.store(if keep { IDLE } else { STOPPED }, Ordering::Release);
             }),
         )

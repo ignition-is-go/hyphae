@@ -147,6 +147,8 @@ pub(crate) struct DomainInner {
     pub(super) released: Condvar,
     mailbox: Arc<Mailbox>,
     closed: AtomicBool,
+    /// Why this domain failed: the first panic in its propagation.
+    failure: std::sync::OnceLock<Arc<str>>,
     /// How to remove each hand-off subscription this domain holds on a root
     /// cell or source, by subscription id. Closing the domain runs them all.
     boundary: Mutex<FxHashMap<Uuid, HandOffOp>>,
@@ -157,6 +159,29 @@ pub(crate) struct DomainInner {
 impl DomainInner {
     pub(super) fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
+    }
+
+    /// Record that a panic interrupted this domain's propagation. The
+    /// domain's state no longer follows the writes it was given, so it stops:
+    /// its worker closes it before it would apply another unit. The first
+    /// failure is kept.
+    fn fail(&self, message: &str) {
+        if self.failure.set(Arc::from(message)).is_ok() {
+            log::error!(
+                "hyphae: domain {} failed and closes: a panic interrupted its propagation: \
+                 {message}",
+                self.id
+            );
+        }
+        // Wake the worker, so it closes the domain even when nothing else
+        // is queued for it.
+        let inbox = self.mailbox.inbox.lock();
+        drop(inbox);
+        self.mailbox.arrived.notify_all();
+    }
+
+    fn failed(&self) -> bool {
+        self.failure.get().is_some()
     }
 
     /// Remember how to remove hand-off subscription `id`. A domain that is
@@ -396,10 +421,16 @@ pub(crate) fn enter(domain: Option<&Arc<DomainInner>>) -> AmbientScope {
 pub(crate) struct PropagationScope {
     _ambient: AmbientScope,
     previous: u64,
+    domain: Option<Arc<DomainInner>>,
 }
 
 impl Drop for PropagationScope {
     fn drop(&mut self) {
+        if std::thread::panicking()
+            && let Some(domain) = self.domain.as_ref()
+        {
+            domain.fail("a panic unwound out of its propagation");
+        }
         let _ = PROPAGATING.try_with(|propagating| propagating.set(self.previous));
     }
 }
@@ -411,6 +442,7 @@ pub(crate) fn propagate(domain: Option<&Arc<DomainInner>>) -> PropagationScope {
     PropagationScope {
         _ambient: enter(domain),
         previous,
+        domain: domain.cloned(),
     }
 }
 
@@ -559,35 +591,44 @@ pub(crate) fn run_task(owner: &Arc<DomainInner>, task: HandOffOp) -> bool {
     push(owner, Segment::Eager(task)).is_none()
 }
 
-pub(super) fn log_panic(context: &str, payload: &(dyn std::any::Any + Send)) {
+/// Report a panic caught in `domain`'s propagation. A child domain fails
+/// (see [`Domain::failure`]); root has no failed state and only logs it.
+pub(crate) fn caught_panic(
+    domain: Option<&Arc<DomainInner>>,
+    context: &str,
+    payload: &(dyn std::any::Any + Send),
+) {
     let message = payload
         .downcast_ref::<&str>()
         .map(|message| (*message).to_string())
         .or_else(|| payload.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "non-string panic payload".to_string());
     log::error!("hyphae: {context} panicked: {message}");
+    if let Some(domain) = domain {
+        domain.fail(&format!("{context} panicked: {message}"));
+    }
 }
 
-fn run_logged(op: HandOffOp) {
+fn run_caught(domain: &Arc<DomainInner>, op: HandOffOp) {
     if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(op)) {
-        log_panic("hand-off delivery", payload.as_ref());
+        caught_panic(Some(domain), "hand-off delivery", payload.as_ref());
     }
 }
 
 fn apply(domain: &Arc<DomainInner>, segment: Segment) {
     let _scope = propagate(Some(domain));
     match segment {
-        Segment::Eager(op) => run_logged(op),
+        Segment::Eager(op) => run_caught(domain, op),
         Segment::Batch(ops) => {
             let drained = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 super::batch_in(Some(domain), || {
                     for op in ops {
-                        run_logged(op);
+                        run_caught(domain, op);
                     }
                 });
             }));
             if let Err(payload) = drained {
-                log_panic("hand-off batch drain", payload.as_ref());
+                caught_panic(Some(domain), "hand-off batch drain", payload.as_ref());
             }
         }
     }
@@ -595,10 +636,10 @@ fn apply(domain: &Arc<DomainInner>, segment: Segment) {
 
 /// The next unit to apply, or `None` once the domain is closed.
 #[cfg(not(target_arch = "wasm32"))]
-fn next_segment(mailbox: &Mailbox) -> Option<Segment> {
+fn next_segment(domain: &Weak<DomainInner>, mailbox: &Mailbox) -> Option<Segment> {
     let mut inbox = mailbox.inbox.lock();
     loop {
-        if inbox.closed {
+        if inbox.closed || domain.upgrade().is_some_and(|domain| domain.failed()) {
             drop(inbox);
             return None;
         }
@@ -612,8 +653,9 @@ fn next_segment(mailbox: &Mailbox) -> Option<Segment> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn run_worker(domain: &Weak<DomainInner>, mailbox: &Mailbox) {
-    while let Some(segment) = next_segment(mailbox) {
+    while let Some(segment) = next_segment(domain, mailbox) {
         match domain.upgrade() {
+            Some(domain) if domain.failed() => drop(segment),
             Some(domain) => {
                 apply(&domain, segment);
                 // The unit is fully propagated before the next one starts, so
@@ -629,6 +671,12 @@ fn run_worker(domain: &Weak<DomainInner>, mailbox: &Mailbox) {
         }
         drop(inbox);
         mailbox.idle.notify_all();
+    }
+    // A failed domain stops here, before it applies another unit.
+    if let Some(domain) = domain.upgrade()
+        && domain.failed()
+    {
+        domain.close();
     }
 }
 
@@ -689,6 +737,7 @@ impl Domain {
             released: Condvar::new(),
             mailbox: Arc::clone(&mailbox),
             closed: AtomicBool::new(false),
+            failure: std::sync::OnceLock::new(),
             boundary: Mutex::new(FxHashMap::default()),
             #[cfg(not(target_arch = "wasm32"))]
             worker: Mutex::new(None),
@@ -784,6 +833,22 @@ impl Domain {
     #[must_use]
     pub const fn is_root(&self) -> bool {
         self.inner.is_none()
+    }
+
+    /// Why this child domain failed: the first panic that interrupted its
+    /// propagation, on its worker or on any thread running one of its
+    /// cascades or waves. `None` for root and for a domain that has not
+    /// failed.
+    ///
+    /// A failed domain's state no longer follows the writes it was given,
+    /// so it does not go on as if nothing happened: its worker closes it
+    /// before applying another unit (see [`close`](Self::close)), which
+    /// stops its hand-offs and discards what is queued, and the failure is
+    /// logged at error level. Code that owns the domain reads this to
+    /// refuse further work with the cause.
+    #[must_use]
+    pub fn failure(&self) -> Option<Arc<str>> {
+        self.inner.as_ref()?.failure.get().cloned()
     }
 
     /// Whether this child domain has been closed. Always `false` for root.

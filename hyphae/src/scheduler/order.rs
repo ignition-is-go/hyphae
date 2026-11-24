@@ -643,7 +643,8 @@ impl Drop for Delivery<'_> {
                     if let Err(payload) =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(follower))
                     {
-                        super::domain::log_panic(
+                        super::domain::caught_panic(
+                            self.domain,
                             "a write delivered by another thread",
                             payload.as_ref(),
                         );
