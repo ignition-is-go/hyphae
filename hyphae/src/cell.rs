@@ -262,7 +262,7 @@ impl<T, M> Cell<T, M> {
     {
         if let Err(error) = self.check_domain(&guard) {
             drop(guard);
-            reject(error);
+            crate::scheduler::domain::reject(error);
         }
         self.own_checked(guard);
     }
@@ -337,7 +337,7 @@ impl<T, M> Cell<T, M> {
     {
         if let Err(error) = self.check_domain(&guard) {
             drop(guard);
-            reject(error);
+            crate::scheduler::domain::reject(error);
         }
         // Register as a height-dependent of the new source before it moves into
         // `owned`. The replaced guard's stale back-edge on the *old* source is
@@ -384,13 +384,6 @@ impl<T, M> Cell<T, M> {
         self.inner.no_coalesce.store(true, Ordering::Relaxed);
         self
     }
-}
-
-/// A dependency that crosses a scheduling-domain boundary the wrong way is a
-/// construction error in the calling code, reported where the graph is built.
-#[allow(clippy::panic)]
-fn reject(error: DomainError) -> ! {
-    panic!("hyphae: {error}");
 }
 
 /// Type-erased handle to a node participating in localized height-cache
@@ -564,7 +557,17 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         // the value-settle + fanout into the height-ordered tick queue and
         // returns; the drain runs them in order at the batch boundary. One
         // relaxed atomic load when no batch is open.
-        let domain = self.inner.domain.as_ref();
+        //
+        // Until the first child domain exists every cell is a root cell and
+        // the cell's own domain is never read.
+        let domains = crate::scheduler::domain::in_use();
+        let domain = if domains {
+            let domain = self.inner.domain.as_ref();
+            crate::scheduler::domain::assert_write(domain);
+            domain
+        } else {
+            None
+        };
         if crate::scheduler::tick_active(domain) {
             // Weak: the queued op must not be what keeps this cell alive. If
             // its source is rewritten before the op runs, the rewrite reaches
@@ -602,9 +605,10 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         // batch (the default, and always on wasm) they run back-to-back: the
         // exact synchronous eager-push path, with no behavioral change.
         //
-        // Once a child domain exists, the cascade runs with this cell's domain
-        // as the thread's ambient one, so cells its operators create join it.
-        let _scope = crate::scheduler::domain::enter_if_in_use(domain);
+        // Once a child domain exists, the cascade runs as this cell's domain's
+        // propagation: cells its operators create join that domain, and a
+        // callback that writes another domain is rejected.
+        let _scope = domains.then(|| crate::scheduler::domain::propagate(domain));
         self.write_value(&signal);
         self.fanout(&signal);
         // `notify` owns its signal because scheduler-enabled builds may move it
@@ -685,9 +689,14 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
             if let Some(child) = sub.hand_off() {
                 // A child's subscription to this root cell: the delivery
                 // crosses the boundary and runs on the child's own tick.
-                let sub = Arc::clone(sub);
-                let signal = signal.clone();
-                crate::scheduler::domain::hand_off(child, Box::new(move || sub.deliver(&signal)));
+                if sub.seed_started() {
+                    let sub = Arc::clone(sub);
+                    let signal = signal.clone();
+                    crate::scheduler::domain::hand_off(
+                        child,
+                        Box::new(move || sub.deliver(&signal)),
+                    );
+                }
             } else {
                 sub.deliver(signal);
             }
@@ -707,6 +716,9 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
 
         for (subscriber_id, sub) in result_subs.as_slice() {
             if let Some(child) = sub.hand_off() {
+                if !sub.seed_started() {
+                    continue;
+                }
                 let sub = Arc::clone(sub);
                 let signal = signal.clone();
                 let subscriber_id = *subscriber_id;
@@ -742,6 +754,29 @@ impl<T: CellValue, U: Send + Sync + 'static> Gettable<T> for Cell<T, U> {
     }
 }
 
+impl<T: CellValue, U: Send + Sync + 'static> Cell<T, U> {
+    /// Tell `child` how to remove hand-off subscription `id` from this root
+    /// cell, so closing the child releases it. Returns the child for the
+    /// subscription's guard to deregister with.
+    fn register_boundary(
+        &self,
+        child: Option<&Arc<crate::scheduler::domain::DomainInner>>,
+        id: Uuid,
+    ) -> Option<Arc<crate::scheduler::domain::DomainInner>> {
+        let child = child?;
+        let cell = self.downgrade();
+        child.register_boundary(
+            id,
+            Box::new(move || {
+                if let Some(cell) = cell.upgrade() {
+                    cell.unsubscribe(id);
+                }
+            }),
+        );
+        Some(Arc::clone(child))
+    }
+}
+
 impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
     fn subscribe(
         &self,
@@ -772,6 +807,7 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
         // concurrently-dropping cells to deadlock.
         let displaced = self.inner.subscribers.lock().insert(id, sub.clone());
         drop(displaced);
+        let boundary = self.register_boundary(sub.hand_off(), id);
 
         // Seed the current value AFTER the insert (backfilling the freshest
         // stored value) and fire OUTSIDE the subscribers lock — subscriber
@@ -780,7 +816,17 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
         // raced the insert above already delivers to this now-indexed
         // subscriber; a duplicate value delivery is benign, and any one-emit
         // ordering skew self-heals on the next notify.
-        let current = self.inner.value.lock().clone();
+        //
+        // A hand-off subscriber starts receiving at the instant its seed is
+        // read, under the value lock: a write settled before that instant is
+        // in the seed, and its fanout hands this subscriber nothing unless it
+        // is the write the seed read, so nothing older than the seed can
+        // arrive after it.
+        let current = {
+            let value = self.inner.value.lock();
+            sub.start_seed();
+            value.clone()
+        };
         sub.finish_initial(&Signal::Value(current));
 
         // If already complete or errored, send that signal too
@@ -800,6 +846,9 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
             let (removed_sub, stale_snap) = cell.inner.subscribers.lock().remove(&id);
             drop(removed_sub);
             drop(stale_snap);
+            if let Some(child) = &boundary {
+                child.release_boundary(id);
+            }
         })
         .subscribed_here()
     }
@@ -853,9 +902,14 @@ impl<T: CellValue, U: Send + Sync + 'static> WatchableResult<T> for Cell<T, U> {
         // to preserve replay-before-live ordering.
         let displaced = self.inner.result_subscribers.lock().insert(id, sub.clone());
         drop(displaced);
+        let boundary = self.register_boundary(sub.hand_off(), id);
 
         // Send current value immediately (Arc clone, no deep copy).
-        let current = self.inner.value.lock().clone();
+        let current = {
+            let value = self.inner.value.lock();
+            sub.start_seed();
+            value.clone()
+        };
         sub.finish_initial(&Signal::Value(current), |error| log_err(&id, error));
 
         // Replay any prior terminal signal.
@@ -878,6 +932,9 @@ impl<T: CellValue, U: Send + Sync + 'static> WatchableResult<T> for Cell<T, U> {
             let (removed_sub, stale_snap) = cell.inner.result_subscribers.lock().remove(&id);
             drop(removed_sub);
             drop(stale_snap);
+            if let Some(child) = &boundary {
+                child.release_boundary(id);
+            }
         })
         .subscribed_here()
     }

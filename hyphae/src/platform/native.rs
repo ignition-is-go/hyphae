@@ -2,11 +2,13 @@
 
 pub use std::time::Instant;
 use std::{
-    sync::{Condvar, Mutex, OnceLock},
+    sync::{
+        Arc, Condvar, Mutex, OnceLock,
+        atomic::{AtomicU8, Ordering},
+    },
     thread,
     time::Duration,
 };
-
 
 /// A single scheduled timer, owned by the shared [`Reactor`].
 struct TimerEntry {
@@ -188,7 +190,12 @@ fn drain_due(entries: &mut Vec<TimerEntry>, now: Instant) -> Vec<TimerEntry> {
 ///
 /// The work is fire-and-forget: cancellation is the caller's responsibility
 /// (operators use a weak upgrade / generation check inside `f`).
+///
+/// A timer registered inside a child scheduling domain belongs to that child:
+/// the reactor only queues `f` for the child's worker, so a slow callback in
+/// one domain cannot hold up another domain's timers.
 pub fn spawn_delayed(delay: Duration, f: impl FnOnce() + Send + 'static) {
+    let owner = crate::scheduler::domain::timer_owner();
     let mut f = Some(f);
     register(TimerEntry {
         next_fire: Instant::now()
@@ -197,8 +204,14 @@ pub fn spawn_delayed(delay: Duration, f: impl FnOnce() + Send + 'static) {
         period: delay,
         count: 1,
         tick: Box::new(move |_count| {
-            if let Some(f) = f.take() {
-                f();
+            match (f.take(), &owner) {
+                (Some(f), None) => f(),
+                (Some(f), Some(owner)) => {
+                    if let Some(owner) = owner.upgrade() {
+                        crate::scheduler::domain::run_task(&owner, Box::new(f));
+                    }
+                }
+                (None, _) => {}
             }
             false
         }),
@@ -213,19 +226,63 @@ pub fn spawn_delayed(delay: Duration, f: impl FnOnce() + Send + 'static) {
 /// `precise` is accepted for API compatibility but no longer changes the
 /// wait strategy: the shared reactor schedules every timer against a monotonic
 /// deadline and parks between deadlines (see [`wait_for_due`]).
+///
+/// An interval registered inside a child scheduling domain belongs to that
+/// child: each tick runs on the child's worker. A tick that comes due while
+/// the previous one has not run yet is skipped, as a tick the reactor itself
+/// is late for is, so a slow child queues at most one tick per interval.
 pub fn spawn_interval(
     period: Duration,
     _precise: bool,
     tick: impl FnMut(u64) -> bool + Send + 'static,
 ) {
+    let tick: Box<dyn FnMut(u64) -> bool + Send> = match crate::scheduler::domain::timer_owner() {
+        None => Box::new(tick),
+        Some(owner) => Box::new(child_interval(owner, tick)),
+    };
     register(TimerEntry {
         next_fire: Instant::now()
             .checked_add(period)
             .unwrap_or_else(Instant::now),
         period,
         count: 1,
-        tick: Box::new(tick),
+        tick,
     });
+}
+
+/// The reactor-side half of an interval owned by a child domain: queue each
+/// tick for the child's worker and report whether the interval is still live.
+fn child_interval(
+    owner: std::sync::Weak<crate::scheduler::domain::DomainInner>,
+    tick: impl FnMut(u64) -> bool + Send + 'static,
+) -> impl FnMut(u64) -> bool + Send {
+    const IDLE: u8 = 0;
+    const QUEUED: u8 = 1;
+    const STOPPED: u8 = 2;
+    let tick = Arc::new(parking_lot::Mutex::new(tick));
+    let state = Arc::new(AtomicU8::new(IDLE));
+    move |count| {
+        let Some(owner) = owner.upgrade() else {
+            return false;
+        };
+        match state.compare_exchange(IDLE, QUEUED, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => {}
+            Err(STOPPED) => return false,
+            Err(_) => return true,
+        }
+        let tick = Arc::clone(&tick);
+        let state = Arc::clone(&state);
+        crate::scheduler::domain::run_task(
+            &owner,
+            Box::new(move || {
+                // A panicking tick stays scheduled, as on the reactor.
+                let keep =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (tick.lock())(count)))
+                        .unwrap_or(true);
+                state.store(if keep { IDLE } else { STOPPED }, Ordering::Release);
+            }),
+        )
+    }
 }
 
 #[cfg(test)]

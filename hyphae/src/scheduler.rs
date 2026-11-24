@@ -41,10 +41,15 @@
 //!
 //! Concretely: [`enqueue`] and [`drain`] share one `Mutex`-protected queue.
 //! Deferral is gated by `depth > 0 || draining` (a `batch()` open anywhere,
-//! or a drain in flight). Draining is **claimed at a thread's outermost
-//! `batch()` close** — the close that brings this thread's [`BATCH_NEST`]
-//! back to 0 — by whichever such close finds `draining` false and the queue
-//! non-empty; it sets `draining` (the single-drainer mutex) and drains the
+//! or a drain in flight). A write a thread makes inside its own open batch is
+//! **staged** on that thread and reaches the queue only when the thread's
+//! outermost `batch()` closes, in one step under the lock. A batch is
+//! therefore atomic to observers: a drain, on any thread, runs all of a
+//! batch's writes or none of them, never the first half while the batch is
+//! still open. A write from a thread that holds no batch, made while another
+//! thread's batch is open, goes straight to the queue as before. Draining is
+//! **claimed at a thread's outermost `batch()` close** by whichever such
+//! close finds `draining` false and the queue non-empty; it sets `draining` (the single-drainer mutex) and drains the
 //! queue empty in short bursts, then clears `draining` the instant the queue
 //! runs dry. Crucially there is **no park and no "wait for the count to
 //! quiesce" loop**: a thread never pins itself as a persistent drainer, so a
@@ -77,8 +82,9 @@
 //! tick of its own with the same rules, so one child's batches and drains
 //! never wait on root's or a sibling's. Everything in this module works on
 //! one domain's tick: `notify` picks it from the cell, [`batch`] from the
-//! calling thread's ambient domain. See [`domain`] for the boundary between
-//! root and its children.
+//! calling thread's ambient domain. A thread running one domain's
+//! propagation writes only that domain. See [`domain`] for the boundary
+//! between root and its children.
 //!
 //! # Wave-parallel draining, cheaply
 //!
@@ -152,18 +158,21 @@
 //! the batch (before the closing brace) still sees its pre-batch value — the
 //! glitch-free trade-off, and the reason this is opt-in.
 
-use std::sync::{
-    Arc, LazyLock,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+use std::{
+    cell::RefCell,
+    sync::{
+        Arc, LazyLock,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
 };
 
-use parking_lot::Mutex;
-use rustc_hash::FxHashSet;
+use parking_lot::{Condvar, Mutex};
+use rustc_hash::{FxHashMap, FxHashSet};
 use uuid::Uuid;
 
 use crate::traits::DepNode;
 
-pub(crate) mod domain;
+pub mod domain;
 mod frontier;
 mod ready;
 
@@ -179,14 +188,156 @@ thread_local! {
     /// per-tick, cross-thread coordination is needed for it, unlike the tick
     /// queue below.
     static NO_COALESCE_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
-    /// THIS thread's [`batch`] nesting depth. Only a thread's *outermost*
-    /// batch (the close that brings this back to 0) is eligible to drain, so
-    /// same-thread nested batches never drain mid-`f()` — preserving "all of a
-    /// batch's sets are enqueued before any of it drains." Thread-local
-    /// because it tracks one call stack's nesting; the cross-thread batch
-    /// count is [`SharedTick::depth`]. Root batches only: nesting on a child
-    /// domain's tick is tracked per domain in [`domain`].
-    static BATCH_NEST: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// THIS thread's open batches, one record per domain. A write this
+    /// thread makes to a cell of a domain it holds a batch on is staged in
+    /// the record and reaches the shared tick only when the thread's
+    /// outermost batch of that domain closes, all at once. Until then no
+    /// drain, on any thread, can run part of the batch.
+    static OPEN_BATCHES: RefCell<Vec<OpenBatch>> = const { RefCell::new(Vec::new()) };
+}
+
+/// One write staged by an open batch.
+struct Staged {
+    id: Uuid,
+    height: u64,
+    coalesce: bool,
+    run: PendingRun,
+}
+
+/// One thread's open batch on one domain.
+struct OpenBatch {
+    domain: u64,
+    /// Same-thread nesting. Only the close that brings this to zero commits.
+    nest: u32,
+    staged: Vec<Staged>,
+    /// Index in `staged` of each cell's latest write and whether it coalesces.
+    /// Empty until `staged` outgrows [`STAGED_SCAN`].
+    latest: FxHashMap<Uuid, (usize, bool)>,
+}
+
+/// Longest staging list searched linearly for a cell's latest write. Most
+/// batches write a handful of cells and never build the index.
+const STAGED_SCAN: usize = 8;
+
+impl OpenBatch {
+    /// Stage `op`. A coalescing write whose cell's latest staged write also
+    /// coalesces takes that write's place, exactly as the tick would coalesce
+    /// the two, and the superseded write is returned for the caller to drop.
+    fn stage(&mut self, op: Staged) -> Option<PendingRun> {
+        let indexed = self.staged.len() > STAGED_SCAN;
+        if indexed && self.latest.is_empty() {
+            for (index, staged) in self.staged.iter().enumerate() {
+                self.latest.insert(staged.id, (index, staged.coalesce));
+            }
+        }
+        let prior = if indexed {
+            self.latest.get(&op.id).copied()
+        } else {
+            self.staged
+                .iter()
+                .rposition(|staged| staged.id == op.id)
+                .and_then(|index| Some((index, self.staged.get(index)?.coalesce)))
+        };
+        if let Some((index, true)) = prior
+            && op.coalesce
+            && let Some(slot) = self.staged.get_mut(index)
+        {
+            slot.height = op.height;
+            return Some(std::mem::replace(&mut slot.run, op.run));
+        }
+        if indexed {
+            self.latest.insert(op.id, (self.staged.len(), op.coalesce));
+        }
+        self.staged.push(op);
+        None
+    }
+}
+
+/// Record one more open batch of `domain` on this thread.
+fn open_batch(domain: u64) {
+    OPEN_BATCHES.with(|open| {
+        let mut open = open.borrow_mut();
+        if let Some(batch) = open.iter_mut().find(|batch| batch.domain == domain) {
+            batch.nest = batch.nest.saturating_add(1);
+        } else {
+            open.push(OpenBatch {
+                domain,
+                nest: 1,
+                staged: Vec::new(),
+                latest: FxHashMap::default(),
+            });
+        }
+    });
+}
+
+/// Close one batch of `domain` on this thread. Returns the staged writes when
+/// it was the thread's outermost batch of that domain.
+fn close_batch(domain: u64) -> Option<Vec<Staged>> {
+    OPEN_BATCHES.with(|open| {
+        let mut open = open.borrow_mut();
+        let index = open.iter().position(|batch| batch.domain == domain)?;
+        let batch = open.get_mut(index)?;
+        batch.nest = batch.nest.saturating_sub(1);
+        (batch.nest == 0).then(|| open.swap_remove(index).staged)
+    })
+}
+
+/// Stage `run` in this thread's open batch of `domain`, or give it back when
+/// the thread holds none.
+fn stage(
+    domain: u64,
+    id: Uuid,
+    node: &dyn DepNode,
+    terminal: bool,
+    run: PendingRun,
+) -> Result<(), PendingRun> {
+    let holds_batch =
+        OPEN_BATCHES.with(|open| open.borrow().iter().any(|batch| batch.domain == domain));
+    if !holds_batch {
+        return Err(run);
+    }
+    // Walking the dependencies can drop a node, and a dropping node can write.
+    // Neither may happen while the staging list is borrowed.
+    let staged = Staged {
+        id,
+        height: compute_height(node),
+        coalesce: !node.no_coalesce() && !terminal,
+        run,
+    };
+    let superseded = OPEN_BATCHES.with(|open| {
+        let mut open = open.borrow_mut();
+        match open.iter_mut().find(|batch| batch.domain == domain) {
+            Some(batch) => Ok(batch.stage(staged)),
+            None => Err(staged.run),
+        }
+    })?;
+    // A superseded write can own the last handle of a cell, whose drop may
+    // write again, so it is destroyed once the list is no longer borrowed.
+    drop(superseded);
+    Ok(())
+}
+
+/// Hides this thread's open batch of one domain while the thread drains that
+/// domain's tick, so a write made by a drained op goes to the tick instead of
+/// into the batch. Restores the batch when dropped.
+struct SuspendedBatch(Option<OpenBatch>);
+
+impl SuspendedBatch {
+    fn of(domain: u64) -> Self {
+        Self(OPEN_BATCHES.with(|open| {
+            let mut open = open.borrow_mut();
+            let index = open.iter().position(|batch| batch.domain == domain)?;
+            Some(open.swap_remove(index))
+        }))
+    }
+}
+
+impl Drop for SuspendedBatch {
+    fn drop(&mut self) {
+        if let Some(batch) = self.0.take() {
+            OPEN_BATCHES.with(|open| open.borrow_mut().push(batch));
+        }
+    }
 }
 
 // Height-cache invalidation is **per-node**, not global. Each cell carries its
@@ -281,13 +432,19 @@ fn refresh_active(active: &AtomicBool, t: &SharedTick) {
     active.store(t.depth > 0 || t.draining, Ordering::Relaxed);
 }
 
+/// Signalled whenever the root drain is released, for a thread waiting in
+/// [`quiesce`] for the root tick to go quiet.
+static TICK_RELEASED: Condvar = Condvar::new();
+
 /// One domain's tick: the root tick is the process-wide static, a child's is a
 /// field of its [`DomainInner`]. Everything below operates on a `TickRef`, so
 /// the root and child paths are the same code.
 #[derive(Clone, Copy)]
 struct TickRef<'a> {
+    id: u64,
     queue: &'a Mutex<SharedTick>,
     active: &'a AtomicBool,
+    released: &'a Condvar,
     child: Option<&'a Arc<DomainInner>>,
 }
 
@@ -295,13 +452,17 @@ impl<'a> TickRef<'a> {
     fn of(domain: Option<&'a Arc<DomainInner>>) -> Self {
         domain.map_or_else(
             || Self {
+                id: domain::ROOT_ID,
                 queue: &TICK,
                 active: &TICK_ACTIVE,
+                released: &TICK_RELEASED,
                 child: None,
             },
             |child| Self {
+                id: child.id,
                 queue: &child.tick,
                 active: &child.active,
+                released: &child.released,
                 child: Some(child),
             },
         )
@@ -309,35 +470,6 @@ impl<'a> TickRef<'a> {
 
     fn refresh_active(self, t: &SharedTick) {
         refresh_active(self.active, t);
-    }
-
-    /// Wake a hand-off worker waiting for this tick to go quiet.
-    fn notify_released(self) {
-        if let Some(child) = self.child {
-            child.released.notify_all();
-        }
-    }
-
-    /// Record one more open batch on this thread; `true` if it is the thread's
-    /// outermost batch of this domain.
-    fn nest_enter(self) -> bool {
-        self.child.map_or_else(
-            || {
-                BATCH_NEST.with(|n| {
-                    let v = n.get().saturating_add(1);
-                    n.set(v);
-                    v == 1
-                })
-            },
-            |child| domain::nest_enter(child.id),
-        )
-    }
-
-    fn nest_exit(self) {
-        match self.child {
-            None => BATCH_NEST.with(|n| n.set(n.get().saturating_sub(1))),
-            Some(child) => domain::nest_exit(child.id),
-        }
     }
 }
 
@@ -417,7 +549,14 @@ pub(crate) fn enqueue(
     terminal: bool,
     run: Box<dyn FnOnce() + Send>,
 ) {
-    let mut guard = TickRef::of(domain).queue.lock();
+    let tick = TickRef::of(domain);
+    // A write this thread makes inside its own open batch is staged, so no
+    // drain can run it before the rest of that batch.
+    let run = match stage(tick.id, id, node, terminal, run) {
+        Ok(()) => return,
+        Err(run) => run,
+    };
+    let mut guard = tick.queue.lock();
     // Defer only if a batch is open somewhere, or a drain is in flight (a
     // popped op's fanout must land in the current drain's queue, not cascade
     // eagerly). Otherwise run synchronously on this thread — the default
@@ -425,7 +564,7 @@ pub(crate) fn enqueue(
     // hint can't strand an op in a queue nobody will drain.
     if guard.depth == 0 && !guard.draining {
         drop(guard);
-        let _scope = domain::enter_if_in_use(domain);
+        let _scope = domain::propagate_if_in_use(domain);
         run();
         return;
     }
@@ -541,8 +680,8 @@ fn run_wave(
                 groups
                     .into_par_iter()
                     .flat_map_iter(|group| {
-                        let _scope =
-                            handing_off.then(|| (domain::enter(None), domain::enter_root_wave()));
+                        let _scope = handing_off
+                            .then(|| (domain::propagate(None), domain::enter_root_wave()));
                         run_group(group)
                     })
                     .collect()
@@ -598,11 +737,12 @@ fn run_wave(
 ///
 /// `domain` selects the tick (`None` is root). A root drain that runs dry also
 /// distributes the deliveries it produced for child domains, one unit per
-/// child, before it releases; a child drain wakes that child's hand-off worker
-/// on release.
+/// child, before it releases. Every release wakes the threads waiting in
+/// [`quiesce`] for that tick.
 fn drain(domain: Option<&Arc<DomainInner>>) -> Option<Box<dyn std::any::Any + Send>> {
     let tick = TickRef::of(domain);
-    let _scope = domain::enter_if_in_use(domain);
+    let _scope = domain::propagate_if_in_use(domain);
+    let _suspended = SuspendedBatch::of(tick.id);
     let mut first_panic: Option<Box<dyn std::any::Any + Send>> = None;
     let mut waves = 0usize;
     loop {
@@ -617,11 +757,16 @@ fn drain(domain: Option<&Arc<DomainInner>>) -> Option<Box<dyn std::any::Any + Se
             // release happen under this one lock, so it's strand-free: if the
             // last other batch just closed (`depth == 0`), we don't hand off —
             // there'd be no one to reclaim — and drain to completion instead.
-            if waves >= DRAIN_STINT_WAVES && guard.depth > 0 {
+            //
+            // The queue must also be non-empty: only a close that finds work
+            // claims the drain, and a root drain that released dry without
+            // distributing its hand-offs would leave them with nobody to
+            // deliver them.
+            if waves >= DRAIN_STINT_WAVES && guard.depth > 0 && !guard.ready.is_empty() {
                 guard.draining = false;
                 tick.refresh_active(&guard);
                 drop(guard);
-                tick.notify_released();
+                tick.released.notify_all();
                 return first_panic;
             }
             if let Some(groups) = guard.pop_min_height_groups() {
@@ -630,16 +775,15 @@ fn drain(domain: Option<&Arc<DomainInner>>) -> Option<Box<dyn std::any::Any + Se
             } else {
                 // Under the lock, so two root drains' units reach each child
                 // in drain order.
-                let handed_off = if tick.child.is_none() {
-                    domain::flush_root_outbox()
-                } else {
-                    Vec::new()
-                };
+                let handed_off =
+                    (tick.child.is_none() && domain::in_use()).then(domain::flush_root_outbox);
                 guard.draining = false;
                 tick.refresh_active(&guard);
                 drop(guard);
-                drop(handed_off);
-                tick.notify_released();
+                if let Some(handed_off) = handed_off {
+                    handed_off.finish();
+                }
+                tick.released.notify_all();
                 return first_panic;
             }
         };
@@ -698,17 +842,21 @@ pub(crate) fn birth_no_coalesce() -> bool {
 
 /// Run `f` as a single propagation batch.
 ///
-/// Every `set`/`notify` on ANY thread while `f` runs enqueues into the one
-/// shared tick instead of cascading. Draining is deferred until `f` (and any
-/// batch nested inside it, on this thread or another) has fully returned —
-/// drain only runs at the closing brace, never interleaved with `f`'s own
-/// execution. Draining any earlier would let a diamond join fire on a partial
-/// set of inputs, since the second input might not have arrived yet.
+/// Every `set`/`notify` on ANY thread while `f` runs is deferred to the one
+/// shared tick instead of cascading. None of `f`'s own writes drains before
+/// `f` (and any batch nested inside it on this thread) has fully returned.
+/// Draining any earlier would let a diamond join fire on a partial set of
+/// inputs, since the second input might not have arrived yet.
+///
+/// The batch is atomic to observers: the writes `f` makes on this thread are
+/// staged and reach the tick together when the thread's outermost batch
+/// closes, so no drain on another thread can run some of them while `f` is
+/// still running.
 ///
 /// Nested `batch` calls — genuinely nested on the same thread's call stack,
 /// or a different thread racing this one — join the same shared tick rather
 /// than opening a second one. Draining is claimed at a thread's *outermost*
-/// batch close (its [`BATCH_NEST`] returning to 0), by whichever such close
+/// batch close, by whichever such close
 /// finds no drain already in flight and pending work; that drain runs the
 /// queue empty in short bursts and hands off (see [`drain`]). A same-thread
 /// outermost call still observes full settlement by the time it returns
@@ -728,7 +876,8 @@ pub(crate) fn birth_no_coalesce() -> bool {
 ///
 /// The batch opens on the calling thread's ambient [`Domain`]: root unless the
 /// call is inside a child's [`Domain::enter`] scope or one of its waves. A
-/// write to a cell of another domain is not part of the batch.
+/// write to a cell of another domain is not part of the batch: it takes
+/// effect on that domain's tick at once.
 pub fn batch<R>(f: impl FnOnce() -> R) -> R {
     match domain::ambient_child() {
         None => batch_in(None, f),
@@ -737,9 +886,9 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
 }
 
 /// [`batch`] on `domain`'s tick (`None` is root).
-fn batch_in<R>(domain: Option<&Arc<DomainInner>>, f: impl FnOnce() -> R) -> R {
+pub(crate) fn batch_in<R>(domain: Option<&Arc<DomainInner>>, f: impl FnOnce() -> R) -> R {
     let tick = TickRef::of(domain);
-    let outermost = tick.nest_enter();
+    open_batch(tick.id);
     {
         let mut guard = tick.queue.lock();
         guard.depth = guard.depth.saturating_add(1);
@@ -749,14 +898,21 @@ fn batch_in<R>(domain: Option<&Arc<DomainInner>>, f: impl FnOnce() -> R) -> R {
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
 
-    // Close this batch and decide whether to drain. Claim the drain only from
-    // a thread's OUTERMOST batch (nested same-thread batches must not drain
-    // mid-`f()`), only if no drain is already in flight, and only if there is
-    // pending work — the empty-check and the `draining = true` claim happen
-    // together under the lock, which is what makes the hand-off strand-free.
+    // Close this batch. A thread's OUTERMOST batch commits everything it
+    // staged in one step under the lock, so a drain sees the whole batch or
+    // none of it, and then decides whether to drain: only if no drain is
+    // already in flight and there is pending work. The empty-check and the
+    // `draining = true` claim happen together under the lock, which is what
+    // makes the hand-off strand-free.
+    let staged = close_batch(tick.id);
+    let outermost = staged.is_some();
+    let mut displaced = Vec::new();
     let claimed_drain = {
         let mut guard = tick.queue.lock();
         guard.depth = guard.depth.saturating_sub(1);
+        for op in staged.into_iter().flatten() {
+            displaced.extend(guard.enqueue_locked(op.id, op.height, op.coalesce, op.run));
+        }
         let claim = outermost && !guard.draining && !guard.ready.is_empty();
         if claim {
             guard.draining = true;
@@ -765,10 +921,8 @@ fn batch_in<R>(domain: Option<&Arc<DomainInner>>, f: impl FnOnce() -> R) -> R {
         drop(guard);
         claim
     };
-    tick.nest_exit();
-    if !claimed_drain {
-        tick.notify_released();
-    }
+    // A superseded closure can own a cell whose drop re-enters the scheduler.
+    drop(displaced);
 
     let drain_panic = if claimed_drain { drain(domain) } else { None };
 
@@ -781,5 +935,32 @@ fn batch_in<R>(domain: Option<&Arc<DomainInner>>, f: impl FnOnce() -> R) -> R {
         }
         // `f`'s own panic is the caller-relevant one and takes precedence.
         Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
+
+/// Block until `domain`'s tick has no drain in flight and no queued op,
+/// draining it on this thread whenever nobody else is. Every write committed
+/// to the tick before the call has then been propagated. Returns early for a
+/// closed child domain.
+fn quiesce(domain: Option<&Arc<DomainInner>>) {
+    let tick = TickRef::of(domain);
+    loop {
+        let mut guard = tick.queue.lock();
+        if tick.child.is_some_and(|child| child.is_closed()) {
+            return;
+        }
+        if guard.draining {
+            tick.released.wait(&mut guard);
+            continue;
+        }
+        if guard.ready.is_empty() {
+            return;
+        }
+        guard.draining = true;
+        tick.refresh_active(&guard);
+        drop(guard);
+        if let Some(payload) = drain(domain) {
+            domain::log_panic("propagation", payload.as_ref());
+        }
     }
 }

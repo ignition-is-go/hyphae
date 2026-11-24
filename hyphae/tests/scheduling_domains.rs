@@ -12,77 +12,17 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
     thread::{self, ThreadId},
-    time::Duration,
 };
 
+mod domain_support;
+
+use domain_support::{Gate, Log, ROOT_TICK_SERIAL, log_values};
 use hyphae::{
     Cell, CellMutable, DepNode, Gettable, JoinExt, MapExt, Materialize, Mutable, Signal,
     SubscriptionGuard, SwitchMapExt, Watchable, batch,
     scheduler::{Domain, DomainError, no_coalesce},
 };
-use parking_lot::{Condvar, Mutex};
-
-const DEADLINE: Duration = Duration::from_secs(20);
-
-/// Every test here writes root cells and asserts on them as soon as the write
-/// returns. The root tick is shared by the whole process, so a root batch on
-/// one test thread can be drained by another test's thread and return before
-/// its own propagation is visible. Running the tests one at a time keeps each
-/// assertion about root on the thread that drained it.
-static ROOT_TICK_SERIAL: Mutex<()> = Mutex::new(());
-
-#[derive(Default)]
-struct GateState {
-    armed: bool,
-    entered: bool,
-    open: bool,
-}
-
-/// Parks whoever calls [`Gate::pass`] once armed, until [`Gate::open`].
-#[derive(Default)]
-struct Gate {
-    state: Mutex<GateState>,
-    changed: Condvar,
-}
-
-impl Gate {
-    fn arm(&self) {
-        self.state.lock().armed = true;
-    }
-
-    fn pass(&self) {
-        let mut state = self.state.lock();
-        if !state.armed {
-            return;
-        }
-        state.entered = true;
-        self.changed.notify_all();
-        while !state.open {
-            if self.changed.wait_for(&mut state, DEADLINE).timed_out() {
-                return;
-            }
-        }
-    }
-
-    fn wait_entered(&self) -> bool {
-        let mut state = self.state.lock();
-        while !state.entered {
-            if self.changed.wait_for(&mut state, DEADLINE).timed_out() {
-                return false;
-            }
-        }
-        true
-    }
-
-    fn is_open(&self) -> bool {
-        self.state.lock().open
-    }
-
-    fn open(&self) {
-        self.state.lock().open = true;
-        self.changed.notify_all();
-    }
-}
+use parking_lot::Mutex;
 
 /// A source and a derived cell: writing the source and reading the derived
 /// cell proves one write and one propagation hop completed.
@@ -116,19 +56,6 @@ fn assert_progress_while_parked(busy: &Gate, domain: &Domain, probe: &Probe, roo
     assert_eq!(root.derived.get(), 12);
 
     assert!(!busy.is_open());
-}
-
-type Log<T> = Arc<Mutex<Vec<T>>>;
-
-fn log_values<T: Clone + Send + 'static>(
-    log: &Log<T>,
-) -> impl Fn(&Signal<T>) + Send + Sync + use<T> {
-    let log = Arc::clone(log);
-    move |signal| {
-        if let Signal::Value(value) = signal {
-            log.lock().push(value.as_ref().clone());
-        }
-    }
 }
 
 // (a) isolation ------------------------------------------------------------
@@ -230,12 +157,6 @@ struct SlowDrop(Arc<Gate>);
 impl Drop for SlowDrop {
     fn drop(&mut self) {
         self.0.pass();
-    }
-}
-
-impl std::fmt::Debug for Gate {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Gate")
     }
 }
 

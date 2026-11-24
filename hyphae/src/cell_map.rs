@@ -325,6 +325,14 @@ where
         )
     }
 
+    /// The scheduling domain this map belongs to: the one that was ambient
+    /// where the map was created. Its diff, length and per-key cells all live
+    /// there.
+    #[must_use]
+    pub fn domain(&self) -> crate::scheduler::Domain {
+        self.inner.diffs_cell.domain()
+    }
+
     /// Create a weak handle to this map.
     #[must_use]
     pub fn downgrade(&self) -> WeakCellMap<K, V> {
@@ -340,7 +348,10 @@ where
     /// underlying per-key cell, but that cache is not part of the public API.
     #[track_caller]
     pub fn get(&self, key: &K) -> impl Materialize<Option<V>, Definite> + use<K, V, M> {
-        let key_cells = self.inner.key_cells.get_or_init(|| DashMap::with_shard_amount(SHARDS));
+        let key_cells = self
+            .inner
+            .key_cells
+            .get_or_init(|| DashMap::with_shard_amount(SHARDS));
         let reserved = key_cells.get(key).map(|slot| slot.value().clone());
         let slot = reserved.unwrap_or_else(|| match key_cells.entry(key.clone()) {
             Entry::Occupied(slot) => slot.get().clone(),
@@ -359,6 +370,11 @@ where
         let mut current = self.inner.data.get(key).map(|entry| entry.value().clone());
         let map_name = self.inner.name.lock().clone();
         let point_name = map_name.map(|name| Arc::<str>::from(format!("{name}[{key:?}]")));
+        // The observer belongs to the map, not to whoever asks first: it is
+        // cached and handed to every later caller, in any domain.
+        let home = self.inner.diffs_cell.inner.domain.as_ref();
+        let _scope =
+            crate::scheduler::domain::in_use().then(|| crate::scheduler::domain::enter(home));
         loop {
             let candidate = Cell::new(current);
             if let Some(point_name) = &point_name {

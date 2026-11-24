@@ -254,6 +254,12 @@ pub(crate) struct Subscriber<T> {
     /// The child domain whose tick runs this subscriber's deliveries, when it
     /// is a child's subscription to a root cell. `None` delivers inline.
     hand_off: Option<Arc<DomainInner>>,
+    /// Whether the subscription has started reading the value it is seeded
+    /// with. A fanout that finds this unset hands nothing to the subscriber:
+    /// the value it would carry was written before the seed is read, so the
+    /// seed delivers that value or a newer one. Handing it over as well would
+    /// deliver it after the seed, out of order.
+    seed_started: AtomicBool,
 }
 
 impl<T: Clone> Subscriber<T> {
@@ -263,6 +269,7 @@ impl<T: Clone> Subscriber<T> {
             initializing: AtomicBool::new(true),
             pending: Mutex::new(Vec::new()),
             hand_off: None,
+            seed_started: AtomicBool::new(false),
         }
     }
 
@@ -272,17 +279,31 @@ impl<T: Clone> Subscriber<T> {
             initializing: AtomicBool::new(false),
             pending: Mutex::new(Vec::new()),
             hand_off: None,
+            seed_started: AtomicBool::new(true),
         }
     }
 
-    pub(super) fn handing_off_to(mut self, child: Option<Arc<DomainInner>>) -> Self {
+    pub(crate) fn handing_off_to(mut self, child: Option<Arc<DomainInner>>) -> Self {
         self.hand_off = child;
         self
     }
 
+    /// The child to hand a delivery to, or `None` to deliver inline.
     #[inline]
-    pub(super) const fn hand_off(&self) -> Option<&Arc<DomainInner>> {
+    pub(crate) const fn hand_off(&self) -> Option<&Arc<DomainInner>> {
         self.hand_off.as_ref()
+    }
+
+    /// Mark that the seed is about to be read. Call after the subscriber is
+    /// registered and before reading the value.
+    #[inline]
+    pub(super) fn start_seed(&self) {
+        self.seed_started.store(true, Ordering::Release);
+    }
+
+    #[inline]
+    pub(crate) fn seed_started(&self) -> bool {
+        self.seed_started.load(Ordering::Acquire)
     }
 
     /// Queue notifications until the synchronous current-value replay has
@@ -328,6 +349,8 @@ pub(crate) struct ResultSubscriber<T> {
     pending: Mutex<Vec<Signal<T>>>,
     /// See [`Subscriber::hand_off`].
     hand_off: Option<Arc<DomainInner>>,
+    /// See [`Subscriber::seed_started`].
+    seed_started: AtomicBool,
 }
 
 impl<T: Clone> ResultSubscriber<T> {
@@ -339,17 +362,31 @@ impl<T: Clone> ResultSubscriber<T> {
             initializing: AtomicBool::new(true),
             pending: Mutex::new(Vec::new()),
             hand_off: None,
+            seed_started: AtomicBool::new(false),
         }
     }
 
-    pub(super) fn handing_off_to(mut self, child: Option<Arc<DomainInner>>) -> Self {
+    pub(crate) fn handing_off_to(mut self, child: Option<Arc<DomainInner>>) -> Self {
         self.hand_off = child;
         self
     }
 
+    /// The child to hand a delivery to, or `None` to deliver inline.
     #[inline]
-    pub(super) const fn hand_off(&self) -> Option<&Arc<DomainInner>> {
+    pub(crate) const fn hand_off(&self) -> Option<&Arc<DomainInner>> {
         self.hand_off.as_ref()
+    }
+
+    /// Mark that the seed is about to be read. Call after the subscriber is
+    /// registered and before reading the value.
+    #[inline]
+    pub(super) fn start_seed(&self) {
+        self.seed_started.store(true, Ordering::Release);
+    }
+
+    #[inline]
+    pub(crate) fn seed_started(&self) -> bool {
+        self.seed_started.load(Ordering::Acquire)
     }
 
     pub(super) fn deliver(&self, signal: &Signal<T>) -> Result<(), String> {

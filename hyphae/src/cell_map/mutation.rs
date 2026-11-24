@@ -131,6 +131,15 @@ where
         slot.and_then(|slot| slot.changed())
     }
 
+    /// Reject a write made from inside another scheduling domain's
+    /// propagation before it changes the map. Every mutating method calls
+    /// this first: the diff cell would reject the write too, but only after
+    /// the data had changed.
+    #[inline]
+    fn assert_writable(&self) {
+        crate::scheduler::domain::assert_write(self.inner.diffs_cell.inner.domain.as_ref());
+    }
+
     fn notify_len_if_changed(&self, previous_len: usize) {
         let len = self.inner.data.len();
         if len != previous_len {
@@ -140,6 +149,7 @@ where
 
     /// Insert a key-value pair, returning the old value if present.
     pub fn insert(&self, key: K, value: V) -> Option<V> {
+        self.assert_writable();
         self.maybe_prune_key_cells();
         let stored = self.store(key.clone(), value.clone());
 
@@ -173,6 +183,7 @@ where
 
     /// Insert multiple key-value pairs and emit a single batch diff.
     pub fn insert_many(&self, entries: Vec<(K, V)>) {
+        self.assert_writable();
         if entries.is_empty() {
             return;
         }
@@ -214,6 +225,7 @@ where
 
     /// Remove a key, returning the old value if present.
     pub fn remove(&self, key: &K) -> Option<V> {
+        self.assert_writable();
         self.maybe_prune_key_cells();
         let removed = self.delete(key);
 
@@ -241,6 +253,7 @@ where
 
     /// Remove multiple keys and emit a single batch diff.
     pub fn remove_many(&self, keys: Vec<K>) {
+        self.assert_writable();
         if keys.is_empty() {
             return;
         }
@@ -283,6 +296,7 @@ where
     /// Emits `MapDiff::Batch` with the actual changes so downstream
     /// subscribers see one atomic replacement instead of N individual diffs.
     pub fn replace_all(&self, entries: Vec<(K, V)>) {
+        self.assert_writable();
         self.maybe_prune_key_cells();
         let previous_len = self.inner.data.len();
         let new_keys: std::collections::HashSet<&K> = entries.iter().map(|(k, _)| k).collect();
@@ -348,6 +362,7 @@ where
     /// own the diff (one upstream clone is unavoidable when the source
     /// hands out `&diff`).
     pub fn apply_diff_owned(&self, diff: MapDiff<K, V>) {
+        self.assert_writable();
         if let MapDiff::Batch { changes } = diff {
             self.apply_batch(changes);
             return;
@@ -479,6 +494,8 @@ where
             }
             Some(diff)
         }
+
+        self.assert_writable();
 
         if changes.is_empty() {
             return;
