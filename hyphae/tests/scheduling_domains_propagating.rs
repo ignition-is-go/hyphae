@@ -289,7 +289,9 @@ fn entering_root_or_a_sibling_from_a_childs_propagation_panics() {
                     return;
                 }
                 let entered = entered.clone();
-                let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || entered.enter(|| ())));
+                let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                    entered.enter(|| ())
+                }));
                 let message = panicked
                     .err()
                     .and_then(|payload| payload.downcast_ref::<String>().cloned())
