@@ -13,6 +13,7 @@ use rustc_hash::FxHashMap;
 use uuid::Uuid;
 
 use crate::{
+    scheduler::{Domain, DomainError},
     signal::Signal,
     subscription::SubscriptionGuard,
     traits::{CellValue, DepNode, Gettable, Mutable, Watchable, WatchableResult},
@@ -86,6 +87,9 @@ pub(crate) struct CellInner<T> {
     /// only causes a harmless extra recompute) but must never miss a live
     /// dependent, or that dependent would keep a stale height (a glitch).
     pub(crate) height_dependents: Mutex<Vec<std::sync::Weak<dyn HeightInvalidate>>>,
+    /// The child scheduling domain this cell belongs to, fixed at birth from
+    /// the creating thread's ambient domain. `None` is the root domain.
+    pub(crate) domain: Option<Arc<crate::scheduler::domain::DomainInner>>,
     /// Source location where this cell was created (via #[`track_caller`]).
     #[allow(dead_code)]
     pub(crate) caller: &'static Location<'static>,
@@ -155,6 +159,7 @@ impl<T: CellValue> Cell<T, CellMutable> {
             no_coalesce: AtomicBool::new(crate::scheduler::birth_no_coalesce()),
             height_epoch: std::sync::atomic::AtomicU64::new(1),
             height_dependents: Mutex::new(Vec::new()),
+            domain: crate::scheduler::domain::birth_domain(),
             caller: Location::caller(),
         });
         Self {
@@ -245,7 +250,61 @@ impl<T, M> Cell<T, M> {
     /// holding it somewhere real — not by making its own subscription pin it.
     /// A self-pinning cell is indistinguishable from a leak, because that is
     /// what it is.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the guard's source would cross a scheduling-domain boundary
+    /// the wrong way (see [`DomainError`]). [`try_own`](Self::try_own) reports
+    /// the same condition as an error.
     pub fn own(&self, guard: SubscriptionGuard)
+    where
+        T: Send + Sync + 'static,
+    {
+        if let Err(error) = self.check_domain(&guard) {
+            drop(guard);
+            reject(error);
+        }
+        self.own_checked(guard);
+    }
+
+    /// [`own`](Self::own), returning an error instead of panicking when the
+    /// guard's source would cross a scheduling-domain boundary the wrong way.
+    /// The guard is dropped on error, which cancels its subscription.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`DomainError`] describing the rejected dependency.
+    pub fn try_own(&self, guard: SubscriptionGuard) -> Result<(), DomainError>
+    where
+        T: Send + Sync + 'static,
+    {
+        self.check_domain(&guard)?;
+        self.own_checked(guard);
+        Ok(())
+    }
+
+    /// The scheduling domain this cell belongs to.
+    #[must_use]
+    pub fn domain(&self) -> Domain {
+        Domain::from_inner(self.inner.domain.clone())
+    }
+
+    /// Validate the dependency `guard` would add to this cell. Free until the
+    /// first child domain exists.
+    fn check_domain(&self, guard: &SubscriptionGuard) -> Result<(), DomainError> {
+        use crate::scheduler::domain;
+        if !domain::in_use() {
+            return Ok(());
+        }
+        let reader = domain::id_of(self.inner.domain.as_ref());
+        let crosses_boundary = guard.source().check_reader(reader)?;
+        if crosses_boundary && guard.subscribed_in().is_some_and(|scope| scope != reader) {
+            return Err(DomainError::UnscopedBoundary);
+        }
+        Ok(())
+    }
+
+    fn own_checked(&self, guard: SubscriptionGuard)
     where
         T: Send + Sync + 'static,
     {
@@ -268,10 +327,18 @@ impl<T, M> Cell<T, M> {
     /// If a guard with the same key already exists, it is replaced (and dropped).
     /// This is used by `switch_map` to ensure the old inner subscription is cleaned up
     /// when switching to a new inner cell.
+    ///
+    /// # Panics
+    ///
+    /// Panics under the same condition as [`own`](Self::own).
     pub fn own_keyed(&self, key: Uuid, guard: SubscriptionGuard)
     where
         T: Send + Sync + 'static,
     {
+        if let Err(error) = self.check_domain(&guard) {
+            drop(guard);
+            reject(error);
+        }
         // Register as a height-dependent of the new source before it moves into
         // `owned`. The replaced guard's stale back-edge on the *old* source is
         // left to be pruned lazily — a stale dependent only over-invalidates (a
@@ -317,6 +384,13 @@ impl<T, M> Cell<T, M> {
         self.inner.no_coalesce.store(true, Ordering::Relaxed);
         self
     }
+}
+
+/// A dependency that crosses a scheduling-domain boundary the wrong way is a
+/// construction error in the calling code, reported where the graph is built.
+#[allow(clippy::panic)]
+fn reject(error: DomainError) -> ! {
+    panic!("hyphae: {error}");
 }
 
 /// Type-erased handle to a node participating in localized height-cache
@@ -440,6 +514,11 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
         self.inner.no_coalesce.load(Ordering::Relaxed)
     }
 
+    fn check_reader(&self, reader: u64) -> Result<bool, DomainError> {
+        let source = crate::scheduler::domain::id_of(self.inner.domain.as_ref());
+        crate::scheduler::domain::check_edge(reader, source)
+    }
+
     fn subscriber_count(&self) -> usize {
         self.inner
             .subscribers
@@ -485,7 +564,8 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         // the value-settle + fanout into the height-ordered tick queue and
         // returns; the drain runs them in order at the batch boundary. One
         // relaxed atomic load when no batch is open.
-        if crate::scheduler::tick_active() {
+        let domain = self.inner.domain.as_ref();
+        if crate::scheduler::tick_active(domain) {
             // Weak: the queued op must not be what keeps this cell alive. If
             // its source is rewritten before the op runs, the rewrite reaches
             // the cell through the op's reference and queues a fresh op that
@@ -501,6 +581,7 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
             let signal = signal;
             let dependency: &dyn crate::traits::DepNode = self;
             crate::scheduler::enqueue(
+                domain,
                 self.inner.id,
                 dependency,
                 terminal,
@@ -520,6 +601,10 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         // distinct symbols instead of one folded `notify`. Outside a scheduler
         // batch (the default, and always on wasm) they run back-to-back: the
         // exact synchronous eager-push path, with no behavioral change.
+        //
+        // Once a child domain exists, the cascade runs with this cell's domain
+        // as the thread's ambient one, so cells its operators create join it.
+        let _scope = crate::scheduler::domain::enter_if_in_use(domain);
         self.write_value(&signal);
         self.fanout(&signal);
         // `notify` owns its signal because scheduler-enabled builds may move it
@@ -597,7 +682,15 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         // rest of this fanout, which is a bug in the subscriber that should surface
         // loudly rather than be silently swallowed.
         for (_subscriber_id, sub) in subs.as_slice() {
-            sub.deliver(signal);
+            if let Some(child) = sub.hand_off() {
+                // A child's subscription to this root cell: the delivery
+                // crosses the boundary and runs on the child's own tick.
+                let sub = Arc::clone(sub);
+                let signal = signal.clone();
+                crate::scheduler::domain::hand_off(child, Box::new(move || sub.deliver(&signal)));
+            } else {
+                sub.deliver(signal);
+            }
         }
 
         // Fallible subscribers run after the infallible chain. Errors are logged
@@ -613,7 +706,22 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         };
 
         for (subscriber_id, sub) in result_subs.as_slice() {
-            if let Err(err) = sub.deliver(signal) {
+            if let Some(child) = sub.hand_off() {
+                let sub = Arc::clone(sub);
+                let signal = signal.clone();
+                let subscriber_id = *subscriber_id;
+                let cell_id = self.inner.id;
+                crate::scheduler::domain::hand_off(
+                    child,
+                    Box::new(move || {
+                        if let Err(err) = sub.deliver(&signal) {
+                            log::error!(
+                                "hyphae: fallible subscriber {subscriber_id} on cell {cell_id} returned error: {err}"
+                            );
+                        }
+                    }),
+                );
+            } else if let Err(err) = sub.deliver(signal) {
                 log::error!(
                     "hyphae: fallible subscriber {} on cell {} returned error: {}",
                     subscriber_id,
@@ -640,7 +748,8 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
         callback: impl Fn(&Signal<T>) + Send + Sync + 'static,
     ) -> SubscriptionGuard {
         let id = Uuid::new_v4();
-        let sub = Arc::new(Subscriber::new(callback));
+        let hand_off = crate::scheduler::domain::hand_off_target(self.inner.domain.as_ref());
+        let sub = Arc::new(Subscriber::new(callback).handing_off_to(hand_off));
 
         // Insert BEFORE seeding. The prior order (fire the seed with the current
         // value, THEN insert) left a window in which a concurrent `notify` on
@@ -692,6 +801,7 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
             drop(removed_sub);
             drop(stale_snap);
         })
+        .subscribed_here()
     }
 
     fn unsubscribe(&self, id: Uuid) {
@@ -734,7 +844,8 @@ impl<T: CellValue, U: Send + Sync + 'static> WatchableResult<T> for Cell<T, U> {
         };
 
         let id = Uuid::new_v4();
-        let sub = Arc::new(ResultSubscriber::new(callback));
+        let hand_off = crate::scheduler::domain::hand_off_target(self.inner.domain.as_ref());
+        let sub = Arc::new(ResultSubscriber::new(callback).handing_off_to(hand_off));
 
         // Match the infallible subscribe path: install before replay so an
         // update racing subscription cannot fall between the replay and the
@@ -768,6 +879,7 @@ impl<T: CellValue, U: Send + Sync + 'static> WatchableResult<T> for Cell<T, U> {
             drop(removed_sub);
             drop(stale_snap);
         })
+        .subscribed_here()
     }
 }
 

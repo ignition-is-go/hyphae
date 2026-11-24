@@ -46,6 +46,19 @@ pub trait DepNode: Send + Sync {
         false
     }
 
+    /// Check that a cell of scheduling domain `reader` may depend on this node.
+    /// `Ok(true)` means the dependency crosses the boundary from the root
+    /// domain into a child. Nodes that are not cells belong to no domain and
+    /// accept every reader.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`DomainError`](crate::scheduler::DomainError) describing a
+    /// dependency that points from root to a child or between two children.
+    fn check_reader(&self, _reader: u64) -> Result<bool, crate::scheduler::DomainError> {
+        Ok(false)
+    }
+
     /// Returns the number of active subscribers to this node.
     fn subscriber_count(&self) -> usize {
         0

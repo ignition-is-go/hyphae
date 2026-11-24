@@ -10,6 +10,10 @@ pub struct SubscriptionGuard {
     unsubscribe_fn: Option<Box<dyn FnMut() + Send + Sync>>,
     id: Uuid,
     source: Arc<dyn DepNode>,
+    /// Id of the scheduling domain that was ambient when a cell subscription
+    /// behind this guard was made. `None` for guards that are not cell
+    /// subscriptions.
+    subscribed_in: Option<u64>,
 }
 
 /// Minimal `DepNode` for callback-only guards (no real cell dependency).
@@ -55,6 +59,14 @@ impl DepNode for CompositeDepNode {
             source.add_height_dependent(dep.clone());
         }
     }
+
+    fn check_reader(&self, reader: u64) -> Result<bool, crate::scheduler::DomainError> {
+        let mut crosses_boundary = false;
+        for source in &self.sources {
+            crosses_boundary |= source.check_reader(reader)?;
+        }
+        Ok(crosses_boundary)
+    }
 }
 
 impl SubscriptionGuard {
@@ -67,7 +79,19 @@ impl SubscriptionGuard {
             unsubscribe_fn: Some(Box::new(unsubscribe_fn)),
             id,
             source,
+            subscribed_in: None,
         }
+    }
+
+    /// Record the calling thread's ambient scheduling domain as the one this
+    /// cell subscription was made in.
+    pub(crate) fn subscribed_here(mut self) -> Self {
+        self.subscribed_in = Some(crate::scheduler::domain::ambient_id());
+        self
+    }
+
+    pub(crate) const fn subscribed_in(&self) -> Option<u64> {
+        self.subscribed_in
     }
 
     /// Create a guard that runs a callback when dropped.
@@ -82,6 +106,7 @@ impl SubscriptionGuard {
             unsubscribe_fn: Some(Box::new(callback)),
             id,
             source: Arc::new(CallbackDepNode(id)),
+            subscribed_in: None,
         }
     }
 
@@ -93,13 +118,16 @@ impl SubscriptionGuard {
     /// upstream dependency rather than a callback-only placeholder.
     pub(crate) fn with_cleanup(self, mut cleanup: impl FnMut() + Send + Sync + 'static) -> Self {
         let source = self.source.clone();
+        let subscribed_in = self.subscribed_in;
         let mut guard = Some(self);
-        Self::new(Uuid::new_v4(), source, move || {
+        let mut wrapped = Self::new(Uuid::new_v4(), source, move || {
             cleanup();
             if let Some(guard) = guard.take() {
                 drop(guard);
             }
-        })
+        });
+        wrapped.subscribed_in = subscribed_in;
+        wrapped
     }
 
     /// Combine multiple upstream subscriptions into one pipeline guard.
@@ -118,12 +146,16 @@ impl SubscriptionGuard {
                 let id = Uuid::new_v4();
                 let sources = guards.iter().map(|guard| guard.source.clone()).collect();
                 let source = Arc::new(CompositeDepNode { id, sources });
+                // The parts of one installed pipeline are subscribed in one scope.
+                let subscribed_in = guards.iter().find_map(|guard| guard.subscribed_in);
                 let mut guards = Some(guards);
-                Self::new(id, source, move || {
+                let mut combined = Self::new(id, source, move || {
                     if let Some(guards) = guards.take() {
                         drop(guards);
                     }
-                })
+                });
+                combined.subscribed_in = subscribed_in;
+                combined
             }
         }
     }

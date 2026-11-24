@@ -9,7 +9,7 @@ use parking_lot::Mutex;
 use rustc_hash::FxHashMap;
 use uuid::Uuid;
 
-use crate::signal::Signal;
+use crate::{scheduler::domain::DomainInner, signal::Signal};
 
 /// Indexed subscriber registry: O(1) subscribe/unsubscribe by subscription id,
 /// with a lazily-rebuilt [`SubSnapshot`] for lock-free notify iteration.
@@ -251,6 +251,9 @@ pub(crate) struct Subscriber<T> {
     pub(crate) callback: SubscriberCallback<T>,
     initializing: AtomicBool,
     pending: Mutex<Vec<Signal<T>>>,
+    /// The child domain whose tick runs this subscriber's deliveries, when it
+    /// is a child's subscription to a root cell. `None` delivers inline.
+    hand_off: Option<Arc<DomainInner>>,
 }
 
 impl<T: Clone> Subscriber<T> {
@@ -259,6 +262,7 @@ impl<T: Clone> Subscriber<T> {
             callback: Arc::new(callback),
             initializing: AtomicBool::new(true),
             pending: Mutex::new(Vec::new()),
+            hand_off: None,
         }
     }
 
@@ -267,7 +271,18 @@ impl<T: Clone> Subscriber<T> {
             callback,
             initializing: AtomicBool::new(false),
             pending: Mutex::new(Vec::new()),
+            hand_off: None,
         }
+    }
+
+    pub(super) fn handing_off_to(mut self, child: Option<Arc<DomainInner>>) -> Self {
+        self.hand_off = child;
+        self
+    }
+
+    #[inline]
+    pub(super) const fn hand_off(&self) -> Option<&Arc<DomainInner>> {
+        self.hand_off.as_ref()
     }
 
     /// Queue notifications until the synchronous current-value replay has
@@ -311,6 +326,8 @@ pub(crate) struct ResultSubscriber<T> {
     pub(crate) callback: ResultSubscriberCallback<T>,
     initializing: AtomicBool,
     pending: Mutex<Vec<Signal<T>>>,
+    /// See [`Subscriber::hand_off`].
+    hand_off: Option<Arc<DomainInner>>,
 }
 
 impl<T: Clone> ResultSubscriber<T> {
@@ -321,7 +338,18 @@ impl<T: Clone> ResultSubscriber<T> {
             callback: Arc::new(callback),
             initializing: AtomicBool::new(true),
             pending: Mutex::new(Vec::new()),
+            hand_off: None,
         }
+    }
+
+    pub(super) fn handing_off_to(mut self, child: Option<Arc<DomainInner>>) -> Self {
+        self.hand_off = child;
+        self
+    }
+
+    #[inline]
+    pub(super) const fn hand_off(&self) -> Option<&Arc<DomainInner>> {
+        self.hand_off.as_ref()
     }
 
     pub(super) fn deliver(&self, signal: &Signal<T>) -> Result<(), String> {

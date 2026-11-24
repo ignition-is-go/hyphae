@@ -46,8 +46,15 @@ static WORKER_POOL: LazyLock<Option<rayon::ThreadPool>> = LazyLock::new(|| {
 /// workload. `None` means parallel execution was explicitly disabled or pool
 /// construction failed. Callers perform their cost and balance gates before
 /// requesting the pool.
+///
+/// Work running inside a child scheduling domain never gets the pool: a child
+/// must not wait behind another domain's work that occupies it, so child work
+/// stays on the child's own thread.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn worker_pool() -> Option<&'static rayon::ThreadPool> {
+    if crate::scheduler::domain::in_child_domain() {
+        return None;
+    }
     WORKER_POOL.as_ref()
 }
 

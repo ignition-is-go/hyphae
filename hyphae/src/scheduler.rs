@@ -70,6 +70,16 @@
 //! today depends on (there was no cross-thread coordination to depend on
 //! before this).
 //!
+//! # Scheduling domains
+//!
+//! "Process-wide" above describes the **root domain**, which holds every cell
+//! of a program that never creates a child [`Domain`]. Each child domain has a
+//! tick of its own with the same rules, so one child's batches and drains
+//! never wait on root's or a sibling's. Everything in this module works on
+//! one domain's tick: `notify` picks it from the cell, [`batch`] from the
+//! calling thread's ambient domain. See [`domain`] for the boundary between
+//! root and its children.
+//!
 //! # Wave-parallel draining, cheaply
 //!
 //! Two cells at the *same* height can never depend on each other (height is
@@ -143,7 +153,7 @@
 //! glitch-free trade-off, and the reason this is opt-in.
 
 use std::sync::{
-    LazyLock,
+    Arc, LazyLock,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
@@ -153,9 +163,12 @@ use uuid::Uuid;
 
 use crate::traits::DepNode;
 
+pub(crate) mod domain;
 mod frontier;
 mod ready;
 
+use domain::DomainInner;
+pub use domain::{Domain, DomainError};
 use ready::{PendingRun, ReadyQueue};
 
 thread_local! {
@@ -171,7 +184,8 @@ thread_local! {
     /// same-thread nested batches never drain mid-`f()` — preserving "all of a
     /// batch's sets are enqueued before any of it drains." Thread-local
     /// because it tracks one call stack's nesting; the cross-thread batch
-    /// count is [`SharedTick::depth`].
+    /// count is [`SharedTick::depth`]. Root batches only: nesting on a child
+    /// domain's tick is tracked per domain in [`domain`].
     static BATCH_NEST: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
@@ -183,7 +197,8 @@ thread_local! {
 // epoch counter here anymore — a cached height is validated against its own
 // node's epoch in `height_dfs`.
 
-/// The process-wide propagation tick queue: height-ordered and
+/// One domain's propagation tick queue (the root domain's is the process-wide
+/// [`TICK`], a child domain's lives in its [`DomainInner`]): height-ordered and
 /// last-write-wins-coalesced per cell (see module docs). Every thread's
 /// deferred ops share this one structure — the `Mutex` is what makes
 /// [`batch`]'s glitch-free guarantee a cross-thread one instead of a
@@ -262,8 +277,68 @@ static TICK_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Set `TICK_ACTIVE` from the authoritative state under the lock. Call after
 /// any mutation of `depth` or `draining`.
-fn refresh_tick_active(t: &SharedTick) {
-    TICK_ACTIVE.store(t.depth > 0 || t.draining, Ordering::Relaxed);
+fn refresh_active(active: &AtomicBool, t: &SharedTick) {
+    active.store(t.depth > 0 || t.draining, Ordering::Relaxed);
+}
+
+/// One domain's tick: the root tick is the process-wide static, a child's is a
+/// field of its [`DomainInner`]. Everything below operates on a `TickRef`, so
+/// the root and child paths are the same code.
+#[derive(Clone, Copy)]
+struct TickRef<'a> {
+    queue: &'a Mutex<SharedTick>,
+    active: &'a AtomicBool,
+    child: Option<&'a Arc<DomainInner>>,
+}
+
+impl<'a> TickRef<'a> {
+    fn of(domain: Option<&'a Arc<DomainInner>>) -> Self {
+        domain.map_or_else(
+            || Self {
+                queue: &TICK,
+                active: &TICK_ACTIVE,
+                child: None,
+            },
+            |child| Self {
+                queue: &child.tick,
+                active: &child.active,
+                child: Some(child),
+            },
+        )
+    }
+
+    fn refresh_active(self, t: &SharedTick) {
+        refresh_active(self.active, t);
+    }
+
+    /// Wake a hand-off worker waiting for this tick to go quiet.
+    fn notify_released(self) {
+        if let Some(child) = self.child {
+            child.released.notify_all();
+        }
+    }
+
+    /// Record one more open batch on this thread; `true` if it is the thread's
+    /// outermost batch of this domain.
+    fn nest_enter(self) -> bool {
+        self.child.map_or_else(
+            || {
+                BATCH_NEST.with(|n| {
+                    let v = n.get().saturating_add(1);
+                    n.set(v);
+                    v == 1
+                })
+            },
+            |child| domain::nest_enter(child.id),
+        )
+    }
+
+    fn nest_exit(self) {
+        match self.child {
+            None => BATCH_NEST.with(|n| n.set(n.get().saturating_sub(1))),
+            Some(child) => domain::nest_exit(child.id),
+        }
+    }
 }
 
 /// The cell's propagation height, `1 + max(dep.height)` (sources are 0), read
@@ -308,11 +383,15 @@ fn height_dfs(node: &dyn DepNode, stack: &mut FxHashSet<Uuid>) -> u64 {
     height
 }
 
-/// Whether a batch is active on any thread. Cheap — one relaxed atomic load.
-/// This is the single check `notify` pays on the synchronous hot path when
-/// no batch is open.
-pub(crate) fn tick_active() -> bool {
-    TICK_ACTIVE.load(Ordering::Relaxed)
+/// Whether a batch is active on any thread for `domain`'s tick (`None` is
+/// root). Cheap — one relaxed atomic load. This is the single check `notify`
+/// pays on the synchronous hot path when no batch is open.
+#[inline]
+pub(crate) fn tick_active(domain: Option<&Arc<DomainInner>>) -> bool {
+    domain.map_or_else(
+        || TICK_ACTIVE.load(Ordering::Relaxed),
+        |child| child.active.load(Ordering::Relaxed),
+    )
 }
 
 /// Defer `run` for cell `id` (height computed from `node`) if a batch is open
@@ -331,8 +410,14 @@ pub(crate) fn tick_active() -> bool {
 /// terminal takes a later position in its cell group, so the value drains
 /// first and the terminal after it. The queue preserves arrival order for
 /// later operations too; completion only takes effect when its operation runs.
-pub(crate) fn enqueue(id: Uuid, node: &dyn DepNode, terminal: bool, run: Box<dyn FnOnce() + Send>) {
-    let mut guard = TICK.lock();
+pub(crate) fn enqueue(
+    domain: Option<&Arc<DomainInner>>,
+    id: Uuid,
+    node: &dyn DepNode,
+    terminal: bool,
+    run: Box<dyn FnOnce() + Send>,
+) {
+    let mut guard = TickRef::of(domain).queue.lock();
     // Defer only if a batch is open somewhere, or a drain is in flight (a
     // popped op's fanout must land in the current drain's queue, not cascade
     // eagerly). Otherwise run synchronously on this thread — the default
@@ -340,6 +425,7 @@ pub(crate) fn enqueue(id: Uuid, node: &dyn DepNode, terminal: bool, run: Box<dyn
     // hint can't strand an op in a queue nobody will drain.
     if guard.depth == 0 && !guard.draining {
         drop(guard);
+        let _scope = domain::enter_if_in_use(domain);
         run();
         return;
     }
@@ -416,8 +502,17 @@ pub fn set_wave_threshold_for_test(groups: usize) {
 /// Panics are caught per-op so one buggy callback can't strand or corrupt
 /// unrelated work; every payload seen is returned for the caller to pick one to
 /// re-raise.
+///
+/// A child domain's wave always runs sequentially on its drainer: children get
+/// their parallelism from running beside each other, and staying off the
+/// shared pool means a wave occupying it can never hold a child up. While any
+/// child domain exists, a root wave marks each thread it runs on so root-cell
+/// fanouts know they belong to a root drain (see [`domain::hand_off`]).
 #[cfg(not(target_arch = "wasm32"))]
-fn run_wave(groups: Vec<Vec<Box<dyn FnOnce() + Send>>>) -> Vec<Box<dyn std::any::Any + Send>> {
+fn run_wave(
+    groups: Vec<Vec<Box<dyn FnOnce() + Send>>>,
+    tick: TickRef<'_>,
+) -> Vec<Box<dyn std::any::Any + Send>> {
     fn run_group(group: Vec<Box<dyn FnOnce() + Send>>) -> Vec<Box<dyn std::any::Any + Send>> {
         group
             .into_iter()
@@ -429,6 +524,11 @@ fn run_wave(groups: Vec<Vec<Box<dyn FnOnce() + Send>>>) -> Vec<Box<dyn std::any:
     ) -> Vec<Box<dyn std::any::Any + Send>> {
         groups.into_iter().flat_map(run_group).collect()
     }
+    if tick.child.is_some() {
+        return run_sequential(groups);
+    }
+    let handing_off = domain::in_use();
+    let _root_wave = handing_off.then(domain::enter_root_wave);
     // Common/resting case: below the threshold, or parallelism disabled — run
     // sequentially and never touch the pool (so it stays unbuilt).
     if groups.len() < wave_threshold() {
@@ -437,7 +537,16 @@ fn run_wave(groups: Vec<Vec<Box<dyn FnOnce() + Send>>>) -> Vec<Box<dyn std::any:
     match crate::executor::worker_pool() {
         Some(pool) => {
             use rayon::prelude::*;
-            pool.install(|| groups.into_par_iter().flat_map_iter(run_group).collect())
+            pool.install(|| {
+                groups
+                    .into_par_iter()
+                    .flat_map_iter(|group| {
+                        let _scope =
+                            handing_off.then(|| (domain::enter(None), domain::enter_root_wave()));
+                        run_group(group)
+                    })
+                    .collect()
+            })
         }
         None => run_sequential(groups),
     }
@@ -447,7 +556,11 @@ fn run_wave(groups: Vec<Vec<Box<dyn FnOnce() + Send>>>) -> Vec<Box<dyn std::any:
 /// cross-thread race to guard against either, but this module still needs to
 /// compile and behave correctly there. Groups run in order, ops within each in arrival order.
 #[cfg(target_arch = "wasm32")]
-fn run_wave(groups: Vec<Vec<Box<dyn FnOnce() + Send>>>) -> Vec<Box<dyn std::any::Any + Send>> {
+fn run_wave(
+    groups: Vec<Vec<Box<dyn FnOnce() + Send>>>,
+    tick: TickRef<'_>,
+) -> Vec<Box<dyn std::any::Any + Send>> {
+    let _root_wave = (tick.child.is_none() && domain::in_use()).then(domain::enter_root_wave);
     groups
         .into_iter()
         .flatten()
@@ -482,12 +595,19 @@ fn run_wave(groups: Vec<Vec<Box<dyn FnOnce() + Send>>>) -> Vec<Box<dyn std::any:
 /// panics are caught in [`run_wave`] so one buggy callback can't strand other
 /// concurrent batches' queued work; the first panic seen is returned for the
 /// caller to re-raise after the drain has fully completed.
-fn drain() -> Option<Box<dyn std::any::Any + Send>> {
+///
+/// `domain` selects the tick (`None` is root). A root drain that runs dry also
+/// distributes the deliveries it produced for child domains, one unit per
+/// child, before it releases; a child drain wakes that child's hand-off worker
+/// on release.
+fn drain(domain: Option<&Arc<DomainInner>>) -> Option<Box<dyn std::any::Any + Send>> {
+    let tick = TickRef::of(domain);
+    let _scope = domain::enter_if_in_use(domain);
     let mut first_panic: Option<Box<dyn std::any::Any + Send>> = None;
     let mut waves = 0usize;
     loop {
         let groups = {
-            let mut guard = TICK.lock();
+            let mut guard = tick.queue.lock();
             // Bounded rotation: after a stint's worth of waves, hand the drain
             // off *if another batch is still open* (`depth > 0`, so a close is
             // coming to reclaim it). This caps any single `batch()` call's
@@ -499,21 +619,31 @@ fn drain() -> Option<Box<dyn std::any::Any + Send>> {
             // there'd be no one to reclaim — and drain to completion instead.
             if waves >= DRAIN_STINT_WAVES && guard.depth > 0 {
                 guard.draining = false;
-                refresh_tick_active(&guard);
+                tick.refresh_active(&guard);
                 drop(guard);
+                tick.notify_released();
                 return first_panic;
             }
             if let Some(groups) = guard.pop_min_height_groups() {
                 drop(guard);
                 groups
             } else {
+                // Under the lock, so two root drains' units reach each child
+                // in drain order.
+                let handed_off = if tick.child.is_none() {
+                    domain::flush_root_outbox()
+                } else {
+                    Vec::new()
+                };
                 guard.draining = false;
-                refresh_tick_active(&guard);
+                tick.refresh_active(&guard);
                 drop(guard);
+                drop(handed_off);
+                tick.notify_released();
                 return first_panic;
             }
         };
-        let panics = run_wave(groups);
+        let panics = run_wave(groups, tick);
         if first_panic.is_none() {
             first_panic = panics.into_iter().next();
         }
@@ -595,16 +725,25 @@ pub(crate) fn birth_no_coalesce() -> bool {
 /// `f`'s panic is resumed to its caller.
 ///
 /// See the module docs for the deferred semantics.
+///
+/// The batch opens on the calling thread's ambient [`Domain`]: root unless the
+/// call is inside a child's [`Domain::enter`] scope or one of its waves. A
+/// write to a cell of another domain is not part of the batch.
 pub fn batch<R>(f: impl FnOnce() -> R) -> R {
-    let outermost = BATCH_NEST.with(|n| {
-        let v = n.get().saturating_add(1);
-        n.set(v);
-        v == 1
-    });
+    match domain::ambient_child() {
+        None => batch_in(None, f),
+        Some(child) => batch_in(Some(&child), f),
+    }
+}
+
+/// [`batch`] on `domain`'s tick (`None` is root).
+fn batch_in<R>(domain: Option<&Arc<DomainInner>>, f: impl FnOnce() -> R) -> R {
+    let tick = TickRef::of(domain);
+    let outermost = tick.nest_enter();
     {
-        let mut guard = TICK.lock();
+        let mut guard = tick.queue.lock();
         guard.depth = guard.depth.saturating_add(1);
-        refresh_tick_active(&guard);
+        tick.refresh_active(&guard);
         drop(guard);
     }
 
@@ -616,19 +755,22 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
     // pending work — the empty-check and the `draining = true` claim happen
     // together under the lock, which is what makes the hand-off strand-free.
     let claimed_drain = {
-        let mut guard = TICK.lock();
+        let mut guard = tick.queue.lock();
         guard.depth = guard.depth.saturating_sub(1);
         let claim = outermost && !guard.draining && !guard.ready.is_empty();
         if claim {
             guard.draining = true;
         }
-        refresh_tick_active(&guard);
+        tick.refresh_active(&guard);
         drop(guard);
         claim
     };
-    BATCH_NEST.with(|n| n.set(n.get().saturating_sub(1)));
+    tick.nest_exit();
+    if !claimed_drain {
+        tick.notify_released();
+    }
 
-    let drain_panic = if claimed_drain { drain() } else { None };
+    let drain_panic = if claimed_drain { drain(domain) } else { None };
 
     match result {
         Ok(value) => {
