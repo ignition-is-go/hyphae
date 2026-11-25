@@ -15,6 +15,12 @@
 //! Usage: `cargo bench -p hyphae --bench emission -- [--list] [filter...]`.
 
 #![recursion_limit = "256"]
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_precision_loss,
+    clippy::indexing_slicing
+)]
 
 use std::{
     alloc::{GlobalAlloc, Layout, System},
@@ -269,17 +275,17 @@ fn cellmap_batch(n: u64, domain: Option<Domain>) -> Bench {
 /// `outer -> switch_map(cached inner) [-> map(+1) x tail, materialized] ->
 /// subscriber`. `changing` alternates the outer key between two cached inner
 /// cells; otherwise every operation rewrites the outer with the value it
-/// already holds. Work counts calls to the switch_map closure (re-knits).
+/// already holds. Work counts calls to the `switch_map` closure (re-knits).
 fn switch_map(changing: bool, tail: usize) -> Bench {
     let work = Arc::new(AtomicU64::new(0));
     let delivered = Arc::new(AtomicU64::new(0));
     let inners = Arc::new([Cell::new(100u64), Cell::new(200u64)]);
     let outer = Cell::new(0u64);
-    let (calls, i2) = (Arc::clone(&work), Arc::clone(&inners));
+    let (knits, i2) = (Arc::clone(&work), Arc::clone(&inners));
     let switched = outer
         .clone()
         .switch_map(move |key: &u64| {
-            calls.fetch_add(1, Ordering::Relaxed);
+            knits.fetch_add(1, Ordering::Relaxed);
             i2[(*key % 2) as usize].clone()
         })
         .materialize();
