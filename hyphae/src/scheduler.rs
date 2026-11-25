@@ -119,7 +119,7 @@
 //! record. Only cells with several arrival-ordered event/terminal operations
 //! use reusable arena storage. Repeated coalescing writes replace the inline
 //! operation directly. Parallel dispatch stays on the drain side, once per height
-//! rather than once per push: [`SharedTick::pop_min_height_groups`]
+//! rather than once per push: [`SharedTick::pop_min_height_into`]
 //! pulls every op at the current minimum height out in one locked pass, grouped
 //! by cell, and [`run_wave`] runs those groups — sequentially if there are few
 //! (the common/resting case: a join has 2 inputs, most fan-out is a handful of
@@ -183,6 +183,8 @@ pub mod domain;
 mod frontier;
 pub(crate) mod order;
 mod ready;
+
+use ready::Wave;
 
 use domain::DomainInner;
 pub use domain::{Domain, DomainError};
@@ -490,8 +492,8 @@ impl SharedTick {
         self.ready.enqueue(id, height, coalesce, run)
     }
 
-    /// Remove every op at the current minimum height, **grouped by cell id**,
-    /// each group in arrival order; or `None` if the frontier is empty.
+    /// Move every op at the current minimum height into `wave`, **grouped by
+    /// cell id**, each group in arrival order; `false` if the frontier is empty.
     ///
     /// The parallel unit is a *cell*, not an op. Distinct groups are distinct
     /// cells at the same height — mathematically independent (see [`run_wave`]'s
@@ -502,8 +504,8 @@ impl SharedTick {
     /// a group must run sequentially in arrival order. A coalescing cell can
     /// also have terminal or event operations in its group.
     #[inline]
-    fn pop_min_height_groups(&mut self) -> Option<Vec<Vec<Box<dyn FnOnce() + Send>>>> {
-        self.ready.pop_min_height_groups()
+    fn pop_min_height_into(&mut self, wave: &mut Wave) -> bool {
+        self.ready.pop_min_height_into(wave)
     }
 }
 
@@ -720,7 +722,7 @@ pub fn set_wave_threshold_for_test(groups: usize) {
 }
 
 /// Run one height's worth of ops, grouped by cell (see
-/// [`SharedTick::pop_min_height_groups`]). Distinct groups are distinct cells at
+/// [`SharedTick::pop_min_height_into`]). Distinct groups are distinct cells at
 /// the same height: height is `1 + max(dep.height)`, so if one group's cell
 /// depended on another's it would have a strictly greater height and never land
 /// in this wave — each group only writes its own cell's value and fans out to
@@ -744,61 +746,80 @@ pub fn set_wave_threshold_for_test(groups: usize) {
 /// child domain exists, a root wave marks each thread it runs on so root-cell
 /// fanouts know they belong to a root drain (see [`domain::hand_off`]).
 #[cfg(not(target_arch = "wasm32"))]
-fn run_wave(
-    groups: Vec<Vec<Box<dyn FnOnce() + Send>>>,
-    tick: TickRef<'_>,
-) -> Vec<Box<dyn std::any::Any + Send>> {
-    fn run_group(group: Vec<Box<dyn FnOnce() + Send>>) -> Vec<Box<dyn std::any::Any + Send>> {
-        group
-            .into_iter()
-            .filter_map(|run| std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).err())
+fn run_wave(wave: &mut Wave, tick: TickRef<'_>) -> Vec<Box<dyn std::any::Any + Send>> {
+    fn run_ops(
+        ops: impl Iterator<Item = Box<dyn FnOnce() + Send>>,
+    ) -> Vec<Box<dyn std::any::Any + Send>> {
+        ops.filter_map(|run| std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).err())
             .collect()
     }
-    fn run_sequential(
-        groups: Vec<Vec<Box<dyn FnOnce() + Send>>>,
-    ) -> Vec<Box<dyn std::any::Any + Send>> {
-        groups.into_iter().flat_map(run_group).collect()
-    }
+    let groups = wave.ends.len();
     if tick.child.is_some() {
-        return run_sequential(groups);
+        wave.ends.clear();
+        return run_ops(wave.runs.drain(..));
     }
     let handing_off = domain::in_use();
     let _root_wave = handing_off.then(domain::enter_root_wave);
     // Common/resting case: below the threshold, or parallelism disabled — run
     // sequentially and never touch the pool (so it stays unbuilt).
-    if groups.len() < wave_threshold() {
-        return run_sequential(groups);
+    let pool = (groups >= wave_threshold())
+        .then(crate::executor::worker_pool)
+        .flatten();
+    let Some(pool) = pool else {
+        wave.ends.clear();
+        return run_ops(wave.runs.drain(..));
+    };
+    run_parallel(pool, wave, groups, handing_off)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[cold]
+fn run_parallel(
+    pool: &rayon::ThreadPool,
+    wave: &mut Wave,
+    groups: usize,
+    handing_off: bool,
+) -> Vec<Box<dyn std::any::Any + Send>> {
+    use rayon::prelude::*;
+    let mut split = Vec::with_capacity(groups);
+    let mut runs = wave.runs.drain(..);
+    let mut start = 0;
+    for &end in &wave.ends {
+        split.push(
+            runs.by_ref()
+                .take(end.saturating_sub(start))
+                .collect::<Vec<_>>(),
+        );
+        start = end;
     }
-    match crate::executor::worker_pool() {
-        Some(pool) => {
-            use rayon::prelude::*;
-            pool.install(|| {
-                groups
-                    .into_par_iter()
-                    .flat_map_iter(|group| {
-                        let _scope = handing_off
-                            .then(|| (domain::propagate(None), domain::enter_root_wave()));
-                        run_group(group)
+    drop(runs);
+    wave.ends.clear();
+    pool.install(|| {
+        split
+            .into_par_iter()
+            .flat_map_iter(|group| {
+                let _scope =
+                    handing_off.then(|| (domain::propagate(None), domain::enter_root_wave()));
+                group
+                    .into_iter()
+                    .filter_map(|run| {
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).err()
                     })
-                    .collect()
+                    .collect::<Vec<_>>()
             })
-        }
-        None => run_sequential(groups),
-    }
+            .collect()
+    })
 }
 
 /// wasm is single-threaded — no real parallelism to exploit, and no
 /// cross-thread race to guard against either, but this module still needs to
 /// compile and behave correctly there. Groups run in order, ops within each in arrival order.
 #[cfg(target_arch = "wasm32")]
-fn run_wave(
-    groups: Vec<Vec<Box<dyn FnOnce() + Send>>>,
-    tick: TickRef<'_>,
-) -> Vec<Box<dyn std::any::Any + Send>> {
+fn run_wave(wave: &mut Wave, tick: TickRef<'_>) -> Vec<Box<dyn std::any::Any + Send>> {
     let _root_wave = (tick.child.is_none() && domain::in_use()).then(domain::enter_root_wave);
-    groups
-        .into_iter()
-        .flatten()
+    wave.ends.clear();
+    wave.runs
+        .drain(..)
         .filter_map(|run| std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).err())
         .collect()
 }
@@ -844,13 +865,29 @@ fn drain(domain: Option<&Arc<DomainInner>>) -> Option<Box<dyn std::any::Any + Se
 }
 
 fn drain_waves(domain: Option<&Arc<DomainInner>>) -> Option<Box<dyn std::any::Any + Send>> {
+    // A drain on this thread can nest inside another's wave (a child domain's
+    // drain), so the buffer is taken rather than borrowed.
+    let mut wave = WAVE_BUFFER.take();
+    let panicked = drain_waves_into(domain, &mut wave);
+    WAVE_BUFFER.set(wave);
+    panicked
+}
+
+thread_local! {
+    static WAVE_BUFFER: std::cell::Cell<Wave> = std::cell::Cell::new(Wave::default());
+}
+
+fn drain_waves_into(
+    domain: Option<&Arc<DomainInner>>,
+    wave: &mut Wave,
+) -> Option<Box<dyn std::any::Any + Send>> {
     let tick = TickRef::of(domain);
     let _scope = domain::propagate_if_in_use(domain);
     let _suspended = SuspendedBatch::of(tick.id);
     let mut first_panic: Option<Box<dyn std::any::Any + Send>> = None;
     let mut waves = 0usize;
     loop {
-        let groups = {
+        {
             let mut guard = tick.queue.lock();
             // Bounded rotation: after a stint's worth of waves, hand the drain
             // off *if another batch is still open* (`depth > 0`, so a close is
@@ -873,9 +910,8 @@ fn drain_waves(domain: Option<&Arc<DomainInner>>) -> Option<Box<dyn std::any::An
                 tick.released.notify_all();
                 return first_panic;
             }
-            if let Some(groups) = guard.pop_min_height_groups() {
+            if guard.pop_min_height_into(wave) {
                 drop(guard);
-                groups
             } else {
                 // Under the lock, so two root drains' units reach each child
                 // in drain order.
@@ -890,8 +926,8 @@ fn drain_waves(domain: Option<&Arc<DomainInner>>) -> Option<Box<dyn std::any::An
                 tick.released.notify_all();
                 return first_panic;
             }
-        };
-        let panics = run_wave(groups, tick);
+        }
+        let panics = run_wave(wave, tick);
         if first_panic.is_none() {
             first_panic = panics.into_iter().next();
         }
