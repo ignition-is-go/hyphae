@@ -3,6 +3,8 @@
 //! delivers, in the same order. An integration test because `batch` is
 //! process-wide.
 
+#![allow(clippy::expect_used, clippy::unreachable)]
+
 use std::{collections::HashMap, sync::Arc, thread};
 
 use hyphae::{CellMap, Gettable, MapDiff, Materialize, batch};

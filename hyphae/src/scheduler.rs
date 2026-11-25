@@ -184,12 +184,10 @@ mod frontier;
 pub(crate) mod order;
 mod ready;
 
-use ready::Wave;
-
 use domain::DomainInner;
 pub use domain::{Domain, DomainError};
 use order::{Claim, Groups, Writer};
-use ready::{PendingRun, ReadyQueue};
+use ready::{PendingRun, ReadyQueue, Wave};
 
 thread_local! {
     /// Reentrancy depth of the active [`no_coalesce`] construction scope on

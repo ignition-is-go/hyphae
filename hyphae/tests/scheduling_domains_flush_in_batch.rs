@@ -4,6 +4,8 @@
 //! propagation belongs to the drained tick, not to the caller's batch, so it
 //! is visible when `flush` returns even though the batch is still open.
 
+#![allow(clippy::expect_used)]
+
 use std::thread;
 
 use hyphae::{Cell, Gettable, MapExt, Materialize, Mutable, batch, scheduler::Domain};
@@ -16,7 +18,9 @@ fn flush_inside_open_batch_propagates_another_threads_write_downstream() {
 
     batch(|| {
         let writer = source.clone();
-        thread::spawn(move || writer.set(5)).join().unwrap();
+        thread::spawn(move || writer.set(5))
+            .join()
+            .expect("writer thread");
         child.flush();
         assert_eq!(
             derived.get(),
