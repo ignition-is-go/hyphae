@@ -137,3 +137,7 @@ harness = false
 name = "wave_calibration"
 harness = false
 required-features = ["scheduler"]
+
+[[bench]]
+name = "emission"
+harness = false
