@@ -78,6 +78,40 @@ impl Seedness for Empty {
     type Seed<T: CellValue> = ();
 }
 
+/// A signal passed between fused stages.
+///
+/// A stage that computes a fresh value hands it on by value, so the value is
+/// only put behind an `Arc` where something keeps it (the output cell, or an
+/// operator that retains it). A value that already arrived shared is passed
+/// on as the same `Arc`.
+pub(crate) enum Emit<'a, T> {
+    Shared(&'a Arc<T>),
+    Owned(T),
+    Complete,
+    Error(&'a Arc<anyhow::Error>),
+}
+
+pub(crate) type EmitSink<T> = Arc<dyn for<'a> Fn(Emit<'a, T>) + Send + Sync>;
+
+impl<'a, T> Emit<'a, T> {
+    pub(crate) const fn from_signal(signal: &'a Signal<T>) -> Self {
+        match signal {
+            Signal::Value(value) => Self::Shared(value),
+            Signal::Complete => Self::Complete,
+            Signal::Error(error) => Self::Error(error),
+        }
+    }
+
+    pub(crate) fn into_signal(self) -> Signal<T> {
+        match self {
+            Self::Shared(value) => Signal::Value(Arc::clone(value)),
+            Self::Owned(value) => Signal::value(value),
+            Self::Complete => Signal::Complete,
+            Self::Error(error) => Signal::Error(Arc::clone(error)),
+        }
+    }
+}
+
 /// Crate-private installer hook used by `materialize`.
 ///
 /// `install` subscribes the pipeline's composed callback to the root source
@@ -85,6 +119,12 @@ impl Seedness for Empty {
 /// into the pipeline's output signal type and invokes the provided callback.
 pub(crate) trait PipelineInstall<T: CellValue>: Send + Sync + 'static {
     fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard;
+
+    /// Install a stage-to-stage sink. Stages that only transform or inspect a
+    /// value override this so the value crosses them without an `Arc`.
+    fn install_emit(&self, sink: EmitSink<T>) -> SubscriptionGuard {
+        self.install(Arc::new(move |signal| sink(Emit::from_signal(signal))))
+    }
 
     /// Install with the materializing cell as the owner of every guard.
     ///
