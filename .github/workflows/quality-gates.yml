@@ -23,7 +23,7 @@ jobs:
       # after a merge if run on main-push, and requires a nightly toolchain just
       # for rustfmt.toml's nightly-only import grouping. Run it locally with
       # `cargo flux run fmt`. Everything below runs on stable.
-      - uses: ignition-is-go/pulse-actions/actions/setup-rust@2c94ebf4fedd47f0c36d491e0dee5ad446a071b5 # v1.0.0
+      - uses: ignition-is-go/pulse-actions/actions/setup-rust@9a22a3c3987bfa13c1619f6bc3ff14de893e35e8
         with:
           targets: wasm32-unknown-unknown
           components: clippy
@@ -34,22 +34,25 @@ jobs:
           compiler-cache-access-key: ${{ secrets.CI_CACHE_ACCESS_KEY }}
           compiler-cache-secret-key: ${{ secrets.CI_CACHE_SECRET_KEY }}
 
-      - name: Check for cargo-binstall
-        id: cargo-binstall
-        shell: bash
-        run: |
-          if command -v cargo-binstall >/dev/null 2>&1; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "available=false" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Install cargo-binstall
-        if: steps.cargo-binstall.outputs.available != 'true'
-        uses: cargo-bins/cargo-binstall@e00d2c94cc0067b77737821097a62d91c0301baa # v1.21.1
+          cache-save-if: ${{ env.CI_NATIVE_CACHE_CONFIGURED != 'true' }}
+          cache-targets: ${{ env.CI_NATIVE_CACHE_CONFIGURED != 'true' }}
+      - name: Set up Cargo Flux and ROSE cache
+        uses: ignition-is-go/cargo-flux@ae2ffa5f4420add3ab3c98665a4b5c0374bf2a5b
         with:
-          version: "1.21.1"
-      - name: Install or update cargo-flux
-        run: cargo binstall cargo-flux --no-confirm --force
+          version: 0.12.0
+          cache: ${{ env.CI_NATIVE_CACHE_CONFIGURED == 'true' && 's3' || '' }}
+          cache-endpoint: ${{ vars.CI_CACHE_S3_ENDPOINT || secrets.CI_CACHE_ENDPOINT }}
+          cache-bucket: ${{ vars.CI_CACHE_S3_BUCKET || secrets.CI_CACHE_BUCKET }}
+          cache-access-key-id: ${{ secrets.CI_CACHE_S3_ACCESS_KEY_ID || secrets.CI_CACHE_ACCESS_KEY }}
+          cache-secret-access-key: ${{ secrets.CI_CACHE_S3_SECRET_ACCESS_KEY || secrets.CI_CACHE_SECRET_KEY }}
+      - name: Restore ROSE compiler snapshot
+        id: compiler-snapshot
+        if: env.CI_NATIVE_CACHE_CONFIGURED == 'true'
+        uses: ignition-is-go/pulse-actions/actions/flux-target-cache@9a22a3c3987bfa13c1619f6bc3ff14de893e35e8
+        with:
+          operation: restore
+          scope: check
+          plugin: cargo
       - run: cargo flux run check
       - run: cargo flux run check-wasm
       - run: cargo flux run check-wasm-features
@@ -59,5 +62,13 @@ jobs:
         run: cargo test -p hyphae --bench runtime_baseline -- --size 16 --iterations 2 --warmup 0
       - name: Verify hyphae-gpui is publishable
         run: cargo publish --dry-run --locked --allow-dirty -p hyphae-gpui
+      - name: Save ROSE snapshot and clean local Cargo targets
+        if: success() && steps.compiler-snapshot.outputs.state != ''
+        uses: ignition-is-go/pulse-actions/actions/flux-target-cache@9a22a3c3987bfa13c1619f6bc3ff14de893e35e8
+        with:
+          operation: save
+          state: ${{ steps.compiler-snapshot.outputs.state }}
       - uses: ignition-is-go/pulse-actions/actions/report-resources@2c94ebf4fedd47f0c36d491e0dee5ad446a071b5 # v1.0.0
         if: always()
+    env:
+      CI_NATIVE_CACHE_CONFIGURED: ${{ (secrets.CI_CACHE_S3_ACCESS_KEY_ID || secrets.CI_CACHE_ACCESS_KEY) != '' }}
