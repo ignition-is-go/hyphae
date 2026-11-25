@@ -580,8 +580,22 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
     /// before or just after the fanout, so the effect takes the write's
     /// place in delivery order instead of the order `set` was called in.
     pub(crate) fn set_with(&self, value: T, at: EffectAt, effect: impl FnOnce() + Send + 'static) {
-        let signal = Signal::value(value);
+        self.set_from(at, move || Some((value, effect)));
+    }
+
+    /// [`set_with`](Self::set_with), with the value and effect produced when
+    /// the write is delivered rather than when it is made. Nothing is
+    /// delivered when `produce` gives nothing.
+    pub(crate) fn set_from<E: FnOnce() + Send + 'static>(
+        &self,
+        at: EffectAt,
+        produce: impl FnOnce() -> Option<(T, E)> + Send + 'static,
+    ) {
         let deliver = move |cell: Option<&Self>| {
+            let Some((value, effect)) = produce() else {
+                return;
+            };
+            let signal = Signal::value(value);
             if matches!(at, EffectAt::BeforeFanout) {
                 effect();
                 if let Some(cell) = cell {

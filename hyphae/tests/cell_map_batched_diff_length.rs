@@ -1,4 +1,3 @@
-
 use std::sync::Arc;
 
 use hyphae::{CellMap, Gettable, MapDiff, Materialize};
@@ -43,9 +42,11 @@ fn single_diff_length_uses_membership_changes_when_cell_writes_are_deferred() {
     });
     assert_eq!(length.get(), 0);
     assert!(entries.get().is_empty());
-    let mut expected = vec![MapDiff::Initial {
-        entries: Vec::new(),
-    }];
-    expected.extend(changes);
+    let expected = vec![
+        MapDiff::Initial {
+            entries: Vec::new(),
+        },
+        MapDiff::Batch { changes },
+    ];
     assert_eq!(*diffs.lock(), expected);
 }

@@ -18,8 +18,8 @@ use std::sync::{
 };
 
 use hyphae::{
-    Cell, CellImmutable, CellMap, CellMutable, CellSet, JoinExt, MapExt, Materialize, Mutable,
-    Signal, Source, Watchable, batch, scheduler::no_coalesce,
+    Cell, CellImmutable, CellMap, CellMutable, CellSet, JoinExt, MapDiff, MapExt, Materialize,
+    Mutable, Signal, Source, Watchable, batch, scheduler::no_coalesce,
 };
 use parking_lot::Mutex;
 
@@ -259,28 +259,32 @@ fn batched_source_coalesces_a_same_rate_diamond_that_per_subscriber_batch_cannot
 fn cellmap_diffs_survive_a_batched_add_then_remove() {
     let _serial = scheduler_test_serial();
     let map: CellMap<u32, u32> = CellMap::new();
-    let seen = std::sync::Arc::new(Mutex::new(0usize));
+    let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
     let sink = seen.clone();
-    let guard = map.subscribe_diffs(move |_diff| {
-        let mut count = sink.lock();
-        *count = count.saturating_add(1);
-    });
+    let guard = map.subscribe_diffs(move |diff| sink.lock().push(diff.clone()));
     std::mem::forget(guard);
-    *seen.lock() = 0; // discard the Initial replay
+    seen.lock().clear(); // discard the Initial replay
 
-    // Add then remove the same key inside one batch: two diffs_cell.set calls.
-    // The diffs_cell is no_coalesce by default, so BOTH the Insert and Remove
-    // survive; a plain (coalescing) cell would drop the Insert (LWW keeps the
-    // Remove) and an accumulating subscriber would corrupt.
+    // Add then remove the same key inside one batch. A plain (coalescing)
+    // cell would drop the Insert (LWW keeps the Remove) and an accumulating
+    // subscriber would corrupt.
     batch(|| {
         map.insert(1, 100);
         map.remove(&1);
     });
 
-    assert!(
-        *seen.lock() >= 2,
-        "both the add and the remove diff must survive the batch, saw {}",
-        *seen.lock()
+    assert_eq!(
+        *seen.lock(),
+        [MapDiff::Batch {
+            changes: vec![
+                MapDiff::Insert { key: 1, value: 100 },
+                MapDiff::Remove {
+                    key: 1,
+                    old_value: 100
+                },
+            ]
+        }],
+        "both the add and the remove diff must survive the batch"
     );
 }
 

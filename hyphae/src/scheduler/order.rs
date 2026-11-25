@@ -138,6 +138,8 @@ struct Held {
     /// How many unbatched writes the thread is delivering. A subscriber that
     /// writes the store adds one.
     deliveries: u32,
+    /// Stamp of the batch's last row here.
+    last: u64,
     /// Writes other threads made to these keys meanwhile, which the thread
     /// delivers, in order, when its own delivery has returned.
     followers: VecDeque<Follower>,
@@ -158,6 +160,7 @@ impl Held {
             },
             whole: false,
             deliveries: 0,
+            last: 0,
             followers: VecDeque::new(),
         }
     }
@@ -405,7 +408,7 @@ impl WriteOrder {
         touched: Touched,
         store: impl FnOnce() -> (R, Option<E>),
         whole: impl FnOnce(&E) -> bool,
-        emit: impl FnOnce(E),
+        emit: impl FnOnce(E, Staging),
         follow: impl FnOnce() -> Box<dyn FnOnce(E) + Send>,
     ) -> R {
         let tick = TickRef::of(domain);
@@ -421,12 +424,12 @@ impl WriteOrder {
             touched
         };
         let hold = |batch: &mut super::OpenBatch| {
-            self.hold(&mut order.borrow_mut(), tick, batch, &touched);
+            self.hold(&mut order.borrow_mut(), tick, batch, &touched)
         };
-        if super::with_open_batch(tick.id, hold).is_some() {
+        if let Some((previous, stamp)) = super::with_open_batch(tick.id, hold) {
             // Staged in the thread's open batch.
             drop(order);
-            emit(emission);
+            emit(emission, Staging::Batched { previous, stamp });
             return result;
         }
         let route = self.route(&mut order.borrow_mut(), domain, &touched);
@@ -435,7 +438,7 @@ impl WriteOrder {
                 // Set on this thread or queued on the tick, as each cell
                 // decides.
                 drop(order);
-                emit(emission);
+                emit(emission, Staging::Unbatched);
                 drop(delivery);
             }
             Route::Follow(holder) => {
@@ -455,7 +458,7 @@ impl WriteOrder {
                 super::with_open_batch(tick.id, hold);
                 drop(order);
                 let batch = Implicit(domain);
-                emit(emission);
+                emit(emission, Staging::Unbatched);
                 drop(batch);
             }
         }
@@ -505,14 +508,16 @@ impl WriteOrder {
     }
 
     /// Join every unfinished writer that holds one of the keys, and hold the
-    /// keys for `batch`.
+    /// keys for `batch`. Returns the stamp of the row this batch stored
+    /// here before, when no row was stored here since (0 otherwise), and
+    /// the stamp of this one.
     fn hold(
         self: &Arc<Self>,
         pending: &mut Pending,
         tick: TickRef<'_>,
         batch: &mut super::OpenBatch,
         touched: &Touched,
-    ) {
+    ) -> (u64, u64) {
         let writer = &*batch.writer.get_or_insert_with(Writer::new);
         let thread = thread_id();
         let mut mine = None;
@@ -551,14 +556,20 @@ impl WriteOrder {
             pending.held.push(Held::new(Some(Arc::clone(writer)), 0));
             pending.held.len().saturating_sub(1)
         });
-        if let Some(held) = pending.held.get_mut(mine) {
-            held.hold(touched);
-        }
         // Later than every row stored here before and than everything this
         // batch wrote before.
         let stamp = batch.stamp.max(pending.clock).saturating_add(1);
+        let mut previous = 0;
+        if let Some(held) = pending.held.get_mut(mine) {
+            held.hold(touched);
+            if held.last == pending.clock {
+                previous = held.last;
+            }
+            held.last = stamp;
+        }
         pending.clock = stamp;
         batch.stamp = stamp;
+        (previous, stamp)
     }
 }
 
@@ -568,6 +579,19 @@ fn thread_id() -> usize {
         static MARK: u8 = const { 0 };
     }
     MARK.with(|mark| std::ptr::from_ref(mark).addr())
+}
+
+/// How [`WriteOrder::write`] hands a write's emission over.
+#[derive(Clone, Copy)]
+pub(crate) enum Staging {
+    /// Delivered alone: now, after another thread's delivery, or through a
+    /// batch opened for it.
+    Unbatched,
+    /// Staged in the writer's open batch, for the row stamped `stamp`.
+    /// `previous` is the stamp of the batch's last row in the store when no
+    /// other row was stored there since, so the two emissions are adjacent
+    /// in the store's order and may be delivered as one; 0 otherwise.
+    Batched { previous: u64, stamp: u64 },
 }
 
 /// How a write made outside a batch is delivered.

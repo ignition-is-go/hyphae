@@ -36,5 +36,5 @@ fn hooks_report_inside_an_open_batch_while_diffs_wait() {
             "diff delivery is still deferred"
         );
     });
-    assert_eq!(*diffs.lock(), delivered_before + 3);
+    assert_eq!(*diffs.lock(), delivered_before + 1);
 }

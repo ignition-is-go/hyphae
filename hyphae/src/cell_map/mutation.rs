@@ -13,7 +13,7 @@ use parking_lot::Mutex;
 use super::{CellMap, CellMapInner, MapDiff, write_hook::Stored};
 use crate::{
     cell::{Cell, CellImmutable, CellMutable, EffectAt},
-    scheduler::order::{Sequenced, Touched, WriteOrder, key_hash},
+    scheduler::order::{Sequenced, Staging, Touched, WriteOrder, key_hash},
     subscription::SubscriptionGuard,
     traits::{CellValue, Mutable},
 };
@@ -98,6 +98,41 @@ where
         if let Some(cell) = map.observed_key_cell(key) {
             self.points.push((cell, value));
         }
+    }
+}
+
+/// Adjacent diffs one batch made to a map, delivered as one.
+pub(super) struct StagedDiff<K, V> {
+    /// Stamp of the first row, which names the delivery.
+    first: u64,
+    /// Stamp of the last row.
+    last: u64,
+    /// The first diff, while it is the only one.
+    diff: Option<MapDiff<K, V>>,
+    /// Every row once there is more than one diff.
+    rows: Vec<MapDiff<K, V>>,
+    grown: isize,
+}
+
+impl<K, V> StagedDiff<K, V> {
+    fn push(&mut self, diff: MapDiff<K, V>, grown: isize, stamp: u64) {
+        fn extend<K, V>(rows: &mut Vec<MapDiff<K, V>>, diff: MapDiff<K, V>) {
+            match diff {
+                MapDiff::Batch { changes } => rows.extend(changes),
+                row => rows.push(row),
+            }
+        }
+        if let Some(first) = self.diff.take() {
+            extend(&mut self.rows, first);
+        }
+        extend(&mut self.rows, diff);
+        self.grown = self.grown.saturating_add(grown);
+        self.last = stamp;
+    }
+
+    fn into_diff(self) -> Option<MapDiff<K, V>> {
+        self.diff
+            .or_else(|| (!self.rows.is_empty()).then_some(MapDiff::Batch { changes: self.rows }))
     }
 }
 
@@ -188,6 +223,7 @@ where
                 delivered_len: AtomicIsize::new(0),
                 len: Sequenced::default(),
                 order: WriteOrder::new(),
+                staged: Mutex::new(Vec::new()),
                 owned: Mutex::new(Vec::new()),
                 name: Mutex::new(None),
             }),
@@ -304,15 +340,15 @@ where
             },
             // A removal that empties the map says so in one diff.
             |emission| matches!(emission.diff, Some(MapDiff::Initial { .. })),
-            |emission| self.emit(emission),
+            |emission, staging| self.emit(emission, staging),
             || {
                 let map = self.clone();
-                Box::new(move |emission| map.emit(emission))
+                Box::new(move |emission| map.emit(emission, Staging::Unbatched))
             },
         )
     }
 
-    fn emit(&self, emission: Emission<K, V>) {
+    fn emit(&self, emission: Emission<K, V>, staging: Staging) {
         let Emission {
             points,
             diff,
@@ -329,14 +365,18 @@ where
             Sequence::PointsDiffLen | Sequence::PointsLenDiff => (points, Vec::new()),
         };
         set_points(first);
+        let at = match sequence {
+            Sequence::PointsLenDiff => EffectAt::BeforeFanout,
+            Sequence::PointsDiffLen | Sequence::DiffLenPoints => EffectAt::AfterFanout,
+        };
         if let Some(diff) = diff {
-            if grown == 0 {
+            if let Staging::Batched { previous, stamp } = staging
+                && !matches!(diff, MapDiff::Initial { .. })
+            {
+                self.stage_diff(diff, grown, at, previous, stamp);
+            } else if grown == 0 {
                 self.inner.diffs_cell.set(diff);
             } else {
-                let at = match sequence {
-                    Sequence::PointsLenDiff => EffectAt::BeforeFanout,
-                    Sequence::PointsDiffLen | Sequence::DiffLenPoints => EffectAt::AfterFanout,
-                };
                 let map = Arc::downgrade(&self.inner);
                 self.inner.diffs_cell.set_with(diff, at, move || {
                     if let Some(map) = map.upgrade() {
@@ -346,6 +386,50 @@ where
             }
         }
         set_points(last);
+    }
+
+    /// Stage a diff made inside a batch. A diff whose row directly follows
+    /// one this batch staged here joins that diff's delivery, so the
+    /// subscribers of one batch's adjacent rows are called once, with a
+    /// `Batch` of the rows in the order they were stored.
+    fn stage_diff(
+        &self,
+        diff: MapDiff<K, V>,
+        grown: isize,
+        at: EffectAt,
+        previous: u64,
+        stamp: u64,
+    ) {
+        let mut staged = self.inner.staged.lock();
+        if previous != 0
+            && let Some(open) = staged.iter_mut().find(|open| open.last == previous)
+        {
+            open.push(diff, grown, stamp);
+            return;
+        }
+        staged.push(StagedDiff {
+            first: stamp,
+            last: stamp,
+            diff: Some(diff),
+            rows: Vec::new(),
+            grown,
+        });
+        drop(staged);
+        let map = Arc::clone(&self.inner);
+        self.inner.diffs_cell.set_from(at, move || {
+            let open = {
+                let mut staged = map.staged.lock();
+                let index = staged.iter().position(|open| open.first == stamp)?;
+                staged.swap_remove(index)
+            };
+            let grown = open.grown;
+            let diff = open.into_diff()?;
+            Some((diff, move || {
+                if grown != 0 {
+                    map.grew(grown);
+                }
+            }))
+        });
     }
 
     /// Insert a key-value pair, returning the old value if present.
