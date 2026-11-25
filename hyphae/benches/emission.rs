@@ -28,8 +28,9 @@ use std::{
 };
 
 use hyphae::{
-    Cell, CellImmutable, CellMap, CellMutable, MapDiff, MapExt, Materialize, Mutable, Signal,
-    SubscriptionGuard, SwitchMapExt, Watchable, batch, join_vec, scheduler::Domain,
+    Cell, CellImmutable, CellMap, CellMutable, FilterExt, MapDiff, MapExt, Materialize, Mutable,
+    Signal, SubscriptionGuard, SwitchMapExt, TapExt, TryMapExt, Watchable, batch, join_vec,
+    scheduler::Domain,
 };
 use seq_macro::seq;
 
@@ -401,6 +402,47 @@ fn eager_map() -> Bench {
     }
 }
 
+/// `source -> map -> filter -> tap -> try_map -> map -> subscriber`, fused into
+/// one cell, one batched write per operation.
+fn fused_mixed() -> Bench {
+    let work = Arc::new(AtomicU64::new(0));
+    let source = Cell::new(0u64);
+    let cell = source
+        .clone()
+        .map(|x| x.wrapping_add(1))
+        .filter(|x| *x != u64::MAX)
+        .tap(|x| {
+            black_box(x);
+        })
+        .try_map(|x| Ok::<u64, u64>(x.wrapping_add(1)))
+        .map(|r| r.map_or(0, |x| x.wrapping_add(1)))
+        .materialize();
+    let last = Arc::new(AtomicU64::new(u64::MAX));
+    let (w, l) = (Arc::clone(&work), Arc::clone(&last));
+    let guard = cell.subscribe(move |signal| {
+        if let Signal::Value(value) = signal
+            && let Some(value) = **value
+        {
+            w.fetch_add(1, Ordering::Relaxed);
+            l.store(value, Ordering::Relaxed);
+        }
+    });
+    let expected = Arc::new(AtomicU64::new(0));
+    let exp = Arc::clone(&expected);
+    let src = source.clone();
+    Bench {
+        run: Box::new(move |first, count| {
+            for i in first..first + count {
+                batch(|| src.set(black_box(i)));
+            }
+            exp.store((first + count - 1).wrapping_add(3), Ordering::Relaxed);
+        }),
+        work,
+        errors: expect_last(last, expected),
+        _keep: Box::new((source, cell, guard)),
+    }
+}
+
 fn cases() -> Vec<Case> {
     let mut cases = vec![
         case("eager_map_one", "reference", 200_000, eager_map),
@@ -409,6 +451,7 @@ fn cases() -> Vec<Case> {
         }),
         case("fused_chain/4", "H5", 200_000, || fused_chain!(4, 3)),
         case("fused_chain/8", "H5", 200_000, || fused_chain!(8, 7)),
+        case("fused_mixed", "H5", 200_000, fused_mixed),
         case("cell_chain/4", "H1 H2 H3 H7", 50_000, || {
             cell_chain(4, None)
         }),
