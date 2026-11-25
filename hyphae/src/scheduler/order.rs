@@ -46,7 +46,7 @@ use std::{
 };
 
 use parking_lot::ReentrantMutex;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 
 use super::{Staged, TickRef, domain::DomainInner};
 
@@ -122,7 +122,7 @@ impl Claim {
 thread_local! {
     /// The key list of the last hold this thread released, kept so the next
     /// one does not allocate.
-    static SPARE_KEYS: Cell<Vec<u64>> = const { Cell::new(Vec::new()) };
+    static SPARE_KEYS: Cell<Vec<(u64, u64)>> = const { Cell::new(Vec::new()) };
 }
 
 /// The keys one writer holds on one store.
@@ -140,6 +140,11 @@ struct Held {
     deliveries: u32,
     /// Stamp of the batch's last row here.
     last: u64,
+    /// Stamp of the first row of the run of adjacent rows that ends at
+    /// `last`.
+    run: u64,
+    /// Stamp of the batch's last row here that stored every key.
+    whole_at: u64,
     /// Writes other threads made to these keys meanwhile, which the thread
     /// delivers, in order, when its own delivery has returned.
     followers: VecDeque<Follower>,
@@ -156,11 +161,13 @@ impl Held {
             keys: Keys {
                 first: None,
                 few: Vec::new(),
-                many: FxHashSet::default(),
+                many: FxHashMap::default(),
             },
             whole: false,
             deliveries: 0,
             last: 0,
+            run: 0,
+            whole_at: 0,
             followers: VecDeque::new(),
         }
     }
@@ -171,12 +178,28 @@ impl Held {
             .is_some_and(|held| Arc::ptr_eq(held, writer))
     }
 
-    fn hold(&mut self, touched: &Touched) {
-        match touched {
-            Touched::Key(hash) => self.keys.insert(*hash),
-            Touched::Keys(hashes) => hashes.iter().for_each(|hash| self.keys.insert(*hash)),
-            Touched::All => self.whole = true,
-        }
+    /// Hold the keys for a row stamped `stamp` (0 outside a batch), and
+    /// return the stamp of this holder's latest earlier row to any of them.
+    fn hold(&mut self, touched: &Touched, stamp: u64) -> u64 {
+        let latest = match touched {
+            Touched::Key(hash) => self.keys.insert(*hash, stamp),
+            Touched::Keys(hashes) => {
+                // Taken over every key before any is stamped, so a key the
+                // row names twice does not count as written before it.
+                let latest = hashes.iter().map(|hash| self.keys.get(*hash)).max();
+                for hash in hashes {
+                    self.keys.insert(*hash, stamp);
+                }
+                latest.unwrap_or(0)
+            }
+            Touched::All => {
+                self.whole = true;
+                let latest = self.last;
+                self.whole_at = stamp;
+                return latest;
+            }
+        };
+        latest.max(self.whole_at)
     }
 
     /// Keep the key list, if one was needed, for this thread's next hold.
@@ -189,39 +212,66 @@ impl Held {
     }
 }
 
-/// A set of key hashes: one inline, a list while it is short, indexed once
-/// it is not.
+/// Key hashes, each with the stamp of its latest row: one inline, a list
+/// while it is short, indexed once it is not.
 struct Keys {
-    first: Option<u64>,
-    few: Vec<u64>,
-    many: FxHashSet<u64>,
+    first: Option<(u64, u64)>,
+    few: Vec<(u64, u64)>,
+    many: FxHashMap<u64, u64>,
 }
 
 /// Longest key list searched linearly.
 const KEYS_SCAN: usize = 16;
 
 impl Keys {
-    fn insert(&mut self, hash: u64) {
-        if self.contains(hash) {
-            return;
+    /// Stamp `hash` and return its previous stamp, 0 when it was not held.
+    fn insert(&mut self, hash: u64, stamp: u64) -> u64 {
+        let slot = match &mut self.first {
+            Some(first) if first.0 == hash => Some(&mut first.1),
+            _ => self
+                .few
+                .iter_mut()
+                .find(|(held, _)| *held == hash)
+                .map(|(_, at)| at)
+                .or_else(|| self.many.get_mut(&hash)),
+        };
+        if let Some(at) = slot {
+            return std::mem::replace(at, stamp);
         }
         if self.first.is_none() {
-            self.first = Some(hash);
+            self.first = Some((hash, stamp));
         } else if !self.many.is_empty() {
-            self.many.insert(hash);
+            self.many.insert(hash, stamp);
         } else if self.few.len() < KEYS_SCAN {
             if self.few.capacity() == 0 {
                 self.few = SPARE_KEYS.take();
             }
-            self.few.push(hash);
+            self.few.push((hash, stamp));
         } else {
             self.many.extend(self.few.drain(..));
-            self.many.insert(hash);
+            self.many.insert(hash, stamp);
+        }
+        0
+    }
+
+    /// The stamp of `hash`, 0 when it is not held.
+    fn get(&self, hash: u64) -> u64 {
+        match self.first {
+            Some((first, at)) if first == hash => at,
+            _ => self
+                .few
+                .iter()
+                .find(|(held, _)| *held == hash)
+                .map(|(_, at)| *at)
+                .or_else(|| self.many.get(&hash).copied())
+                .unwrap_or(0),
         }
     }
 
     fn contains(&self, hash: u64) -> bool {
-        self.first == Some(hash) || self.few.contains(&hash) || self.many.contains(&hash)
+        self.first.is_some_and(|(first, _)| first == hash)
+            || self.few.iter().any(|(held, _)| *held == hash)
+            || self.many.contains_key(&hash)
     }
 }
 
@@ -446,7 +496,7 @@ impl WriteOrder {
                 // It delivers this one when it has finished.
                 let emit = follow();
                 if let Some(held) = order.borrow_mut().held.get_mut(holder) {
-                    held.hold(&touched);
+                    held.hold(&touched, 0);
                     held.followers.push_back(Box::new(move || emit(emission)));
                 }
                 drop(order);
@@ -497,7 +547,7 @@ impl WriteOrder {
             pending.held.len().saturating_sub(1)
         });
         if let Some(held) = pending.held.get_mut(mine) {
-            held.hold(touched);
+            held.hold(touched, 0);
             held.deliveries = held.deliveries.saturating_add(1);
         }
         Route::Deliver(Delivery {
@@ -509,8 +559,14 @@ impl WriteOrder {
 
     /// Join every unfinished writer that holds one of the keys, and hold the
     /// keys for `batch`. Returns the stamp of the row this batch stored
-    /// here before, when no row was stored here since (0 otherwise), and
+    /// here before, when this row may join its delivery (0 otherwise), and
     /// the stamp of this one.
+    ///
+    /// A row may join when no other row was stored here since and it names
+    /// no key the run of rows it would join already names, so a merged
+    /// delivery never carries one key twice unless one write's own diff
+    /// did: each write to a key stays its own emission, in stored order.
+    /// Two keys with one hash count as one, which only splits a delivery.
     fn hold(
         self: &Arc<Self>,
         pending: &mut Pending,
@@ -561,9 +617,12 @@ impl WriteOrder {
         let stamp = batch.stamp.max(pending.clock).saturating_add(1);
         let mut previous = 0;
         if let Some(held) = pending.held.get_mut(mine) {
-            held.hold(touched);
-            if held.last == pending.clock {
+            let adjacent = held.last != 0 && held.last == pending.clock;
+            let repeats = held.hold(touched, stamp) >= held.run;
+            if adjacent && !repeats {
                 previous = held.last;
+            } else {
+                held.run = stamp;
             }
             held.last = stamp;
         }
@@ -588,9 +647,9 @@ pub(crate) enum Staging {
     /// batch opened for it.
     Unbatched,
     /// Staged in the writer's open batch, for the row stamped `stamp`.
-    /// `previous` is the stamp of the batch's last row in the store when no
-    /// other row was stored there since, so the two emissions are adjacent
-    /// in the store's order and may be delivered as one; 0 otherwise.
+    /// `previous` is the stamp of the batch's last row in the store when the
+    /// two emissions may be delivered as one (see [`WriteOrder::hold`]); 0
+    /// otherwise.
     Batched { previous: u64, stamp: u64 },
 }
 

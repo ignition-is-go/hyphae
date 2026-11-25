@@ -275,15 +275,13 @@ fn cellmap_diffs_survive_a_batched_add_then_remove() {
 
     assert_eq!(
         *seen.lock(),
-        [MapDiff::Batch {
-            changes: vec![
-                MapDiff::Insert { key: 1, value: 100 },
-                MapDiff::Remove {
-                    key: 1,
-                    old_value: 100
-                },
-            ]
-        }],
+        [
+            MapDiff::Insert { key: 1, value: 100 },
+            MapDiff::Remove {
+                key: 1,
+                old_value: 100
+            },
+        ],
         "both the add and the remove diff must survive the batch"
     );
 }

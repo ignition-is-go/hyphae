@@ -100,7 +100,7 @@ fn every_child_receives_each_root_map_diff_once_in_root_order() {
 
     let writer = thread::current().id();
     let expected = reference.lock().clone();
-    assert_eq!(expected.len(), 13);
+    assert_eq!(expected.len(), 17);
     for (child, diffs, threads, _guard) in &readers {
         child.flush();
         assert_eq!(child.pending_hand_offs(), 0);

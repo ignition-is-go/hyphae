@@ -1,5 +1,5 @@
 //! The row diffs a map receives inside one batch reach its diff subscribers
-//! as one `Batch`, carrying the rows an unbatched run of the same writes
+//! as `Batch`es of distinct keys, carrying the rows an unbatched run of the same writes
 //! delivers, in the same order. An integration test because `batch` is
 //! process-wide.
 
@@ -48,7 +48,7 @@ fn mixed_writes(map: &CellMap<u32, u32>) {
 }
 
 #[test]
-fn a_batch_delivers_one_batch_with_the_unbatched_rows_in_order() {
+fn a_batch_delivers_the_unbatched_rows_in_order_without_repeating_a_key() {
     let _serial = SERIAL.lock();
     let unbatched = CellMap::new();
     unbatched.insert(5, 50);
@@ -61,8 +61,26 @@ fn a_batch_delivers_one_batch_with_the_unbatched_rows_in_order() {
     batch(|| mixed_writes(&batched));
 
     let seen = seen.lock().clone();
-    assert_eq!(seen.len(), 1, "one delivery for the batch: {seen:?}");
-    assert!(matches!(seen.first(), Some(MapDiff::Batch { .. })));
+    assert_eq!(
+        seen.len(),
+        4,
+        "a delivery per run of distinct keys: {seen:?}"
+    );
+    for diff in &seen {
+        let mut keys: Vec<u32> = rows(std::slice::from_ref(diff))
+            .iter()
+            .filter_map(|row| match row {
+                MapDiff::Insert { key, .. }
+                | MapDiff::Remove { key, .. }
+                | MapDiff::Update { key, .. } => Some(*key),
+                _ => None,
+            })
+            .collect();
+        let len = keys.len();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), len, "a key repeated in one delivery: {diff:?}");
+    }
     assert_eq!(rows(&seen), rows(&expected.lock()));
     assert_eq!(
         batched.len().materialize().get(),
@@ -109,28 +127,28 @@ fn two_maps_and_nested_batches_each_get_their_own_rows() {
     });
     assert_eq!(
         *left_seen.lock(),
-        [MapDiff::Batch {
-            changes: vec![
-                MapDiff::Insert { key: 1, value: 10 },
-                MapDiff::Insert { key: 2, value: 20 },
-                MapDiff::Remove {
-                    key: 1,
-                    old_value: 10
-                },
-            ]
-        }]
+        [
+            MapDiff::Batch {
+                changes: vec![
+                    MapDiff::Insert { key: 1, value: 10 },
+                    MapDiff::Insert { key: 2, value: 20 },
+                ]
+            },
+            MapDiff::Remove {
+                key: 1,
+                old_value: 10
+            },
+        ]
     );
     assert_eq!(
         *right_seen.lock(),
-        [MapDiff::Batch {
-            changes: vec![
-                MapDiff::Insert { key: 1, value: 100 },
-                MapDiff::Remove {
-                    key: 1,
-                    old_value: 100
-                },
-            ]
-        }]
+        [
+            MapDiff::Insert { key: 1, value: 100 },
+            MapDiff::Remove {
+                key: 1,
+                old_value: 100
+            },
+        ]
     );
 }
 

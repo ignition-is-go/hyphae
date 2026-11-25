@@ -389,9 +389,13 @@ where
     }
 
     /// Stage a diff made inside a batch. A diff whose row directly follows
-    /// one this batch staged here joins that diff's delivery, so the
-    /// subscribers of one batch's adjacent rows are called once, with a
-    /// `Batch` of the rows in the order they were stored.
+    /// one this batch staged here, and names none of the keys that delivery
+    /// already carries, joins it, so the subscribers of one batch's adjacent
+    /// rows to distinct keys are called once, with a `Batch` of the rows in
+    /// the order they were stored. A merged `Batch` never repeats a key
+    /// that no single write's diff repeated: every write to a key is its own
+    /// emission, as consumers that fold a `Batch` to each key's latest row
+    /// would otherwise drop the earlier ones.
     fn stage_diff(
         &self,
         diff: MapDiff<K, V>,
