@@ -2,6 +2,8 @@
 //! subscriber sees on switch, on stale-inner writes, under `batch`, under
 //! `no_coalesce`, and on teardown.
 
+#![allow(clippy::expect_used)]
+
 use std::sync::Arc;
 
 use hyphae::{
@@ -189,4 +191,142 @@ fn completion_waits_for_outer_and_current_inner() {
     assert!(!out.is_complete());
     inner.complete();
     assert!(out.is_complete());
+}
+
+fn counting_switch(
+    sel: &Cell<u64, hyphae::CellMutable>,
+) -> (
+    Arc<std::sync::atomic::AtomicUsize>,
+    impl Watchable<u64> + use<>,
+) {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let c = calls.clone();
+    let out = sel
+        .clone()
+        .switch_map(move |&v| {
+            c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Cell::new(v.wrapping_mul(10))
+        })
+        .materialize();
+    (calls, out)
+}
+
+fn calls(c: &std::sync::atomic::AtomicUsize) -> usize {
+    c.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[test]
+fn an_equal_outer_value_keeps_the_live_inner() {
+    let _serial = serial();
+    let sel = Cell::new(1u64);
+    let (n, out) = counting_switch(&sel);
+    let (seen, _g) = record(&out);
+    sel.set(1);
+    batch(|| sel.set(1));
+    assert_eq!(calls(&n), 1);
+    assert_eq!(*seen.lock(), vec![10]);
+    sel.set(2);
+    assert_eq!(calls(&n), 2);
+    assert_eq!(*seen.lock(), vec![10, 20]);
+}
+
+#[test]
+fn returning_to_an_earlier_outer_value_rebuilds_each_time() {
+    let _serial = serial();
+    let sel = Cell::new(1u64);
+    let (n, out) = counting_switch(&sel);
+    let (seen, _g) = record(&out);
+    sel.set(2);
+    sel.set(1);
+    sel.set(1);
+    assert_eq!(calls(&n), 3);
+    assert_eq!(*seen.lock(), vec![10, 20, 10]);
+}
+
+#[test]
+fn a_batch_ending_on_the_knitted_value_keeps_the_live_inner() {
+    let _serial = serial();
+    let sel = Cell::new(1u64);
+    let (n, out) = counting_switch(&sel);
+    let (seen, _g) = record(&out);
+    batch(|| {
+        sel.set(2);
+        sel.set(1);
+    });
+    assert_eq!(calls(&n), 1);
+    assert_eq!(*seen.lock(), vec![10]);
+}
+
+type Built = Arc<Mutex<Vec<Inner>>>;
+
+fn recording_switch(sel: &Cell<u64, hyphae::CellMutable>) -> (Built, impl Watchable<u64> + use<>) {
+    let built: Built = Arc::new(Mutex::new(Vec::new()));
+    let b = built.clone();
+    let out = sel
+        .clone()
+        .switch_map(move |&v| {
+            let mut b = b.lock();
+            let builds = u64::try_from(b.len()).expect("build count fits u64");
+            let c = Cell::new(v.wrapping_add(1).wrapping_add(builds.wrapping_mul(100)));
+            b.push(c.clone());
+            c
+        })
+        .materialize();
+    (built, out)
+}
+
+fn nth(built: &Built, i: usize) -> Inner {
+    built.lock().get(i).expect("inner was built").clone()
+}
+
+#[test]
+fn an_equal_outer_value_rebuilds_a_completed_inner() {
+    let _serial = serial();
+    let sel = Cell::new(0u64);
+    let (built, out) = recording_switch(&sel);
+    let (seen, _g) = record(&out);
+    let first = nth(&built, 0);
+    first.complete();
+    sel.set(0);
+    assert_eq!(*seen.lock(), vec![1, 101]);
+    let second = nth(&built, 1);
+    second.set(7);
+    assert_eq!(out.get(), 7);
+    sel.complete();
+    assert!(!out.is_complete());
+}
+
+// The output is terminal after an inner error, so the rebuild shows only as a
+// closure call.
+#[test]
+fn an_equal_outer_value_rebuilds_an_errored_inner() {
+    let _serial = serial();
+    let sel = Cell::new(0u64);
+    let (built, out) = recording_switch(&sel);
+    let first = nth(&built, 0);
+    first.fail(anyhow::anyhow!("inner failed"));
+    sel.set(0);
+    assert_eq!(built.lock().len(), 2);
+    assert!(out.error().is_some());
+}
+
+#[test]
+fn concurrent_equal_outer_writes_leave_one_live_inner() {
+    let _serial = serial();
+    for _ in 0..200 {
+        let sel = Cell::new(0u64);
+        let (built, out) = recording_switch(&sel);
+        std::thread::scope(|s| {
+            for _ in 0..2 {
+                s.spawn(|| sel.set(1));
+            }
+        });
+        let built = built.lock().clone();
+        assert_eq!(built.len(), 2);
+        assert_eq!(out.get(), 102);
+        built.get(1).expect("second inner").set(11);
+        assert_eq!(out.get(), 11);
+        built.first().expect("first inner").set(99);
+        assert_eq!(out.get(), 11);
+    }
 }
