@@ -278,12 +278,16 @@ where
     fn materialize_pipeline(self) -> Cell<Option<T>, CellImmutable> {
         let cell = Cell::<Option<T>, CellMutable>::new(None);
         let weak = cell.downgrade();
-        let callback: Arc<dyn Fn(&Signal<T>) + Send + Sync> = Arc::new(move |signal| {
+        let guard = self.install_emit(Arc::new(move |emit| {
             if let Some(cell) = weak.upgrade() {
-                cell.notify(signal.map(|value| Some(value.clone())));
+                cell.notify(match emit {
+                    Emit::Shared(value) => Signal::value(Some(T::clone(value))),
+                    Emit::Owned(value) => Signal::value(Some(value)),
+                    Emit::Complete => Signal::Complete,
+                    Emit::Error(error) => Signal::Error(Arc::clone(error)),
+                });
             }
-        });
-        let guard = self.install(callback);
+        }));
         cell.own(guard);
         cell.lock()
     }

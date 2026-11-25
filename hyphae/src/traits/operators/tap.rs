@@ -4,7 +4,7 @@ use std::{marker::PhantomData, sync::Arc};
 
 use super::CellValue;
 use crate::{
-    pipeline::{Pipeline, PipelineInstall, PipelineSeed, Seedness},
+    pipeline::{Emit, EmitSink, Pipeline, PipelineInstall, PipelineSeed, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -23,14 +23,19 @@ where
     F: Fn(&T) + Send + Sync + 'static,
 {
     fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
+        self.install_emit(Arc::new(move |emit| callback(&emit.into_signal())))
+    }
+
+    fn install_emit(&self, sink: EmitSink<T>) -> SubscriptionGuard {
         let f = Arc::clone(&self.f);
-        let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> = Arc::new(move |signal: &Signal<T>| {
-            if let Signal::Value(v) = signal {
-                (f)(v.as_ref());
+        self.source.install_emit(Arc::new(move |emit| {
+            match &emit {
+                Emit::Shared(v) => (f)(v),
+                Emit::Owned(v) => (f)(v),
+                Emit::Complete | Emit::Error(_) => {}
             }
-            callback(signal);
-        });
-        self.source.install(wrapped)
+            sink(emit);
+        }))
     }
 }
 
