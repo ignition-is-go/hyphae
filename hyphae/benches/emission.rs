@@ -228,6 +228,15 @@ fn fan_out(width: usize) -> Bench {
 /// subscriber. Work counts diff callbacks; `changes` counts rows delivered,
 /// which must equal `n` per operation.
 fn cellmap_batch(n: u64, domain: Option<Domain>) -> Bench {
+    cellmap_batch_keys(n, domain, |i, k| (k, i + 1))
+}
+
+/// [`cellmap_batch`] with operation `i`'s `k`th write storing `write(i, k)`.
+fn cellmap_batch_keys(
+    n: u64,
+    domain: Option<Domain>,
+    write: impl Fn(u64, u64) -> (u64, u64) + Send + 'static,
+) -> Bench {
     let domain = domain.unwrap_or_else(Domain::root);
     let work = Arc::new(AtomicU64::new(0));
     let changes = Arc::new(AtomicU64::new(0));
@@ -256,7 +265,8 @@ fn cellmap_batch(n: u64, domain: Option<Domain>) -> Bench {
             for i in first..first + count {
                 domain.batch(|| {
                     for k in 0..n {
-                        m.insert(k, black_box(i + 1));
+                        let (key, value) = write(i, k);
+                        m.insert(key, black_box(value));
                     }
                 });
             }
@@ -476,6 +486,12 @@ fn cases() -> Vec<Case> {
             cellmap_batch(n, None)
         }));
     }
+    cases.push(case("cellmap_batch_same_key/16", "H4", 20_000, || {
+        cellmap_batch_keys(16, None, |i, k| (0, i * 16 + k + 1))
+    }));
+    cases.push(case("cellmap_batch_bulk/50000", "H4", 20, || {
+        cellmap_batch(50_000, None)
+    }));
     for threads in [1usize, 4] {
         cases.push(case(
             format!("writers/disjoint/{threads}"),
