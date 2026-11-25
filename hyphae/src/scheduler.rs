@@ -174,7 +174,7 @@ use std::{
 };
 
 use parking_lot::{Condvar, Mutex};
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use uuid::Uuid;
 
 use crate::traits::DepNode;
@@ -417,14 +417,6 @@ impl Drop for SuspendedBatch {
     }
 }
 
-// Height-cache invalidation is **per-node**, not global. Each cell carries its
-// own `height_epoch` (see `CellInner::height_epoch`); an edge change bumps only
-// the changed cell and its transitive dependents' epochs
-// (`crate::cell::invalidate_height_cone`), so a topology-churning knit no longer
-// flushes every cached height in the process. There is deliberately no global
-// epoch counter here anymore — a cached height is validated against its own
-// node's epoch in `height_dfs`.
-
 /// One domain's propagation tick queue (the root domain's is the process-wide
 /// [`TICK`], a child domain's lives in its [`DomainInner`]): height-ordered and
 /// last-write-wins-coalesced per cell (see module docs). Every thread's
@@ -571,46 +563,11 @@ impl<'a> TickRef<'a> {
     }
 }
 
-/// The cell's propagation height, `1 + max(dep.height)` (sources are 0), read
-/// from its persistent per-node cache when the cache is current for `epoch` and
-/// recomputed (and re-cached) otherwise. In a stable topology this is one atomic
-/// load; `deps()` is walked only on the first read after an edge change.
+/// The node's propagation height. Heights are maintained incrementally as
+/// edges are added (see `crate::cell::raise_height`), so this is one atomic
+/// load for a cell.
 fn compute_height(node: &dyn DepNode) -> u64 {
-    let mut stack = FxHashSet::default();
-    height_dfs(node, &mut stack)
-}
-
-/// Height DFS backing [`compute_height`]. Each node's [`DepNode::height_cache`]
-/// packs `(height_epoch << 32) | height` and is validated against that node's
-/// *own* [`DepNode::height_epoch`] — so a settled subgraph stays cached even
-/// while an unrelated (or downstream) part of the graph is churning, and only
-/// nodes whose cone was invalidated recompute. `stack` breaks dependency cycles
-/// — a back-edge to a node already on the current path contributes height 0
-/// rather than recursing forever. Nodes without an epoch (non-cell `DepNode`s)
-/// have no stable cache slot and are recomputed each read.
-fn height_dfs(node: &dyn DepNode, stack: &mut FxHashSet<Uuid>) -> u64 {
-    let epoch = node
-        .height_epoch()
-        .map(|e| u32::try_from(e.load(Ordering::Relaxed)).unwrap_or(u32::MAX));
-    if let (Some(cache), Some(epoch)) = (node.height_cache(), epoch) {
-        let packed = cache.load(Ordering::Relaxed);
-        if u32::try_from(packed >> 32).unwrap_or(u32::MAX) == epoch {
-            return packed & 0xFFFF_FFFF;
-        }
-    }
-    let id = node.id();
-    if !stack.insert(id) {
-        return 0;
-    }
-    let mut height = 0u64;
-    for dep in node.deps() {
-        height = height.max(height_dfs(dep.as_ref(), stack).saturating_add(1));
-    }
-    stack.remove(&id);
-    if let (Some(cache), Some(epoch)) = (node.height_cache(), epoch) {
-        cache.store((u64::from(epoch) << 32) | height, Ordering::Relaxed);
-    }
-    height
+    node.height()
 }
 
 /// Whether a batch is active on any thread for `domain`'s tick (`None` is

@@ -63,13 +63,11 @@ pub(crate) struct CellInner<T> {
     /// The error, if any. Cold path — only written when the cell errors,
     /// read by error/subscribe paths.
     pub(crate) error: Mutex<Option<Arc<anyhow::Error>>>,
-    /// Scheduler height cache: packed `(epoch << 32) | height`. The scheduler
-    /// computes a cell's propagation height (`1 + max(dep.height)`) once per
-    /// topology epoch and caches it here, so a steady-state batch reads height
-    /// as a single atomic load instead of walking `deps()` every notify. `0`
-    /// means "never computed" (epoch 0 is never current). Invalidated lazily by
-    /// bumping the global topology epoch on any edge change.
-    pub(crate) height_cache: std::sync::atomic::AtomicU64,
+    /// Propagation height. Invariant: strictly greater than the height of
+    /// every source this cell owns a guard on. Only ever raised (see
+    /// [`raise_height`]); heights must be valid, not minimal, so removing an
+    /// edge leaves it as is.
+    pub(crate) height: std::sync::atomic::AtomicU64,
     /// Scheduler coalescing policy. When `true`, the scheduler enqueues every
     /// notify from this cell as a distinct height-ordered op instead of
     /// last-write-wins coalescing them — preserving the event semantics
@@ -79,21 +77,12 @@ pub(crate) struct CellInner<T> {
     /// the fact via [`Cell::no_coalesce`]. Default `false` (coalesce), so the
     /// behavior-cell majority gets the glitch-free win.
     pub(crate) no_coalesce: AtomicBool,
-    /// Per-node height epoch for localized cache invalidation. Bumped whenever
-    /// an edge change in this cell's transitive-dependency cone could change its
-    /// height; `height_cache` is tagged with the epoch it was computed under and
-    /// recomputed only when they differ. Starts at 1 so a zero-initialized
-    /// `height_cache` reads as stale. Replaces the old process-global topology
-    /// epoch (which flushed *every* cached height on any edge change — pathologically
-    /// costly during a topology-churning knit).
-    pub(crate) height_epoch: std::sync::atomic::AtomicU64,
-    /// Weak back-edges to the cells whose height depends (transitively) on this
-    /// one — the invalidation cone walked when this cell's deps change (see
-    /// [`invalidate_height_cone`]). Weak so a dependent's death doesn't pin it
-    /// here; the walk prunes dead entries. May over-approximate (a stale entry
-    /// only causes a harmless extra recompute) but must never miss a live
-    /// dependent, or that dependent would keep a stale height (a glitch).
-    pub(crate) height_dependents: Mutex<Vec<std::sync::Weak<dyn HeightInvalidate>>>,
+    /// Weak back-edges to the cells that own a guard on this one: the cells a
+    /// raise of this cell's height must also raise (see [`raise_height`]).
+    /// Weak so a dependent's death doesn't pin it here; dead entries are
+    /// pruned on read. May over-approximate (a stale entry only over-raises)
+    /// but must never miss a live dependent.
+    pub(crate) height_dependents: Mutex<Vec<std::sync::Weak<dyn HeightNode>>>,
     /// The child scheduling domain this cell belongs to, fixed at birth from
     /// the creating thread's ambient domain. `None` is the root domain.
     pub(crate) domain: Option<Arc<crate::scheduler::domain::DomainInner>>,
@@ -162,9 +151,8 @@ impl<T: CellValue> Cell<T, CellMutable> {
             completed: AtomicBool::new(false),
             errored: AtomicBool::new(false),
             error: Mutex::new(None),
-            height_cache: std::sync::atomic::AtomicU64::new(0),
+            height: std::sync::atomic::AtomicU64::new(0),
             no_coalesce: AtomicBool::new(crate::scheduler::birth_no_coalesce()),
-            height_epoch: std::sync::atomic::AtomicU64::new(1),
             height_dependents: Mutex::new(Vec::new()),
             domain: crate::scheduler::domain::birth_domain(),
             caller: Location::caller(),
@@ -315,18 +303,23 @@ impl<T, M> Cell<T, M> {
     where
         T: Send + Sync + 'static,
     {
-        // Register this cell as a height-dependent of the guard's source (so a
-        // later edge change there invalidates our cached height), then invalidate
-        // our own height cone — our dependency set just changed. Localized: only
-        // this cell and its transitive dependents recompute, not the whole graph.
-        {
-            let erased: Arc<dyn HeightInvalidate> = self.inner.clone();
-            let dep = Arc::downgrade(&erased);
-            guard.source().add_height_dependent(dep);
-        }
+        let min_height = self.register_height_edge(&guard);
         let previous = self.inner.owned.lock().insert(Uuid::new_v4(), guard);
         drop(previous);
-        invalidate_height_cone(self.inner.as_ref());
+        raise_height(self.inner.as_ref(), min_height);
+    }
+
+    /// Register this cell as a height dependent of `guard`'s source and return
+    /// the height this cell needs to stay above it. Registration comes first
+    /// so a concurrent raise of the source either sees this cell in its
+    /// dependents or happened before the height read here.
+    fn register_height_edge(&self, guard: &SubscriptionGuard) -> u64
+    where
+        T: Send + Sync + 'static,
+    {
+        let erased: Arc<dyn HeightNode> = self.inner.clone();
+        guard.source().add_height_dependent(Arc::downgrade(&erased));
+        guard.source().height().saturating_add(1)
     }
 
     /// Take ownership of a subscription guard with a stable key.
@@ -346,20 +339,12 @@ impl<T, M> Cell<T, M> {
             drop(guard);
             crate::scheduler::domain::reject(error);
         }
-        // Register as a height-dependent of the new source before it moves into
-        // `owned`. The replaced guard's stale back-edge on the *old* source is
-        // left to be pruned lazily — a stale dependent only over-invalidates (a
-        // harmless extra recompute), never under-invalidates.
-        {
-            let erased: Arc<dyn HeightInvalidate> = self.inner.clone();
-            let dep = Arc::downgrade(&erased);
-            guard.source().add_height_dependent(dep);
-        }
+        // The replaced guard's back-edge on its old source stays; a stale
+        // dependent only over-raises, never under-raises.
+        let min_height = self.register_height_edge(&guard);
         let previous = self.inner.owned.lock().insert(key, guard);
         drop(previous);
-        // switch_map rewiring changed our dep set: invalidate our height cone
-        // (this cell + its transitive dependents), not the whole process.
-        invalidate_height_cone(self.inner.as_ref());
+        raise_height(self.inner.as_ref(), min_height);
     }
 }
 
@@ -393,63 +378,63 @@ impl<T, M> Cell<T, M> {
     }
 }
 
-/// Type-erased handle to a node participating in localized height-cache
-/// invalidation. Implemented on the stable `Arc<CellInner<T>>` (not the ephemeral
-/// `Cell` handle that `DepNode` rides), so a `Weak<dyn HeightInvalidate>` can name
-/// a specific cell for its lifetime — the identity the dependency back-edges need
-/// and `DepNode` can't provide.
+/// Type-erased handle to a cell's height and height dependents. Implemented
+/// on the stable `Arc<CellInner<T>>` (not the ephemeral `Cell` handle that
+/// `DepNode` rides), so a `Weak<dyn HeightNode>` names a specific cell for its
+/// lifetime.
 ///
 /// `pub` only because it appears in the (public) `DepNode::add_height_dependent`
 /// signature; it is an internal scheduler detail, not stable API.
 #[doc(hidden)]
-pub trait HeightInvalidate: Send + Sync {
-    fn hi_id(&self) -> Uuid;
-    /// Advance this node's height epoch, marking its cached height stale.
-    fn hi_bump_epoch(&self);
-    /// Snapshot the live dependents (pruning dead weaks) for the cone walk.
-    fn hi_dependents(&self) -> Vec<std::sync::Weak<dyn HeightInvalidate>>;
+pub trait HeightNode: Send + Sync {
+    fn hn_id(&self) -> Uuid;
+    fn hn_height(&self) -> &std::sync::atomic::AtomicU64;
+    /// Snapshot the live dependents, pruning dead weaks.
+    fn hn_dependents(&self) -> Vec<std::sync::Weak<dyn HeightNode>>;
 }
 
-impl<T: Send + Sync> HeightInvalidate for CellInner<T> {
-    fn hi_id(&self) -> Uuid {
+impl<T: Send + Sync> HeightNode for CellInner<T> {
+    fn hn_id(&self) -> Uuid {
         self.id
     }
-    fn hi_bump_epoch(&self) {
-        self.height_epoch.fetch_add(1, Ordering::Relaxed);
+    fn hn_height(&self) -> &std::sync::atomic::AtomicU64 {
+        &self.height
     }
-    fn hi_dependents(&self) -> Vec<std::sync::Weak<dyn HeightInvalidate>> {
+    fn hn_dependents(&self) -> Vec<std::sync::Weak<dyn HeightNode>> {
         let mut g = self.height_dependents.lock();
-        // Amortized prune: a dropped dependent leaves a dead weak; sweep them on
-        // read. NOTE: this bounds the vec to the live dependent set only because
-        // `add_height_dependent` also rejects duplicates — retain alone cannot
-        // remove a repeat registration of a still-live dependent (rship lv-c065).
+        // NOTE: this bounds the vec to the live dependent set only because
+        // `add_height_dependent` also rejects duplicates (rship lv-c065).
         g.retain(|w| w.strong_count() > 0);
         g.clone()
     }
 }
 
-/// Invalidate the height cache of `start` and every node whose height depends
-/// (transitively) on it — the downstream cone. Called when `start`'s dependency
-/// set changes (`own`/`own_keyed`), so exactly the heights that could have moved
-/// are recomputed on their next read, leaving unrelated (and already-settled)
-/// subgraphs cached.
-///
-/// Bounds/safety: the visited set breaks cycles and de-dups diamonds; dead weaks
-/// (a dependent dropped concurrently — e.g. a `switch_map` inner being torn down
-/// in the same wave that invalidates it) upgrade to `None` and are skipped. The
-/// walk may over-invalidate (a stale weak still upgrades until pruned → one extra
-/// recompute) but never under-invalidates a live dependent.
-pub(crate) fn invalidate_height_cone(start: &dyn HeightInvalidate) {
-    start.hi_bump_epoch();
-    let mut visited = std::collections::HashSet::new();
-    visited.insert(start.hi_id());
-    let mut stack = start.hi_dependents();
-    while let Some(weak) = stack.pop() {
-        let Some(node) = weak.upgrade() else { continue };
-        if visited.insert(node.hi_id()) {
-            node.hi_bump_epoch();
-            stack.extend(node.hi_dependents());
+/// Raise `start`'s height to at least `min`, then raise every transitive
+/// dependent that would no longer sit strictly above its source. Heights only
+/// grow, through `fetch_max`, so concurrent raises compose; each thread walks
+/// on from the nodes it raised itself. A walk stops at a node already on its
+/// path, so a dependency cycle ends the walk instead of raising forever.
+pub(crate) fn raise_height(start: &dyn HeightNode, min: u64) {
+    if start.hn_height().fetch_max(min, Ordering::AcqRel) >= min {
+        return;
+    }
+    let mut path = vec![start.hn_id()];
+    raise_dependents(start, min, &mut path);
+}
+
+fn raise_dependents(node: &dyn HeightNode, height: u64, path: &mut Vec<Uuid>) {
+    let min = height.saturating_add(1);
+    for weak in node.hn_dependents() {
+        let Some(dependent) = weak.upgrade() else {
+            continue;
+        };
+        let id = dependent.hn_id();
+        if path.contains(&id) || dependent.hn_height().fetch_max(min, Ordering::AcqRel) >= min {
+            continue;
         }
+        path.push(id);
+        raise_dependents(dependent.as_ref(), min, path);
+        path.pop();
     }
 }
 
@@ -479,15 +464,11 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
         sources
     }
 
-    fn height_cache(&self) -> Option<&std::sync::atomic::AtomicU64> {
-        Some(&self.inner.height_cache)
+    fn height(&self) -> u64 {
+        self.inner.height.load(Ordering::Acquire)
     }
 
-    fn height_epoch(&self) -> Option<&std::sync::atomic::AtomicU64> {
-        Some(&self.inner.height_epoch)
-    }
-
-    fn add_height_dependent(&self, dep: std::sync::Weak<dyn HeightInvalidate>) {
+    fn add_height_dependent(&self, dep: std::sync::Weak<dyn HeightNode>) {
         let mut deps = self.inner.height_dependents.lock();
         // Prune dead entries, then register only if this dependent isn't already
         // here. Both steps are load-bearing: `own`/`own_keyed` re-register the
@@ -1134,6 +1115,131 @@ mod height_dependents_tests {
             len <= 2,
             "switch_map re-knit onto a cached inner cell grew dependents to {len}"
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::indexing_slicing)]
+mod height_invariant_tests {
+    use std::sync::Arc;
+
+    use parking_lot::Mutex;
+
+    use crate::{
+        Cell, DepNode, Gettable, JoinExt, MapExt, Materialize, Mutable, Signal, SwitchMapExt,
+        Watchable, batch, cell::CellMutable,
+    };
+
+    fn assert_edges_valid(cells: &[Cell<u64, CellMutable>]) {
+        for cell in cells {
+            let height = cell.height();
+            for guard in cell.inner.owned.lock().values() {
+                let source = guard.source().height();
+                assert!(
+                    height > source,
+                    "edge violates height order: {source} -> {height}"
+                );
+            }
+        }
+    }
+
+    fn lcg(state: &mut u64) -> usize {
+        *state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        usize::try_from(*state >> 33).unwrap_or(0)
+    }
+
+    #[test]
+    fn random_edits_keep_every_edge_ordered() {
+        let mut state = 7u64;
+        let cells: Vec<_> = (0..24).map(|_| Cell::new(0u64)).collect();
+        let keys: Vec<_> = (0..4).map(|_| uuid::Uuid::new_v4()).collect();
+        for _ in 0..2000 {
+            let dst = 1 + lcg(&mut state) % (cells.len() - 1);
+            let src = lcg(&mut state) % dst;
+            let guard = cells[src].subscribe(|_| {});
+            if lcg(&mut state).is_multiple_of(2) {
+                cells[dst].own_keyed(keys[lcg(&mut state) % keys.len()], guard);
+            } else {
+                cells[dst].own(guard);
+            }
+            assert_edges_valid(&cells);
+        }
+    }
+
+    #[test]
+    fn concurrent_edits_keep_every_edge_ordered() {
+        let cells: Arc<Vec<_>> = Arc::new((0..24).map(|_| Cell::new(0u64)).collect());
+        std::thread::scope(|scope| {
+            for seed in 0..4u64 {
+                let cells = Arc::clone(&cells);
+                scope.spawn(move || {
+                    let mut state = seed + 1;
+                    let key = uuid::Uuid::new_v4();
+                    for _ in 0..1000 {
+                        let dst = 1 + lcg(&mut state) % (cells.len() - 1);
+                        let src = lcg(&mut state) % dst;
+                        cells[dst].own_keyed(key, cells[src].subscribe(|_| {}));
+                    }
+                });
+            }
+        });
+        assert_edges_valid(&cells);
+    }
+
+    #[test]
+    fn dependency_cycle_terminates() {
+        let a = Cell::new(0u64);
+        let b = Cell::new(0u64);
+        b.own(a.subscribe(|_| {}));
+        a.own(b.subscribe(|_| {}));
+        let c = Cell::new(0u64);
+        a.own(c.subscribe(|_| {}));
+        assert!(b.height() > c.height());
+    }
+
+    /// A diamond whose one branch switches onto a taller inner after the join
+    /// was built must stay glitch-free: the join has to be raised above it.
+    #[test]
+    fn switch_to_taller_inner_keeps_diamond_glitch_free() {
+        let source = Cell::new(0u64);
+        let mut deep = source.clone().map(|x| *x).materialize();
+        for _ in 0..4 {
+            deep = deep.clone().map(|x| *x).materialize();
+        }
+        let selector = Cell::new(false);
+        let (shallow, tall) = (source.clone().lock(), deep);
+        let right = selector
+            .clone()
+            .switch_map(move |use_tall: &bool| {
+                if *use_tall {
+                    tall.clone()
+                } else {
+                    shallow.clone()
+                }
+            })
+            .materialize();
+        let left = source.clone().map(|x| *x).materialize();
+        let joined = left.join(right).materialize();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        let _guard = joined.subscribe(move |signal| {
+            if let Signal::Value(pair) = signal {
+                sink.lock().push(**pair);
+            }
+        });
+        selector.set(true);
+        seen.lock().clear();
+        for i in 1..=20 {
+            batch(|| source.set(i));
+        }
+        let seen = std::mem::take(&mut *seen.lock());
+        assert!(
+            seen.iter().all(|(l, r)| l == r),
+            "glitch through diamond: {seen:?}"
+        );
+        assert_eq!(joined.get(), (20, 20));
     }
 }
 
