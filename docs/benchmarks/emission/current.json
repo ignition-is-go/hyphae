@@ -1,20 +1,20 @@
 {
-  "commit": "bca9f3380b54e2a49c8380d459e6943229b86042",
+  "commit": "57e2793c0d604b346f128640c3e472b058db2a4d",
   "dirty": false,
   "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)",
   "cpus": "6-11",
   "runs": 5,
   "loadavg_before": [
-    "23.75",
-    "40.47",
-    "32.54"
+    "14.38",
+    "14.15",
+    "10.43"
   ],
   "loadavg_after": [
-    "23.89",
-    "38.68",
-    "32.24"
+    "15.06",
+    "15.12",
+    "11.94"
   ],
-  "seconds": 36.1,
+  "seconds": 292.4,
   "cases": {
     "eager_map_one": {
       "covers": "reference",
@@ -24,16 +24,16 @@
       "work_per_op": 1.0,
       "work_spread": 0.0,
       "errors": 0,
-      "ns_per_op": 106.87,
-      "ns_min": 103.73,
-      "ns_max": 107.81,
-      "noise_pct": 3.82,
+      "ns_per_op": 100.76,
+      "ns_min": 100.2,
+      "ns_max": 103.5,
+      "noise_pct": 3.28,
       "run_medians": [
-        106.92,
-        103.73,
-        106.87,
-        106.36,
-        107.81
+        100.2,
+        103.5,
+        100.76,
+        100.44,
+        102.22
       ]
     },
     "batch_map_one": {
@@ -44,16 +44,16 @@
       "work_per_op": 1.0,
       "work_spread": 0.0,
       "errors": 0,
-      "ns_per_op": 290.06,
-      "ns_min": 280.57,
-      "ns_max": 320.62,
-      "noise_pct": 13.81,
+      "ns_per_op": 275.16,
+      "ns_min": 273.42,
+      "ns_max": 281.53,
+      "noise_pct": 2.95,
       "run_medians": [
-        320.62,
-        280.57,
-        294.69,
-        290.06,
-        284.35
+        281.53,
+        275.16,
+        273.42,
+        277.75,
+        273.92
       ]
     },
     "fused_chain/4": {
@@ -64,16 +64,16 @@
       "work_per_op": 1.0,
       "work_spread": 0.0,
       "errors": 0,
-      "ns_per_op": 292.6,
-      "ns_min": 285.72,
-      "ns_max": 317.24,
-      "noise_pct": 10.77,
+      "ns_per_op": 280.1,
+      "ns_min": 265.0,
+      "ns_max": 302.32,
+      "noise_pct": 13.32,
       "run_medians": [
-        317.24,
-        285.72,
-        292.6,
-        286.02,
-        314.44
+        275.53,
+        280.1,
+        282.95,
+        302.32,
+        265.0
       ]
     },
     "fused_chain/8": {
@@ -84,16 +84,16 @@
       "work_per_op": 1.0,
       "work_spread": 0.0,
       "errors": 0,
-      "ns_per_op": 310.95,
-      "ns_min": 301.22,
-      "ns_max": 339.16,
-      "noise_pct": 12.2,
+      "ns_per_op": 293.01,
+      "ns_min": 287.72,
+      "ns_max": 321.67,
+      "noise_pct": 11.59,
       "run_medians": [
-        339.16,
-        301.22,
-        310.95,
-        306.52,
-        322.78
+        293.01,
+        289.71,
+        297.49,
+        321.67,
+        287.72
       ]
     },
     "fused_mixed": {
@@ -104,16 +104,16 @@
       "work_per_op": 1.0,
       "work_spread": 0.0,
       "errors": 0,
-      "ns_per_op": 301.49,
-      "ns_min": 292.41,
-      "ns_max": 318.98,
-      "noise_pct": 8.81,
+      "ns_per_op": 268.98,
+      "ns_min": 262.14,
+      "ns_max": 301.36,
+      "noise_pct": 14.58,
       "run_medians": [
-        318.98,
-        301.49,
-        292.41,
-        297.29,
-        304.02
+        268.76,
+        274.23,
+        268.98,
+        301.36,
+        262.14
       ]
     },
     "cell_chain/4": {
@@ -124,16 +124,16 @@
       "work_per_op": 1.0,
       "work_spread": 0.0,
       "errors": 0,
-      "ns_per_op": 638.96,
-      "ns_min": 607.8,
-      "ns_max": 708.16,
-      "noise_pct": 15.71,
+      "ns_per_op": 584.32,
+      "ns_min": 576.68,
+      "ns_max": 619.64,
+      "noise_pct": 7.35,
       "run_medians": [
-        708.16,
-        624.48,
-        653.56,
-        638.96,
-        607.8
+        576.68,
+        588.14,
+        577.71,
+        619.64,
+        584.32
       ]
     },
     "cell_chain/16": {
@@ -144,16 +144,16 @@
       "work_per_op": 1.0,
       "work_spread": 0.0,
       "errors": 0,
-      "ns_per_op": 2140.89,
-      "ns_min": 2030.63,
-      "ns_max": 2290.89,
-      "noise_pct": 12.16,
+      "ns_per_op": 1932.75,
+      "ns_min": 1881.81,
+      "ns_max": 2054.4,
+      "noise_pct": 8.93,
       "run_medians": [
-        2290.89,
-        2082.84,
-        2147.76,
-        2140.89,
-        2030.63
+        1881.81,
+        1932.75,
+        2027.63,
+        2054.4,
+        1909.82
       ]
     },
     "fan_out/16": {
@@ -164,36 +164,36 @@
       "work_per_op": 16.0,
       "work_spread": 0.0,
       "errors": 0,
-      "ns_per_op": 2486.67,
-      "ns_min": 2406.21,
-      "ns_max": 2547.93,
-      "noise_pct": 5.7,
+      "ns_per_op": 2332.35,
+      "ns_min": 2174.76,
+      "ns_max": 2399.02,
+      "noise_pct": 9.62,
       "run_medians": [
-        2441.88,
-        2495.9,
-        2486.67,
-        2547.93,
-        2406.21
+        2399.02,
+        2321.38,
+        2174.76,
+        2359.5,
+        2332.35
       ]
     },
     "fan_out/128": {
       "covers": "H1 H2 H3",
       "allocs_per_op": 277.0,
-      "allocs_spread": 3.0,
+      "allocs_spread": 2.0,
       "bytes_per_op": 14712.0,
       "work_per_op": 128.0,
       "work_spread": 0.0,
       "errors": 0,
-      "ns_per_op": 27196.34,
-      "ns_min": 27053.7,
-      "ns_max": 28964.32,
-      "noise_pct": 7.03,
+      "ns_per_op": 24918.27,
+      "ns_min": 24054.35,
+      "ns_max": 25650.25,
+      "noise_pct": 6.4,
       "run_medians": [
-        27053.7,
-        27196.34,
-        27076.53,
-        28964.32,
-        27849.89
+        24054.35,
+        25138.52,
+        24918.27,
+        25650.25,
+        24462.47
       ]
     },
     "switch_map/changed": {
@@ -204,16 +204,16 @@
       "work_per_op": 1.0,
       "work_spread": 0.0,
       "errors": 0,
-      "ns_per_op": 590.82,
-      "ns_min": 510.73,
-      "ns_max": 652.48,
-      "noise_pct": 23.99,
+      "ns_per_op": 505.62,
+      "ns_min": 475.55,
+      "ns_max": 520.21,
+      "noise_pct": 8.83,
       "run_medians": [
-        590.82,
-        529.4,
-        597.68,
-        652.48,
-        510.73
+        504.92,
+        520.21,
+        505.62,
+        510.76,
+        475.55
       ]
     },
     "switch_map/equal": {
@@ -224,16 +224,16 @@
       "work_per_op": 0.0,
       "work_spread": 0.0,
       "errors": 0,
-      "ns_per_op": 204.69,
-      "ns_min": 181.14,
-      "ns_max": 224.16,
-      "noise_pct": 21.02,
+      "ns_per_op": 182.18,
+      "ns_min": 176.72,
+      "ns_max": 191.68,
+      "noise_pct": 8.21,
       "run_medians": [
-        224.16,
-        181.14,
-        195.5,
-        204.69,
-        206.43
+        191.68,
+        182.18,
+        182.0,
+        184.81,
+        176.72
       ]
     },
     "graph_edit/4": {
@@ -244,16 +244,16 @@
       "work_per_op": 1.0,
       "work_spread": 0.0,
       "errors": 0,
-      "ns_per_op": 1052.89,
-      "ns_min": 979.05,
-      "ns_max": 1168.52,
-      "noise_pct": 18.0,
+      "ns_per_op": 929.24,
+      "ns_min": 919.18,
+      "ns_max": 986.7,
+      "noise_pct": 7.27,
       "run_medians": [
-        1168.52,
-        979.05,
-        1086.64,
-        1036.82,
-        1052.89
+        919.18,
+        927.46,
+        965.34,
+        986.7,
+        929.24
       ]
     },
     "graph_edit/16": {
@@ -264,16 +264,16 @@
       "work_per_op": 1.0,
       "work_spread": 0.0,
       "errors": 0,
-      "ns_per_op": 2706.09,
-      "ns_min": 2580.78,
-      "ns_max": 2776.32,
-      "noise_pct": 7.23,
+      "ns_per_op": 2446.36,
+      "ns_min": 2293.31,
+      "ns_max": 2726.79,
+      "noise_pct": 17.72,
       "run_medians": [
-        2776.32,
-        2580.78,
-        2706.09,
-        2738.21,
-        2635.94
+        2726.79,
+        2293.31,
+        2446.36,
+        2548.18,
+        2319.16
       ]
     },
     "cellmap_batch/1": {
@@ -284,16 +284,16 @@
       "work_per_op": 1.0,
       "work_spread": 0.0,
       "errors": 0,
-      "ns_per_op": 306.7,
-      "ns_min": 280.05,
-      "ns_max": 325.91,
-      "noise_pct": 14.95,
+      "ns_per_op": 283.45,
+      "ns_min": 272.98,
+      "ns_max": 290.46,
+      "noise_pct": 6.17,
       "run_medians": [
-        325.04,
-        296.03,
-        325.91,
-        306.7,
-        280.05
+        287.24,
+        274.28,
+        290.46,
+        283.45,
+        272.98
       ]
     },
     "cellmap_batch/16": {
@@ -304,36 +304,116 @@
       "work_per_op": 1.0,
       "work_spread": 0.0,
       "errors": 0,
-      "ns_per_op": 1683.98,
-      "ns_min": 1569.93,
-      "ns_max": 1837.61,
-      "noise_pct": 15.9,
+      "ns_per_op": 1500.98,
+      "ns_min": 1423.11,
+      "ns_max": 1552.91,
+      "noise_pct": 8.65,
       "run_medians": [
-        1749.59,
-        1683.98,
-        1837.61,
-        1671.92,
-        1569.93
+        1423.11,
+        1500.98,
+        1517.02,
+        1552.91,
+        1467.25
       ]
     },
     "cellmap_batch/256": {
       "covers": "H4",
       "allocs_per_op": 14.0001,
       "allocs_spread": 0.0,
-      "bytes_per_op": 25344.01,
+      "bytes_per_op": 33280.01,
       "work_per_op": 1.0,
       "work_spread": 0.0,
       "errors": 0,
-      "ns_per_op": 24707.93,
-      "ns_min": 23948.06,
-      "ns_max": 27688.15,
-      "noise_pct": 15.14,
+      "ns_per_op": 23088.76,
+      "ns_min": 22667.83,
+      "ns_max": 25340.67,
+      "noise_pct": 11.58,
       "run_medians": [
-        27688.15,
-        23948.06,
-        26652.58,
-        24707.93,
-        24155.03
+        22667.83,
+        24501.51,
+        23088.76,
+        25340.67,
+        22932.67
+      ]
+    },
+    "cellmap_batch_same_key/16": {
+      "covers": "H4",
+      "allocs_per_op": 38.0,
+      "allocs_spread": 0.0,
+      "bytes_per_op": 1924.0,
+      "work_per_op": 16.0,
+      "work_spread": 0.0,
+      "errors": 0,
+      "ns_per_op": 3140.13,
+      "ns_min": 3013.01,
+      "ns_max": 3402.6,
+      "noise_pct": 12.41,
+      "run_medians": [
+        3061.91,
+        3140.13,
+        3013.01,
+        3236.98,
+        3402.6
+      ]
+    },
+    "cellmap_batch_bulk/50000": {
+      "covers": "H4",
+      "allocs_per_op": 29.0071,
+      "allocs_spread": 0.0,
+      "bytes_per_op": 6422128.4,
+      "work_per_op": 1.0,
+      "work_spread": 0.0,
+      "errors": 0,
+      "ns_per_op": 5446879.1,
+      "ns_min": 5129993.4,
+      "ns_max": 5527689.75,
+      "noise_pct": 7.3,
+      "run_medians": [
+        5527689.75,
+        5129993.4,
+        5225816.4,
+        5494525.4,
+        5446879.1
+      ]
+    },
+    "cellmap_derived_rows/1000": {
+      "covers": "H4",
+      "allocs_per_op": 7070.2607,
+      "allocs_spread": 1.7627999999995154,
+      "bytes_per_op": 440401.73,
+      "work_per_op": 1000.0,
+      "work_spread": 0.0,
+      "errors": 0,
+      "ns_per_op": 1508035.78,
+      "ns_min": 1390879.06,
+      "ns_max": 1737873.52,
+      "noise_pct": 23.01,
+      "run_medians": [
+        1436463.48,
+        1390879.06,
+        1530362.67,
+        1508035.78,
+        1737873.52
+      ]
+    },
+    "cellmap_derived_rows/10000": {
+      "covers": "H4",
+      "allocs_per_op": 70375.5929,
+      "allocs_spread": 0.08569999999599531,
+      "bytes_per_op": 5056272.57,
+      "work_per_op": 10000.0,
+      "work_spread": 0.0,
+      "errors": 0,
+      "ns_per_op": 15211648.55,
+      "ns_min": 13895583.45,
+      "ns_max": 17426562.0,
+      "noise_pct": 23.21,
+      "run_medians": [
+        15203319.5,
+        15211648.55,
+        16380226.25,
+        13895583.45,
+        17426562.0
       ]
     },
     "writers/disjoint/1": {
@@ -344,16 +424,16 @@
       "work_per_op": 1.0,
       "work_spread": 0.0,
       "errors": 0,
-      "ns_per_op": 290.34,
-      "ns_min": 282.6,
-      "ns_max": 317.83,
-      "noise_pct": 12.13,
+      "ns_per_op": 282.16,
+      "ns_min": 265.69,
+      "ns_max": 300.79,
+      "noise_pct": 12.44,
       "run_medians": [
-        301.49,
-        290.34,
-        317.83,
-        282.7,
-        282.6
+        265.69,
+        282.6,
+        300.79,
+        276.01,
+        282.16
       ]
     },
     "writers/overlapping/1": {
@@ -364,56 +444,56 @@
       "work_per_op": 1.0,
       "work_spread": 0.0,
       "errors": 0,
-      "ns_per_op": 425.88,
-      "ns_min": 416.84,
-      "ns_max": 437.19,
-      "noise_pct": 4.78,
+      "ns_per_op": 416.0,
+      "ns_min": 384.94,
+      "ns_max": 436.46,
+      "noise_pct": 12.38,
       "run_medians": [
-        416.84,
-        421.8,
-        425.88,
-        437.19,
-        433.11
+        384.94,
+        436.46,
+        423.35,
+        400.96,
+        416.0
       ]
     },
     "writers/disjoint/4": {
       "covers": "H2",
-      "allocs_per_op": 3.3264,
-      "allocs_spread": 0.012199999999999989,
-      "bytes_per_op": 106.8,
-      "work_per_op": 0.0385,
-      "work_spread": 0.027999999999999997,
+      "allocs_per_op": 3.3208,
+      "allocs_spread": 0.028799999999999937,
+      "bytes_per_op": 106.89,
+      "work_per_op": 0.0312,
+      "work_spread": 0.045500000000000006,
       "errors": 0,
-      "ns_per_op": 329.86,
-      "ns_min": 322.85,
-      "ns_max": 336.09,
-      "noise_pct": 4.01,
+      "ns_per_op": 292.17,
+      "ns_min": 284.21,
+      "ns_max": 305.82,
+      "noise_pct": 7.4,
       "run_medians": [
-        322.85,
-        331.63,
-        336.09,
-        329.86,
-        326.28
+        288.57,
+        300.07,
+        292.17,
+        284.21,
+        305.82
       ]
     },
     "writers/overlapping/4": {
       "covers": "H2",
-      "allocs_per_op": 3.6738,
-      "allocs_spread": 0.07120000000000015,
-      "bytes_per_op": 123.23,
-      "work_per_op": 0.0246,
-      "work_spread": 0.025,
+      "allocs_per_op": 3.6487,
+      "allocs_spread": 0.025399999999999867,
+      "bytes_per_op": 122.77,
+      "work_per_op": 0.0187,
+      "work_spread": 0.0046,
       "errors": 0,
-      "ns_per_op": 314.94,
-      "ns_min": 314.36,
-      "ns_max": 319.49,
-      "noise_pct": 1.63,
+      "ns_per_op": 280.49,
+      "ns_min": 273.86,
+      "ns_max": 309.05,
+      "noise_pct": 12.55,
       "run_medians": [
-        314.94,
-        319.23,
-        319.49,
-        314.36,
-        314.54
+        279.12,
+        289.04,
+        280.49,
+        273.86,
+        309.05
       ]
     },
     "domain/batch_map_one": {
@@ -424,16 +504,16 @@
       "work_per_op": 1.0,
       "work_spread": 0.0,
       "errors": 0,
-      "ns_per_op": 300.84,
-      "ns_min": 293.86,
-      "ns_max": 337.06,
-      "noise_pct": 14.36,
+      "ns_per_op": 288.88,
+      "ns_min": 275.68,
+      "ns_max": 297.95,
+      "noise_pct": 7.71,
       "run_medians": [
-        293.86,
-        303.23,
-        337.06,
-        300.84,
-        296.69
+        275.68,
+        296.63,
+        279.79,
+        288.88,
+        297.95
       ]
     },
     "domain/cell_chain/4": {
@@ -444,16 +524,16 @@
       "work_per_op": 1.0,
       "work_spread": 0.0,
       "errors": 0,
-      "ns_per_op": 632.51,
-      "ns_min": 616.53,
-      "ns_max": 696.42,
-      "noise_pct": 12.63,
+      "ns_per_op": 609.09,
+      "ns_min": 591.54,
+      "ns_max": 626.95,
+      "noise_pct": 5.81,
       "run_medians": [
-        632.51,
-        639.25,
-        696.42,
-        621.74,
-        616.53
+        591.54,
+        602.14,
+        626.95,
+        609.09,
+        622.75
       ]
     },
     "domain/cellmap_batch/16": {
@@ -464,16 +544,16 @@
       "work_per_op": 1.0,
       "work_spread": 0.0,
       "errors": 0,
-      "ns_per_op": 1721.99,
-      "ns_min": 1629.06,
-      "ns_max": 1862.75,
-      "noise_pct": 13.57,
+      "ns_per_op": 1574.01,
+      "ns_min": 1518.13,
+      "ns_max": 1653.82,
+      "noise_pct": 8.62,
       "run_medians": [
-        1721.99,
-        1767.27,
-        1862.75,
-        1629.06,
-        1665.0
+        1574.01,
+        1577.68,
+        1518.13,
+        1528.73,
+        1653.82
       ]
     }
   }
