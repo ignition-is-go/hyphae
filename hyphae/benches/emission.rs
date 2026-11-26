@@ -27,7 +27,7 @@ use std::{
     hint::black_box,
     sync::{
         Arc, Barrier,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     thread,
     time::Instant,
@@ -282,6 +282,75 @@ fn cellmap_batch_keys(
     }
 }
 
+/// `source -> derived -> consumer thread`. One batch writes `n` rows to
+/// `source`; a diff subscriber copies each row into `derived` while the batch
+/// is delivered, so every derived row is its own write and its own delivery;
+/// `derived`'s diff subscriber hands each diff to a consumer thread, which
+/// drops it. Work counts derived deliveries.
+fn cellmap_derived_rows(n: u64) -> Bench {
+    const CONSUMERS: usize = 8;
+    fn rows<'a>(diff: &'a MapDiff<u64, u64>, out: &mut Vec<(&'a u64, &'a u64)>) {
+        match diff {
+            MapDiff::Insert { key, value } => out.push((key, value)),
+            MapDiff::Update { key, new_value, .. } => out.push((key, new_value)),
+            MapDiff::Batch { changes } => changes.iter().for_each(|d| rows(d, out)),
+            MapDiff::Initial { .. } | MapDiff::Remove { .. } => {}
+        }
+    }
+    let work = Arc::new(AtomicU64::new(0));
+    let (senders, consumers): (Vec<_>, Vec<_>) = (0..CONSUMERS)
+        .map(|_| {
+            let (tx, rx) = std::sync::mpsc::channel::<Box<MapDiff<u64, u64>>>();
+            let consumer = std::thread::spawn(move || {
+                while let Ok(diff) = rx.recv() {
+                    black_box(format!("{diff:?}"));
+                }
+            });
+            (tx, consumer)
+        })
+        .unzip();
+    let source = CellMap::<u64, u64>::new();
+    let derived = CellMap::<u64, u64>::new();
+    let d = derived.clone();
+    let copy = source.subscribe_diffs(move |diff: &MapDiff<u64, u64>| {
+        let mut out = Vec::new();
+        rows(diff, &mut out);
+        for (key, value) in out {
+            d.insert(*key, *value);
+        }
+    });
+    let (w, next) = (Arc::clone(&work), AtomicUsize::new(0));
+    let send = derived.subscribe_diffs(move |diff: &MapDiff<u64, u64>| {
+        if !matches!(diff, MapDiff::Initial { .. }) {
+            w.fetch_add(1, Ordering::Relaxed);
+            let lane = next.fetch_add(1, Ordering::Relaxed) % CONSUMERS;
+            drop(senders[lane].send(Box::new(diff.clone())));
+        }
+    });
+    let ops_done = Arc::new(AtomicU64::new(0));
+    let (done, s) = (Arc::clone(&ops_done), source.clone());
+    let delivered = Arc::clone(&work);
+    Bench {
+        run: Box::new(move |first, count| {
+            for i in first..first + count {
+                hyphae::batch(|| {
+                    for k in 0..n {
+                        s.insert(k, black_box(i + 1));
+                    }
+                });
+            }
+            done.fetch_add(count, Ordering::Relaxed);
+        }),
+        work,
+        errors: Box::new(move || {
+            delivered
+                .load(Ordering::Relaxed)
+                .abs_diff(ops_done.load(Ordering::Relaxed) * n)
+        }),
+        _keep: Box::new((source, derived, copy, send, consumers)),
+    }
+}
+
 /// `outer -> switch_map(cached inner) [-> map(+1) x tail, materialized] ->
 /// subscriber`. `changing` alternates the outer key between two cached inner
 /// cells; otherwise every operation rewrites the outer with the value it
@@ -492,6 +561,14 @@ fn cases() -> Vec<Case> {
     cases.push(case("cellmap_batch_bulk/50000", "H4", 20, || {
         cellmap_batch(50_000, None)
     }));
+    for (n, ops) in [(1_000, 200), (10_000, 20)] {
+        cases.push(case(
+            format!("cellmap_derived_rows/{n}"),
+            "H4",
+            ops,
+            move || cellmap_derived_rows(n),
+        ));
+    }
     for threads in [1usize, 4] {
         cases.push(case(
             format!("writers/disjoint/{threads}"),
