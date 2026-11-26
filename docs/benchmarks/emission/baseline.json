@@ -1,0 +1,460 @@
+{
+  "commit": "e977a479f64037e1d0d993b777009e17400b672c",
+  "dirty": true,
+  "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)",
+  "cpus": "6-11",
+  "runs": 5,
+  "loadavg_before": [
+    "13.05",
+    "9.02",
+    "7.48"
+  ],
+  "loadavg_after": [
+    "12.62",
+    "9.44",
+    "7.69"
+  ],
+  "seconds": 42.2,
+  "cases": {
+    "eager_map_one": {
+      "covers": "reference",
+      "allocs_per_op": 2.0,
+      "allocs_spread": 0.0,
+      "bytes_per_op": 48.0,
+      "work_per_op": 1.0,
+      "work_spread": 0.0,
+      "errors": 0,
+      "ns_per_op": 99.09,
+      "ns_min": 96.73,
+      "ns_max": 102.65,
+      "noise_pct": 5.97,
+      "run_medians": [
+        96.73,
+        102.65,
+        101.62,
+        99.09,
+        97.65
+      ]
+    },
+    "batch_map_one": {
+      "covers": "H1 H2 H3 H7",
+      "allocs_per_op": 8.0,
+      "allocs_spread": 0.0,
+      "bytes_per_op": 320.0,
+      "work_per_op": 1.0,
+      "work_spread": 0.0,
+      "errors": 0,
+      "ns_per_op": 342.5,
+      "ns_min": 329.97,
+      "ns_max": 354.65,
+      "noise_pct": 7.21,
+      "run_medians": [
+        348.18,
+        354.65,
+        329.97,
+        342.5,
+        339.94
+      ]
+    },
+    "fused_chain/4": {
+      "covers": "H5",
+      "allocs_per_op": 11.0,
+      "allocs_spread": 0.0,
+      "bytes_per_op": 392.0,
+      "work_per_op": 1.0,
+      "work_spread": 0.0,
+      "errors": 0,
+      "ns_per_op": 354.53,
+      "ns_min": 353.41,
+      "ns_max": 362.03,
+      "noise_pct": 2.43,
+      "run_medians": [
+        355.58,
+        354.36,
+        353.41,
+        362.03,
+        354.53
+      ]
+    },
+    "fused_chain/8": {
+      "covers": "H5",
+      "allocs_per_op": 15.0,
+      "allocs_spread": 0.0,
+      "bytes_per_op": 488.0,
+      "work_per_op": 1.0,
+      "work_spread": 0.0,
+      "errors": 0,
+      "ns_per_op": 398.51,
+      "ns_min": 394.42,
+      "ns_max": 404.91,
+      "noise_pct": 2.63,
+      "run_medians": [
+        398.51,
+        394.42,
+        404.91,
+        397.5,
+        398.9
+      ]
+    },
+    "cell_chain/4": {
+      "covers": "H1 H2 H3 H7",
+      "allocs_per_op": 20.0,
+      "allocs_spread": 0.0,
+      "bytes_per_op": 800.0,
+      "work_per_op": 1.0,
+      "work_spread": 0.0,
+      "errors": 0,
+      "ns_per_op": 768.34,
+      "ns_min": 743.75,
+      "ns_max": 795.51,
+      "noise_pct": 6.74,
+      "run_medians": [
+        757.68,
+        743.75,
+        795.51,
+        768.34,
+        788.55
+      ]
+    },
+    "cell_chain/16": {
+      "covers": "H1 H2 H3 H7",
+      "allocs_per_op": 68.0,
+      "allocs_spread": 0.0,
+      "bytes_per_op": 2720.0,
+      "work_per_op": 1.0,
+      "work_spread": 0.0,
+      "errors": 0,
+      "ns_per_op": 2537.36,
+      "ns_min": 2455.0,
+      "ns_max": 2571.73,
+      "noise_pct": 4.6,
+      "run_medians": [
+        2455.0,
+        2476.58,
+        2537.36,
+        2544.63,
+        2571.73
+      ]
+    },
+    "fan_out/16": {
+      "covers": "H1 H2 H3",
+      "allocs_per_op": 55.0,
+      "allocs_spread": 0.0,
+      "bytes_per_op": 1856.0,
+      "work_per_op": 16.0,
+      "work_spread": 0.0,
+      "errors": 0,
+      "ns_per_op": 2736.87,
+      "ns_min": 2725.61,
+      "ns_max": 2766.35,
+      "noise_pct": 1.49,
+      "run_medians": [
+        2766.35,
+        2747.12,
+        2729.92,
+        2736.87,
+        2725.61
+      ]
+    },
+    "fan_out/128": {
+      "covers": "H1 H2 H3",
+      "allocs_per_op": 413.0,
+      "allocs_spread": 2.0,
+      "bytes_per_op": 22920.0,
+      "work_per_op": 128.0,
+      "work_spread": 0.0,
+      "errors": 0,
+      "ns_per_op": 29568.86,
+      "ns_min": 29028.36,
+      "ns_max": 29852.1,
+      "noise_pct": 2.79,
+      "run_medians": [
+        29852.1,
+        29786.13,
+        29028.36,
+        29568.86,
+        29298.45
+      ]
+    },
+    "switch_map/changed": {
+      "covers": "H6",
+      "allocs_per_op": 19.0,
+      "allocs_spread": 0.0,
+      "bytes_per_op": 964.0,
+      "work_per_op": 1.0,
+      "work_spread": 0.0,
+      "errors": 0,
+      "ns_per_op": 715.05,
+      "ns_min": 709.31,
+      "ns_max": 746.79,
+      "noise_pct": 5.24,
+      "run_medians": [
+        746.79,
+        715.05,
+        723.64,
+        709.41,
+        709.31
+      ]
+    },
+    "switch_map/equal": {
+      "covers": "H6",
+      "allocs_per_op": 19.0,
+      "allocs_spread": 0.0,
+      "bytes_per_op": 964.0,
+      "work_per_op": 1.0,
+      "work_spread": 0.0,
+      "errors": 0,
+      "ns_per_op": 728.09,
+      "ns_min": 704.24,
+      "ns_max": 738.64,
+      "noise_pct": 4.72,
+      "run_medians": [
+        738.64,
+        728.09,
+        722.24,
+        704.24,
+        737.84
+      ]
+    },
+    "graph_edit/4": {
+      "covers": "H7",
+      "allocs_per_op": 51.0,
+      "allocs_spread": 0.0,
+      "bytes_per_op": 2664.0,
+      "work_per_op": 1.0,
+      "work_spread": 0.0,
+      "errors": 0,
+      "ns_per_op": 1850.82,
+      "ns_min": 1759.94,
+      "ns_max": 1862.27,
+      "noise_pct": 5.53,
+      "run_medians": [
+        1850.82,
+        1844.1,
+        1851.2,
+        1759.94,
+        1862.27
+      ]
+    },
+    "graph_edit/16": {
+      "covers": "H7",
+      "allocs_per_op": 149.0,
+      "allocs_spread": 0.0,
+      "bytes_per_op": 8408.0,
+      "work_per_op": 1.0,
+      "work_spread": 0.0,
+      "errors": 0,
+      "ns_per_op": 5508.77,
+      "ns_min": 5415.8,
+      "ns_max": 5646.74,
+      "noise_pct": 4.19,
+      "run_medians": [
+        5616.33,
+        5415.8,
+        5508.77,
+        5646.74,
+        5469.08
+      ]
+    },
+    "cellmap_batch/1": {
+      "covers": "H4",
+      "allocs_per_op": 4.0,
+      "allocs_spread": 0.0,
+      "bytes_per_op": 184.0,
+      "work_per_op": 1.0,
+      "work_spread": 0.0,
+      "errors": 0,
+      "ns_per_op": 283.13,
+      "ns_min": 280.85,
+      "ns_max": 295.11,
+      "noise_pct": 5.04,
+      "run_medians": [
+        285.03,
+        280.85,
+        281.74,
+        283.13,
+        295.11
+      ]
+    },
+    "cellmap_batch/16": {
+      "covers": "H4",
+      "allocs_per_op": 42.0,
+      "allocs_spread": 0.0,
+      "bytes_per_op": 2340.0,
+      "work_per_op": 16.0,
+      "work_spread": 0.0,
+      "errors": 0,
+      "ns_per_op": 2857.17,
+      "ns_min": 2839.25,
+      "ns_max": 2991.66,
+      "noise_pct": 5.33,
+      "run_medians": [
+        2857.17,
+        2840.5,
+        2839.25,
+        2935.91,
+        2991.66
+      ]
+    },
+    "cellmap_batch/256": {
+      "covers": "H4",
+      "allocs_per_op": 535.0001,
+      "allocs_spread": 0.0,
+      "bytes_per_op": 43988.01,
+      "work_per_op": 256.0,
+      "work_spread": 0.0,
+      "errors": 0,
+      "ns_per_op": 45525.85,
+      "ns_min": 43524.34,
+      "ns_max": 46727.25,
+      "noise_pct": 7.04,
+      "run_medians": [
+        43524.34,
+        46549.47,
+        44710.11,
+        46727.25,
+        45525.85
+      ]
+    },
+    "writers/disjoint/1": {
+      "covers": "H2",
+      "allocs_per_op": 8.0,
+      "allocs_spread": 0.0,
+      "bytes_per_op": 320.0,
+      "work_per_op": 1.0,
+      "work_spread": 0.0,
+      "errors": 0,
+      "ns_per_op": 336.19,
+      "ns_min": 326.04,
+      "ns_max": 343.51,
+      "noise_pct": 5.2,
+      "run_medians": [
+        326.04,
+        331.16,
+        343.51,
+        338.84,
+        336.19
+      ]
+    },
+    "writers/overlapping/1": {
+      "covers": "H2",
+      "allocs_per_op": 13.0001,
+      "allocs_spread": 0.0,
+      "bytes_per_op": 504.01,
+      "work_per_op": 1.0,
+      "work_spread": 0.0,
+      "errors": 0,
+      "ns_per_op": 497.57,
+      "ns_min": 491.19,
+      "ns_max": 506.79,
+      "noise_pct": 3.14,
+      "run_medians": [
+        506.79,
+        494.26,
+        500.91,
+        497.57,
+        491.19
+      ]
+    },
+    "writers/disjoint/4": {
+      "covers": "H2",
+      "allocs_per_op": 3.8235,
+      "allocs_spread": 0.035600000000000076,
+      "bytes_per_op": 128.96,
+      "work_per_op": 0.0211,
+      "work_spread": 0.005299999999999999,
+      "errors": 0,
+      "ns_per_op": 300.04,
+      "ns_min": 293.54,
+      "ns_max": 300.68,
+      "noise_pct": 2.38,
+      "run_medians": [
+        300.04,
+        297.0,
+        300.68,
+        300.31,
+        293.54
+      ]
+    },
+    "writers/overlapping/4": {
+      "covers": "H2",
+      "allocs_per_op": 4.14,
+      "allocs_spread": 0.1241999999999992,
+      "bytes_per_op": 144.83,
+      "work_per_op": 0.0148,
+      "work_spread": 0.0157,
+      "errors": 0,
+      "ns_per_op": 289.71,
+      "ns_min": 281.12,
+      "ns_max": 295.13,
+      "noise_pct": 4.84,
+      "run_medians": [
+        281.12,
+        287.57,
+        289.71,
+        289.77,
+        295.13
+      ]
+    },
+    "domain/batch_map_one": {
+      "covers": "H1 H2 H3 H7",
+      "allocs_per_op": 8.0,
+      "allocs_spread": 0.0,
+      "bytes_per_op": 320.0,
+      "work_per_op": 1.0,
+      "work_spread": 0.0,
+      "errors": 0,
+      "ns_per_op": 351.97,
+      "ns_min": 342.25,
+      "ns_max": 353.44,
+      "noise_pct": 3.18,
+      "run_medians": [
+        352.67,
+        353.44,
+        347.57,
+        342.25,
+        351.97
+      ]
+    },
+    "domain/cell_chain/4": {
+      "covers": "H1 H2 H3 H7",
+      "allocs_per_op": 20.0,
+      "allocs_spread": 0.0,
+      "bytes_per_op": 800.0,
+      "work_per_op": 1.0,
+      "work_spread": 0.0,
+      "errors": 0,
+      "ns_per_op": 767.55,
+      "ns_min": 763.02,
+      "ns_max": 786.22,
+      "noise_pct": 3.02,
+      "run_medians": [
+        763.02,
+        783.4,
+        767.55,
+        766.33,
+        786.22
+      ]
+    },
+    "domain/cellmap_batch/16": {
+      "covers": "H4",
+      "allocs_per_op": 42.0,
+      "allocs_spread": 0.0,
+      "bytes_per_op": 2340.0,
+      "work_per_op": 16.0,
+      "work_spread": 0.0,
+      "errors": 0,
+      "ns_per_op": 2941.44,
+      "ns_min": 2889.1,
+      "ns_max": 3124.18,
+      "noise_pct": 7.99,
+      "run_medians": [
+        2941.44,
+        2889.1,
+        2996.0,
+        2933.94,
+        3124.18
+      ]
+    }
+  }
+}

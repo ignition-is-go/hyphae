@@ -54,7 +54,15 @@ impl DepNode for CompositeDepNode {
         self.sources.clone()
     }
 
-    fn add_height_dependent(&self, dep: std::sync::Weak<dyn crate::cell::HeightInvalidate>) {
+    fn height(&self) -> u64 {
+        self.sources
+            .iter()
+            .map(|source| source.height())
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn add_height_dependent(&self, dep: std::sync::Weak<dyn crate::cell::HeightNode>) {
         for source in &self.sources {
             source.add_height_dependent(dep.clone());
         }

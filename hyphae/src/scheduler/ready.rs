@@ -154,13 +154,17 @@ impl ManyGroup {
         self.scheduled = scheduled;
     }
 
-    fn into_runs(self) -> Vec<PendingRun> {
-        self.runs.into_iter().flatten().collect()
-    }
-
     fn into_single(mut self) -> Option<PendingRun> {
         self.runs.iter_mut().find_map(Option::take)
     }
+}
+
+/// One height's ops, flattened: `ends[i]` is the exclusive end in `runs` of
+/// the `i`th cell's group. Reused across waves so popping does not allocate.
+#[derive(Default)]
+pub(super) struct Wave {
+    pub(super) runs: Vec<PendingRun>,
+    pub(super) ends: Vec<usize>,
 }
 
 enum Group {
@@ -335,13 +339,17 @@ impl ReadyQueue {
             .get_or_insert_with(|| Box::new(ManyArena::default()))
     }
 
+    /// Moves every op at the minimum height into `wave`, grouped by cell id,
+    /// each group in arrival order. Returns `false` when the frontier is empty.
     #[inline]
-    pub(super) fn pop_min_height_groups(&mut self) -> Option<Vec<Vec<PendingRun>>> {
-        let target = self
+    pub(super) fn pop_min_height_into(&mut self, wave: &mut Wave) -> bool {
+        let Some(target) = self
             .frontier
             .first_key_value()
-            .map(|(&(height, _), _)| height)?;
-        let mut groups = Vec::new();
+            .map(|(&(height, _), _)| height)
+        else {
+            return false;
+        };
 
         while self
             .frontier
@@ -354,21 +362,22 @@ impl ReadyQueue {
             if self.scheduled.get(&id) == Some(&height) {
                 self.scheduled.remove(&id);
             }
-            let runs = match group {
-                Group::One(run) => vec![run],
-                Group::Many(handle) => self
-                    .many
-                    .as_deref_mut()
-                    .and_then(|many| many.take(*handle))
-                    .map(ManyGroup::into_runs)
-                    .unwrap_or_default(),
-            };
-            if !runs.is_empty() {
-                groups.push(runs);
+            let start = wave.runs.len();
+            match group {
+                Group::One(run) => wave.runs.push(run),
+                Group::Many(handle) => {
+                    if let Some(many) = self.many.as_deref_mut().and_then(|many| many.take(*handle))
+                    {
+                        wave.runs.extend(many.runs.into_iter().flatten());
+                    }
+                }
+            }
+            if wave.runs.len() > start {
+                wave.ends.push(wave.runs.len());
             }
         }
 
-        (!groups.is_empty()).then_some(groups)
+        !wave.ends.is_empty()
     }
 
     #[inline]
@@ -466,11 +475,20 @@ mod tests {
         })
     }
 
-    fn run(groups: Vec<Vec<PendingRun>>) {
-        for group in groups {
-            for op in group {
-                op();
-            }
+    fn run(wave: Wave) {
+        for op in wave.runs {
+            op();
+        }
+    }
+
+    trait PopWave {
+        fn pop_min_height_groups(&mut self) -> Option<Wave>;
+    }
+
+    impl PopWave for ReadyQueue {
+        fn pop_min_height_groups(&mut self) -> Option<Wave> {
+            let mut wave = Wave::default();
+            self.pop_min_height_into(&mut wave).then_some(wave)
         }
     }
 
@@ -652,7 +670,7 @@ mod tests {
         let Some(groups) = groups else {
             return;
         };
-        assert_eq!(groups.len(), 1);
+        assert_eq!(groups.ends.len(), 1);
         run(groups);
         assert_eq!(snapshot(&seen), (0..16).collect::<Vec<_>>());
     }

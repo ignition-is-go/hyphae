@@ -16,7 +16,7 @@ use std::{marker::PhantomData, sync::Arc};
 
 use super::CellValue;
 use crate::{
-    pipeline::{Definite, Empty, Pipeline, PipelineInstall, Seedness},
+    pipeline::{Definite, Emit, EmitSink, Empty, Pipeline, PipelineInstall, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -41,18 +41,21 @@ where
     P: Fn(&T) -> bool + Send + Sync + 'static,
 {
     fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
+        self.install_emit(Arc::new(move |emit| callback(&emit.into_signal())))
+    }
+
+    fn install_emit(&self, sink: EmitSink<T>) -> SubscriptionGuard {
         let predicate = Arc::clone(&self.predicate);
-        let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
-            Arc::new(move |signal: &Signal<T>| match signal {
-                Signal::Value(v) => {
-                    if (predicate)(v.as_ref()) {
-                        callback(signal);
-                    }
-                }
-                Signal::Complete => callback(&Signal::Complete),
-                Signal::Error(e) => callback(&Signal::Error(e.clone())),
-            });
-        self.source.install(wrapped)
+        self.source.install_emit(Arc::new(move |emit| {
+            let pass = match &emit {
+                Emit::Shared(v) => (predicate)(v),
+                Emit::Owned(v) => (predicate)(v),
+                Emit::Complete | Emit::Error(_) => true,
+            };
+            if pass {
+                sink(emit);
+            }
+        }))
     }
 }
 

@@ -241,6 +241,8 @@ where
     len: crate::scheduler::order::Sequenced<usize>,
     /// The order rows are stored in and their diffs delivered in.
     order: Arc<crate::scheduler::order::WriteOrder>,
+    /// Diffs staged in open batches and not yet delivered.
+    staged: Mutex<Vec<mutation::StagedDiff<K, V>>>,
     /// Subscription guards owned by this map (dropped when map drops).
     owned: Mutex<Vec<SubscriptionGuard>>,
     /// Optional name for debugging. Cold path — set once via `with_name`,

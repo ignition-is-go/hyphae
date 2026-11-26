@@ -20,12 +20,14 @@ use crate::{
 };
 
 // Lock-free completion state packed into a single u64:
-// - Bits 0-61: generation (max 2^62-1)
+// - Bits 0-60: generation (max 2^61-1)
+// - Bit 61: inner_errored
 // - Bit 62: inner_complete
 // - Bit 63: outer_complete
 const INNER_COMPLETE_BIT: u64 = 1 << 62;
 const OUTER_COMPLETE_BIT: u64 = 1 << 63;
-const GEN_MASK: u64 = (1 << 62) - 1;
+const INNER_ERRORED_BIT: u64 = 1 << 61;
+const GEN_MASK: u64 = (1 << 61) - 1;
 
 fn advance_generation(state: &AtomicU64) -> u64 {
     loop {
@@ -85,7 +87,11 @@ fn inner_callback<U: CellValue>(
             return;
         }
         match signal {
-            Signal::Value(_) | Signal::Error(_) => emit(signal),
+            Signal::Value(_) => emit(signal),
+            Signal::Error(_) => {
+                state.fetch_or(INNER_ERRORED_BIT, Ordering::SeqCst);
+                emit(signal);
+            }
             Signal::Complete if mark_inner_complete(&state, generation) => emit(signal),
             Signal::Complete => {}
         }
@@ -147,7 +153,9 @@ where
         // Source callbacks may run concurrently. Serializing complete re-knits
         // ensures an older installation can never return after a newer one and
         // overwrite the newer generation's keyed guard.
-        let reknit_lock = Arc::new(Mutex::new(()));
+        // It also holds the outer value the live inner was built from, so an
+        // equal outer value is compared against the inner it would replace.
+        let reknit_lock = Arc::new(Mutex::new(Arc::new(outer_prepared.initial().clone())));
 
         // Subscribe to first inner (generation 0)
         let first_callback = inner_callback(
@@ -166,9 +174,9 @@ where
         let switch_lock_outer = switch_lock;
         let reknit_lock_outer = reknit_lock;
         let outer_callback: Arc<dyn Fn(&Signal<T>) + Send + Sync> = Arc::new(move |signal| {
-            let _reknit = reknit_lock_outer.lock();
             match signal {
                 Signal::Value(outer_value) => {
+                    let mut knitted_to = reknit_lock_outer.lock();
                     // Per-outer-fire re-knit: rebuild the inner cell + re-subscribe
                     // + drop the prior inner guard. This span isolates switch_map's
                     // un-fusable teardown/rebuild cost from the anonymous
@@ -177,6 +185,14 @@ where
                     let _reknit_span = ::tracing::trace_span!("hyphae.switch_map").entered();
 
                     if !owner_outer.is_alive() {
+                        return;
+                    }
+                    // Equal keys keep only a live inner; a terminated one is
+                    // rebuilt so the operator never stays on a dead inner.
+                    let inner_terminated = state_for_outer.load(Ordering::SeqCst)
+                        & (INNER_COMPLETE_BIT | INNER_ERRORED_BIT)
+                        != 0;
+                    if !inner_terminated && **knitted_to == **outer_value {
                         return;
                     }
 
@@ -210,13 +226,18 @@ where
                     );
                     let value_guard = prepared.activate(&value_callback);
                     owner_outer.own_keyed(inner_guard_key, value_guard);
+                    *knitted_to = Arc::clone(outer_value);
                 }
                 Signal::Complete => {
+                    let _reknit = reknit_lock_outer.lock();
                     if mark_outer_complete(&state_for_outer) {
                         emit(&Signal::Complete);
                     }
                 }
-                Signal::Error(error) => emit(&Signal::Error(error.clone())),
+                Signal::Error(error) => {
+                    let _reknit = reknit_lock_outer.lock();
+                    emit(&Signal::Error(error.clone()));
+                }
             }
         });
         let outer_guard = outer_prepared.activate(&outer_callback);
@@ -247,6 +268,12 @@ where
 }
 
 pub trait SwitchMapExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
+    /// Follows the inner pipeline built by `f` from the latest outer value.
+    ///
+    /// An outer value equal to the one the live inner was built from keeps
+    /// that inner: `f` is not called and nothing is emitted for it. Once the
+    /// live inner has completed or errored, any outer value, equal or not,
+    /// builds a new inner and emits its current value.
     fn switch_map<U, F, I>(self, f: F) -> impl crate::Materialize<U, Definite>
     where
         U: CellValue,

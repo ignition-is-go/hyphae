@@ -1,3 +1,4 @@
+#![allow(clippy::expect_used)]
 
 use std::sync::Arc;
 
@@ -43,9 +44,19 @@ fn single_diff_length_uses_membership_changes_when_cell_writes_are_deferred() {
     });
     assert_eq!(length.get(), 0);
     assert!(entries.get().is_empty());
-    let mut expected = vec![MapDiff::Initial {
-        entries: Vec::new(),
-    }];
-    expected.extend(changes);
+    // Each write to a key is its own delivery; a run of distinct keys is one.
+    let [insert_a, update_a, remove_a, update_b, remove_b] =
+        <[_; 5]>::try_from(changes).expect("five changes");
+    let expected = vec![
+        MapDiff::Initial {
+            entries: Vec::new(),
+        },
+        insert_a,
+        update_a,
+        MapDiff::Batch {
+            changes: vec![remove_a, update_b],
+        },
+        remove_b,
+    ];
     assert_eq!(*diffs.lock(), expected);
 }

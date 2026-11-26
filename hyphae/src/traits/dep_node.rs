@@ -12,31 +12,23 @@ pub trait DepNode: Send + Sync {
     /// Returns the dependencies of this node.
     fn deps(&self) -> Vec<Arc<dyn DepNode>>;
 
-    /// The scheduler's per-node height cache slot, if any. Cells expose their
-    /// `CellInner::height_cache`; other nodes default to `None` and are
-    /// recomputed each time. Lets the scheduler memoize propagation height
-    /// (`1 + max(dep.height)`) across ticks, invalidated by the topology epoch.
-    fn height_cache(&self) -> Option<&std::sync::atomic::AtomicU64> {
-        None
+    /// Propagation height: strictly greater than the height of every node
+    /// this one depends on. Cells keep it as a maintained atomic (see
+    /// `crate::cell::raise_height`); other nodes derive it from `deps()`.
+    #[doc(hidden)]
+    fn height(&self) -> u64 {
+        self.deps()
+            .iter()
+            .map(|dep| dep.height().saturating_add(1))
+            .max()
+            .unwrap_or(0)
     }
 
-    /// The node's per-node **height epoch** — bumped whenever an edge change in
-    /// this node's transitive-dependency cone could alter its height (see
-    /// [`crate::cell::invalidate_height_cone`]). The scheduler tags each cached
-    /// height with the epoch it was computed under and recomputes when they
-    /// differ, so invalidation is localized to the affected subgraph instead of
-    /// flushing every cached height in the process on any edge change. Cells
-    /// expose `CellInner::height_epoch`; other nodes default to `None` and are
-    /// recomputed each read.
-    fn height_epoch(&self) -> Option<&std::sync::atomic::AtomicU64> {
-        None
-    }
-
-    /// Register `dep` as a node whose height depends (transitively) on this one,
-    /// so a later edge change here invalidates its cached height. Called when a
-    /// cell takes ownership of a subscription guard whose source is this node.
+    /// Register `dep` as a node whose height must stay above this one's, so a
+    /// later raise of this node's height also raises `dep`. Called when a cell
+    /// takes ownership of a subscription guard whose source is this node.
     /// Cells push into `CellInner::height_dependents`; other nodes ignore it.
-    fn add_height_dependent(&self, _dep: std::sync::Weak<dyn crate::cell::HeightInvalidate>) {}
+    fn add_height_dependent(&self, _dep: std::sync::Weak<dyn crate::cell::HeightNode>) {}
 
     /// Whether the scheduler should skip last-write-wins coalescing for this
     /// node — enqueuing every notify as a distinct height-ordered op so event

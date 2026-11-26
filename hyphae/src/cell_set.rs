@@ -121,7 +121,7 @@ where
                 )
             },
             |_| false,
-            |(member, value)| self.inserted(member, value),
+            |(member, value), _| self.inserted(member, value),
             || {
                 let set = self.clone();
                 Box::new(move |(member, value)| set.inserted(member, value))
@@ -141,7 +141,7 @@ where
                 (removed, member)
             },
             |_| false,
-            |member| self.removed(member, value.clone()),
+            |member, _| self.removed(member, value.clone()),
             || {
                 let (set, value) = (self.clone(), value.clone());
                 Box::new(move |member| set.removed(member, value))
