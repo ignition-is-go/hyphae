@@ -320,6 +320,11 @@ fn open_batch(domain: u64) {
     });
 }
 
+/// Whether this thread holds an open batch of `domain`.
+pub(crate) fn holds_open_batch(domain: u64) -> bool {
+    with_open_batch(domain, |_| ()).is_some()
+}
+
 /// Run `f` on this thread's open batch of `domain`, if it holds one.
 fn with_open_batch<R>(domain: u64, f: impl FnOnce(&mut OpenBatch) -> R) -> Option<R> {
     if OPEN_BATCH_COUNT.get() == 0 {

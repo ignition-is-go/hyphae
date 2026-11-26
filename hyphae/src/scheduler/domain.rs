@@ -880,6 +880,15 @@ impl Domain {
         f()
     }
 
+    /// Whether the calling thread holds an open [`batch`](Self::batch) of
+    /// this domain. Work that batch stages, including hand-overs to a child
+    /// queued through it, only propagates when the thread closes it, so a
+    /// caller must not wait for that work on this thread while this is true.
+    #[must_use]
+    pub fn holds_open_batch(&self) -> bool {
+        super::holds_open_batch(id_of(self.inner.as_ref()))
+    }
+
     /// Run `f` as one propagation batch on this domain's tick, inside an
     /// [`enter`](Self::enter) scope.
     ///
