@@ -580,7 +580,11 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
     /// before or just after the fanout, so the effect takes the write's
     /// place in delivery order instead of the order `set` was called in.
     pub(crate) fn set_with(&self, value: T, at: EffectAt, effect: impl FnOnce() + Send + 'static) {
-        self.set_from(at, move || Some((value, effect)));
+        // Wrapped when the write is made, not when it is delivered: wrapping
+        // at delivery puts one allocation per row into the drain loop, where
+        // it contends with the threads freeing what subscribers handed off.
+        let signal = Signal::value(value);
+        self.set_signal_from(at, move || Some((signal, effect)));
     }
 
     /// [`set_with`](Self::set_with), with the value and effect produced when
@@ -591,11 +595,20 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         at: EffectAt,
         produce: impl FnOnce() -> Option<(T, E)> + Send + 'static,
     ) {
+        self.set_signal_from(at, move || {
+            produce().map(|(value, effect)| (Signal::value(value), effect))
+        });
+    }
+
+    fn set_signal_from<E: FnOnce() + Send + 'static>(
+        &self,
+        at: EffectAt,
+        produce: impl FnOnce() -> Option<(Signal<T>, E)> + Send + 'static,
+    ) {
         let deliver = move |cell: Option<&Self>| {
-            let Some((value, effect)) = produce() else {
+            let Some((signal, effect)) = produce() else {
                 return;
             };
-            let signal = Signal::value(value);
             if matches!(at, EffectAt::BeforeFanout) {
                 effect();
                 if let Some(cell) = cell {
