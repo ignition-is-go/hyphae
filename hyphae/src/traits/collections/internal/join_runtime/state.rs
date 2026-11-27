@@ -7,6 +7,7 @@ use crate::{
     traits::{CellValue, RightJoinKey},
 };
 
+pub(in crate::traits::collections::internal) use super::super::grouped_rows::GroupedRows;
 pub(super) use super::super::index_members::{IndexMembers, add_index_member, remove_index_member};
 use super::super::ordered_set::OrderedSet;
 
@@ -35,7 +36,7 @@ pub(in crate::traits::collections::internal) struct RelationIndex<RK, RV, JK> {
     pub(in crate::traits::collections::internal) rows: FxHashMap<RK, RV>,
     pub(in crate::traits::collections::internal) row_join_keys: FxHashMap<RK, JK>,
     pub(in crate::traits::collections::internal) join_to_rows: FxHashMap<JK, IndexMembers<RK>>,
-    pub(in crate::traits::collections::internal) grouped_rows: FxHashMap<JK, Vec<(RK, RV)>>,
+    pub(in crate::traits::collections::internal) grouped_rows: FxHashMap<JK, GroupedRows<RK, RV>>,
 }
 
 impl<RK, RV, JK> Clone for RelationIndex<RK, RV, JK>
@@ -123,11 +124,11 @@ fn remove_grouped_row<RK, RV, JK>(
     join_key: &JK,
     row_key: &RK,
 ) where
-    RK: Eq,
+    RK: Hash + Eq + Clone,
     JK: Hash + Eq,
 {
     if let Some(rows) = index.grouped_rows.get_mut(join_key) {
-        rows.retain(|(key, _)| key != row_key);
+        rows.remove(row_key);
         if rows.is_empty() {
             index.grouped_rows.remove(join_key);
         }
@@ -140,15 +141,14 @@ fn upsert_grouped_row<RK, RV, JK>(
     row_key: RK,
     row_value: RV,
 ) where
-    RK: Eq,
+    RK: Hash + Eq + Clone,
     JK: Hash + Eq,
 {
-    let rows = index.grouped_rows.entry(join_key).or_default();
-    if let Some((_, value)) = rows.iter_mut().find(|(key, _)| key == &row_key) {
-        *value = row_value;
-    } else {
-        rows.push((row_key, row_value));
-    }
+    index
+        .grouped_rows
+        .entry(join_key)
+        .or_default()
+        .upsert(row_key, row_value);
 }
 
 pub(super) struct JoinScratch<LK, RK, RV, JK, OK, OV> {
@@ -715,7 +715,7 @@ where
                         .left_join_keys
                         .get(left_key)
                         .and_then(|join_key| right.grouped_rows.get(join_key))
-                        .map_or(&[][..], Vec::as_slice);
+                        .map_or(&[][..], GroupedRows::as_slice);
                     compute_value(left_key, left_value, right_rows)
                 });
                 (left_key.clone(), desired)
@@ -782,7 +782,7 @@ where
                 .left_join_keys
                 .get(left_key)
                 .and_then(|join_key| right.grouped_rows.get(join_key))
-                .map_or(&[][..], Vec::as_slice);
+                .map_or(&[][..], GroupedRows::as_slice);
             compute_value(left_key, left_value, right_rows)
         });
         commit_keyed_value(

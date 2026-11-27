@@ -18,9 +18,9 @@ use super::{
         state_left_entries, state_right_entries,
     },
     state::{
-        JoinState, RelationIndexStorage, add_index_member, apply_left_diff, apply_right_diff,
-        commit_keyed_value, recompute_keyed_impacted, remove_index_member, remove_left,
-        upsert_left,
+        GroupedRows, JoinState, RelationIndexStorage, add_index_member, apply_left_diff,
+        apply_right_diff, commit_keyed_value, recompute_keyed_impacted, remove_index_member,
+        remove_left, upsert_left,
     },
 };
 
@@ -145,7 +145,7 @@ where
                     .left_join_keys
                     .get(key)
                     .and_then(|join_key| right.grouped_rows.get(join_key))
-                    .map_or(&[][..], Vec::as_slice);
+                    .map_or(&[][..], GroupedRows::as_slice);
                 (config.project1)(key, left_value, right_rows)
             });
 
@@ -220,7 +220,7 @@ where
             .left_join_keys
             .get(key)
             .and_then(|join_key| right.grouped_rows.get(join_key))
-            .map_or(&[][..], Vec::as_slice);
+            .map_or(&[][..], GroupedRows::as_slice);
         let middle = (config.project1)(key, value, right_rows);
         if serial.first.output_cache.get(key) == Some(&middle) {
             return Vec::new();
@@ -251,7 +251,7 @@ where
             .left_join_keys
             .get(key)
             .and_then(|join_key| right.grouped_rows.get(join_key))
-            .map_or(&[][..], Vec::as_slice);
+            .map_or(&[][..], GroupedRows::as_slice);
         let final_value = (config.project2)(key, &middle, right_rows);
         let mut output = Vec::with_capacity(1);
         commit_keyed_value(

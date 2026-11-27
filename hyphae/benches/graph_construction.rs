@@ -154,5 +154,51 @@ fn bench_hot_join_key(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_cells, bench_queries, bench_hot_join_key);
+/// One right-side join key holding every right row: each change hands the
+/// closure the whole matched group, so group maintenance must not rescan it.
+fn bench_hot_right_group(c: &mut Criterion) {
+    let mut group = c.benchmark_group("graph_construction/hot_right_group");
+    group.sample_size(10);
+    for n in [1_000_u64, 10_000] {
+        group.bench_with_input(BenchmarkId::new("insert_update_remove", n), &n, |b, &n| {
+            b.iter_batched(
+                || {
+                    let right = CellMap::<u64, Arc<Row>>::new();
+                    let output = rows(1)
+                        .left_join_by(right.clone(), |_, _| 0_u64, |_, row| row.relation)
+                        .map_joined_values(|_, row, matches| (row.payload, matches.len()))
+                        .materialize();
+                    (right, output)
+                },
+                |(right, output)| {
+                    for round in 0..2 {
+                        for key in 0..n {
+                            right.insert(
+                                key,
+                                Arc::new(Row {
+                                    relation: 0,
+                                    payload: key.wrapping_add(round),
+                                }),
+                            );
+                        }
+                    }
+                    for key in 0..n {
+                        right.remove(&key);
+                    }
+                    (right, output)
+                },
+                BatchSize::PerIteration,
+            );
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_cells,
+    bench_queries,
+    bench_hot_join_key,
+    bench_hot_right_group
+);
 criterion_main!(benches);
