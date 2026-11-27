@@ -173,7 +173,7 @@ enum Group {
 }
 
 pub(super) struct ReadyQueue {
-    frontier: Frontier<(u64, Uuid), Group>,
+    frontier: Frontier<Group>,
     scheduled: FxHashMap<Uuid, u64>,
     many: Option<Box<ManyArena>>,
 }
@@ -343,22 +343,11 @@ impl ReadyQueue {
     /// each group in arrival order. Returns `false` when the frontier is empty.
     #[inline]
     pub(super) fn pop_min_height_into(&mut self, wave: &mut Wave) -> bool {
-        let Some(target) = self
-            .frontier
-            .first_key_value()
-            .map(|(&(height, _), _)| height)
-        else {
+        let Some(mut bucket) = self.frontier.pop_min() else {
             return false;
         };
-
-        while self
-            .frontier
-            .first_key_value()
-            .is_some_and(|(&(height, _), _)| height == target)
-        {
-            let Some(((height, id), group)) = self.frontier.pop_first() else {
-                break;
-            };
+        let height = bucket.height();
+        for (id, group) in bucket.drain() {
             if self.scheduled.get(&id) == Some(&height) {
                 self.scheduled.remove(&id);
             }
@@ -376,12 +365,13 @@ impl ReadyQueue {
                 wave.ends.push(wave.runs.len());
             }
         }
+        self.frontier.recycle(bucket);
 
         !wave.ends.is_empty()
     }
 
     #[inline]
-    pub(super) fn is_empty(&self) -> bool {
+    pub(super) const fn is_empty(&self) -> bool {
         self.frontier.is_empty()
     }
 
@@ -526,12 +516,14 @@ mod tests {
             self.order.insert((height, id, sequence), payload);
         }
 
-        fn pop(&mut self) -> Option<Vec<u16>> {
+        /// The next height's payloads, one list per cell in arrival order,
+        /// the lists sorted: cells at one height owe each other no order.
+        fn pop(&mut self) -> Option<Vec<Vec<u16>>> {
             let target = self
                 .order
                 .first_key_value()
                 .map(|(&(height, _, _), _)| height)?;
-            let mut payloads = Vec::new();
+            let mut groups: Vec<(Uuid, Vec<u16>)> = Vec::new();
             while self
                 .order
                 .first_key_value()
@@ -547,9 +539,17 @@ mod tests {
                 {
                     self.scheduled.remove(&id);
                 }
-                payloads.push(payload);
+                match groups.last_mut() {
+                    Some((last, payloads)) if *last == id => payloads.push(payload),
+                    _ => groups.push((id, vec![payload])),
+                }
             }
-            Some(payloads)
+            let mut groups = groups
+                .into_iter()
+                .map(|(_, payloads)| payloads)
+                .collect::<Vec<_>>();
+            groups.sort();
+            Some(groups)
         }
     }
 
@@ -560,6 +560,25 @@ mod tests {
                 seen.push(value);
             }
         })
+    }
+
+    /// Run `wave` and return what each of its cells recorded, in the shape
+    /// [`ReferenceQueue::pop`] gives.
+    fn run_groups(wave: Wave, seen: &Arc<Mutex<Vec<u16>>>) -> Vec<Vec<u16>> {
+        let ends = wave.ends.clone();
+        run(wave);
+        let payloads = drain_u16(seen);
+        let mut start = 0;
+        let mut groups = ends
+            .into_iter()
+            .map(|end| {
+                let group = payloads.get(start..end).unwrap_or_default().to_vec();
+                start = end;
+                group
+            })
+            .collect::<Vec<_>>();
+        groups.sort();
+        groups
     }
 
     fn drain_u16(seen: &Arc<Mutex<Vec<u16>>>) -> Vec<u16> {
@@ -577,7 +596,7 @@ mod tests {
         {
             assert_eq!(std::mem::size_of::<ManyHandle>(), 16);
             assert_eq!(std::mem::size_of::<Group>(), 16);
-            assert_eq!(std::mem::size_of::<ReadyQueue>(), 72);
+            assert_eq!(std::mem::size_of::<ReadyQueue>(), 88);
         }
     }
 
@@ -731,7 +750,6 @@ mod tests {
             reference.enqueue(id, height, true, payload);
             queue.assert_consistent();
         }
-        assert!(queue.frontier.is_large());
 
         for (position, &id) in ids.iter().take(5).enumerate() {
             let height = u64::try_from(position % 4).unwrap_or(0);
@@ -762,12 +780,10 @@ mod tests {
             queue.assert_consistent();
             assert!(groups.is_some(), "wide queue drained before reference");
             if let Some(groups) = groups {
-                run(groups);
+                assert_eq!(run_groups(groups, &seen), expected);
             }
-            assert_eq!(drain_u16(&seen), expected);
         }
         assert!(queue.is_empty());
-        assert!(!queue.frontier.is_large());
 
         let id = Uuid::from_u128(100);
         assert!(
@@ -775,7 +791,6 @@ mod tests {
                 .enqueue(id, 1, true, recorded_u16(251, &seen))
                 .is_none()
         );
-        assert!(!queue.frontier.is_large());
         queue.assert_consistent();
         if let Some(groups) = queue.pop_min_height_groups() {
             queue.assert_consistent();
@@ -811,8 +826,7 @@ mod tests {
                 queue.assert_consistent();
                 match (expected, actual) {
                     (Some(expected), Some(actual)) => {
-                        run(actual);
-                        assert_eq!(drain_u16(&seen), expected);
+                        assert_eq!(run_groups(actual, &seen), expected);
                     }
                     (None, None) => {}
                     (expected, actual) => {
@@ -829,8 +843,7 @@ mod tests {
             queue.assert_consistent();
             match (expected, actual) {
                 (Some(expected), Some(actual)) => {
-                    run(actual);
-                    assert_eq!(drain_u16(&seen), expected);
+                    assert_eq!(run_groups(actual, &seen), expected);
                 }
                 (None, None) => break,
                 (expected, actual) => {
