@@ -145,3 +145,7 @@ harness = false
 [[bench]]
 name = "graph_construction"
 harness = false
+
+[[bench]]
+name = "scheduler_overhead"
+harness = false
