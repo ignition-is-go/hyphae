@@ -35,6 +35,21 @@ where
         }
     }
 
+    /// An empty set that holds `capacity` values without growing.
+    pub(super) fn with_capacity(capacity: usize) -> Self {
+        if capacity < 2 {
+            return Self::default();
+        }
+        let mut seen = FxHashSet::default();
+        seen.reserve(capacity);
+        Self {
+            storage: Storage::Many {
+                seen,
+                values: Vec::with_capacity(capacity),
+            },
+        }
+    }
+
     pub(super) fn insert(&mut self, value: T) -> bool {
         match &mut self.storage {
             Storage::Empty => {
