@@ -318,39 +318,39 @@ impl<T: CellValue> SignalQueue<T> {
         }
     }
 
-    fn latest_value(&self) -> Option<(T, usize)> {
-        match self {
-            Self::One(Signal::Value(value)) => Some((value.as_ref().clone(), 1)),
-            Self::Empty | Self::One(_) => None,
-            Self::Many(signals) => signals
-                .iter()
-                .enumerate()
-                .rev()
-                .find_map(|(index, signal)| match signal {
-                    Signal::Value(value) => Some((value.as_ref().clone(), index.saturating_add(1))),
-                    _ => None,
-                }),
-        }
-    }
-
-    fn discard_prefix(&mut self, count: usize) {
-        if count == 0 {
-            return;
-        }
-        match self {
-            Self::Empty => {}
-            Self::One(_) => *self = Self::Empty,
-            Self::Many(signals) => {
-                let mut tail = signals.split_off(count.min(signals.len()));
-                *self = if tail.is_empty() {
-                    Self::Empty
-                } else if tail.len() == 1 {
-                    Self::One(tail.remove(0))
-                } else {
-                    Self::Many(tail)
-                };
+    /// Remove the latest value and every signal before it, returning that
+    /// value. Signals after it stay queued for activation.
+    fn take_latest_value(&mut self) -> Option<T> {
+        let value = match self.take() {
+            Self::One(Signal::Value(value)) => value,
+            Self::Empty => return None,
+            one @ Self::One(_) => {
+                *self = one;
+                return None;
             }
-        }
+            Self::Many(mut signals) => {
+                let Some(index) = signals
+                    .iter()
+                    .rposition(|signal| matches!(signal, Signal::Value(_)))
+                else {
+                    *self = Self::Many(signals);
+                    return None;
+                };
+                let mut tail = signals.split_off(index.saturating_add(1));
+                *self = match tail.len() {
+                    0 => Self::Empty,
+                    1 => tail.pop().map_or(Self::Empty, Self::One),
+                    _ => Self::Many(tail),
+                };
+                match signals.pop() {
+                    Some(Signal::Value(value)) => value,
+                    _ => return None,
+                }
+            }
+        };
+        // The emitter has returned, so the queue usually holds the only
+        // reference and the value moves out without a clone.
+        Some(Arc::try_unwrap(value).unwrap_or_else(|value| T::clone(&value)))
     }
 
     const fn take(&mut self) -> Self {
@@ -402,6 +402,29 @@ impl<T: CellValue, G> PreparedInstall<T, G> {
         &self.initial
     }
 
+    /// Separate the initial value so a caller can move it into its cell.
+    pub(crate) fn into_parts(self) -> (T, PendingActivation<T, G>) {
+        (
+            self.initial,
+            PendingActivation {
+                state: self.state,
+                guard: self.guard,
+            },
+        )
+    }
+
+    pub(crate) fn activate(self, callback: &Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> G {
+        self.into_parts().1.activate(callback)
+    }
+}
+
+/// A [`PreparedInstall`] whose initial value has been taken.
+pub(crate) struct PendingActivation<T: CellValue, G> {
+    state: Arc<InstallState<T>>,
+    guard: G,
+}
+
+impl<T: CellValue, G> PendingActivation<T, G> {
     pub(crate) fn activate(self, callback: &Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> G {
         let mut pending = {
             let mut state = self.state.capture.lock();
@@ -480,7 +503,8 @@ where
 {
     let owner = GuardOwner::pending();
     let prepared = prepare(pipeline, |callback| pipeline.install_into(&owner, callback));
-    let cell = Cell::<T, CellMutable>::new(prepared.initial().clone());
+    let (initial, prepared) = prepared.into_parts();
+    let cell = Cell::<T, CellMutable>::new(initial);
     owner.attach(&cell);
     let weak = cell.downgrade();
     let callback: Arc<dyn Fn(&Signal<T>) + Send + Sync> = Arc::new(move |signal| {
@@ -544,35 +568,19 @@ where
         }
     }));
 
-    let captured_initial = {
-        let state = state.capture.lock();
-        match &*state {
+    let take_captured = || {
+        let mut state = state.capture.lock();
+        match &mut *state {
             InstallCapture::Capturing(signals) | InstallCapture::Activating(signals) => {
-                signals.latest_value()
+                signals.take_latest_value()
             }
             InstallCapture::Live => None,
         }
     };
-
-    let (initial, initial_boundary) = captured_initial.unwrap_or_else(|| {
+    let initial = take_captured().unwrap_or_else(|| {
         let fallback = pipeline.seed();
-        let state = state.capture.lock();
-        match &*state {
-            InstallCapture::Capturing(signals) | InstallCapture::Activating(signals) => {
-                signals.latest_value().unwrap_or((fallback, 0))
-            }
-            InstallCapture::Live => (fallback, 0),
-        }
+        take_captured().unwrap_or(fallback)
     });
-
-    {
-        let mut state = state.capture.lock();
-        if let InstallCapture::Capturing(signals) | InstallCapture::Activating(signals) =
-            &mut *state
-        {
-            signals.discard_prefix(initial_boundary);
-        }
-    }
 
     PreparedInstall {
         initial,
