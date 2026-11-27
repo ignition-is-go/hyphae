@@ -141,3 +141,7 @@ required-features = ["scheduler"]
 [[bench]]
 name = "emission"
 harness = false
+
+[[bench]]
+name = "graph_construction"
+harness = false
