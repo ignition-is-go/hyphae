@@ -460,8 +460,7 @@ mod tests {
             &mut cx,
             source.clone(),
             {
-                let slot = slot.clone();
-                let builds = builds.clone();
+                let builds = Arc::clone(&builds);
                 move |_: &String, v: &i32| {
                     let v = *v;
                     weak_shared(&slot, &builds)
@@ -472,6 +471,7 @@ mod tests {
             sink,
         );
         guards.extend(cx.activate());
+        assert!(!guards.is_empty());
         assert_eq!(builds.load(std::sync::atomic::Ordering::SeqCst), 1);
 
         source.insert("a".to_string(), 2);

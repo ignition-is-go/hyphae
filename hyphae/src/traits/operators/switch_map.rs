@@ -440,20 +440,21 @@ mod tests {
         let switched = source
             .clone()
             .switch_map({
-                let slot = slot.clone();
-                let builds = builds.clone();
+                let builds = Arc::clone(&builds);
                 move |v| {
                     let v = *v;
-                    let mut slot = slot
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let shared = if let Some(cell) = slot.as_ref().and_then(|w| w.upgrade()) {
-                        cell
-                    } else {
-                        builds.fetch_add(1, Ordering::SeqCst);
-                        let cell = Cell::new(100u64);
-                        *slot = Some(cell.downgrade());
-                        cell
+                    let shared = {
+                        let mut slot = slot
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        slot.as_ref()
+                            .and_then(crate::cell::WeakCell::upgrade)
+                            .unwrap_or_else(|| {
+                                builds.fetch_add(1, Ordering::SeqCst);
+                                let cell = Cell::new(100u64);
+                                *slot = Some(cell.downgrade());
+                                cell
+                            })
                     };
                     shared.map(move |s| s + v).materialize()
                 }
