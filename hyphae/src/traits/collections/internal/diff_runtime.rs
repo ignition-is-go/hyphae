@@ -1,8 +1,9 @@
 use std::{
-    collections::{HashMap, HashSet},
     hash::Hash,
     sync::{Arc, Mutex},
 };
+
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use crate::{
     cell_map::MapDiff, map_query::MapQuery, subscription::SubscriptionGuard, traits::CellValue,
@@ -27,8 +28,8 @@ where
 {
     fn default() -> Self {
         Self {
-            source_to_group: HashMap::new(),
-            groups: HashMap::new(),
+            source_to_group: HashMap::default(),
+            groups: HashMap::default(),
         }
     }
 }
@@ -133,6 +134,17 @@ where
     sink(&MapDiff::Batch { changes });
 }
 
+/// Visit the non-batch changes of `diff` in order, without copying it.
+fn for_each_atomic<K, V>(diff: &MapDiff<K, V>, visit: &mut impl FnMut(&MapDiff<K, V>)) {
+    if let MapDiff::Batch { changes } = diff {
+        for change in changes {
+            for_each_atomic(change, visit);
+        }
+    } else {
+        visit(diff);
+    }
+}
+
 /// Sink-driven diff runtime for [`MapQuery`] plan nodes.
 ///
 /// Compiles `source` into an intermediate sink that
@@ -159,16 +171,14 @@ where
 
     let upstream_sink = {
         move |diff: &MapDiff<SK, SV>| {
-            let mut atomic_diffs: Vec<MapDiff<SK, SV>> = Vec::new();
-            diff.clone().flatten_into(&mut atomic_diffs);
             let mut emitted = Vec::<MapDiff<OK, OV>>::new();
             {
                 let mut state = state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                for atomic in &atomic_diffs {
+                for_each_atomic(diff, &mut |atomic| {
                     apply_atomic(&mut state, atomic, &mut emitted);
-                }
+                });
             }
             emit_changes(emitted, &sink);
         }
@@ -209,13 +219,14 @@ where
         move |state: &mut GroupedState<SK, GK, GS>,
               diff: &MapDiff<SK, SV>,
               downstream: &mut Vec<MapDiff<GK, OV>>| {
-            let mut touched = HashSet::<GK>::new();
-            let mut before = HashMap::<GK, Option<OV>>::new();
+            let mut touched = HashSet::<GK>::default();
+            let mut before = HashMap::<GK, Option<OV>>::default();
 
             match diff {
                 MapDiff::Initial { entries } => {
                     let old_groups = std::mem::take(&mut state.groups);
                     state.source_to_group.clear();
+                    state.source_to_group.reserve(entries.len());
                     for (group, group_state) in old_groups {
                         before.insert(group.clone(), Some((ops.materialize)(&group_state)));
                         touched.insert(group);
