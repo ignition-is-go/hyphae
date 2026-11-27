@@ -82,7 +82,7 @@ pub(crate) struct CellInner<T> {
     /// Weak so a dependent's death doesn't pin it here; dead entries are
     /// pruned on read. May over-approximate (a stale entry only over-raises)
     /// but must never miss a live dependent.
-    pub(crate) height_dependents: Mutex<Vec<std::sync::Weak<dyn HeightNode>>>,
+    pub(crate) height_dependents: Mutex<HeightDependents>,
     /// The child scheduling domain this cell belongs to, fixed at birth from
     /// the creating thread's ambient domain. `None` is the root domain.
     pub(crate) domain: Option<Arc<crate::scheduler::domain::DomainInner>>,
@@ -153,7 +153,7 @@ impl<T: CellValue> Cell<T, CellMutable> {
             error: Mutex::new(None),
             height: std::sync::atomic::AtomicU64::new(0),
             no_coalesce: AtomicBool::new(crate::scheduler::birth_no_coalesce()),
-            height_dependents: Mutex::new(Vec::new()),
+            height_dependents: Mutex::new(HeightDependents::default()),
             domain: crate::scheduler::domain::birth_domain(),
             caller: Location::caller(),
         });
@@ -401,11 +401,62 @@ impl<T: Send + Sync> HeightNode for CellInner<T> {
         &self.height
     }
     fn hn_dependents(&self) -> Vec<std::sync::Weak<dyn HeightNode>> {
-        let mut g = self.height_dependents.lock();
-        // NOTE: this bounds the vec to the live dependent set only because
-        // `add_height_dependent` also rejects duplicates (rship lv-c065).
-        g.retain(|w| w.strong_count() > 0);
-        g.clone()
+        self.height_dependents.lock().live()
+    }
+}
+
+/// The weak back-edges of [`CellInner::height_dependents`], keyed by the
+/// dependent's data address so registering is O(1) however many cells share
+/// one source.
+///
+/// The address key is sound because a held `Weak` keeps its allocation alive:
+/// no other cell can be born at an address present here. Re-registering the
+/// same (source, dependent) pair is therefore a lookup, never a push — the
+/// `switch_map`-onto-a-cached-cell shape (rship lv-c065) — and dead entries are
+/// pruned whenever the set doubles, bounding it to twice the live set.
+pub(crate) struct HeightDependents {
+    by_addr: FxHashMap<usize, std::sync::Weak<dyn HeightNode>>,
+    prune_at: usize,
+}
+
+impl Default for HeightDependents {
+    fn default() -> Self {
+        Self {
+            by_addr: FxHashMap::default(),
+            prune_at: Self::MIN_PRUNE,
+        }
+    }
+}
+
+impl HeightDependents {
+    const MIN_PRUNE: usize = 8;
+
+    fn insert(&mut self, dep: std::sync::Weak<dyn HeightNode>) {
+        // Compare data addresses, not `Weak::ptr_eq`: these are trait-object
+        // weaks and vtable identity is not guaranteed across coercion sites.
+        let addr = dep.as_ptr().cast::<()>().addr();
+        if self.by_addr.contains_key(&addr) {
+            return;
+        }
+        if self.by_addr.len() >= self.prune_at {
+            self.prune();
+            self.prune_at = self.by_addr.len().saturating_mul(2).max(Self::MIN_PRUNE);
+        }
+        self.by_addr.insert(addr, dep);
+    }
+
+    fn prune(&mut self) {
+        self.by_addr.retain(|_, w| w.strong_count() > 0);
+    }
+
+    fn live(&mut self) -> Vec<std::sync::Weak<dyn HeightNode>> {
+        self.prune();
+        self.by_addr.values().cloned().collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.by_addr.len()
     }
 }
 
@@ -469,26 +520,10 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
     }
 
     fn add_height_dependent(&self, dep: std::sync::Weak<dyn HeightNode>) {
-        let mut deps = self.inner.height_dependents.lock();
-        // Prune dead entries, then register only if this dependent isn't already
-        // here. Both steps are load-bearing: `own`/`own_keyed` re-register the
-        // SAME (source, dependent) pair on every `switch_map` re-knit whose
-        // closure returns a CACHED cell (myko memoizes report/query cells, so
-        // the "new" inner cell is usually the same live one). An unguarded push
-        // therefore grew this Vec without bound at 16 bytes per re-knit —
-        // measured at ~7.5k re-knits/s in the rship server, and quadratic in
-        // allocator churn on top, because `hi_dependents` clones the whole Vec
-        // on every invalidation. `retain(strong_count > 0)` alone did NOT bound
-        // it: it only drops dependents that have DIED, never duplicates of a
-        // live one. (rship lv-c065)
-        deps.retain(|w| w.strong_count() > 0);
-        // Compare data addresses, not `Weak::ptr_eq`: these are trait-object
-        // weaks and vtable identity is not guaranteed across coercion sites.
-        let new_addr = dep.as_ptr().cast::<()>();
-        if deps.iter().any(|w| w.as_ptr().cast::<()>() == new_addr) {
-            return;
-        }
-        deps.push(dep);
+        // Deduplicated: `own`/`own_keyed` re-register the same (source,
+        // dependent) pair on every `switch_map` re-knit onto a memoized inner
+        // cell, which an unguarded push grew without bound (rship lv-c065).
+        self.inner.height_dependents.lock().insert(dep);
     }
 
     fn no_coalesce(&self) -> bool {
@@ -1111,11 +1146,11 @@ mod height_dependents_tests {
             let owner = Cell::new(0i32);
             owner.own(source.subscribe(|_| {}));
         }
-        // Force a read, which runs the amortized prune.
         let owner2 = Cell::new(0i32);
         owner2.own(source.subscribe(|_| {}));
 
-        let len = source.inner.height_dependents.lock().len();
+        // A raise reads the dependents, which prunes the dead entry.
+        let len = crate::cell::HeightNode::hn_dependents(source.inner.as_ref()).len();
         assert_eq!(len, 1, "dropped dependent should not linger, got {len}");
     }
 
