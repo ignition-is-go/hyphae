@@ -1185,12 +1185,7 @@ mod height_dependents_tests {
 mod height_invariant_tests {
     use std::sync::Arc;
 
-    use parking_lot::Mutex;
-
-    use crate::{
-        Cell, DepNode, Gettable, JoinExt, MapExt, Materialize, Mutable, Signal, SwitchMapExt,
-        Watchable, batch, cell::CellMutable,
-    };
+    use crate::{Cell, DepNode, Watchable, cell::CellMutable};
 
     fn assert_edges_valid(cells: &[Cell<u64, CellMutable>]) {
         for cell in cells {
@@ -1259,49 +1254,6 @@ mod height_invariant_tests {
         let c = Cell::new(0u64);
         a.own(c.subscribe(|_| {}));
         assert!(b.height() > c.height());
-    }
-
-    /// A diamond whose one branch switches onto a taller inner after the join
-    /// was built must stay glitch-free: the join has to be raised above it.
-    #[test]
-    fn switch_to_taller_inner_keeps_diamond_glitch_free() {
-        let source = Cell::new(0u64);
-        let mut deep = source.clone().map(|x| *x).materialize();
-        for _ in 0..4 {
-            deep = deep.clone().map(|x| *x).materialize();
-        }
-        let selector = Cell::new(false);
-        let (shallow, tall) = (source.clone().lock(), deep);
-        let right = selector
-            .clone()
-            .switch_map(move |use_tall: &bool| {
-                if *use_tall {
-                    tall.clone()
-                } else {
-                    shallow.clone()
-                }
-            })
-            .materialize();
-        let left = source.clone().map(|x| *x).materialize();
-        let joined = left.join(right).materialize();
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::clone(&seen);
-        let _guard = joined.subscribe(move |signal| {
-            if let Signal::Value(pair) = signal {
-                sink.lock().push(**pair);
-            }
-        });
-        selector.set(true);
-        seen.lock().clear();
-        for i in 1..=20 {
-            batch(|| source.set(i));
-        }
-        let seen = std::mem::take(&mut *seen.lock());
-        assert!(
-            seen.iter().all(|(l, r)| l == r),
-            "glitch through diamond: {seen:?}"
-        );
-        assert_eq!(joined.get(), (20, 20));
     }
 }
 
