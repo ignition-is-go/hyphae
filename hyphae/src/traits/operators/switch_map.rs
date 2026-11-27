@@ -430,4 +430,39 @@ mod tests {
             "expected at most 1 live inner cell, found {alive_count} — old cells not being dropped"
         );
     }
+
+    #[test]
+    fn switch_keeps_upstream_shared_by_old_and_new_inner() {
+        let slot: Arc<std::sync::Mutex<Option<crate::cell::WeakCell<u64, CellMutable>>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let builds = Arc::new(AtomicUsize::new(0));
+        let source = Cell::new(1u64);
+        let switched = source
+            .clone()
+            .switch_map({
+                let slot = slot.clone();
+                let builds = builds.clone();
+                move |v| {
+                    let v = *v;
+                    let mut slot = slot
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let shared = if let Some(cell) = slot.as_ref().and_then(|w| w.upgrade()) {
+                        cell
+                    } else {
+                        builds.fetch_add(1, Ordering::SeqCst);
+                        let cell = Cell::new(100u64);
+                        *slot = Some(cell.downgrade());
+                        cell
+                    };
+                    shared.map(move |s| s + v).materialize()
+                }
+            })
+            .materialize();
+        for i in 2..=5u64 {
+            source.set(i);
+        }
+        assert_eq!(switched.get(), 105);
+        assert_eq!(builds.load(Ordering::SeqCst), 1);
+    }
 }

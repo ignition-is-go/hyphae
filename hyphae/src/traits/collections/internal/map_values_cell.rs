@@ -68,9 +68,13 @@ where
         key: &K,
         value: &V,
         changes: Option<&mut Vec<MapDiff<K, U>>>,
+        retired: &mut Vec<SubscriptionGuard>,
     ) {
+        // Make before break: the replaced row's guard is retired, not dropped,
+        // so anything shared by the old and new inner graphs stays alive while
+        // the mapper builds the new one.
         let prior = rows.remove(key).map(|row| {
-            drop(row.guard);
+            retired.extend(row.guard);
             row.value
         });
         let inner_cell = (self.mapper)(key, value);
@@ -120,9 +124,10 @@ where
         rows: &mut HashMap<K, MapValuesRow<U>>,
         key: &K,
         changes: Option<&mut Vec<MapDiff<K, U>>>,
+        retired: &mut Vec<SubscriptionGuard>,
     ) {
         if let Some(row) = rows.remove(key) {
-            drop(row.guard);
+            retired.extend(row.guard);
             self.emit(
                 MapDiff::Remove {
                     key: key.clone(),
@@ -138,23 +143,24 @@ where
         rows: &mut HashMap<K, MapValuesRow<U>>,
         diff: &MapDiff<K, V>,
         mut changes: Option<&mut Vec<MapDiff<K, U>>>,
+        retired: &mut Vec<SubscriptionGuard>,
     ) {
         match diff {
             MapDiff::Initial { entries } => {
                 let existing_keys: Vec<K> = rows.keys().cloned().collect();
                 for key in existing_keys {
-                    self.detach(rows, &key, changes.as_deref_mut());
+                    self.detach(rows, &key, changes.as_deref_mut(), retired);
                 }
                 for (key, value) in entries {
-                    self.attach(rows, key, value, changes.as_deref_mut());
+                    self.attach(rows, key, value, changes.as_deref_mut(), retired);
                 }
             }
             MapDiff::Insert { key, value } => {
-                self.attach(rows, key, value, changes);
+                self.attach(rows, key, value, changes, retired);
             }
-            MapDiff::Remove { key, .. } => self.detach(rows, key, changes),
+            MapDiff::Remove { key, .. } => self.detach(rows, key, changes, retired),
             MapDiff::Update { key, new_value, .. } => {
-                self.attach(rows, key, new_value, changes);
+                self.attach(rows, key, new_value, changes, retired);
             }
             MapDiff::Batch { .. } => {}
         }
@@ -186,13 +192,22 @@ where
                 drop(queue);
                 event
             };
+            // Guards replaced while applying one source event are dropped
+            // only after the whole event is applied, so a key removed and
+            // re-added within one batch keeps its shared upstream alive.
+            let mut retired = Vec::new();
             match event {
                 MapValuesEvent::Source(MapDiff::Batch { changes }) => {
                     let mut atomic_changes = Vec::new();
                     MapDiff::Batch { changes }.flatten_into(&mut atomic_changes);
                     let mut downstream_changes = Vec::new();
                     for change in &atomic_changes {
-                        self.apply(&mut rows, change, Some(&mut downstream_changes));
+                        self.apply(
+                            &mut rows,
+                            change,
+                            Some(&mut downstream_changes),
+                            &mut retired,
+                        );
                     }
                     if !downstream_changes.is_empty() {
                         (self.sink)(&MapDiff::Batch {
@@ -200,7 +215,7 @@ where
                         });
                     }
                 }
-                MapValuesEvent::Source(diff) => self.apply(&mut rows, &diff, None),
+                MapValuesEvent::Source(diff) => self.apply(&mut rows, &diff, None, &mut retired),
                 MapValuesEvent::Inner { key, token, value } => {
                     let Some(row) = rows.get_mut(&key) else {
                         continue;
@@ -411,6 +426,68 @@ mod tests {
         assert!(
             matches!(seen.last(), Some(MapDiff::Batch { changes }) if changes.len() == 2),
             "expected a two-change batch diff from install_map_values_cell_via_query"
+        );
+    }
+
+    /// A weakly cached shared cell, as a report cache holds it: alive only
+    /// while some inner graph holds it. Counts constructions.
+    fn weak_shared(
+        slot: &Arc<Mutex<Option<crate::cell::WeakCell<i32, crate::cell::CellMutable>>>>,
+        builds: &Arc<std::sync::atomic::AtomicUsize>,
+    ) -> Cell<i32, crate::cell::CellMutable> {
+        let mut slot = slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(cell) = slot.as_ref().and_then(crate::cell::WeakCell::upgrade) {
+            return cell;
+        }
+        builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let cell = Cell::new(100);
+        *slot = Some(cell.downgrade());
+        cell
+    }
+
+    #[test]
+    fn map_values_cell_update_keeps_upstream_shared_by_old_and_new_inner() {
+        let source = CellMap::<String, i32>::new();
+        source.insert("a".to_string(), 1);
+        let slot = Arc::new(Mutex::new(None));
+        let builds = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let (sink, state, _diffs) = capturing_sink::<String, i32>();
+        let mut cx = crate::map_query::compiler::CompileContext::default();
+        let mut guards = install_map_values_cell_via_query(
+            &mut cx,
+            source.clone(),
+            {
+                let slot = slot.clone();
+                let builds = builds.clone();
+                move |_: &String, v: &i32| {
+                    let v = *v;
+                    weak_shared(&slot, &builds)
+                        .map(move |s| s + v)
+                        .materialize()
+                }
+            },
+            sink,
+        );
+        guards.extend(cx.activate());
+        assert_eq!(builds.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        source.insert("a".to_string(), 2);
+        source.insert_many(vec![("a".to_string(), 3)]);
+        assert_eq!(
+            state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get("a")
+                .copied(),
+            Some(103)
+        );
+        assert_eq!(
+            builds.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "shared upstream was torn down and rebuilt on row update"
         );
     }
 }
