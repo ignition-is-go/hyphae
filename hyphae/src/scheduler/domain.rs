@@ -141,7 +141,7 @@ struct Mailbox {
 pub(crate) struct DomainInner {
     pub(crate) id: u64,
     pub(super) tick: Mutex<SharedTick>,
-    pub(super) active: AtomicBool,
+    pub(super) state: super::TickState,
     /// Signalled when this tick's drain is released, so a thread waiting for
     /// the tick to go quiet can look again.
     pub(super) released: Condvar,
@@ -732,7 +732,7 @@ impl Domain {
         let inner = Arc::new(DomainInner {
             id,
             tick: Mutex::new(SharedTick::new()),
-            active: AtomicBool::new(false),
+            state: super::TickState::new(),
             released: Condvar::new(),
             mailbox: Arc::clone(&mailbox),
             closed: AtomicBool::new(false),
