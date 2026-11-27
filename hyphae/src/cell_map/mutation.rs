@@ -1,4 +1,5 @@
 use std::{
+    hash::BuildHasher,
     hash::Hash,
     marker::PhantomData,
     sync::{
@@ -647,6 +648,7 @@ where
                     displaced.extend(emission.delete(self, &key));
                     emission.point(self, &key, None);
                 }
+                self.reserve_rows(entries.len());
                 for (key, value) in entries {
                     drop(emission.store(self, key.clone(), value.clone()));
                     emission.point(self, key, Some(value.clone()));
@@ -685,6 +687,26 @@ where
             MapDiff::Batch { .. } => return false,
         }
         true
+    }
+
+    /// Size every shard for `rows` more rows spread across the shards, so a
+    /// snapshot fills the map without rehashing it as it grows.
+    fn reserve_rows(&self, rows: usize) {
+        // A small snapshot grows each shard's table once or twice; reserving
+        // it up front costs more than that.
+        const MIN_ROWS: usize = 64;
+        if rows < MIN_ROWS {
+            return;
+        }
+        let per_shard = rows.div_ceil(super::SHARDS);
+        // Rows split unevenly between shards; leave a quarter's headroom.
+        let per_shard = per_shard.saturating_add(per_shard / 4);
+        let data = &self.inner.data;
+        for shard in data.shards() {
+            shard
+                .write()
+                .reserve(per_shard, |(key, _)| data.hasher().hash_one(key));
+        }
     }
 
     /// Apply a batch of diffs and emit them as one `MapDiff::Batch`.
