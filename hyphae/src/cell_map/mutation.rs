@@ -1,6 +1,5 @@
 use std::{
-    hash::BuildHasher,
-    hash::Hash,
+    hash::{BuildHasher, Hash},
     marker::PhantomData,
     sync::{
         Arc, OnceLock,
@@ -33,6 +32,35 @@ where
     /// Rows added less rows removed.
     grown: isize,
     sequence: Sequence,
+}
+
+/// What a write of one row tells the map's cells once the row is stored.
+struct One<K, V> {
+    diff: MapDiff<K, V>,
+    point: Option<Point<V>>,
+    /// Rows added less rows removed.
+    grown: isize,
+}
+
+impl Sequence {
+    /// Whether the per-key observers are told before the diff subscribers.
+    const fn points_first(self) -> bool {
+        !matches!(self, Self::DiffLenPoints)
+    }
+
+    /// When the length is told, relative to the diff subscribers.
+    const fn len_at(self) -> EffectAt {
+        match self {
+            Self::PointsLenDiff => EffectAt::BeforeFanout,
+            Self::PointsDiffLen | Self::DiffLenPoints => EffectAt::AfterFanout,
+        }
+    }
+}
+
+fn set_points<V: CellValue>(points: Vec<Point<V>>) {
+    for (cell, value) in points {
+        cell.set(value);
+    }
 }
 
 /// Rows a write took out of the map, kept until the write has released it.
@@ -77,6 +105,7 @@ where
     V: CellValue,
 {
     /// [`CellMap::store`], counting a new row.
+    #[inline]
     fn store(&mut self, map: &CellMap<K, V, CellMutable>, key: K, value: V) -> Stored<V> {
         let stored = map.store(key, value);
         if matches!(stored, Stored::Inserted) {
@@ -138,6 +167,7 @@ impl<K, V> StagedDiff<K, V> {
 }
 
 /// The keys `diffs` name, or every key when one of them replaces the map.
+#[inline]
 fn touched_by<K: Hash, V>(diffs: &[MapDiff<K, V>]) -> Touched {
     fn collect<K: Hash, V>(diffs: &[MapDiff<K, V>], keys: &mut Vec<u64>) -> bool {
         diffs.iter().all(|diff| match diff {
@@ -318,6 +348,7 @@ where
     /// [`Emission`] what the map's cells must be told. The rows are stored in
     /// the map's write order and the emission is delivered in that order (see
     /// [`WriteOrder`]), whichever threads and batches the writes come from.
+    #[inline]
     fn write<R>(
         &self,
         touched: Touched,
@@ -349,6 +380,77 @@ where
         )
     }
 
+    /// [`write`](Self::write) for a write that changes at most the one key
+    /// `hash` names. When nothing else holds the map, the row is delivered
+    /// here without building an [`Emission`].
+    #[inline]
+    fn write_one<R>(
+        &self,
+        hash: u64,
+        sequence: Sequence,
+        store: impl FnOnce() -> (R, Option<One<K, V>>),
+    ) -> R {
+        self.assert_writable();
+        self.maybe_prune_key_cells();
+        let domain = self.inner.diffs_cell.inner.domain.as_ref();
+        let locked = self.inner.order.lock();
+        let (result, one) = store();
+        let Some(One { diff, point, grown }) = one else {
+            return result;
+        };
+        match locked.alone(domain, hash) {
+            Ok(delivery) => {
+                let (before, after) = if sequence.points_first() {
+                    (point, None)
+                } else {
+                    (None, point)
+                };
+                if let Some((cell, value)) = before {
+                    cell.set(value);
+                }
+                self.set_diff(diff, grown, sequence.len_at());
+                if let Some((cell, value)) = after {
+                    cell.set(value);
+                }
+                drop(delivery);
+            }
+            Err(locked) => locked.deliver(
+                domain,
+                Touched::Key(hash),
+                Emission {
+                    points: point.into_iter().collect(),
+                    diff: Some(diff),
+                    grown,
+                    sequence,
+                },
+                |_| false,
+                |emission, staging| self.emit(emission, staging),
+                || {
+                    let map = self.clone();
+                    Box::new(move |emission| map.emit(emission, Staging::Unbatched))
+                },
+            ),
+        }
+        result
+    }
+
+    /// Set the diff cell to `diff` outside a batch, telling the length of
+    /// `grown` more rows at `at`.
+    #[inline]
+    fn set_diff(&self, diff: MapDiff<K, V>, grown: isize, at: EffectAt) {
+        if grown == 0 {
+            self.inner.diffs_cell.set(diff);
+        } else {
+            let map = Arc::downgrade(&self.inner);
+            self.inner.diffs_cell.set_with(diff, at, move || {
+                if let Some(map) = map.upgrade() {
+                    map.grew(grown);
+                }
+            });
+        }
+    }
+
+    #[inline]
     fn emit(&self, emission: Emission<K, V>, staging: Staging) {
         let Emission {
             points,
@@ -356,37 +458,25 @@ where
             grown,
             sequence,
         } = emission;
-        let set_points = |points: Vec<Point<V>>| {
-            for (cell, value) in points {
-                cell.set(value);
-            }
-        };
-        let (first, last) = match sequence {
-            Sequence::DiffLenPoints => (Vec::new(), points),
-            Sequence::PointsDiffLen | Sequence::PointsLenDiff => (points, Vec::new()),
-        };
-        set_points(first);
-        let at = match sequence {
-            Sequence::PointsLenDiff => EffectAt::BeforeFanout,
-            Sequence::PointsDiffLen | Sequence::DiffLenPoints => EffectAt::AfterFanout,
-        };
+        let mut points = Some(points).filter(|points| !points.is_empty());
+        if sequence.points_first()
+            && let Some(points) = points.take()
+        {
+            set_points(points);
+        }
+        let at = sequence.len_at();
         if let Some(diff) = diff {
             if let Staging::Batched { previous, stamp } = staging
                 && !matches!(diff, MapDiff::Initial { .. })
             {
                 self.stage_diff(diff, grown, at, previous, stamp);
-            } else if grown == 0 {
-                self.inner.diffs_cell.set(diff);
             } else {
-                let map = Arc::downgrade(&self.inner);
-                self.inner.diffs_cell.set_with(diff, at, move || {
-                    if let Some(map) = map.upgrade() {
-                        map.grew(grown);
-                    }
-                });
+                self.set_diff(diff, grown, at);
             }
         }
-        set_points(last);
+        if let Some(points) = points {
+            set_points(points);
+        }
     }
 
     /// Stage a diff made inside a batch. A diff whose row directly follows
@@ -439,28 +529,27 @@ where
 
     /// Insert a key-value pair, returning the old value if present.
     pub fn insert(&self, key: K, value: V) -> Option<V> {
-        let touched = Touched::Key(key_hash(&key));
-        self.write(touched, Sequence::PointsDiffLen, |emission| {
-            let stored = emission.store(self, key.clone(), value.clone());
+        self.write_one(key_hash(&key), Sequence::PointsDiffLen, || {
+            let stored = self.store(key.clone(), value.clone());
 
             // No-op update: same key/value should not emit a diff or notify observers.
-            let unchanged = stored.unchanged(&value);
-            let old = stored.into_old();
-            if unchanged {
-                return old;
+            if stored.unchanged(&value) {
+                return (stored.into_old(), None);
             }
-
-            emission.point(self, &key, Some(value.clone()));
-            emission.diff = Some(
-                old.as_ref()
-                    .map(|old_value| MapDiff::Update {
-                        key: key.clone(),
-                        old_value: old_value.clone(),
-                        new_value: value.clone(),
-                    })
-                    .unwrap_or(MapDiff::Insert { key, value }),
-            );
-            old
+            let grown = isize::from(matches!(stored, Stored::Inserted));
+            let old = stored.into_old();
+            let point = self
+                .observed_key_cell(&key)
+                .map(|cell| (cell, Some(value.clone())));
+            let diff = old
+                .as_ref()
+                .map(|old_value| MapDiff::Update {
+                    key: key.clone(),
+                    old_value: old_value.clone(),
+                    new_value: value.clone(),
+                })
+                .unwrap_or(MapDiff::Insert { key, value });
+            (old, Some(One { diff, point, grown }))
         })
     }
 
@@ -506,15 +595,23 @@ where
 
     /// Remove a key, returning the old value if present.
     pub fn remove(&self, key: &K) -> Option<V> {
-        let touched = Touched::Key(key_hash(key));
-        self.write(touched, Sequence::DiffLenPoints, |emission| {
-            let (key, old_value) = emission.delete(self, key)?;
-            emission.point(self, &key, None);
-            emission.diff = Some(MapDiff::Remove {
+        self.write_one(key_hash(key), Sequence::DiffLenPoints, || {
+            let Some((key, old_value)) = self.delete(key) else {
+                return (None, None);
+            };
+            let point = self.observed_key_cell(&key).map(|cell| (cell, None));
+            let diff = MapDiff::Remove {
                 key,
                 old_value: old_value.clone(),
-            });
-            Some(old_value)
+            };
+            (
+                Some(old_value),
+                Some(One {
+                    diff,
+                    point,
+                    grown: -1,
+                }),
+            )
         })
     }
 
@@ -621,6 +718,16 @@ where
             return self.apply_batch(changes);
         }
         // What the write displaced drops once it has released the map.
+        if let MapDiff::Insert { key, .. }
+        | MapDiff::Update { key, .. }
+        | MapDiff::Remove { key, .. } = &diff
+        {
+            let displaced = self.write_one(key_hash(key), Sequence::PointsLenDiff, || {
+                self.apply_one(diff)
+            });
+            drop(displaced);
+            return;
+        }
         let touched = touched_by(std::slice::from_ref(&diff));
         let displaced = self.write(touched, Sequence::PointsLenDiff, |emission| {
             let mut displaced = Displaced::default();
@@ -632,9 +739,44 @@ where
         drop(displaced);
     }
 
+    /// Store what one `Insert`, `Update` or `Remove` describes, as
+    /// [`apply`](Self::apply) does, and return the row it displaced with
+    /// what the map's cells must be told.
+    #[inline]
+    fn apply_one(&self, diff: MapDiff<K, V>) -> (Option<(K, V)>, Option<One<K, V>>) {
+        let (displaced, point, grown) = match &diff {
+            MapDiff::Insert {
+                key,
+                value: new_value,
+            }
+            | MapDiff::Update { key, new_value, .. } => {
+                let stored = self.store(key.clone(), new_value.clone());
+                // An update to the value the map holds changes nothing.
+                if matches!(diff, MapDiff::Update { .. }) && stored.unchanged(new_value) {
+                    return (stored.into_old().map(|old| (key.clone(), old)), None);
+                }
+                let grown = isize::from(matches!(stored, Stored::Inserted));
+                let displaced = stored.into_old().map(|old| (key.clone(), old));
+                let point = self
+                    .observed_key_cell(key)
+                    .map(|cell| (cell, Some(new_value.clone())));
+                (displaced, point, grown)
+            }
+            MapDiff::Remove { key, .. } => {
+                let displaced = self.delete(key);
+                let grown = if displaced.is_some() { -1 } else { 0 };
+                let point = self.observed_key_cell(key).map(|cell| (cell, None));
+                (displaced, point, grown)
+            }
+            MapDiff::Initial { .. } | MapDiff::Batch { .. } => return (None, None),
+        };
+        (displaced, Some(One { diff, point, grown }))
+    }
+
     /// Store what one diff other than a `Batch` describes, moving the rows it
     /// displaces into `displaced`. Returns `false` when the diff changes
     /// nothing and is dropped.
+    #[inline]
     fn apply(
         &self,
         diff: &MapDiff<K, V>,

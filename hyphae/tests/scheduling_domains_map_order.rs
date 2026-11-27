@@ -388,6 +388,138 @@ fn a_write_to_a_key_another_thread_is_delivering_follows_it_without_waiting() {
     });
 }
 
+/// A writer alone on a map delivers without recording its keys in the
+/// map's list of holders. Its parked delivery must still be followed by a
+/// batch and by another thread's write that arrive while it runs, and the
+/// writer must deliver alone again once they have finished.
+#[test]
+fn a_lone_writer_is_followed_by_writers_that_arrive_during_its_delivery() {
+    in_root_and_in_a_child(|domain| {
+        let source = domain.enter(CellMap::<u32, i64>::new);
+        let gate = Arc::new(Gate::default());
+        let delivered: Log<i64> = Arc::default();
+        let _parked = domain.enter(|| {
+            let (gate, delivered) = (Arc::clone(&gate), Arc::clone(&delivered));
+            source.subscribe_diffs(move |diff| {
+                if let MapDiff::Insert { key: 1, value }
+                | MapDiff::Update {
+                    key: 1,
+                    new_value: value,
+                    ..
+                } = diff
+                {
+                    delivered.lock().push(*value);
+                    if *value == 10 {
+                        gate.pass();
+                    }
+                }
+            })
+        });
+        let derived = Derived::of(domain, &source);
+        gate.arm();
+
+        let lone = {
+            let source = source.clone();
+            thread::spawn(move || {
+                source.insert(1, 10);
+                // Returns once its delivery has, while the batch below is
+                // still open on the key.
+                source.insert(1, 40);
+            })
+        };
+        assert!(gate.wait_entered(), "the lone write was never delivered");
+
+        let held = HeldBatch::open(domain);
+        held.run({
+            let source = source.clone();
+            move || {
+                source.insert(1, 20);
+            }
+        });
+        source.insert(1, 30);
+        assert_eq!(*delivered.lock(), vec![10]);
+
+        gate.open();
+        assert!(lone.join().is_ok());
+        assert_eq!(
+            *delivered.lock(),
+            vec![10],
+            "a write that follows the open batch was delivered before it closed"
+        );
+        assert_eq!(derived.selected.get_value(&1), Some(10));
+
+        held.close();
+        domain.flush();
+        assert_eq!(*delivered.lock(), vec![10, 20, 30, 40]);
+        derived.assert_matches(&rows_of(&source), "after the batch closed");
+
+        // Nobody holds the map any more, so this write is delivered alone,
+        // before it returns.
+        source.insert(1, 50);
+        assert_eq!(*delivered.lock(), vec![10, 20, 30, 40, 50]);
+        assert_eq!(derived.selected.get_value(&1), Some(50));
+        derived.assert_matches(&rows_of(&source), "after the lone write");
+    });
+}
+
+/// One thread writes a key outside any batch, alone on the map at first.
+/// Partway through, other threads start writing the same keys, in batches
+/// and outside them. Every diff must still follow the row before it.
+#[test]
+fn a_stream_of_lone_writes_stays_in_order_when_other_writers_join() {
+    const STREAM: i64 = 2_000;
+    const JOIN_AT: i64 = 500;
+    in_root_and_in_a_child(|domain| {
+        let source = domain.enter(CellMap::<u32, i64>::new);
+        let derived = Derived::of(domain, &source);
+        let next_value = Arc::new(AtomicU64::new(1_000_000));
+        let joined = Arc::new(Barrier::new(3));
+
+        let stream = {
+            let (source, joined) = (source.clone(), Arc::clone(&joined));
+            thread::spawn(move || {
+                for value in 1..=STREAM {
+                    if value == JOIN_AT {
+                        joined.wait();
+                    }
+                    source.insert(0, value);
+                }
+            })
+        };
+        let others: Vec<_> = [true, false]
+            .into_iter()
+            .map(|batched| {
+                let (domain, source) = (domain.clone(), source.clone());
+                let (next_value, joined) = (Arc::clone(&next_value), Arc::clone(&joined));
+                thread::spawn(move || {
+                    joined.wait();
+                    for _ in 0..200 {
+                        let value = || {
+                            i64::try_from(next_value.fetch_add(1, Ordering::Relaxed)).unwrap_or(0)
+                        };
+                        if batched {
+                            domain.batch(|| {
+                                source.insert(0, value());
+                                source.insert(1, value());
+                            });
+                        } else {
+                            source.insert(0, value());
+                            source.remove(&1);
+                        }
+                    }
+                })
+            })
+            .collect();
+
+        assert!(stream.join().is_ok(), "the lone writer panicked");
+        for other in others {
+            assert!(other.join().is_ok(), "a joining writer panicked");
+        }
+        domain.flush();
+        derived.assert_matches(&rows_of(&source), "after every writer returned");
+    });
+}
+
 /// One thread's delivery is parked inside a subscriber of a cell that
 /// describes the whole map. Another thread then writes a different key, which
 /// it delivers itself. The parked cell must not take the second value until

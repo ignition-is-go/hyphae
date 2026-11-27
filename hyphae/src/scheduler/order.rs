@@ -33,6 +33,15 @@
 //!
 //! The lock is held while rows are stored, which can run a write hook, and
 //! never while subscribers run.
+//!
+//! Most writes meet nobody: one thread delivers a write, or one batch holds
+//! the store, and no other writer holds anything here. That writer is kept
+//! apart as the store's **sole holder**, beside the list of holders, and
+//! gives its keys back with one atomic exchange instead of the lock. Any
+//! other writer that finds a sole holder first moves it into the list, under
+//! the lock, and from then on both take the general path. A sole holder
+//! never has followers or a group, since giving it one moves it to the list
+//! first.
 
 #![allow(clippy::redundant_pub_crate)]
 
@@ -41,7 +50,7 @@ use std::{
     collections::VecDeque,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
 };
 
@@ -94,11 +103,19 @@ impl Writer {
     fn group(&self) -> u64 {
         self.group.load(Ordering::Acquire)
     }
+
+    /// The number that names this writer as a holder: its address, which
+    /// no thread's [`thread_id`] and no other live writer shares. Exposed,
+    /// so [`WriteOrder::share`] can reach the writer from it.
+    fn token(writer: &Arc<Self>) -> usize {
+        Arc::as_ptr(writer).expose_provenance()
+    }
 }
 
 /// One store a batch holds keys pending on.
 pub(super) struct Claim {
     order: Arc<WriteOrder>,
+    /// The batch, kept alive while it may be the store's sole holder.
     writer: Arc<Writer>,
 }
 
@@ -106,6 +123,9 @@ impl Claim {
     /// Free the keys. Called once the batch's writes are in the tick, with
     /// no tick lock held.
     pub(super) fn release(self) {
+        if self.order.leave_solo(Writer::token(&self.writer)) {
+            return;
+        }
         let released = self.order.with_pending(|pending| {
             pending
                 .held
@@ -173,9 +193,24 @@ impl Held {
     }
 
     fn is(&self, writer: &Arc<Writer>) -> bool {
-        self.writer
-            .as_ref()
-            .is_some_and(|held| Arc::ptr_eq(held, writer))
+        self.token() == Some(Writer::token(writer))
+    }
+
+    fn token(&self) -> Option<usize> {
+        self.writer.as_ref().map(Writer::token)
+    }
+
+    /// Forget the keys of an earlier holder, keeping the list's memory.
+    fn reset(&mut self, thread: usize) {
+        self.thread = thread;
+        self.keys.first = None;
+        self.keys.few.clear();
+        self.keys.many.clear();
+        self.whole = false;
+        self.deliveries = 0;
+        self.last = 0;
+        self.run = 0;
+        self.whole_at = 0;
     }
 
     /// Hold the keys for a row stamped `stamp` (0 outside a batch), and
@@ -225,7 +260,16 @@ const KEYS_SCAN: usize = 16;
 
 impl Keys {
     /// Stamp `hash` and return its previous stamp, 0 when it was not held.
+    #[inline]
     fn insert(&mut self, hash: u64, stamp: u64) -> u64 {
+        match &mut self.first {
+            None if self.few.is_empty() && self.many.is_empty() => {
+                self.first = Some((hash, stamp));
+                return 0;
+            }
+            Some(first) if first.0 == hash => return std::mem::replace(&mut first.1, stamp),
+            _ => {}
+        }
         let slot = match &mut self.first {
             Some(first) if first.0 == hash => Some(&mut first.1),
             _ => self
@@ -390,11 +434,20 @@ impl Groups {
     }
 }
 
+impl Default for Held {
+    fn default() -> Self {
+        Self::new(None, 0)
+    }
+}
+
 #[derive(Default)]
 struct Pending {
     /// The writers with rows stored here and not yet delivered or in the
-    /// tick.
+    /// tick, other than the sole holder.
     held: Vec<Held>,
+    /// The sole holder's keys, current while [`WriteOrder::solo`] names one.
+    /// Its `writer` stays `None`: [`WriteOrder::share`] fills it in.
+    solo: Held,
     /// Stamp of the last row a batch stored here.
     clock: u64,
 }
@@ -430,11 +483,66 @@ impl Touched {
 #[derive(Default)]
 pub(crate) struct WriteOrder {
     pending: ReentrantMutex<RefCell<Pending>>,
+    /// The sole holder: a delivering thread's [`thread_id`] or a batch's
+    /// [`Writer::token`], 0 for none. Set under the lock. Cleared by the
+    /// holder without the lock when it lets go, or under the lock by a
+    /// writer that moves it into the list. Whichever clears it first wins,
+    /// so a holder that loses knows it was moved and takes the general path.
+    ///
+    /// A batch's token stays set only while the [`Claim`] that keeps its
+    /// writer alive is unreleased: the claim clears it before letting go.
+    solo: AtomicUsize,
 }
 
 impl WriteOrder {
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self::default())
+    }
+
+    /// Make the holder `token` the sole holder, `thread` for a delivery and
+    /// 0 for a batch. Called under the lock, with no holder in the list and
+    /// none sole.
+    #[inline]
+    fn enter_solo(&self, pending: &mut Pending, token: usize, thread: usize) {
+        pending.solo.reset(thread);
+        self.solo.store(token, Ordering::Release);
+    }
+
+    /// Let go as the sole holder `token`, without the lock. False when it
+    /// is not sole any more: its keys were moved into the list.
+    #[inline]
+    fn leave_solo(&self, token: usize) -> bool {
+        self.solo
+            .compare_exchange(token, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    /// Move the sole holder, if there is one, into the list. Called under
+    /// the lock by any writer before it looks at the list.
+    fn share(&self, pending: &mut Pending) {
+        let token = self.solo.load(Ordering::Acquire);
+        if token == 0
+            || self
+                .solo
+                .compare_exchange(token, 0, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
+            return;
+        }
+        let mut held = std::mem::take(&mut pending.solo);
+        if held.thread == 0 {
+            let writer = std::ptr::with_exposed_provenance::<Writer>(token);
+            // SAFETY: `token` is the address of a batch's writer, exposed by
+            // `Writer::token`. The batch's unreleased claim holds an `Arc`
+            // of it: the claim clears the token before it drops that `Arc`,
+            // and the exchange above cleared it first, so the claim has not
+            // let go and cannot until this thread releases the lock.
+            held.writer = Some(unsafe {
+                Arc::increment_strong_count(writer);
+                Arc::from_raw(writer)
+            });
+        }
+        pending.held.push(held);
     }
 
     fn with_pending<R>(&self, f: impl FnOnce(&mut Pending) -> R) -> R {
@@ -446,12 +554,9 @@ impl WriteOrder {
     /// `touched` names the keys `store` may change. The caller hashes them
     /// before the call, so a key's `Hash` never runs under the store's lock.
     /// `store` changes the rows, in the store's order, and returns what the
-    /// store's cells must be told, or `None` when nothing changed. `whole`
-    /// says whether that speaks for every key, whatever keys were named.
-    /// `emit` then sets the cells, on the route that delivers them in that
-    /// order (see the [module docs](self)). When the write has to follow
-    /// another thread's delivery, `follow` gives an `emit` that thread can
-    /// run.
+    /// store's cells must be told, or `None` when nothing changed. The rest
+    /// is [`Locked::deliver`].
+    #[inline]
     pub(crate) fn write<R, E: Send + 'static>(
         self: &Arc<Self>,
         domain: Option<&Arc<DomainInner>>,
@@ -461,58 +566,21 @@ impl WriteOrder {
         emit: impl FnOnce(E, Staging),
         follow: impl FnOnce() -> Box<dyn FnOnce(E) + Send>,
     ) -> R {
-        let tick = TickRef::of(domain);
-        let order = self.pending.lock();
+        let locked = self.lock();
         let (result, emission) = store();
-        let Some(emission) = emission else {
-            drop(order);
-            return result;
-        };
-        let touched = if whole(&emission) {
-            Touched::All
-        } else {
-            touched
-        };
-        let hold = |batch: &mut super::OpenBatch| {
-            self.hold(&mut order.borrow_mut(), tick, batch, &touched)
-        };
-        if let Some((previous, stamp)) = super::with_open_batch(tick.id, hold) {
-            // Staged in the thread's open batch.
-            drop(order);
-            emit(emission, Staging::Batched { previous, stamp });
-            return result;
-        }
-        let route = self.route(&mut order.borrow_mut(), domain, &touched);
-        match route {
-            Route::Deliver(delivery) => {
-                // Set on this thread or queued on the tick, as each cell
-                // decides.
-                drop(order);
-                emit(emission, Staging::Unbatched);
-                drop(delivery);
-            }
-            Route::Follow(holder) => {
-                // Another thread is delivering a write to one of the keys.
-                // It delivers this one when it has finished.
-                let emit = follow();
-                if let Some(held) = order.borrow_mut().held.get_mut(holder) {
-                    held.hold(&touched, 0);
-                    held.followers.push_back(Box::new(move || emit(emission)));
-                }
-                drop(order);
-            }
-            Route::Stage => {
-                // A batch holds one of the keys, so the write is staged in a
-                // batch opened for it alone and joins the holder.
-                super::begin_batch(domain);
-                super::with_open_batch(tick.id, hold);
-                drop(order);
-                let batch = Implicit(domain);
-                emit(emission, Staging::Unbatched);
-                drop(batch);
-            }
+        if let Some(emission) = emission {
+            locked.deliver(domain, touched, emission, whole, emit, follow);
         }
         result
+    }
+
+    /// Take the store's lock to store a write's rows under it.
+    #[inline]
+    pub(crate) fn lock(self: &Arc<Self>) -> Locked<'_> {
+        Locked {
+            order: self,
+            guard: self.pending.lock(),
+        }
     }
 
     /// Choose the route of a write made outside a batch, and hold its keys
@@ -524,6 +592,18 @@ impl WriteOrder {
         touched: &Touched,
     ) -> Route<'a> {
         let thread = thread_id();
+        self.share(pending);
+        if pending.held.is_empty() {
+            self.enter_solo(pending, thread, thread);
+            pending.solo.hold(touched, 0);
+            pending.solo.deliveries = 1;
+            return Route::Deliver(Delivery {
+                order: self,
+                domain,
+                thread,
+                solo: true,
+            });
+        }
         let mut mine = None;
         let mut holder = None;
         for (index, held) in pending.held.iter().enumerate() {
@@ -554,6 +634,7 @@ impl WriteOrder {
             order: self,
             domain,
             thread,
+            solo: false,
         })
     }
 
@@ -570,11 +651,24 @@ impl WriteOrder {
     fn hold(
         self: &Arc<Self>,
         pending: &mut Pending,
-        tick: TickRef<'_>,
+        domain: Option<&Arc<DomainInner>>,
         batch: &mut super::OpenBatch,
         touched: &Touched,
     ) -> (u64, u64) {
         let writer = &*batch.writer.get_or_insert_with(Writer::new);
+        let token = Writer::token(writer);
+        if self.solo.load(Ordering::Acquire) == token {
+            return Self::stamp(pending, None, batch, touched);
+        }
+        self.share(pending);
+        if pending.held.is_empty() {
+            self.enter_solo(pending, token, 0);
+            batch.claims.push(Claim {
+                order: Arc::clone(self),
+                writer: Arc::clone(writer),
+            });
+            return Self::stamp(pending, None, batch, touched);
+        }
         let thread = thread_id();
         let mut mine = None;
         for (index, held) in pending.held.iter_mut().enumerate() {
@@ -597,7 +691,7 @@ impl WriteOrder {
             if let Some(holder) = holder
                 && !holder.is_committed()
             {
-                let mut tick = tick.queue.lock();
+                let mut tick = TickRef::of(domain).queue.lock();
                 // Committed while this thread waited for the tick.
                 if !holder.is_committed() {
                     tick.groups.join(writer, holder);
@@ -612,12 +706,29 @@ impl WriteOrder {
             pending.held.push(Held::new(Some(Arc::clone(writer)), 0));
             pending.held.len().saturating_sub(1)
         });
+        Self::stamp(pending, Some(mine), batch, touched)
+    }
+
+    /// Stamp the batch's row and hold its keys in its entry: the sole
+    /// holder for `None`, else that index of the list. Returns what
+    /// [`hold`](Self::hold) does.
+    fn stamp(
+        pending: &mut Pending,
+        mine: Option<usize>,
+        batch: &mut super::OpenBatch,
+        touched: &Touched,
+    ) -> (u64, u64) {
         // Later than every row stored here before and than everything this
         // batch wrote before.
         let stamp = batch.stamp.max(pending.clock).saturating_add(1);
+        let clock = pending.clock;
+        let held = match mine {
+            None => Some(&mut pending.solo),
+            Some(index) => pending.held.get_mut(index),
+        };
         let mut previous = 0;
-        if let Some(held) = pending.held.get_mut(mine) {
-            let adjacent = held.last != 0 && held.last == pending.clock;
+        if let Some(held) = held {
+            let adjacent = held.last != 0 && held.last == clock;
             let repeats = held.hold(touched, stamp) >= held.run;
             if adjacent && !repeats {
                 previous = held.last;
@@ -632,7 +743,118 @@ impl WriteOrder {
     }
 }
 
+/// A store's lock, held by a write while it stores its rows.
+pub(crate) struct Locked<'a> {
+    order: &'a Arc<WriteOrder>,
+    guard: parking_lot::ReentrantMutexGuard<'a, RefCell<Pending>>,
+}
+
+impl<'a> Locked<'a> {
+    /// The write stored a row of the one key `hash`. When this thread holds
+    /// no batch of `domain` and no other writer holds anything here, the
+    /// thread becomes the store's sole holder and delivers the write now,
+    /// before it drops the returned delivery. Otherwise the lock comes back
+    /// for [`deliver`](Self::deliver).
+    #[inline]
+    pub(crate) fn alone(
+        self,
+        domain: Option<&'a Arc<DomainInner>>,
+        hash: u64,
+    ) -> Result<Delivery<'a>, Self> {
+        let order = self.order;
+        if order.solo.load(Ordering::Acquire) != 0
+            || super::holds_open_batch(super::domain::id_of(domain))
+        {
+            return Err(self);
+        }
+        let thread = thread_id();
+        {
+            let mut pending = self.guard.borrow_mut();
+            if !pending.held.is_empty() {
+                drop(pending);
+                return Err(self);
+            }
+            order.enter_solo(&mut pending, thread, thread);
+            pending.solo.keys.first = Some((hash, 0));
+            pending.solo.deliveries = 1;
+        }
+        drop(self.guard);
+        Ok(Delivery {
+            order,
+            domain,
+            thread,
+            solo: true,
+        })
+    }
+
+    /// Deliver what the write stored. `whole` says whether `emission` speaks
+    /// for every key, whatever keys `touched` named. `emit` then sets the
+    /// cells, on the route that delivers them in that order (see the
+    /// [module docs](self)). When the write has to follow another thread's
+    /// delivery, `follow` gives an `emit` that thread can run.
+    pub(crate) fn deliver<E: Send + 'static>(
+        self,
+        domain: Option<&Arc<DomainInner>>,
+        touched: Touched,
+        emission: E,
+        whole: impl FnOnce(&E) -> bool,
+        emit: impl FnOnce(E, Staging),
+        follow: impl FnOnce() -> Box<dyn FnOnce(E) + Send>,
+    ) {
+        let Self {
+            order: this,
+            guard: order,
+        } = self;
+        let id = super::domain::id_of(domain);
+        let touched = if whole(&emission) {
+            Touched::All
+        } else {
+            touched
+        };
+        let hold = |batch: &mut super::OpenBatch| {
+            this.hold(&mut order.borrow_mut(), domain, batch, &touched)
+        };
+        if let Some((previous, stamp)) = super::with_open_batch(id, hold) {
+            // Staged in the thread's open batch.
+            drop(order);
+            emit(emission, Staging::Batched { previous, stamp });
+            return;
+        }
+        let route = this.route(&mut order.borrow_mut(), domain, &touched);
+        match route {
+            Route::Deliver(delivery) => {
+                // Set on this thread or queued on the tick, as each cell
+                // decides.
+                drop(order);
+                emit(emission, Staging::Unbatched);
+                drop(delivery);
+            }
+            Route::Follow(holder) => {
+                // Another thread is delivering a write to one of the keys.
+                // It delivers this one when it has finished.
+                let emit = follow();
+                if let Some(held) = order.borrow_mut().held.get_mut(holder) {
+                    held.hold(&touched, 0);
+                    held.followers.push_back(Box::new(move || emit(emission)));
+                }
+                drop(order);
+            }
+            Route::Stage => {
+                // A batch holds one of the keys, so the write is staged in a
+                // batch opened for it alone and joins the holder.
+                super::begin_batch(domain);
+                super::with_open_batch(id, hold);
+                drop(order);
+                let batch = Implicit(domain);
+                emit(emission, Staging::Unbatched);
+                drop(batch);
+            }
+        }
+    }
+}
+
 /// A number no other live thread has, and never 0.
+#[inline]
 fn thread_id() -> usize {
     thread_local! {
         static MARK: u8 = const { 0 };
@@ -667,10 +889,12 @@ enum Route<'a> {
 /// One delivery of a write made outside a batch. When it is dropped, also by
 /// a panicking subscriber, it delivers the writes that followed it and frees
 /// its keys.
-struct Delivery<'a> {
+pub(crate) struct Delivery<'a> {
     order: &'a Arc<WriteOrder>,
     domain: Option<&'a Arc<DomainInner>>,
     thread: usize,
+    /// The thread delivers as the store's sole holder.
+    solo: bool,
 }
 
 /// What a delivery finds when it returns.
@@ -717,7 +941,21 @@ impl Delivery<'_> {
 }
 
 impl Drop for Delivery<'_> {
+    #[inline]
     fn drop(&mut self) {
+        // Nobody followed or joined a sole holder without moving it into
+        // the list first.
+        if self.solo && self.order.leave_solo(self.thread) {
+            return;
+        }
+        self.finish();
+    }
+}
+
+impl Delivery<'_> {
+    /// Deliver the writes that followed this one, and free its keys.
+    #[cold]
+    fn finish(&self) {
         loop {
             match self.next() {
                 Next::Follower(follower) => {

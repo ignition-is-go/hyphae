@@ -171,6 +171,7 @@ where
     /// Store `value` under `key`, reporting the change to write hooks while
     /// the shard lock is held. The caller drops the previous value after the
     /// lock is released.
+    #[inline]
     pub(super) fn store(&self, key: K, value: V) -> Stored<V> {
         let hooks = &self.inner.write_hooks;
         let data = &self.inner.data;
