@@ -7,10 +7,10 @@
 
 use std::sync::Arc;
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BatchSize, BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use hyphae::{
-    Cell, CellMap, CountByExt, InnerJoinExt, MapEntriesExt, MapExt, MapQuery, MapValuesExt,
-    Materialize, SwitchMapExt,
+    Cell, CellMap, CountByExt, InnerJoinExt, LeftJoinExt, MapEntriesExt, MapExt, MapQuery,
+    MapValuesExt, Materialize, SwitchMapExt,
 };
 
 const SIZES: [u64; 2] = [10, 200];
@@ -115,5 +115,44 @@ fn bench_queries(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_cells, bench_queries);
+/// One join key holding every left row: the shape of all nodes of one engine
+/// joined to that engine. Index maintenance must stay linear in the bucket.
+fn bench_hot_join_key(c: &mut Criterion) {
+    let mut group = c.benchmark_group("graph_construction/hot_join_key");
+    group.sample_size(10);
+    for n in [1_000_u64, 10_000] {
+        group.bench_with_input(BenchmarkId::new("insert_remove", n), &n, |b, &n| {
+            b.iter_batched(
+                || {
+                    let left = CellMap::<u64, Arc<Row>>::new();
+                    let output = left
+                        .clone()
+                        .left_join_by(rows(1), |_, _| 0_u64, |key, _| *key)
+                        .map_joined_values(|_, row, matches| (row.payload, matches.len()))
+                        .materialize();
+                    (left, output)
+                },
+                |(left, output)| {
+                    for key in 0..n {
+                        left.insert(
+                            key,
+                            Arc::new(Row {
+                                relation: 0,
+                                payload: key,
+                            }),
+                        );
+                    }
+                    for key in 0..n {
+                        left.remove(&key);
+                    }
+                    (left, output)
+                },
+                BatchSize::PerIteration,
+            );
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(benches, bench_cells, bench_queries, bench_hot_join_key);
 criterion_main!(benches);
