@@ -10,7 +10,7 @@ use std::sync::Arc;
 use criterion::{BatchSize, BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use hyphae::{
     Cell, CellMap, CountByExt, InnerJoinExt, LeftJoinExt, MapEntriesExt, MapExt, MapQuery,
-    MapValuesExt, Materialize, SwitchMapExt,
+    MapValuesExt, Materialize, ProjectCellExt, SwitchMapExt,
 };
 
 const SIZES: [u64; 2] = [10, 200];
@@ -71,6 +71,14 @@ fn bench_queries(c: &mut Criterion) {
                 source
                     .clone()
                     .map_values(|_, row| row.payload.wrapping_add(1))
+                    .materialize()
+            });
+        });
+        group.bench_with_input(BenchmarkId::new("project_cell", n), &n, |b, _| {
+            b.iter_with_large_drop(|| {
+                source
+                    .clone()
+                    .project_cell(|key, row: &Arc<Row>| Cell::new(Some((*key, row.payload))).lock())
                     .materialize()
             });
         });

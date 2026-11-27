@@ -1,9 +1,11 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::VecDeque,
     hash::Hash,
     marker::PhantomData,
     sync::{Arc, Mutex},
 };
+
+use rustc_hash::FxHashMap;
 
 use crate::{
     cell_map::MapDiff,
@@ -29,7 +31,7 @@ struct MapValuesRow<U> {
 
 struct MapValuesQueue<K, V, U> {
     events: VecDeque<MapValuesEvent<K, V, U>>,
-    idle_rows: Option<HashMap<K, MapValuesRow<U>>>,
+    idle_rows: Option<FxHashMap<K, MapValuesRow<U>>>,
 }
 
 struct MapValuesRuntime<K, V, U, W, F>
@@ -64,7 +66,7 @@ where
 
     fn attach(
         self: &Arc<Self>,
-        rows: &mut HashMap<K, MapValuesRow<U>>,
+        rows: &mut FxHashMap<K, MapValuesRow<U>>,
         key: &K,
         value: &V,
         changes: Option<&mut Vec<MapDiff<K, U>>>,
@@ -80,14 +82,7 @@ where
         let inner_cell = (self.mapper)(key, value);
         let initial = inner_cell.get();
         let token = Arc::new(());
-        rows.insert(
-            key.clone(),
-            MapValuesRow {
-                token: Arc::clone(&token),
-                value: initial.clone(),
-                guard: None,
-            },
-        );
+        let row_value = initial.clone();
         let diff = match prior {
             None => MapDiff::Insert {
                 key: key.clone(),
@@ -99,29 +94,36 @@ where
                 new_value: initial,
             },
         };
+
         self.emit(diff, changes);
 
         let key_for_sub = key.clone();
         let runtime = Arc::downgrade(self);
+        let sub_token = Arc::clone(&token);
         let sub_guard = inner_cell.subscribe(move |signal| {
             if let Signal::Value(value) = signal
                 && let Some(runtime) = runtime.upgrade()
             {
                 runtime.enqueue(MapValuesEvent::Inner {
                     key: key_for_sub.clone(),
-                    token: Arc::clone(&token),
+                    token: Arc::clone(&sub_token),
                     value: (**value).clone(),
                 });
             }
         });
-        if let Some(row) = rows.get_mut(key) {
-            row.guard = Some(sub_guard);
-        }
+        rows.insert(
+            key.clone(),
+            MapValuesRow {
+                token,
+                value: row_value,
+                guard: Some(sub_guard),
+            },
+        );
     }
 
     fn detach(
         &self,
-        rows: &mut HashMap<K, MapValuesRow<U>>,
+        rows: &mut FxHashMap<K, MapValuesRow<U>>,
         key: &K,
         changes: Option<&mut Vec<MapDiff<K, U>>>,
         retired: &mut Vec<SubscriptionGuard>,
@@ -140,13 +142,14 @@ where
 
     fn apply(
         self: &Arc<Self>,
-        rows: &mut HashMap<K, MapValuesRow<U>>,
+        rows: &mut FxHashMap<K, MapValuesRow<U>>,
         diff: &MapDiff<K, V>,
         mut changes: Option<&mut Vec<MapDiff<K, U>>>,
         retired: &mut Vec<SubscriptionGuard>,
     ) {
         match diff {
             MapDiff::Initial { entries } => {
+                rows.reserve(entries.len());
                 let existing_keys: Vec<K> = rows.keys().cloned().collect();
                 for key in existing_keys {
                     self.detach(rows, &key, changes.as_deref_mut(), retired);
@@ -215,6 +218,26 @@ where
                         });
                     }
                 }
+                // A snapshot reaches the sink as one batch, not one write per
+                // row, like any other atomic source event with many rows.
+                MapValuesEvent::Source(diff @ MapDiff::Initial { .. }) => {
+                    let mut downstream_changes = Vec::new();
+                    self.apply(
+                        &mut rows,
+                        &diff,
+                        Some(&mut downstream_changes),
+                        &mut retired,
+                    );
+                    match downstream_changes.len() {
+                        0 => {}
+                        1 => downstream_changes
+                            .into_iter()
+                            .for_each(|change| (self.sink)(&change)),
+                        _ => (self.sink)(&MapDiff::Batch {
+                            changes: downstream_changes,
+                        }),
+                    }
+                }
                 MapValuesEvent::Source(diff) => self.apply(&mut rows, &diff, None, &mut retired),
                 MapValuesEvent::Inner { key, token, value } => {
                     let Some(row) = rows.get_mut(&key) else {
@@ -263,7 +286,7 @@ where
         mapper: Arc::new(mapper),
         queue: Mutex::new(MapValuesQueue {
             events: VecDeque::new(),
-            idle_rows: Some(HashMap::new()),
+            idle_rows: Some(FxHashMap::default()),
         }),
         sink,
         marker: PhantomData,
@@ -277,7 +300,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::sync::mpsc;
+    use std::{collections::HashMap, sync::mpsc};
 
     use super::*;
     use crate::{Cell, CellMap, MapExt, Materialize, cell_map::MapDiff};
@@ -489,5 +512,35 @@ mod tests {
             1,
             "shared upstream was torn down and rebuilt on row update"
         );
+    }
+
+    #[test]
+    fn map_values_cell_delivers_a_snapshot_as_one_batch() {
+        let source = CellMap::<u32, i32>::new();
+        source.insert_many((0..3).map(|key| (key, 1)).collect());
+        let (sink, state, diffs) = capturing_sink::<u32, i32>();
+        let mut cx = crate::map_query::compiler::CompileContext::default();
+        let mut guards = install_map_values_cell_via_query(
+            &mut cx,
+            source,
+            |key: &u32, v: &i32| Cell::new(*v + i32::try_from(*key).unwrap_or(0)).lock(),
+            sink,
+        );
+        guards.extend(cx.activate());
+        assert!(!guards.is_empty());
+
+        let diffs = diffs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        assert!(
+            matches!(diffs.as_slice(), [MapDiff::Batch { changes }] if changes.len() == 3),
+            "expected one three-row batch, got {diffs:?}"
+        );
+        let state = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        assert_eq!(state, HashMap::from([(0, 1), (1, 2), (2, 3)]));
     }
 }
