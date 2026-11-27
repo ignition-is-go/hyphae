@@ -41,7 +41,7 @@ pub(super) struct StageRuntimeState<
 {
     left_rows: FxHashMap<K, I>,
     left_join_keys: FxHashMap<K, JK>,
-    join_to_left: FxHashMap<JK, Vec<K>>,
+    join_to_left: FxHashMap<JK, IndexMembers<K>>,
     right: RI,
     output_cache: FxHashMap<K, O>,
     left_key: Arc<LeftKey>,
@@ -50,29 +50,7 @@ pub(super) struct StageRuntimeState<
     _right_types: PhantomData<fn() -> (RK, RV)>,
 }
 
-fn add_index_member<I, M>(index: &mut FxHashMap<I, Vec<M>>, index_key: I, member: M)
-where
-    I: Hash + Eq,
-    M: Eq,
-{
-    let members = index.entry(index_key).or_default();
-    if !members.contains(&member) {
-        members.push(member);
-    }
-}
-
-fn remove_index_member<I, M>(index: &mut FxHashMap<I, Vec<M>>, index_key: &I, member: &M)
-where
-    I: Hash + Eq,
-    M: Eq,
-{
-    if let Some(members) = index.get_mut(index_key) {
-        members.retain(|candidate| candidate != member);
-        if members.is_empty() {
-            index.remove(index_key);
-        }
-    }
-}
+use super::super::index_members::{IndexMembers, add_index_member, remove_index_member};
 
 fn upsert_relation<RK, RV, JK, FR>(
     index: &mut RelationIndex<RK, RV, JK>,

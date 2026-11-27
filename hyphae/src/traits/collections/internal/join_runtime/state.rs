@@ -7,6 +7,7 @@ use crate::{
     traits::{CellValue, RightJoinKey},
 };
 
+pub(super) use super::super::index_members::{IndexMembers, add_index_member, remove_index_member};
 use super::super::ordered_set::OrderedSet;
 
 pub(super) struct JoinState<LK, LV, RK, RV, JK, OK, OV, RI = RelationIndex<RK, RV, JK>>
@@ -21,7 +22,7 @@ where
 {
     pub(super) left_rows: FxHashMap<LK, LV>,
     pub(super) left_join_keys: FxHashMap<LK, JK>,
-    pub(super) join_to_left: FxHashMap<JK, Vec<LK>>,
+    pub(super) join_to_left: FxHashMap<JK, IndexMembers<LK>>,
     pub(super) right: RI,
     pub(super) left_output_keys: FxHashMap<LK, OrderedSet<OK>>,
     pub(super) output_cache: FxHashMap<OK, OV>,
@@ -33,7 +34,7 @@ where
 pub(in crate::traits::collections::internal) struct RelationIndex<RK, RV, JK> {
     pub(in crate::traits::collections::internal) rows: FxHashMap<RK, RV>,
     pub(in crate::traits::collections::internal) row_join_keys: FxHashMap<RK, JK>,
-    pub(in crate::traits::collections::internal) join_to_rows: FxHashMap<JK, Vec<RK>>,
+    pub(in crate::traits::collections::internal) join_to_rows: FxHashMap<JK, IndexMembers<RK>>,
     pub(in crate::traits::collections::internal) grouped_rows: FxHashMap<JK, Vec<(RK, RV)>>,
 }
 
@@ -216,30 +217,6 @@ where
             output_cache: FxHashMap::default(),
             parallel_active: false,
             scratch: JoinScratch::default(),
-        }
-    }
-}
-
-pub(super) fn add_index_member<I, M>(index: &mut FxHashMap<I, Vec<M>>, index_key: I, member: M)
-where
-    I: Hash + Eq + CellValue,
-    M: Hash + Eq + CellValue,
-{
-    let members = index.entry(index_key).or_default();
-    if !members.contains(&member) {
-        members.push(member);
-    }
-}
-
-pub(super) fn remove_index_member<I, M>(index: &mut FxHashMap<I, Vec<M>>, index_key: &I, member: &M)
-where
-    I: Hash + Eq + CellValue,
-    M: Hash + Eq + CellValue,
-{
-    if let Some(members) = index.get_mut(index_key) {
-        members.retain(|candidate| candidate != member);
-        if members.is_empty() {
-            index.remove(index_key);
         }
     }
 }
@@ -772,7 +749,7 @@ where
             .left_join_keys
             .get(left_key)
             .and_then(|join_key| right.join_to_rows.get(join_key))
-            .map_or(0, Vec::len);
+            .map_or(0, IndexMembers::len);
         work.saturating_add(fanout.saturating_add(1))
     });
     state.parallel_active = if state.parallel_active {
