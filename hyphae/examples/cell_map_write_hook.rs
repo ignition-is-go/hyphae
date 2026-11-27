@@ -8,6 +8,16 @@
 //! `... -- seed` measures how long registration on a hydrated map blocks a
 //! concurrent writer.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    reason = "a measurement program: timing arithmetic and percentile indexing on known-size samples"
+)]
+
 use std::{
     hint::black_box,
     sync::{
@@ -83,7 +93,7 @@ fn eq() {
                     let row = if i % 2 == 0 { a.clone() } else { b.clone() };
                     drop(black_box(map.insert(0, row)));
                 }
-                let ns = start.elapsed().as_nanos() as f64 / writes as f64;
+                let ns = start.elapsed().as_nanos() as f64 / f64::from(writes);
                 stop.store(true, Ordering::Relaxed);
                 (ns, reader.join().unwrap_or_default())
             });

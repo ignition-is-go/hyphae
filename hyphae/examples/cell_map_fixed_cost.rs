@@ -7,6 +7,16 @@
 //! costs` and `-- contention`. Allocation counts do not depend on load; times
 //! are only comparable between runs taken back to back.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    reason = "a measurement program: timing arithmetic and percentile indexing on known-size samples"
+)]
+
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     hint::black_box,
@@ -112,11 +122,11 @@ fn run_op(map: &CellMap<u64, u64>, name: &str) {
         "insert" => drop(black_box(map.insert(u64::MAX, 1))),
         "update" => {
             let next = map.get_value(&0).map_or(0, |v| v.wrapping_add(1));
-            drop(black_box(map.insert(0, next)));
+            black_box(map.insert(0, next));
         }
         "insert_remove" => {
-            drop(black_box(map.insert(u64::MAX, 1)));
-            drop(black_box(map.remove(&u64::MAX)));
+            black_box(map.insert(u64::MAX, 1));
+            black_box(map.remove(&u64::MAX));
         }
         "get_value" => drop(black_box(map.get_value(&0))),
         _ => {}
@@ -178,10 +188,10 @@ fn hook(
 }
 
 fn costs() {
+    const MAPS: usize = 1000;
     let parallelism = std::thread::available_parallelism().map_or(1, usize::from);
     println!("available_parallelism={parallelism}");
 
-    const MAPS: usize = 1000;
     let before = counts();
     let maps: Vec<CellMap<u64, u64>> = (0..MAPS).map(|_| CellMap::new()).collect();
     let after = counts();
