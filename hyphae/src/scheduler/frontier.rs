@@ -75,10 +75,6 @@ impl<V> Bucket<V> {
         Some(value)
     }
 
-    pub(super) const fn height(&self) -> u64 {
-        self.height
-    }
-
     /// Every live cell, in the order it was first queued at this height.
     pub(super) fn drain(&mut self) -> impl Iterator<Item = (Uuid, V)> + '_ {
         self.live = 0;
@@ -97,23 +93,28 @@ impl<V> Bucket<V> {
 /// independent, so no order among them is owed, and a wide wave costs one
 /// push per cell rather than a tree insert and a tree removal.
 pub(super) struct Frontier<V> {
-    /// Buckets with live cells, highest height first, so the next wave is
-    /// the last bucket.
+    /// The first `live` buckets hold queued cells, highest height first, so
+    /// the next wave is bucket `live - 1`. The rest are drained buckets kept
+    /// for reuse, so a steady tick allocates nothing, and a wave drains in
+    /// place without moving its bucket.
     heights: Vec<Bucket<V>>,
-    /// Drained buckets kept for reuse, so a steady tick allocates nothing.
-    spare: Vec<Bucket<V>>,
+    live: usize,
 }
 
 impl<V> Frontier<V> {
     pub(super) const fn new() -> Self {
         Self {
             heights: Vec::new(),
-            spare: Vec::new(),
+            live: 0,
         }
     }
 
+    fn queued(&self) -> &[Bucket<V>] {
+        self.heights.get(..self.live).unwrap_or_default()
+    }
+
     fn find(&self, height: u64) -> Result<usize, usize> {
-        self.heights
+        self.queued()
             .binary_search_by(|bucket| height.cmp(&bucket.height))
     }
 
@@ -121,9 +122,17 @@ impl<V> Frontier<V> {
         let position = match self.find(height) {
             Ok(position) => position,
             Err(position) => {
-                let mut bucket = self.spare.pop().unwrap_or_else(Bucket::empty);
-                bucket.height = height;
-                self.heights.insert(position, bucket);
+                if self.live == self.heights.len() {
+                    self.heights.push(Bucket::empty());
+                }
+                // The spare bucket at `live` takes its place at `position`.
+                if let Some(moved) = self.heights.get_mut(position..=self.live) {
+                    moved.rotate_right(1);
+                }
+                if let Some(bucket) = self.heights.get_mut(position) {
+                    bucket.height = height;
+                }
+                self.live = self.live.saturating_add(1);
                 position
             }
         };
@@ -140,40 +149,44 @@ impl<V> Frontier<V> {
         let bucket = self.heights.get_mut(position)?;
         let value = bucket.remove(id);
         if bucket.live == 0 {
-            let mut bucket = self.heights.remove(position);
             bucket.entries.clear();
             bucket.index.clear();
-            self.spare.push(bucket);
+            // Out of the queued buckets, to the first spare place.
+            if let Some(moved) = self.heights.get_mut(position..self.live) {
+                moved.rotate_left(1);
+            }
+            self.live = self.live.saturating_sub(1);
         }
         value
     }
 
-    /// Take the lowest height's bucket. Give it back with
-    /// [`recycle`](Self::recycle) once drained.
-    pub(super) fn pop_min(&mut self) -> Option<Bucket<V>> {
-        self.heights.pop()
-    }
-
-    pub(super) fn recycle(&mut self, mut bucket: Bucket<V>) {
-        bucket.entries.clear();
-        bucket.index.clear();
-        bucket.live = 0;
-        self.spare.push(bucket);
+    /// Drain the lowest height's bucket, passing the height and each of its
+    /// cells to `each` in the order the cell was first queued there. Returns
+    /// the height, or `None` when nothing is queued.
+    pub(super) fn drain_min(&mut self, mut each: impl FnMut(u64, Uuid, V)) -> Option<u64> {
+        let last = self.live.checked_sub(1)?;
+        let bucket = self.heights.get_mut(last)?;
+        let height = bucket.height;
+        for (id, value) in bucket.drain() {
+            each(height, id, value);
+        }
+        self.live = last;
+        Some(height)
     }
 
     pub(super) const fn is_empty(&self) -> bool {
-        self.heights.is_empty()
+        self.live == 0
     }
 
     #[cfg(test)]
     pub(super) fn get(&self, &(height, id): &(u64, Uuid)) -> Option<&V> {
-        let bucket = self.heights.get(self.find(height).ok()?)?;
+        let bucket = self.queued().get(self.find(height).ok()?)?;
         bucket.entries.get(bucket.position(id)?)?.1.as_ref()
     }
 
     #[cfg(test)]
     pub(super) fn for_each(&self, mut visit: impl FnMut(&(u64, Uuid), &V)) {
-        for bucket in self.heights.iter().rev() {
+        for bucket in self.queued().iter().rev() {
             for (id, value) in &bucket.entries {
                 if let Some(value) = value {
                     visit(&(bucket.height, *id), value);
@@ -184,7 +197,7 @@ impl<V> Frontier<V> {
 
     #[cfg(test)]
     pub(super) fn len(&self) -> usize {
-        self.heights.iter().map(|bucket| bucket.live).sum()
+        self.queued().iter().map(|bucket| bucket.live).sum()
     }
 }
 
@@ -193,10 +206,8 @@ mod tests {
     use super::*;
 
     fn drain_min(frontier: &mut Frontier<u32>) -> Option<(u64, Vec<u32>)> {
-        let mut bucket = frontier.pop_min()?;
-        let height = bucket.height();
-        let values = bucket.drain().map(|(_, value)| value).collect();
-        frontier.recycle(bucket);
+        let mut values = Vec::new();
+        let height = frontier.drain_min(|_, _, value| values.push(value))?;
         Some((height, values))
     }
 
@@ -216,9 +227,9 @@ mod tests {
             assert_eq!(drain_min(&mut frontier), Some((height, expected)));
         }
         assert!(frontier.is_empty());
-        assert_eq!(frontier.spare.len(), 3);
+        assert_eq!(frontier.heights.len(), 3);
         assert!(frontier.insert((7, Uuid::from_u128(1)), 1).is_none());
-        assert_eq!(frontier.spare.len(), 2);
+        assert_eq!(frontier.heights.len(), 3);
         assert_eq!(drain_min(&mut frontier), Some((7, vec![1])));
     }
 

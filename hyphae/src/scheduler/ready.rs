@@ -343,20 +343,21 @@ impl ReadyQueue {
     /// each group in arrival order. Returns `false` when the frontier is empty.
     #[inline]
     pub(super) fn pop_min_height_into(&mut self, wave: &mut Wave) -> bool {
-        let Some(mut bucket) = self.frontier.pop_min() else {
-            return false;
-        };
-        let height = bucket.height();
-        for (id, group) in bucket.drain() {
-            if self.scheduled.get(&id) == Some(&height) {
-                self.scheduled.remove(&id);
+        let Self {
+            frontier,
+            scheduled,
+            many,
+            ..
+        } = self;
+        let drained = frontier.drain_min(|height, id, group| {
+            if scheduled.get(&id) == Some(&height) {
+                scheduled.remove(&id);
             }
             let start = wave.runs.len();
             match group {
                 Group::One(run) => wave.runs.push(run),
                 Group::Many(handle) => {
-                    if let Some(many) = self.many.as_deref_mut().and_then(|many| many.take(*handle))
-                    {
+                    if let Some(many) = many.as_deref_mut().and_then(|many| many.take(*handle)) {
                         wave.runs.extend(many.runs.into_iter().flatten());
                     }
                 }
@@ -364,10 +365,8 @@ impl ReadyQueue {
             if wave.runs.len() > start {
                 wave.ends.push(wave.runs.len());
             }
-        }
-        self.frontier.recycle(bucket);
-
-        !wave.ends.is_empty()
+        });
+        drained.is_some() && !wave.ends.is_empty()
     }
 
     #[inline]
@@ -596,7 +595,7 @@ mod tests {
         {
             assert_eq!(std::mem::size_of::<ManyHandle>(), 16);
             assert_eq!(std::mem::size_of::<Group>(), 16);
-            assert_eq!(std::mem::size_of::<ReadyQueue>(), 88);
+            assert_eq!(std::mem::size_of::<ReadyQueue>(), 72);
         }
     }
 
