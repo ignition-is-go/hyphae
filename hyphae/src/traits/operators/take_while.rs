@@ -69,7 +69,6 @@ where
 pub trait TakeWhileExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// Forward values while the predicate returns `true`. On the first `false`,
     /// emit `Complete` and ignore all subsequent values.
-    #[track_caller]
     fn take_while<F>(self, predicate: F) -> impl crate::Materialize<T, Empty>
     where
         F: Fn(&T) -> bool + Send + Sync + 'static,

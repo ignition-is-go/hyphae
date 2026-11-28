@@ -85,7 +85,6 @@ where
     T: Hash + Eq + CellValue,
 {
     /// Create a new empty `CellSet`.
-    #[track_caller]
     pub fn new() -> Self {
         // A diffs stream is events, not a level — each SetDiff is a distinct
         // add/remove an accumulating subscriber must see in order. Exempt it from
@@ -221,7 +220,6 @@ where
     /// Materializing produces a `Cell<bool>` that is `true` when the value is
     /// in the set. Multiple installations currently reuse the same underlying
     /// membership cell, but that cache is not part of the public API.
-    #[track_caller]
     pub fn contains(&self, value: &T) -> impl Materialize<bool, Definite> + use<T, M> {
         // Check cache first
         if let Some(weak) = self.inner.membership_cells.get(value)
@@ -246,7 +244,6 @@ where
     /// Returns a derived cell that maintains its state incrementally via diffs.
     /// The initial call is O(N) to build the snapshot, but subsequent updates
     /// are O(1) as they apply diffs incrementally.
-    #[track_caller]
     #[must_use]
     pub fn values(&self) -> impl Materialize<Vec<T>, Definite> + use<T, M> {
         // Build initial values from current data (O(N) once)
@@ -350,8 +347,10 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
-    use crate::Materialize;
-    use crate::traits::{Gettable, Watchable};
+    use crate::{
+        Materialize,
+        traits::{Gettable, Watchable},
+    };
 
     #[test]
     fn test_cellset_basic() {

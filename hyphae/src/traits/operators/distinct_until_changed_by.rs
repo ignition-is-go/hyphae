@@ -109,7 +109,6 @@ pub trait DistinctUntilChangedByExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// source.set(User { id: 1, name: "Alicia".into() }); // same id - blocked
     /// source.set(User { id: 2, name: "Bob".into() });    // different id - passes
     /// ```
-    #[track_caller]
     fn distinct_until_changed_by<F>(self, comparator: F) -> impl crate::Materialize<T, S>
     where
         F: Fn(&T, &T) -> bool + Send + Sync + 'static;

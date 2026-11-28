@@ -1,7 +1,6 @@
 use std::{
     fmt::Debug,
     marker::PhantomData,
-    panic::Location,
     sync::{
         Arc, Weak,
         atomic::{AtomicBool, Ordering},
@@ -82,9 +81,6 @@ pub(crate) struct CellInner<T> {
     /// The child scheduling domain this cell belongs to, fixed at birth from
     /// the creating thread's ambient domain. `None` is the root domain.
     pub(crate) domain: Option<Arc<crate::scheduler::domain::DomainInner>>,
-    /// Source location where this cell was created (via #[`track_caller`]).
-    #[allow(dead_code)]
-    pub(crate) caller: &'static Location<'static>,
 }
 
 /// A reactive cell that holds a value and notifies subscribers on change.
@@ -135,7 +131,6 @@ mod subscriber;
 pub(crate) use subscriber::{ResultSubscriber, Subscriber, SubscriberCallback, SubscriberRegistry};
 
 impl<T: CellValue> Cell<T, CellMutable> {
-    #[track_caller]
     pub fn new(initial_value: T) -> Self {
         let inner = Arc::new(CellInner {
             id: Uuid::new_v4(),
@@ -150,7 +145,6 @@ impl<T: CellValue> Cell<T, CellMutable> {
             no_coalesce: AtomicBool::new(crate::scheduler::birth_no_coalesce()),
             height_dependents: Mutex::new(HeightDependents::default()),
             domain: crate::scheduler::domain::birth_domain(),
-            caller: Location::caller(),
         });
         Self {
             inner,

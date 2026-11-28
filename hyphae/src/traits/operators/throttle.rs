@@ -53,7 +53,6 @@ impl<S: Pipeline<T, Definite> + PipelineSeed<T>, T: CellValue> Pipeline<T, Defin
 
 #[allow(private_bounds)]
 pub trait ThrottleExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
-    #[track_caller]
     fn throttle(self, duration: Duration) -> impl crate::Materialize<T, Definite> {
         ThrottlePipeline {
             source: self,

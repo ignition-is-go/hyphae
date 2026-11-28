@@ -29,7 +29,6 @@ pub trait SampleExt<T>: Watchable<T> {
     /// source.set(4);
     /// ticker.set(()); // emits 4
     /// ```
-    #[track_caller]
     #[allow(private_bounds)]
     fn sample<N, U>(&self, notifier: &N) -> impl Materialize<T, Definite>
     where

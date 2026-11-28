@@ -10,7 +10,6 @@ use crate::pipeline::{Materialize, Pipeline, Seedness};
 pub trait MapOkExt<T: CellValue, E: CellValue, S: Seedness>:
     Pipeline<Result<T, E>, S> + MapExt<Result<T, E>, S>
 {
-    #[track_caller]
     fn map_ok<U, F>(self, f: F) -> impl Materialize<Result<U, E>, S>
     where
         Self: Sized,
@@ -33,7 +32,6 @@ impl<T: CellValue, E: CellValue, S: Seedness, P> MapOkExt<T, E, S> for P where
 pub trait MapErrExt<T: CellValue, E: CellValue, S: Seedness>:
     Pipeline<Result<T, E>, S> + MapExt<Result<T, E>, S>
 {
-    #[track_caller]
     fn map_err<E2, F>(self, f: F) -> impl Materialize<Result<T, E2>, S>
     where
         Self: Sized,
@@ -56,7 +54,6 @@ impl<T: CellValue, E: CellValue, S: Seedness, P> MapErrExt<T, E, S> for P where
 pub trait CatchErrorExt<T: CellValue, E: CellValue, S: Seedness>:
     Pipeline<Result<T, E>, S> + MapExt<Result<T, E>, S>
 {
-    #[track_caller]
     fn catch_error<F>(self, f: F) -> impl Materialize<T, S>
     where
         Self: Sized,
@@ -78,7 +75,6 @@ impl<T: CellValue, E: CellValue, S: Seedness, P> CatchErrorExt<T, E, S> for P wh
 pub trait UnwrapOrExt<T: CellValue, E: CellValue, S: Seedness>:
     Pipeline<Result<T, E>, S> + MapExt<Result<T, E>, S> + CatchErrorExt<T, E, S>
 {
-    #[track_caller]
     fn unwrap_or(self, default: T) -> impl Materialize<T, S>
     where
         Self: Sized,
@@ -89,7 +85,6 @@ pub trait UnwrapOrExt<T: CellValue, E: CellValue, S: Seedness>:
         })
     }
 
-    #[track_caller]
     fn unwrap_or_else<F>(self, f: F) -> impl Materialize<T, S>
     where
         Self: Sized,

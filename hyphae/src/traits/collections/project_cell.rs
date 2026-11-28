@@ -263,7 +263,6 @@ where
     ///
     /// `mapper(&source_key, &source_value)` returns a watchable
     /// `Option<(output_key, output_value)>`. `None` means the row is excluded.
-    #[track_caller]
     fn project_cell<K2, V2, W, F>(self, mapper: F) -> impl MapQuery<Key = K2, Value = V2>
     where
         K2: Hash + Eq + CellValue,

@@ -85,7 +85,6 @@ pub trait SkipWhileExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// source.set(3); // passes (predicate false)
     /// source.set(1); // passes (gate already opened)
     /// ```
-    #[track_caller]
     fn skip_while<F>(self, predicate: F) -> impl crate::Materialize<T, Empty>
     where
         F: Fn(&T) -> bool + Send + Sync + 'static,

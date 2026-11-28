@@ -83,7 +83,6 @@ impl<S: Pipeline<T, Definite> + PipelineSeed<T>, T: CellValue> Pipeline<T, Defin
 
 #[allow(private_bounds)]
 pub trait DebounceExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
-    #[track_caller]
     fn debounce(self, duration: Duration) -> impl crate::Materialize<T, Definite> {
         DebouncePipeline {
             source: self,

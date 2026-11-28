@@ -27,7 +27,6 @@
 
 use std::{
     marker::PhantomData,
-    panic::Location,
     sync::{
         Arc, Weak,
         atomic::{AtomicBool, Ordering},
@@ -70,9 +69,6 @@ pub(crate) struct SourceInner<T> {
     /// The child scheduling domain this source belongs to, fixed at birth
     /// from the creating thread's ambient domain. `None` is the root domain.
     pub(crate) domain: Option<Arc<crate::scheduler::domain::DomainInner>>,
-    /// Source location where this source was created (`#[track_caller]`).
-    #[allow(dead_code)]
-    pub(crate) caller: &'static Location<'static>,
 }
 
 /// A watchable event channel with no current value.
@@ -124,7 +120,6 @@ impl<T> Clone for Source<T> {
 
 impl<T: CellValue> Source<T> {
     /// Create a new source with no subscribers.
-    #[track_caller]
     #[must_use]
     pub fn new() -> Self {
         let inner = Arc::new(SourceInner {
@@ -134,7 +129,6 @@ impl<T: CellValue> Source<T> {
             completed: AtomicBool::new(false),
             batched: AtomicBool::new(false),
             domain: crate::scheduler::domain::birth_domain(),
-            caller: Location::caller(),
         });
         Self {
             inner,
@@ -193,7 +187,6 @@ impl<T: CellValue> Source<T> {
     /// invoke the callback synchronously with a current value — there is no
     /// current value. The callback fires only on subsequent [`emit`](Self::emit)
     /// or [`complete`](Self::complete) calls.
-    #[track_caller]
     pub fn subscribe(
         &self,
         callback: impl Fn(&Signal<T>) + Send + Sync + 'static,
@@ -382,7 +375,6 @@ impl<T: CellValue> Pipeline<T, Empty> for Source<T> {}
 pub trait SampleOnSourceExt<T: CellValue>: Watchable<T> + Gettable<T> {
     /// Build a pipeline that re-emits the current value of `self` whenever
     /// `notifier` emits, with lifecycle owned by the resulting cell.
-    #[track_caller]
     fn sample_on<U>(&self, notifier: &Source<U>) -> impl Materialize<T, Definite> + use<Self, T, U>
     where
         U: CellValue,

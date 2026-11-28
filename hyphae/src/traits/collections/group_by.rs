@@ -108,7 +108,6 @@ where
     ///
     /// Each output key is a group id and each output value is the group's
     /// rows as `Vec<V>`.
-    #[track_caller]
     fn group_by<GK, F>(self, group_key: F) -> impl MapQuery<Key = GK, Value = Vec<V>>
     where
         K: Ord,

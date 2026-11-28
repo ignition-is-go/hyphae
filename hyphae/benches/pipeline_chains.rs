@@ -4,11 +4,7 @@
 #![recursion_limit = "2048"]
 #![type_length_limit = "16777216"]
 
-//! Benchmarks targeting the Pipeline migration.
-//!
-//! Run with `cargo bench --bench pipeline_chains -- --save-baseline pre-pipeline`
-//! BEFORE the refactor, then re-run with `--baseline pre-pipeline` after each
-//! task in `docs/superpowers/plans/2026-04-23-pipeline-type.md` to track effect.
+//! Benchmarks for pipeline chains: fused operators against materialized cells.
 //!
 //! What we expect to see:
 //! - **`pure_chain_set`**: pre-refactor scales linearly with chain depth because

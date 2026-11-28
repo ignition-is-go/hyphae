@@ -133,7 +133,6 @@ where
     /// Filters rows by value.
     ///
     /// `predicate(&value)` decides whether a row is present in the output map.
-    #[track_caller]
     fn select<F>(
         self,
         predicate: F,
@@ -149,7 +148,6 @@ where
     }
 
     /// Filters rows using both the key and value.
-    #[track_caller]
     fn select_by<F>(self, predicate: F) -> SelectPlan<Self, F>
     where
         F: Fn(&K, &V) -> bool + Send + Sync + 'static,

@@ -301,7 +301,6 @@ where
     K: Hash + Eq + CellValue,
     V: CellValue,
 {
-    #[track_caller]
     fn install_output<S, O>(
         &self,
         source: &Cell<S, CellMutable>,
@@ -341,7 +340,6 @@ where
         cell.lock()
     }
 
-    #[track_caller]
     fn install_projection<P, O>(
         &self,
         projection: P,
@@ -382,7 +380,6 @@ where
     /// Materializing produces a `Cell<Option<V>>` that updates whenever the
     /// key's value changes. Multiple installations currently reuse the same
     /// underlying per-key cell, but that cache is not part of the public API.
-    #[track_caller]
     pub fn get(&self, key: &K) -> impl Materialize<Option<V>, Definite> + use<K, V, M> {
         let key_cells = self
             .inner
@@ -433,7 +430,6 @@ where
     /// Returns a derived cell that maintains entries incrementally via diffs.
     /// The initial value is computed from the current map state, then updates
     /// are applied incrementally as O(1) operations per diff.
-    #[track_caller]
     #[must_use]
     pub fn entries(&self) -> impl Materialize<Vec<(K, V)>, Definite> + use<K, V, M> {
         let initial = self.snapshot();
@@ -451,7 +447,6 @@ where
     ///
     /// This maintains its own diff-driven projection to avoid forcing an
     /// intermediate entries materialization on hot value-only paths.
-    #[track_caller]
     #[must_use]
     pub fn items(&self) -> impl Materialize<Vec<V>, Definite> + use<K, V, M> {
         let projection = ValueProjection::from_entries(self.snapshot());
@@ -463,7 +458,6 @@ where
     }
 
     /// Build an observable pipeline of all keys.
-    #[track_caller]
     #[must_use]
     pub fn keys(&self) -> impl Materialize<Vec<K>, Definite> + use<K, V, M> {
         let projection = KeyProjection::from_keys(self.keys_snapshot());

@@ -11,7 +11,6 @@ use crate::{
 ///
 /// Returns `None` if the iterator is empty.
 /// The thread automatically stops when the cell is dropped.
-#[track_caller]
 pub fn from_iter_with_delay<T, I>(iter: I, delay: Duration) -> Option<Cell<T, CellImmutable>>
 where
     T: CellValue,

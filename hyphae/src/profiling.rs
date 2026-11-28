@@ -1,22 +1,12 @@
-//! Within-pass re-fire measurement — sizing how much of a propagation is
-//! redundant re-fire, and thus coalesceable, **without changing any behavior**.
+//! Within-pass fanout measurement: how many times each cell fans out inside
+//! one logical propagation boundary, without changing any behavior.
 //!
-//! A *pass* is one logical propagation boundary. For the motivating case
-//! (rship's server-side fanout) that is one store-diff / `EventBatch`
-//! application: wrap it in [`pass`], and while that scope is on the stack every
-//! cell **fanout** — one per emit — is tallied by cell id. A cell that fans out
-//! more than once in a single pass is *re-firing*: in a glitch-free coalesced
-//! world it would emit once with its settled value, so every fire past the
-//! first is coalesceable.
-//!
-//! This is pure measurement on the synchronous path — it defers, coalesces, and
-//! reorders nothing. Two ways to use it:
-//!
-//! - On today's synchronous build, [`pass`] reports the full re-fire count —
-//!   direct proof of the coalesceable fraction before you adopt [`batch`].
-//! - Run the *same* pass with [`batch`] active and each cell's count collapses
-//!   toward 1: that is the coalescing landing, measured the same way, so the
-//!   two numbers are directly comparable (an A/B on one metric).
+//! Wrap a boundary (for example one store-diff application) in [`pass`];
+//! while that scope is on the stack every cell **fanout** (one per emit) is
+//! tallied by cell id. A cell that fans out more than once in a single pass is
+//! *re-firing*. Inside [`batch`](crate::batch) a coalescing cell fans out once
+//! with its settled value, so the report shows what coalescing saved and which
+//! cells still re-fire.
 //!
 //! Gated behind `profiling`; compiles to nothing otherwise.
 //!

@@ -92,7 +92,6 @@ impl<S: Pipeline<T, Definite> + PipelineSeed<T>, T: CellValue> Pipeline<T, Defin
 
 #[allow(private_bounds)]
 pub trait AuditExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
-    #[track_caller]
     fn audit(self, duration: Duration) -> impl crate::Materialize<T, Definite> {
         AuditPipeline {
             source: self,

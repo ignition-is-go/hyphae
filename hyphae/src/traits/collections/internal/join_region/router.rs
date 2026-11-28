@@ -5,8 +5,6 @@ use std::{
 
 use rustc_hash::{FxHashMap, FxHasher};
 
-use crate::{cell_map::MapDiff, traits::CellValue};
-
 use super::{
     super::join_lifecycle::RuntimeStorage,
     declaration::JCons,
@@ -15,6 +13,7 @@ use super::{
         batch_has_unique_atomic_keys,
     },
 };
+use crate::{cell_map::MapDiff, traits::CellValue};
 
 /// Dual-mode whole-region executor. Tiny events use the original single
 /// runtime without extra hashing. Promotion is one-way; afterwards every map
@@ -669,10 +668,6 @@ where
     RK: Hash + Eq + CellValue,
     RV: CellValue,
 {
-    fn apply_right_root_diff(&mut self, diff: &MapDiff<RK, RV>) -> Vec<MapDiff<K, Self::Output>> {
-        self.apply_right_root_diff_policy(diff, true)
-    }
-
     fn apply_right_root_diff_policy(
         &mut self,
         diff: &MapDiff<RK, RV>,

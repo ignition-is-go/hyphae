@@ -628,7 +628,6 @@ where
     T: CellValue,
     S: Seedness,
 {
-    #[track_caller]
     fn materialize(self) -> Cell<S::Materialized<T>, CellImmutable> {
         self.materialize_pipeline()
     }

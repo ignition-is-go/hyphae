@@ -87,7 +87,6 @@ pub trait DistinctExt<T: CellValue + Eq + Hash, S: Seedness>: Pipeline<T, S> {
     /// source.set(3);
     /// source.set(2); // blocked - already seen
     /// ```
-    #[track_caller]
     fn distinct(self) -> impl crate::Materialize<T, S>;
 }
 

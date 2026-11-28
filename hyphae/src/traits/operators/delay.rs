@@ -74,7 +74,6 @@ impl<S: Pipeline<T, Definite> + PipelineSeed<T>, T: CellValue> Pipeline<T, Defin
 
 #[allow(private_bounds)]
 pub trait DelayExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
-    #[track_caller]
     fn delay(self, duration: Duration) -> impl crate::Materialize<T, Definite> {
         DelayPipeline {
             source: self,

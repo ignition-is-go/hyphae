@@ -124,7 +124,6 @@ where
     ///
     /// `predicate(&key, &value)` returns a watchable bool; the row is
     /// included when true and excluded when false.
-    #[track_caller]
     #[allow(private_bounds)]
     fn select_cell<W, F>(self, predicate: F) -> impl MapQuery<Key = K, Value = V>
     where

@@ -330,32 +330,6 @@ where
     }
 }
 
-/// Filter the successful output of another stage projection.
-pub struct FilterProject<Project, Predicate> {
-    project: Project,
-    predicate: Predicate,
-}
-
-impl<Project, Predicate> FilterProject<Project, Predicate> {
-    pub const fn new(project: Project, predicate: Predicate) -> Self {
-        Self { project, predicate }
-    }
-}
-
-impl<K, Input, RightKey, RightValue, Output, Project, Predicate>
-    StageProject<K, Input, RightKey, RightValue, Output> for FilterProject<Project, Predicate>
-where
-    Output: 'static,
-    Project: StageProject<K, Input, RightKey, RightValue, Output>,
-    Predicate: Fn(&K, &Output) -> bool + Send + Sync + 'static,
-{
-    fn project(&self, key: &K, input: &Input, rights: &[(RightKey, RightValue)]) -> Option<Output> {
-        self.project
-            .project(key, input, rights)
-            .filter(|value| (self.predicate)(key, value))
-    }
-}
-
 /// Keep a stage's relationship index private to that stage.
 #[derive(Debug, Clone, Default)]
 pub struct OwnedIndex;

@@ -58,7 +58,6 @@ where
 #[allow(private_bounds)]
 pub trait PairwiseExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// Emit `(prev, current)` pairs for each consecutive pair of values.
-    #[track_caller]
     fn pairwise(self) -> impl crate::Materialize<(T, T), Empty> {
         PairwisePipeline {
             source: self,

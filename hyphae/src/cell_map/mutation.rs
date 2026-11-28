@@ -223,7 +223,6 @@ where
     V: CellValue,
 {
     /// Create a new empty `CellMap`.
-    #[track_caller]
     #[must_use]
     pub fn new() -> Self {
         let diffs_cell = Cell::new(MapDiff::Initial {

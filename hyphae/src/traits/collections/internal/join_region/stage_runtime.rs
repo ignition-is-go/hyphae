@@ -2,17 +2,16 @@ use std::{collections::hash_map::Entry, hash::Hash, marker::PhantomData, sync::A
 
 use rustc_hash::FxHashMap;
 
-use crate::{
-    cell_map::MapDiff,
-    traits::{CellValue, RightJoinKey},
-};
-
 use super::{
     super::{
         join_runtime::{RelationIndex, RelationIndexStorage},
         ordered_set::OrderedSet,
     },
     declaration::{JCons, JNil, StageProject},
+};
+use crate::{
+    cell_map::MapDiff,
+    traits::{CellValue, RightJoinKey},
 };
 
 /// Executable state for one stage of an arbitrary-length join region.
@@ -98,28 +97,6 @@ fn remove_relation<RK, RV, JK>(
         changed.insert(join_key);
     }
     index.rows.remove(key);
-}
-
-impl<K, I, RK, RV, JK, O, LeftKey, RightKeyFn, Project>
-    StageRuntimeState<K, I, RK, RV, JK, O, LeftKey, RightKeyFn, Project>
-where
-    K: Hash + Eq + CellValue,
-    I: CellValue,
-    RK: Hash + Eq + CellValue,
-    RV: CellValue,
-    JK: Hash + Eq + CellValue,
-    O: CellValue,
-    LeftKey: Fn(&K, &I) -> JK,
-    RightKeyFn: RightJoinKey<RK, RV, JK>,
-    Project: StageProject<K, I, RK, RV, O>,
-{
-    pub(super) fn new(left_key: LeftKey, right_key: RightKeyFn, project: Project) -> Self {
-        Self::with_index(left_key, right_key, project, RelationIndex::default())
-    }
-
-    pub(super) fn apply_right_diff(&mut self, diff: &MapDiff<RK, RV>) -> Vec<MapDiff<K, O>> {
-        self.apply_right_diff_policy(diff, true)
-    }
 }
 
 impl<K, I, RK, RV, JK, O, LeftKey, RightKeyFn, Project, RI>

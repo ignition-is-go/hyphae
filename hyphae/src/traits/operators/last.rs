@@ -135,7 +135,6 @@ pub trait LastExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     ///
     /// assert_eq!(last.get(), Some(3));
     /// ```
-    #[track_caller]
     fn last(self) -> impl crate::Materialize<T, Empty> {
         LastPipeline {
             source: self,
@@ -158,7 +157,6 @@ pub trait LastExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     ///
     /// assert_eq!(last.get(), Some(999));
     /// ```
-    #[track_caller]
     fn last_or(self, default: T) -> impl crate::Materialize<T, Empty> {
         LastOrPipeline {
             source: self,

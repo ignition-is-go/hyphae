@@ -29,7 +29,6 @@ pub trait WithLatestFromExt<T: CellValue>: Pipeline<T> + PipelineSeed<T> {
     /// mouse_pos.set((30, 40)); // no emission
     /// clicks.set(1);           // emits (1, (30, 40))
     /// ```
-    #[track_caller]
     fn with_latest_from<U, W2>(&self, other: &W2) -> impl Materialize<(T, U), Definite>
     where
         T: CellValue,

@@ -4,8 +4,9 @@
 //! `f(initial, source.seed())` (the accumulator after one source emission), so
 //! `scan(0, +).materialize().get()` on `Cell::new(1)` returns `1`.
 
-use parking_lot::Mutex;
 use std::{marker::PhantomData, sync::Arc};
+
+use parking_lot::Mutex;
 
 use super::CellValue;
 use crate::{
@@ -91,7 +92,6 @@ where
 
 #[allow(private_bounds)]
 pub trait ScanExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
-    #[track_caller]
     fn scan<U, F>(self, initial: U, f: F) -> impl crate::Materialize<U, S>
     where
         U: CellValue,

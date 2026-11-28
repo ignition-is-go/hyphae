@@ -91,7 +91,6 @@ impl<S: Pipeline<T, Definite> + PipelineSeed<T>, T: CellValue> Pipeline<T, Defin
 
 #[allow(private_bounds)]
 pub trait TimeoutExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
-    #[track_caller]
     fn timeout(self, duration: Duration) -> impl crate::Materialize<T, Definite> {
         TimeoutPipeline {
             source: self,

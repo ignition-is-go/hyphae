@@ -61,7 +61,6 @@ where
 
 #[allow(private_bounds)]
 pub trait SkipExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
-    #[track_caller]
     fn skip(self, count: usize) -> impl crate::Materialize<T, Empty> {
         SkipPipeline {
             source: self,

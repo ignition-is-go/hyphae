@@ -116,7 +116,6 @@ pub trait FinalizeExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// source.complete();
     /// assert!(finalized_flag.load(Ordering::SeqCst));
     /// ```
-    #[track_caller]
     fn finalize<F>(self, callback: F) -> impl crate::Materialize<T, S>
     where
         F: FnOnce() + Send + Sync + 'static;

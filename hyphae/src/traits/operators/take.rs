@@ -87,7 +87,6 @@ where
 
 #[allow(private_bounds)]
 pub trait TakeExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
-    #[track_caller]
     fn take(self, count: usize) -> impl crate::Materialize<T, S>;
 }
 

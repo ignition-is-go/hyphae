@@ -73,7 +73,6 @@ where
 
 #[allow(private_bounds)]
 pub trait MapExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
-    #[track_caller]
     fn map<U, F>(self, f: F) -> impl Materialize<U, S>
     where
         U: CellValue,

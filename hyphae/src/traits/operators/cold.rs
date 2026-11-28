@@ -74,7 +74,6 @@ pub trait ColdExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// Materializes to `Cell<Option<Arc<T>>>`, initialized to `None`. Once a
     /// post-subscribe emission arrives, the cell flips to `Some(Arc<value>)`
     /// and stays `Some` from then on (it tracks the most recent emission).
-    #[track_caller]
     fn cold(self) -> impl crate::Materialize<Arc<T>, Empty> {
         ColdPipeline {
             source: self,

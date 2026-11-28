@@ -74,7 +74,6 @@ pub trait TapExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// Run `f(&value)` for side effects and forward the value untransformed.
     ///
     /// Returns an opaque lazy pipeline. Materialize to observe.
-    #[track_caller]
     fn tap<F>(self, f: F) -> impl crate::Materialize<T, S>
     where
         F: Fn(&T) + Send + Sync + 'static;

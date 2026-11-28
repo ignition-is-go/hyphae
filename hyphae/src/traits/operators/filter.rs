@@ -70,7 +70,6 @@ where
 
 #[allow(private_bounds)]
 pub trait FilterExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
-    #[track_caller]
     fn filter<P>(self, predicate: P) -> impl crate::Materialize<T, Empty>
     where
         P: Fn(&T) -> bool + Send + Sync + 'static,

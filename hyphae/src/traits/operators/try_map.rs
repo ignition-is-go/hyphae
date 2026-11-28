@@ -84,7 +84,6 @@ pub trait TryMapExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// Returns an opaque lazy pipeline that yields `Ok(value)` when the
     /// transform succeeds, or `Err(error)` when it fails. Materialize to
     /// observe.
-    #[track_caller]
     fn try_map<U, E, F>(self, f: F) -> impl crate::Materialize<Result<U, E>, S>
     where
         U: CellValue,

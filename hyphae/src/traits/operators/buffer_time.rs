@@ -82,7 +82,6 @@ impl<S: Pipeline<T, Definite>, T: CellValue> Pipeline<Vec<T>, Definite> for Buff
 
 #[allow(private_bounds)]
 pub trait BufferTimeExt<T: CellValue>: Pipeline<T, Definite> {
-    #[track_caller]
     fn buffer_time(self, duration: Duration) -> impl crate::Materialize<Vec<T>, Definite> {
         BufferTimePipeline {
             source: self,

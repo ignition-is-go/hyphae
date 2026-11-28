@@ -180,6 +180,7 @@ impl DomainInner {
         self.mailbox.arrived.notify_all();
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn failed(&self) -> bool {
         self.failure.get().is_some()
     }
