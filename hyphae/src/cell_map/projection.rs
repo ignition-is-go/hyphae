@@ -1,8 +1,7 @@
 use std::{collections::HashMap, hash::Hash, sync::Arc};
 
-use crate::traits::CellValue;
-
 use super::MapDiff;
+use crate::traits::CellValue;
 
 #[derive(Clone)]
 pub(super) struct OrderedProjection<K, T>

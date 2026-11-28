@@ -4,9 +4,10 @@
 
 #![allow(clippy::expect_used, clippy::panic)]
 
+use std::sync::Arc;
+
 use hyphae::{CellMap, LeftJoinExt, MapDiff, MapQuery, SubscriptionGuard, batch};
 use parking_lot::Mutex;
-use std::sync::Arc;
 
 type Log = Arc<Mutex<Vec<MapDiff<u32, u32>>>>;
 

@@ -14,8 +14,10 @@
 
 use std::{hash::Hash, marker::PhantomData, sync::Arc};
 
-use super::properties::{ByMapKey, ExactlyOne, PlanProperties};
-use super::{BuildQueryRuntime, MapQuery};
+use super::{
+    BuildQueryRuntime, MapQuery,
+    properties::{ByMapKey, ExactlyOne, PlanProperties},
+};
 use crate::{
     cell::CellImmutable,
     cell_map::CellMap,

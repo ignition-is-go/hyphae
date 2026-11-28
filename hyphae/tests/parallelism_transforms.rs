@@ -44,13 +44,12 @@ use std::sync::{
     atomic::{AtomicI64, AtomicUsize, Ordering},
 };
 
-use parking_lot::Mutex;
-
 use hyphae::{
     Cell, CellImmutable, CellMutable, DedupedExt, DistinctExt, DistinctUntilChangedByExt,
     FilterExt, Gettable, MapErrExt, MapExt, MapOkExt, Materialize, Mutable, ScanExt, Signal,
     StateTransitionExt, TapExt, TryMapExt, Watchable, batch, scheduler::no_coalesce,
 };
+use parking_lot::Mutex;
 
 /// The scheduler's tick queue is a single process-wide structure, so tests
 /// that exercise `batch()` would interfere when `cargo test` runs this file's

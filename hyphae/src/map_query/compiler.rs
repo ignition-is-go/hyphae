@@ -5,24 +5,22 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use super::BoxedMapDiffSink;
 use crate::{
     subscription::SubscriptionGuard,
     traits::{CellValue, reactive_map::ReactiveMap},
 };
 
-use super::BoxedMapDiffSink;
-
 mod dispatch;
 mod registry;
 
+pub use dispatch::{QUERY_POISONED_MESSAGE, QueryPoison};
 use dispatch::{QueryDispatch, dispatch_query_root};
+pub use registry::DeferredPhysical;
 use registry::{
     PhysicalRelationshipBinding, RelationshipKey, RootKey, RootRequirement,
     TypedRelationshipBinding,
 };
-
-pub use dispatch::{QUERY_POISONED_MESSAGE, QueryPoison};
-pub use registry::DeferredPhysical;
 
 /// Stable identity of a reactive root for the duration of query compilation.
 ///

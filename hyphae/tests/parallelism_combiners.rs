@@ -46,12 +46,11 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use parking_lot::Mutex;
-
 use hyphae::{
     Cell, Gettable, Materialize, MergeExt, MergeMapExt, Mutable, Signal, SwitchMapExt, Watchable,
     batch, scheduler::no_coalesce,
 };
+use parking_lot::Mutex;
 
 /// Width of every wave. Must be >= `PARALLEL_WAVE_THRESHOLD` (8) so the drain
 /// dispatches across rayon; `2 * WIDTH` height-0 ops per batch clears it twice

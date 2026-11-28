@@ -9,9 +9,7 @@ use std::sync::{
 };
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use hyphae::{
-    Cell, FilterExt, MapExt, Materialize, Mutable, ScanExt, Signal, Watchable,
-};
+use hyphae::{Cell, FilterExt, MapExt, Materialize, Mutable, ScanExt, Signal, Watchable};
 use seq_macro::seq;
 
 fn bench_single_cell_propagation(c: &mut Criterion) {
@@ -106,7 +104,6 @@ fn bench_fan_out(c: &mut Criterion) {
                 drop(guards);
             },
         );
-
     }
     group.finish();
 }
@@ -270,7 +267,6 @@ fn bench_parallel_heavy_callbacks(c: &mut Criterion) {
                 drop(guards);
             },
         );
-
     }
     group.finish();
 }

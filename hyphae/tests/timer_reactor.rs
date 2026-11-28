@@ -22,9 +22,8 @@ use std::{
     time::Duration,
 };
 
-use parking_lot::Mutex;
-
 use hyphae::{Cell, DelayExt, Materialize, Mutable, Signal, Watchable, interval_source};
+use parking_lot::Mutex;
 
 const DELAYED_TIMER_COUNT: usize = 200;
 static SCHEDULER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

@@ -293,9 +293,8 @@ where
 mod tests {
     use std::sync::Mutex;
 
-    use crate::map_query::compiler::{QUERY_POISONED_MESSAGE, QueryPoison};
-
     use super::{FailStopTransaction, LegacyTransaction, RuntimeStorage, TransactionPolicy};
+    use crate::map_query::compiler::{QUERY_POISONED_MESSAGE, QueryPoison};
 
     #[test]
     fn runtime_storage_promotes_once() {

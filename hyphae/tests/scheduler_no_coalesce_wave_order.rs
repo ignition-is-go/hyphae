@@ -17,9 +17,8 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use parking_lot::Mutex;
-
 use hyphae::{Cell, CellMutable, Mutable, Signal, Watchable, batch, scheduler::no_coalesce};
+use parking_lot::Mutex;
 
 const N: usize = 32; // well over the parallel-wave threshold (8)
 const ITERS: usize = 2_000;

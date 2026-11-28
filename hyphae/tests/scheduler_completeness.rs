@@ -19,7 +19,6 @@
 //! - No `batch()` call — including a "joiner" that isn't the drainer for its
 //!   active window — ever gets stuck waiting forever.
 
-use parking_lot::Mutex;
 use std::{
     sync::{
         Arc,
@@ -33,6 +32,7 @@ use hyphae::{
     Cell, CellMutable, MapExt, Materialize, Mutable, Signal, Watchable, batch, join_vec,
     scheduler::no_coalesce,
 };
+use parking_lot::Mutex;
 
 /// The scheduler's tick queue is a single process-wide structure (see
 /// `hyphae::scheduler`'s cross-thread docs), so tests that exercise `batch()`

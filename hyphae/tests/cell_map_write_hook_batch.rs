@@ -3,9 +3,8 @@
 
 use std::sync::Arc;
 
-use parking_lot::Mutex;
-
 use hyphae::{CellMap, batch, cell_map::MapWrite};
+use parking_lot::Mutex;
 
 #[test]
 fn hooks_report_inside_an_open_batch_while_diffs_wait() {

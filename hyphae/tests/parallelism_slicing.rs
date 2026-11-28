@@ -39,13 +39,12 @@
 
 use std::sync::Arc;
 
-use parking_lot::Mutex;
-
 use hyphae::{
     BufferCountExt, Cell, CellMutable, FirstExt, Gettable, LastExt, Materialize, Mutable,
     PairwiseExt, Signal, SkipExt, SkipWhileExt, TakeExt, TakeUntilExt, TakeWhileExt, Watchable,
     WindowExt, batch, scheduler::no_coalesce,
 };
+use parking_lot::Mutex;
 
 const WIDE: usize = 16;
 const ITERS: i64 = 2_000;
