@@ -2,13 +2,13 @@ use std::hash::{Hash, Hasher};
 
 use rustc_hash::{FxHashMap, FxHasher};
 
+use super::state::{
+    JoinState, RelationIndex, RelationIndexStorage, apply_left_diff, apply_right_diff,
+    recompute_keyed_impacted,
+};
 use crate::{
     cell_map::MapDiff,
     traits::{CellValue, RightJoinKey},
-};
-
-use super::state::{
-    JoinState, RelationIndexStorage, apply_left_diff, apply_right_diff, recompute_keyed_impacted,
 };
 
 #[allow(clippy::missing_const_for_fn)]
@@ -54,7 +54,7 @@ where
     JK: Hash + Eq + CellValue,
     OV: CellValue,
 {
-    shards: Vec<JoinState<LK, LV, RK, RV, JK, LK, OV>>,
+    shards: Vec<JoinState<LK, LV, JK, LK, OV, RelationIndex<RK, RV, JK>>>,
     left_routes: FxHashMap<LK, usize>,
     right_routes: FxHashMap<RK, usize>,
     left_sequence: FxHashMap<LK, u64>,
@@ -392,7 +392,7 @@ where
     FO: Fn(&LK, &LV, &[(RK, RV)]) -> OV + Sync,
 {
     let process = |(state, diffs): (
-        &mut JoinState<LK, LV, RK, RV, JK, LK, OV>,
+        &mut JoinState<LK, LV, JK, LK, OV, RelationIndex<RK, RV, JK>>,
         &Vec<MapDiff<LK, LV>>,
     )| {
         let mut scratch = std::mem::take(&mut state.scratch);
@@ -425,7 +425,7 @@ where
     FO: Fn(&LK, &LV, &[(RK, RV)]) -> OV + Sync,
 {
     let process = |(state, diffs): (
-        &mut JoinState<LK, LV, RK, RV, JK, LK, OV>,
+        &mut JoinState<LK, LV, JK, LK, OV, RelationIndex<RK, RV, JK>>,
         &Vec<MapDiff<RK, RV>>,
     )| {
         let mut scratch = std::mem::take(&mut state.scratch);
@@ -481,7 +481,7 @@ where
 }
 
 pub(super) fn state_left_entries<LK, LV, RK, RV, JK, OK, OV>(
-    state: &JoinState<LK, LV, RK, RV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
+    state: &JoinState<LK, LV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
 ) -> Vec<(LK, LV)>
 where
     LK: Hash + Eq + CellValue,
@@ -506,7 +506,7 @@ where
 }
 
 pub(super) fn state_right_entries<LK, LV, RK, RV, JK, OK, OV>(
-    state: &JoinState<LK, LV, RK, RV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
+    state: &JoinState<LK, LV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
 ) -> Vec<(RK, RV)>
 where
     LK: Hash + Eq + CellValue,

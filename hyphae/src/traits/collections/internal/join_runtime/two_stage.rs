@@ -2,30 +2,31 @@ use std::{collections::hash_map::Entry, hash::Hash, sync::Arc};
 
 use rustc_hash::FxHashMap;
 
+use super::{
+    super::join_lifecycle::{
+        BatchedChanges, InstallRegionRights, LegacyTransaction, RegionHost, RegionRuntime,
+        RootRegistrationOrder, RuntimeStorage, install_region_runtime,
+    },
+    sharded::{
+        ShardedKeyedJoin, process_left_shards, process_right_shards, query_shard_count,
+        state_left_entries, state_right_entries,
+    },
+    state::{
+        GroupedRows, JoinState, RelationIndex, RelationIndexStorage, add_index_member,
+        apply_left_diff, apply_right_diff, commit_keyed_value, recompute_keyed_impacted,
+        remove_index_member, remove_left, upsert_left,
+    },
+};
 use crate::{
     cell_map::MapDiff,
     subscription::SubscriptionGuard,
     traits::{CellValue, RightJoinKey},
 };
 
-use super::super::join_lifecycle::{
-    BatchedChanges, InstallRegionRights, LegacyTransaction, RegionHost, RegionRuntime,
-    RootRegistrationOrder, RuntimeStorage, install_region_runtime,
-};
-use super::{
-    sharded::{
-        ShardedKeyedJoin, process_left_shards, process_right_shards, query_shard_count,
-        state_left_entries, state_right_entries,
-    },
-    state::{
-        GroupedRows, JoinState, RelationIndexStorage, add_index_member, apply_left_diff,
-        apply_right_diff, commit_keyed_value, recompute_keyed_impacted, remove_index_member,
-        remove_left, upsert_left,
-    },
-};
-
-type TwoFirstState<LK, LV, RK, RV, JK, MV> = JoinState<LK, LV, RK, RV, JK, LK, MV>;
-type TwoSecondState<LK, MV, RK, RV, JK, OV> = JoinState<LK, MV, RK, RV, JK, LK, OV>;
+type TwoFirstState<LK, LV, RK, RV, JK, MV> =
+    JoinState<LK, LV, JK, LK, MV, RelationIndex<RK, RV, JK>>;
+type TwoSecondState<LK, MV, RK, RV, JK, OV> =
+    JoinState<LK, MV, JK, LK, OV, RelationIndex<RK, RV, JK>>;
 type TwoFirstShards<LK, LV, RK, RV, JK, MV> = ShardedKeyedJoin<LK, LV, RK, RV, JK, MV>;
 type TwoSecondShards<LK, MV, RK, RV, JK, OV> = ShardedKeyedJoin<LK, MV, RK, RV, JK, OV>;
 

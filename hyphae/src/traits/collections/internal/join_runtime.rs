@@ -130,9 +130,9 @@ where
     let shared_index = relationship_binding
         .as_ref()
         .map(|(_, index)| index.clone());
-    let state = Arc::new(Mutex::new(
-        JoinState::<LK, LV, RK, RV, JK, LK, OV, RI>::with_right(right_index),
-    ));
+    let state = Arc::new(Mutex::new(JoinState::<LK, LV, JK, LK, OV, RI>::with_right(
+        right_index,
+    )));
     let left_join_key = Arc::new(left_join_key);
     let right_join_key = Arc::new(right_join_key);
     let compute_value = Arc::new(compute_value);

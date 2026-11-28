@@ -1,4 +1,4 @@
-use std::{collections::hash_map::Entry, hash::Hash, marker::PhantomData};
+use std::{collections::hash_map::Entry, hash::Hash};
 
 use rustc_hash::FxHashMap;
 
@@ -10,12 +10,10 @@ use crate::{
     traits::{CellValue, RightJoinKey},
 };
 
-pub(super) struct JoinState<LK, LV, RK, RV, JK, OK, OV, RI = RelationIndex<RK, RV, JK>>
+pub(super) struct JoinState<LK, LV, JK, OK, OV, RI>
 where
     LK: Hash + Eq + CellValue,
     LV: CellValue,
-    RK: Hash + Eq + CellValue,
-    RV: CellValue,
     JK: Hash + Eq + CellValue,
     OK: Hash + Eq + CellValue,
     OV: CellValue,
@@ -27,7 +25,7 @@ where
     pub(super) left_output_keys: FxHashMap<LK, OrderedSet<OK>>,
     pub(super) output_cache: FxHashMap<OK, OV>,
     pub(super) parallel_active: bool,
-    pub(super) scratch: JoinScratch<LK, RK, RV, JK, OK, OV>,
+    pub(super) scratch: JoinScratch<LK, JK>,
 }
 
 /// Typed physical index for one right-side relationship.
@@ -150,25 +148,24 @@ fn upsert_grouped_row<RK, RV, JK>(
         .upsert(row_key, row_value);
 }
 
-pub(super) struct JoinScratch<LK, RK, RV, JK, OK, OV> {
+pub(super) struct JoinScratch<LK, JK> {
     pub(super) impacted: OrderedSet<LK>,
     pub(super) impacted_keys: Vec<LK>,
     pub(super) changed_join_keys: OrderedSet<JK>,
-    _rows: PhantomData<fn() -> (RK, RV, OK, OV)>,
 }
 
-impl<LK, RK, RV, JK, OK, OV> Default for JoinScratch<LK, RK, RV, JK, OK, OV> {
+impl<LK, JK> Default for JoinScratch<LK, JK> {
     fn default() -> Self {
         Self {
             impacted: OrderedSet::default(),
             impacted_keys: Vec::new(),
             changed_join_keys: OrderedSet::default(),
-            _rows: PhantomData,
         }
     }
 }
 
-impl<LK, LV, RK, RV, JK, OK, OV> Default for JoinState<LK, LV, RK, RV, JK, OK, OV>
+impl<LK, LV, RK, RV, JK, OK, OV> Default
+    for JoinState<LK, LV, JK, OK, OV, RelationIndex<RK, RV, JK>>
 where
     LK: Hash + Eq + CellValue,
     LV: CellValue,
@@ -192,12 +189,10 @@ where
     }
 }
 
-impl<LK, LV, RK, RV, JK, OK, OV, RI> JoinState<LK, LV, RK, RV, JK, OK, OV, RI>
+impl<LK, LV, JK, OK, OV, RI> JoinState<LK, LV, JK, OK, OV, RI>
 where
     LK: Hash + Eq + CellValue,
     LV: CellValue,
-    RK: Hash + Eq + CellValue,
-    RV: CellValue,
     JK: Hash + Eq + CellValue,
     OK: Hash + Eq + CellValue,
     OV: CellValue,
@@ -217,7 +212,7 @@ where
 }
 
 pub(super) fn upsert_left<LK, LV, RK, RV, JK, OK, OV, FL>(
-    state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
+    state: &mut JoinState<LK, LV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
     left_key: LK,
     left_value: LV,
     left_join_key: &FL,
@@ -249,7 +244,7 @@ pub(super) fn upsert_left<LK, LV, RK, RV, JK, OK, OV, FL>(
 }
 
 pub(super) fn remove_left<LK, LV, RK, RV, JK, OK, OV>(
-    state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
+    state: &mut JoinState<LK, LV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
     left_key: &LK,
     impacted: &mut OrderedSet<LK>,
 ) where
@@ -270,7 +265,7 @@ pub(super) fn remove_left<LK, LV, RK, RV, JK, OK, OV>(
 }
 
 pub(super) fn apply_left_diff<LK, LV, RK, RV, JK, OK, OV, FL>(
-    state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
+    state: &mut JoinState<LK, LV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
     diff: &MapDiff<LK, LV>,
     left_join_key: &FL,
     impacted: &mut OrderedSet<LK>,
@@ -317,7 +312,7 @@ pub(super) fn apply_left_diff<LK, LV, RK, RV, JK, OK, OV, FL>(
 }
 
 fn upsert_right<LK, LV, RK, RV, JK, OK, OV, FR>(
-    state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
+    state: &mut JoinState<LK, LV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
     right_key: RK,
     right_value: RV,
     right_join_key: &FR,
@@ -363,7 +358,7 @@ fn upsert_right<LK, LV, RK, RV, JK, OK, OV, FR>(
 }
 
 fn remove_right<LK, LV, RK, RV, JK, OK, OV>(
-    state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
+    state: &mut JoinState<LK, LV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
     right_key: &RK,
     changed_join_keys: &mut OrderedSet<JK>,
 ) where
@@ -386,7 +381,7 @@ fn remove_right<LK, LV, RK, RV, JK, OK, OV>(
 }
 
 pub(super) fn apply_right_diff<LK, LV, RK, RV, JK, OK, OV, FR>(
-    state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
+    state: &mut JoinState<LK, LV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
     diff: &MapDiff<RK, RV>,
     right_join_key: &FR,
     impacted: &mut OrderedSet<LK>,
@@ -402,7 +397,7 @@ pub(super) fn apply_right_diff<LK, LV, RK, RV, JK, OK, OV, FR>(
     FR: RightJoinKey<RK, RV, JK>,
 {
     fn apply_one<LK, LV, RK, RV, JK, OK, OV, FR>(
-        state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
+        state: &mut JoinState<LK, LV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
         diff: &MapDiff<RK, RV>,
         right_join_key: &FR,
         changed_join_keys: &mut OrderedSet<JK>,
@@ -472,7 +467,7 @@ pub(super) fn apply_right_diff<LK, LV, RK, RV, JK, OK, OV, FR>(
 }
 
 pub(super) fn observe_shared_right_diff<LK, LV, RK, RV, JK, OK, OV, FR>(
-    state: &JoinState<LK, LV, RK, RV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
+    state: &JoinState<LK, LV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
     diff: &MapDiff<RK, RV>,
     right_join_key: &FR,
     impacted: &mut OrderedSet<LK>,
@@ -589,7 +584,7 @@ pub(super) fn commit_keyed_value<LK, OV>(
 #[cfg(not(target_arch = "wasm32"))]
 fn compute_keyed_parallel<LK, LV, RK, RV, JK, OV, FO>(
     pool: &rayon::ThreadPool,
-    state: &JoinState<LK, LV, RK, RV, JK, LK, OV, impl RelationIndexStorage<RK, RV, JK>>,
+    state: &JoinState<LK, LV, JK, LK, OV, impl RelationIndexStorage<RK, RV, JK>>,
     right: &RelationIndex<RK, RV, JK>,
     impacted: &[LK],
     compute_value: &FO,
@@ -624,8 +619,8 @@ where
 }
 
 pub(super) fn recompute_keyed_impacted<LK, LV, RK, RV, JK, OV, FO>(
-    state: &mut JoinState<LK, LV, RK, RV, JK, LK, OV, impl RelationIndexStorage<RK, RV, JK>>,
-    scratch: &mut JoinScratch<LK, RK, RV, JK, LK, OV>,
+    state: &mut JoinState<LK, LV, JK, LK, OV, impl RelationIndexStorage<RK, RV, JK>>,
+    scratch: &mut JoinScratch<LK, JK>,
     compute_value: &FO,
 ) -> Vec<MapDiff<LK, OV>>
 where
