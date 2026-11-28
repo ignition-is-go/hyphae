@@ -127,6 +127,10 @@ name = "region_threshold_truth_table"
 required-features = ["region-calibration"]
 
 [[bench]]
+name = "runtime_baseline"
+harness = false
+
+[[bench]]
 name = "wave_calibration"
 harness = false
 
