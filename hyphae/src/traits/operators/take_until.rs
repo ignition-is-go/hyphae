@@ -13,13 +13,13 @@ use crate::{
     subscription::SubscriptionGuard,
 };
 
-pub struct TakeUntilPipeline<S, N, T, U> {
+pub struct TakeUntilPipeline<S, N, U> {
     source: S,
     notifier: N,
-    _types: PhantomData<fn() -> (T, U)>,
+    _types: PhantomData<fn() -> U>,
 }
 
-impl<S, N, T, U> PipelineInstall<T> for TakeUntilPipeline<S, N, T, U>
+impl<S, N, T, U> PipelineInstall<T> for TakeUntilPipeline<S, N, U>
 where
     S: PipelineInstall<T>,
     N: PipelineInstall<U>,
@@ -46,7 +46,7 @@ where
         SubscriptionGuard::combine(vec![notifier, source])
     }
 }
-impl<S, N, T, U> PipelineSeed<T> for TakeUntilPipeline<S, N, T, U>
+impl<S, N, T, U> PipelineSeed<T> for TakeUntilPipeline<S, N, U>
 where
     S: PipelineSeed<T>,
     N: PipelineInstall<U>,
@@ -57,7 +57,7 @@ where
         self.source.seed()
     }
 }
-impl<S, N, T, U> Pipeline<T, Definite> for TakeUntilPipeline<S, N, T, U>
+impl<S, N, T, U> Pipeline<T, Definite> for TakeUntilPipeline<S, N, U>
 where
     S: Pipeline<T, Definite> + PipelineSeed<T>,
     N: Pipeline<U, Definite>,

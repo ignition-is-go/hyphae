@@ -1,12 +1,12 @@
-use parking_lot::Mutex;
 use std::{
-    marker::PhantomData,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
+
+use parking_lot::Mutex;
 
 use super::CellValue;
 use crate::{
@@ -16,13 +16,12 @@ use crate::{
     subscription::SubscriptionGuard,
 };
 
-pub struct DebouncePipeline<S, T> {
+pub struct DebouncePipeline<S> {
     source: S,
     duration: Duration,
-    _t: PhantomData<fn(T)>,
 }
 
-impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for DebouncePipeline<S, T> {
+impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for DebouncePipeline<S> {
     fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
         let generation = Arc::new(AtomicU64::new(0));
         let terminated = Arc::new(AtomicBool::new(false));
@@ -70,7 +69,7 @@ impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for DebouncePipelin
     }
 }
 
-impl<S: PipelineSeed<T>, T: CellValue> PipelineSeed<T> for DebouncePipeline<S, T> {
+impl<S: PipelineSeed<T>, T: CellValue> PipelineSeed<T> for DebouncePipeline<S> {
     fn seed(&self) -> T {
         self.source.seed()
     }
@@ -78,7 +77,7 @@ impl<S: PipelineSeed<T>, T: CellValue> PipelineSeed<T> for DebouncePipeline<S, T
 
 #[allow(private_bounds)]
 impl<S: Pipeline<T, Definite> + PipelineSeed<T>, T: CellValue> Pipeline<T, Definite>
-    for DebouncePipeline<S, T>
+    for DebouncePipeline<S>
 {
 }
 
@@ -89,7 +88,6 @@ pub trait DebounceExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
         DebouncePipeline {
             source: self,
             duration,
-            _t: PhantomData,
         }
     }
 }

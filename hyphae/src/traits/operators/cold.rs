@@ -28,13 +28,12 @@ use crate::{
 
 /// Pipeline node representing `source.cold()`. Output is `Arc<T>` so chains
 /// stay zero-copy; materialize returns `Cell<Option<Arc<T>>>`.
-pub struct ColdPipeline<S, T, Sd = crate::pipeline::Definite> {
+pub struct ColdPipeline<S, Sd = crate::pipeline::Definite> {
     source: S,
-    _t: PhantomData<fn(T)>,
     _sd: PhantomData<fn(Sd)>,
 }
 
-impl<S, T, Sd> PipelineInstall<Arc<T>> for ColdPipeline<S, T, Sd>
+impl<S, T, Sd> PipelineInstall<Arc<T>> for ColdPipeline<S, Sd>
 where
     S: PipelineInstall<T> + Send + Sync + 'static,
     Sd: Seedness,
@@ -59,7 +58,7 @@ where
 }
 
 #[allow(private_bounds)]
-impl<S, T, Sd> Pipeline<Arc<T>, Empty> for ColdPipeline<S, T, Sd>
+impl<S, T, Sd> Pipeline<Arc<T>, Empty> for ColdPipeline<S, Sd>
 where
     S: Pipeline<T, Sd>,
     Sd: Seedness,
@@ -79,7 +78,6 @@ pub trait ColdExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     fn cold(self) -> impl crate::Materialize<Arc<T>, Empty> {
         ColdPipeline {
             source: self,
-            _t: PhantomData,
             _sd: PhantomData,
         }
     }

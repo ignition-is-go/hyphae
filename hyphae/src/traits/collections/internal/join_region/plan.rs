@@ -1,18 +1,5 @@
 use std::{hash::Hash, marker::PhantomData, sync::Arc};
 
-use crate::{
-    cell_map::MapDiff,
-    map_query::{
-        BuildQueryRuntime, MapQuery,
-        compiler::CompileContext,
-        properties::{ByMapKey, PlanProperties, ZeroOrOne},
-    },
-    subscription::SubscriptionGuard,
-    traits::{
-        CellValue, ForeignKeyRelation, IdFor, OptionalRightKey, RequiredRightKey, RightJoinKey,
-    },
-};
-
 use super::{
     super::join_lifecycle::{
         FailStopTransaction, InstallRegionRights, RegionHost, RegionRuntime, RootRegistrationOrder,
@@ -26,6 +13,18 @@ use super::{
     router::{Here, RegionRouter, RightRoot, There},
     stage_runtime::{
         EmptyShardRuntime, HeadInputSnapshot, RuntimeStageCost, RuntimeStages, StageRuntimeState,
+    },
+};
+use crate::{
+    cell_map::MapDiff,
+    map_query::{
+        BuildQueryRuntime, MapQuery,
+        compiler::CompileContext,
+        properties::{ByMapKey, PlanProperties, ZeroOrOne},
+    },
+    subscription::SubscriptionGuard,
+    traits::{
+        CellValue, ForeignKeyRelation, IdFor, OptionalRightKey, RequiredRightKey, RightJoinKey,
     },
 };
 
@@ -103,7 +102,6 @@ where
                 Current,
                 R::Key,
                 Rel::Child,
-                K,
                 (Current, Vec<Rel::Child>),
                 fn(&K, &Current) -> K,
                 OptionalRightKey<fn(&R::Key, &Rel::Child) -> Option<K>>,
@@ -127,7 +125,6 @@ where
                 Current,
                 R::Key,
                 Rel::Child,
-                K,
                 (Current, Vec<Rel::Child>),
                 fn(&K, &Current) -> K,
                 OptionalRightKey<fn(&R::Key, &Rel::Child) -> Option<K>>,
@@ -164,7 +161,6 @@ where
                 Current,
                 RK,
                 RV,
-                JK,
                 (Current, Vec<RV>),
                 FL,
                 RequiredRightKey<FR>,
@@ -188,7 +184,6 @@ where
                 Current,
                 RK,
                 RV,
-                JK,
                 (Current, Vec<RV>),
                 FL,
                 RequiredRightKey<FR>,
@@ -229,11 +224,11 @@ where
     fn split(self, cx: &CompileContext) -> (Self::Runtime, Self::Rights);
 }
 
-struct RightPlan<Right, Tail, Location, RK, RV, JK, Policy, Binding> {
+struct RightPlan<Right, Tail, Location, JK, Policy, Binding> {
     right: Right,
     tail: Tail,
     binding: Option<Binding>,
-    _types: PhantomData<fn() -> (Location, RK, RV, JK, Policy)>,
+    _types: PhantomData<fn() -> (Location, JK, Policy)>,
 }
 
 impl<K, Input, Location> SplitStages<K, Input, Location> for JNil
@@ -252,7 +247,7 @@ where
 impl<Right, Tail, K, Input, RK, RV, JK, Output, LeftKey, RightKeyFn, Project, Policy, Location>
     SplitStages<K, Input, Location>
     for JCons<
-        JoinStage<Right, K, Input, RK, RV, JK, Output, LeftKey, RightKeyFn, Project, Policy>,
+        JoinStage<Right, K, Input, RK, RV, Output, LeftKey, RightKeyFn, Project, Policy>,
         Tail,
     >
 where
@@ -284,7 +279,7 @@ where
         >,
         Tail::Runtime,
     >;
-    type Rights = RightPlan<Right, Tail::Rights, Location, RK, RV, JK, Policy, Policy::Binding>;
+    type Rights = RightPlan<Right, Tail::Rights, Location, JK, Policy, Policy::Binding>;
 
     fn split(self, cx: &CompileContext) -> (Self::Runtime, Self::Rights) {
         let JoinStage {
@@ -333,7 +328,7 @@ where
 
 impl<Runtime, K, Input, Right, Tail, Location, RK, RV, JK, Policy, Binding, Tx>
     InstallRegionRights<RegionRouter<Runtime, K, Input>, K, Runtime::Output, Tx>
-    for RightPlan<Right, Tail, Location, RK, RV, JK, Policy, Binding>
+    for RightPlan<Right, Tail, Location, JK, Policy, Binding>
 where
     K: Hash + Eq + CellValue,
     Input: CellValue,

@@ -10,13 +10,13 @@ use crate::{
 };
 
 /// Pipeline node representing `source.try_map(f)`. Does not allocate a cell.
-pub struct TryMapPipeline<S, T, U, E, F> {
+pub struct TryMapPipeline<S, T, F> {
     source: S,
     f: Arc<F>,
-    _types: PhantomData<fn(T) -> Result<U, E>>,
+    _types: PhantomData<fn(T)>,
 }
 
-impl<S, T, U, E, F> PipelineInstall<Result<U, E>> for TryMapPipeline<S, T, U, E, F>
+impl<S, T, U, E, F> PipelineInstall<Result<U, E>> for TryMapPipeline<S, T, F>
 where
     S: PipelineInstall<T> + Send + Sync + 'static,
     T: CellValue,
@@ -42,7 +42,7 @@ where
     }
 }
 
-impl<S, T, U, E, F> PipelineSeed<Result<U, E>> for TryMapPipeline<S, T, U, E, F>
+impl<S, T, U, E, F> PipelineSeed<Result<U, E>> for TryMapPipeline<S, T, F>
 where
     S: Pipeline<T, crate::pipeline::Definite>,
     T: CellValue,
@@ -56,8 +56,7 @@ where
 }
 
 #[allow(private_bounds)]
-impl<S, T, U, E, F> Pipeline<Result<U, E>, crate::pipeline::Definite>
-    for TryMapPipeline<S, T, U, E, F>
+impl<S, T, U, E, F> Pipeline<Result<U, E>, crate::pipeline::Definite> for TryMapPipeline<S, T, F>
 where
     S: Pipeline<T, crate::pipeline::Definite>,
     T: CellValue,
@@ -67,7 +66,7 @@ where
 {
 }
 
-impl<S, T, U, E, F> Pipeline<Result<U, E>, crate::pipeline::Empty> for TryMapPipeline<S, T, U, E, F>
+impl<S, T, U, E, F> Pipeline<Result<U, E>, crate::pipeline::Empty> for TryMapPipeline<S, T, F>
 where
     S: Pipeline<T, crate::pipeline::Empty>,
     T: CellValue,

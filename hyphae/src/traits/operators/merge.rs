@@ -1,9 +1,6 @@
-use std::{
-    marker::PhantomData,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicU8, Ordering},
-    },
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicU8, Ordering},
 };
 
 use super::CellValue;
@@ -16,13 +13,12 @@ use crate::{
 const LEFT_COMPLETE: u8 = 0b01;
 const RIGHT_COMPLETE: u8 = 0b10;
 
-pub struct MergePipeline<L, R, T> {
+pub struct MergePipeline<L, R> {
     left: L,
     right: R,
-    _type: PhantomData<fn() -> T>,
 }
 
-impl<L, R, T> PipelineInstall<T> for MergePipeline<L, R, T>
+impl<L, R, T> PipelineInstall<T> for MergePipeline<L, R>
 where
     L: PipelineInstall<T>,
     R: PipelineInstall<T>,
@@ -60,7 +56,7 @@ where
     }
 }
 
-impl<L, R, T> PipelineSeed<T> for MergePipeline<L, R, T>
+impl<L, R, T> PipelineSeed<T> for MergePipeline<L, R>
 where
     L: PipelineSeed<T>,
     R: PipelineInstall<T>,
@@ -71,7 +67,7 @@ where
     }
 }
 
-impl<L, R, T> Pipeline<T, Definite> for MergePipeline<L, R, T>
+impl<L, R, T> Pipeline<T, Definite> for MergePipeline<L, R>
 where
     L: Pipeline<T, Definite> + PipelineSeed<T>,
     R: Pipeline<T, Definite>,
@@ -87,7 +83,6 @@ pub trait MergeExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
         MergePipeline {
             left: self,
             right: other,
-            _type: PhantomData,
         }
     }
 }

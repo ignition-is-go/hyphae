@@ -43,11 +43,6 @@ where
     ) -> LeftJoinPlan<
         Self,
         R,
-        K,
-        V,
-        K,
-        RV,
-        K,
         impl Fn(&K, &V) -> K + Send + Sync + 'static,
         RequiredRightKey<impl Fn(&K, &RV) -> K + Send + Sync + 'static>,
     >
@@ -60,7 +55,6 @@ where
             right,
             left_key: |k: &K, _: &V| k.clone(),
             right_key: RequiredRightKey(|k: &K, _: &RV| k.clone()),
-            _types: PhantomData,
         }
     }
 
@@ -83,11 +77,6 @@ where
         LeftJoinPlan<
             Self,
             R,
-            K,
-            V,
-            R::Key,
-            Rel::Child,
-            K,
             impl Fn(&K, &V) -> K + Send + Sync + 'static,
             OptionalRightKey<impl Fn(&R::Key, &Rel::Child) -> Option<K> + Send + Sync + 'static>,
         >,
@@ -106,7 +95,6 @@ where
                 right_key: OptionalRightKey(|_: &R::Key, rv: &Rel::Child| {
                     Rel::foreign_key(rv).map(|foreign_key| foreign_key.map_key())
                 }),
-                _types: PhantomData,
             },
             _relation: PhantomData,
         }
@@ -125,7 +113,7 @@ where
         right: R,
         left_key: FL,
         right_key: FR,
-    ) -> LeftJoinPlan<Self, R, K, V, RK, RV, JK, FL, RequiredRightKey<FR>>
+    ) -> LeftJoinPlan<Self, R, FL, RequiredRightKey<FR>>
     where
         R: MapQuery<Key = RK, Value = RV>,
         RK: Hash + Eq + CellValue,
@@ -139,7 +127,6 @@ where
             right,
             left_key,
             right_key: RequiredRightKey(right_key),
-            _types: PhantomData,
         }
     }
 }

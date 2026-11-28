@@ -1,9 +1,6 @@
-use std::{
-    marker::PhantomData,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 
 use parking_lot::Mutex;
@@ -18,12 +15,11 @@ use crate::{
     subscription::SubscriptionGuard,
 };
 
-pub struct JoinVecPipeline<P, T> {
+pub struct JoinVecPipeline<P> {
     sources: Vec<P>,
-    _type: PhantomData<fn() -> T>,
 }
 
-impl<P, T> PipelineInstall<Vec<T>> for JoinVecPipeline<P, T>
+impl<P, T> PipelineInstall<Vec<T>> for JoinVecPipeline<P>
 where
     P: PipelineInstall<T> + PipelineSeed<T>,
     T: CellValue,
@@ -79,7 +75,7 @@ where
         }
     }
 }
-impl<P, T> PipelineSeed<Vec<T>> for JoinVecPipeline<P, T>
+impl<P, T> PipelineSeed<Vec<T>> for JoinVecPipeline<P>
 where
     P: PipelineSeed<T>,
     T: CellValue,
@@ -88,7 +84,7 @@ where
         self.sources.iter().map(PipelineSeed::seed).collect()
     }
 }
-impl<P, T> Pipeline<Vec<T>, Definite> for JoinVecPipeline<P, T>
+impl<P, T> Pipeline<Vec<T>, Definite> for JoinVecPipeline<P>
 where
     P: Pipeline<T, Definite> + PipelineSeed<T>,
     T: CellValue,
@@ -101,10 +97,7 @@ where
     T: CellValue,
     P: Pipeline<T, Definite> + PipelineSeed<T>,
 {
-    JoinVecPipeline {
-        sources,
-        _type: PhantomData,
-    }
+    JoinVecPipeline { sources }
 }
 
 #[cfg(test)]

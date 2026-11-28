@@ -4,7 +4,7 @@
 //! other [`MapQuery`] operators. Call [`MapQuery::materialize`] to compile a
 //! plan into a subscribable [`CellMap`](crate::CellMap).
 
-use std::{hash::Hash, marker::PhantomData};
+use std::hash::Hash;
 
 use crate::{
     map_query::{
@@ -28,28 +28,14 @@ use crate::{
 ///
 /// Not [`Clone`]: cloning a plan would silently duplicate join work; share by
 /// materializing once.
-pub struct MultiLeftJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
-where
-    L: MapQuery<Key = LK, Value = LV>,
-    R: MapQuery<Key = RK, Value = RV>,
-    LK: Hash + Eq + CellValue,
-    LV: CellValue,
-    RK: Hash + Eq + CellValue,
-    RV: CellValue,
-    JK: Hash + Eq + CellValue,
-    FL: Fn(&LK, &LV) -> Vec<JK> + Send + Sync + 'static,
-    FR: Fn(&RK, &RV) -> JK + Send + Sync + 'static,
-{
+pub struct MultiLeftJoinPlan<L, R, FL, FR> {
     pub(crate) left: L,
     pub(crate) right: R,
     pub(crate) left_keys: FL,
     pub(crate) right_key: FR,
-    #[allow(clippy::type_complexity)]
-    pub(crate) _types: PhantomData<fn() -> (LK, LV, RK, RV, JK)>,
 }
 
-impl<L, R, LK, LV, RK, RV, JK, FL, FR> PlanProperties
-    for MultiLeftJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
+impl<L, R, LK, LV, RK, RV, JK, FL, FR> PlanProperties for MultiLeftJoinPlan<L, R, FL, FR>
 where
     L: MapQuery<Key = LK, Value = LV>,
     R: MapQuery<Key = RK, Value = RV>,
@@ -67,7 +53,7 @@ where
 }
 
 impl<L, R, LK, LV, RK, RV, JK, FL, FR> BuildQueryRuntime<LK, (LV, Vec<RV>)>
-    for MultiLeftJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
+    for MultiLeftJoinPlan<L, R, FL, FR>
 where
     L: MapQuery<Key = LK, Value = LV>,
     R: MapQuery<Key = RK, Value = RV>,
@@ -100,8 +86,7 @@ where
 }
 
 #[allow(private_bounds)]
-impl<L, R, LK, LV, RK, RV, JK, FL, FR> MapQuery
-    for MultiLeftJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
+impl<L, R, LK, LV, RK, RV, JK, FL, FR> MapQuery for MultiLeftJoinPlan<L, R, FL, FR>
 where
     L: MapQuery<Key = LK, Value = LV>,
     R: MapQuery<Key = RK, Value = RV>,
@@ -153,7 +138,6 @@ where
             right,
             left_keys,
             right_key,
-            _types: PhantomData,
         }
     }
 }

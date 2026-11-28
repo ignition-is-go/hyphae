@@ -34,21 +34,19 @@ struct MapValuesQueue<K, V, U> {
     idle_rows: Option<FxHashMap<K, MapValuesRow<U>>>,
 }
 
-struct MapValuesRuntime<K, V, U, W, F>
+struct MapValuesRuntime<K, V, U, F>
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
     U: CellValue,
-    W: Watchable<U> + Gettable<U> + Clone + Send + Sync + 'static,
-    F: Fn(&K, &V) -> W + Send + Sync + 'static,
 {
     mapper: Arc<F>,
     queue: Mutex<MapValuesQueue<K, V, U>>,
     sink: crate::map_query::BoxedMapDiffSink<K, U>,
-    marker: PhantomData<fn(V) -> W>,
+    marker: PhantomData<fn(V)>,
 }
 
-impl<K, V, U, W, F> MapValuesRuntime<K, V, U, W, F>
+impl<K, V, U, W, F> MapValuesRuntime<K, V, U, F>
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
@@ -282,7 +280,7 @@ where
     W: Watchable<U> + Gettable<U> + Clone + Send + Sync + 'static,
     F: Fn(&K, &V) -> W + Send + Sync + 'static,
 {
-    let runtime = Arc::new(MapValuesRuntime::<K, V, U, W, F> {
+    let runtime = Arc::new(MapValuesRuntime::<K, V, U, F> {
         mapper: Arc::new(mapper),
         queue: Mutex::new(MapValuesQueue {
             events: VecDeque::new(),

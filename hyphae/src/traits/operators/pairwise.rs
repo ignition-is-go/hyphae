@@ -4,8 +4,9 @@
 //! produce, so the materialized cell starts as `None` and flips to
 //! `Some((prev, current))` once the second emission lands.
 
-use parking_lot::Mutex;
 use std::{marker::PhantomData, sync::Arc};
+
+use parking_lot::Mutex;
 
 use super::CellValue;
 use crate::{
@@ -15,13 +16,12 @@ use crate::{
 };
 
 /// Pipeline node representing `source.pairwise()`.
-pub struct PairwisePipeline<S, T, Sd = crate::pipeline::Definite> {
+pub struct PairwisePipeline<S, Sd = crate::pipeline::Definite> {
     source: S,
-    _t: PhantomData<fn(T)>,
     _sd: PhantomData<fn(Sd)>,
 }
 
-impl<S, T, Sd> PipelineInstall<(T, T)> for PairwisePipeline<S, T, Sd>
+impl<S, T, Sd> PipelineInstall<(T, T)> for PairwisePipeline<S, Sd>
 where
     S: PipelineInstall<T> + Send + Sync + 'static,
     Sd: Seedness,
@@ -47,7 +47,7 @@ where
 }
 
 #[allow(private_bounds)]
-impl<S, T, Sd> Pipeline<(T, T), Empty> for PairwisePipeline<S, T, Sd>
+impl<S, T, Sd> Pipeline<(T, T), Empty> for PairwisePipeline<S, Sd>
 where
     S: Pipeline<T, Sd>,
     Sd: Seedness,
@@ -62,7 +62,6 @@ pub trait PairwiseExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     fn pairwise(self) -> impl crate::Materialize<(T, T), Empty> {
         PairwisePipeline {
             source: self,
-            _t: PhantomData,
             _sd: PhantomData,
         }
     }

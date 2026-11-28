@@ -5,7 +5,7 @@
 //! [`MapQuery::materialize`] to compile a plan into a subscribable
 //! [`CellMap`](crate::CellMap).
 
-use std::{hash::Hash, marker::PhantomData, sync::Arc};
+use std::{hash::Hash, sync::Arc};
 
 use super::ProjectCellExt;
 use crate::{
@@ -27,27 +27,13 @@ use crate::{
 /// Not [`Clone`]: cloning a plan would silently duplicate per-row
 /// subscription work; share by materializing once.
 #[allow(private_bounds)]
-pub struct SelectCellPlan<S, K, V, W, F>
-where
-    S: MapQuery<Key = K, Value = V>,
-    K: Hash + Eq + CellValue,
-    V: CellValue,
-    W: Pipeline<bool>
-        + crate::pipeline::PipelineSeed<bool>
-        + Gettable<bool>
-        + Clone
-        + Send
-        + Sync
-        + 'static,
-    F: Fn(&K, &V) -> W + Send + Sync + 'static,
-{
+pub struct SelectCellPlan<S, F> {
     pub(crate) source: S,
     pub(crate) predicate: Arc<F>,
-    pub(crate) _types: PhantomData<fn() -> (K, V, W)>,
 }
 
 #[allow(private_bounds)]
-impl<S, K, V, W, F> PlanProperties for SelectCellPlan<S, K, V, W, F>
+impl<S, K, V, W, F> PlanProperties for SelectCellPlan<S, F>
 where
     S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
@@ -66,7 +52,7 @@ where
     type OutputPartition = ByMapKey<K>;
 }
 
-impl<S, K, V, W, F> BuildQueryRuntime<K, V> for SelectCellPlan<S, K, V, W, F>
+impl<S, K, V, W, F> BuildQueryRuntime<K, V> for SelectCellPlan<S, F>
 where
     S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
@@ -106,7 +92,7 @@ where
 }
 
 #[allow(private_bounds)]
-impl<S, K, V, W, F> MapQuery for SelectCellPlan<S, K, V, W, F>
+impl<S, K, V, W, F> MapQuery for SelectCellPlan<S, F>
 where
     S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
@@ -154,7 +140,6 @@ where
         SelectCellPlan {
             source: self,
             predicate: Arc::new(predicate),
-            _types: PhantomData,
         }
     }
 }

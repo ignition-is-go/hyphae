@@ -33,23 +33,18 @@ use crate::{
 ///
 /// Not [`Clone`]: cloning a plan would silently duplicate per-row subscription
 /// work; share by materializing once.
-pub struct ProjectCellPlan<S, K, V, K2, V2, W, F>
+pub struct ProjectCellPlan<S, K2, V2, F>
 where
-    S: MapQuery<Key = K, Value = V>,
-    K: Hash + Eq + CellValue,
-    V: CellValue,
     K2: Hash + Eq + CellValue,
     V2: CellValue,
-    W: Watchable<Option<(K2, V2)>> + Gettable<Option<(K2, V2)>> + Clone + Send + Sync + 'static,
-    F: Fn(&K, &V) -> W + Send + Sync + 'static,
 {
     pub(crate) source: S,
     pub(crate) mapper: Arc<F>,
     #[allow(clippy::type_complexity)]
-    pub(crate) _types: PhantomData<fn() -> (K, V, K2, V2, W)>,
+    pub(crate) _types: PhantomData<fn() -> (K2, V2)>,
 }
 
-impl<S, K, V, K2, V2, W, F> PlanProperties for ProjectCellPlan<S, K, V, K2, V2, W, F>
+impl<S, K, V, K2, V2, W, F> PlanProperties for ProjectCellPlan<S, K2, V2, F>
 where
     S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
@@ -64,7 +59,7 @@ where
     type OutputPartition = Repartition<K2>;
 }
 
-impl<S, K, V, K2, V2, W, F> BuildQueryRuntime<K2, V2> for ProjectCellPlan<S, K, V, K2, V2, W, F>
+impl<S, K, V, K2, V2, W, F> BuildQueryRuntime<K2, V2> for ProjectCellPlan<S, K2, V2, F>
 where
     S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
@@ -115,7 +110,7 @@ where
 }
 
 #[allow(private_bounds)]
-impl<S, K, V, K2, V2, W, F> MapQuery for ProjectCellPlan<S, K, V, K2, V2, W, F>
+impl<S, K, V, K2, V2, W, F> MapQuery for ProjectCellPlan<S, K2, V2, F>
 where
     S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,

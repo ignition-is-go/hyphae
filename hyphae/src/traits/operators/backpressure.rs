@@ -1,9 +1,6 @@
-use std::{
-    marker::PhantomData,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
 };
 
 use crossbeam::queue::ArrayQueue;
@@ -16,13 +13,12 @@ use crate::{
 };
 
 /// Pipeline node representing `source.drop_newest(capacity)`.
-pub struct DropNewestPipeline<S, T> {
+pub struct DropNewestPipeline<S> {
     source: S,
     capacity: usize,
-    _t: PhantomData<fn(T)>,
 }
 
-impl<S, T> PipelineInstall<T> for DropNewestPipeline<S, T>
+impl<S, T> PipelineInstall<T> for DropNewestPipeline<S>
 where
     S: PipelineInstall<T> + Send + Sync + 'static,
     T: CellValue,
@@ -50,7 +46,7 @@ where
     }
 }
 
-impl<S, T> PipelineSeed<T> for DropNewestPipeline<S, T>
+impl<S, T> PipelineSeed<T> for DropNewestPipeline<S>
 where
     S: PipelineSeed<T>,
     T: CellValue,
@@ -61,7 +57,7 @@ where
 }
 
 #[allow(private_bounds)]
-impl<S, T> Pipeline<T, Definite> for DropNewestPipeline<S, T>
+impl<S, T> Pipeline<T, Definite> for DropNewestPipeline<S>
 where
     S: Pipeline<T, Definite> + PipelineSeed<T>,
     T: CellValue,
@@ -80,7 +76,6 @@ pub trait BackpressureExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T>
         DropNewestPipeline {
             source: self,
             capacity,
-            _t: PhantomData,
         }
     }
 }

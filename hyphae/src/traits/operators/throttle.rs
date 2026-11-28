@@ -1,5 +1,4 @@
 use std::{
-    marker::PhantomData,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -15,13 +14,12 @@ use crate::{
     subscription::SubscriptionGuard,
 };
 
-pub struct ThrottlePipeline<S, T> {
+pub struct ThrottlePipeline<S> {
     source: S,
     duration: Duration,
-    _t: PhantomData<fn(T)>,
 }
 
-impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for ThrottlePipeline<S, T> {
+impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for ThrottlePipeline<S> {
     fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
         let can_emit = Arc::new(AtomicBool::new(true));
         let duration = self.duration;
@@ -41,7 +39,7 @@ impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for ThrottlePipelin
     }
 }
 
-impl<S: PipelineSeed<T>, T: CellValue> PipelineSeed<T> for ThrottlePipeline<S, T> {
+impl<S: PipelineSeed<T>, T: CellValue> PipelineSeed<T> for ThrottlePipeline<S> {
     fn seed(&self) -> T {
         self.source.seed()
     }
@@ -49,7 +47,7 @@ impl<S: PipelineSeed<T>, T: CellValue> PipelineSeed<T> for ThrottlePipeline<S, T
 
 #[allow(private_bounds)]
 impl<S: Pipeline<T, Definite> + PipelineSeed<T>, T: CellValue> Pipeline<T, Definite>
-    for ThrottlePipeline<S, T>
+    for ThrottlePipeline<S>
 {
 }
 
@@ -60,7 +58,6 @@ pub trait ThrottleExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
         ThrottlePipeline {
             source: self,
             duration,
-            _t: PhantomData,
         }
     }
 }

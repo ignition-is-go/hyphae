@@ -34,18 +34,16 @@ where
     }
 }
 
-pub struct GroupedOps<SK, SV, GK, GS, OV, FG, FI, FU, FR, FM, FE>
+pub struct GroupedOps<SK, SV, GK, GS, FG, FI, FU, FR, FM, FE>
 where
     SK: Hash + Eq + CellValue,
     SV: CellValue,
     GK: Hash + Eq + CellValue,
     GS: Clone + Send + Sync + 'static,
-    OV: CellValue,
     FG: Fn(&SK, &SV) -> GK + Send + Sync + 'static,
     FI: Fn(&mut GS, &SK, &SV) + Send + Sync + 'static,
     FU: Fn(&mut GS, &SK, &SV, &SV) + Send + Sync + 'static,
     FR: Fn(&mut GS, &SK, &SV) + Send + Sync + 'static,
-    FM: Fn(&GS) -> OV + Send + Sync + 'static,
     FE: Fn(&GS) -> bool + Send + Sync + 'static,
 {
     pub make_group_key: FG,
@@ -58,8 +56,7 @@ where
     pub _marker: std::marker::PhantomData<fn(&SK, &SV) -> GK>,
 }
 
-impl<SK, SV, GK, GS, OV, FG, FI, FU, FR, FM, FE>
-    GroupedOps<SK, SV, GK, GS, OV, FG, FI, FU, FR, FM, FE>
+impl<SK, SV, GK, GS, OV, FG, FI, FU, FR, FM, FE> GroupedOps<SK, SV, GK, GS, FG, FI, FU, FR, FM, FE>
 where
     SK: Hash + Eq + CellValue,
     SV: CellValue,
@@ -194,7 +191,7 @@ where
 pub fn install_grouped_runtime_via_query<SK, SV, GK, GS, OV, S, FG, FI, FU, FR, FM, FE>(
     cx: &mut crate::map_query::compiler::CompileContext,
     source: S,
-    ops: GroupedOps<SK, SV, GK, GS, OV, FG, FI, FU, FR, FM, FE>,
+    ops: GroupedOps<SK, SV, GK, GS, FG, FI, FU, FR, FM, FE>,
     sink: crate::map_query::BoxedMapDiffSink<GK, OV>,
 ) -> Vec<SubscriptionGuard>
 where

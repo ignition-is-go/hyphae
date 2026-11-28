@@ -4,8 +4,9 @@
 //! First emission has no prior value to compare against, so it always passes —
 //! the operator is therefore [`Definite`] when its source is `Definite`.
 
-use parking_lot::Mutex;
 use std::{marker::PhantomData, sync::Arc};
+
+use parking_lot::Mutex;
 
 use super::CellValue;
 use crate::{
@@ -15,14 +16,13 @@ use crate::{
 };
 
 /// Pipeline node representing `source.distinct_until_changed_by(cmp)`.
-pub struct DistinctUntilChangedByPipeline<S, T, F, Sd = Definite> {
+pub struct DistinctUntilChangedByPipeline<S, F, Sd = Definite> {
     source: S,
     comparator: Arc<F>,
-    _t: PhantomData<fn(T)>,
     _sd: PhantomData<fn(Sd)>,
 }
 
-impl<S, T, F, Sd> PipelineInstall<T> for DistinctUntilChangedByPipeline<S, T, F, Sd>
+impl<S, T, F, Sd> PipelineInstall<T> for DistinctUntilChangedByPipeline<S, F, Sd>
 where
     S: PipelineInstall<T> + Send + Sync + 'static,
     Sd: Seedness,
@@ -58,7 +58,7 @@ where
     }
 }
 
-impl<S, T, F, Sd> PipelineSeed<T> for DistinctUntilChangedByPipeline<S, T, F, Sd>
+impl<S, T, F, Sd> PipelineSeed<T> for DistinctUntilChangedByPipeline<S, F, Sd>
 where
     S: Pipeline<T, crate::pipeline::Definite>,
     Sd: Seedness,
@@ -72,7 +72,7 @@ where
 
 #[allow(private_bounds)]
 impl<S, T, F> Pipeline<T, crate::pipeline::Definite>
-    for DistinctUntilChangedByPipeline<S, T, F, crate::pipeline::Definite>
+    for DistinctUntilChangedByPipeline<S, F, crate::pipeline::Definite>
 where
     S: Pipeline<T, crate::pipeline::Definite>,
     T: CellValue,
@@ -81,7 +81,7 @@ where
 }
 
 impl<S, T, F> Pipeline<T, crate::pipeline::Empty>
-    for DistinctUntilChangedByPipeline<S, T, F, crate::pipeline::Empty>
+    for DistinctUntilChangedByPipeline<S, F, crate::pipeline::Empty>
 where
     S: Pipeline<T, crate::pipeline::Empty>,
     T: CellValue,
@@ -128,7 +128,6 @@ impl<T: CellValue, P: Pipeline<T, crate::pipeline::Definite>>
         DistinctUntilChangedByPipeline {
             source: self,
             comparator: Arc::new(comparator),
-            _t: PhantomData,
             _sd: PhantomData,
         }
     }
@@ -147,7 +146,6 @@ impl<T: CellValue, P: Pipeline<T, crate::pipeline::Empty>>
         DistinctUntilChangedByPipeline {
             source: self,
             comparator: Arc::new(comparator),
-            _t: PhantomData,
             _sd: PhantomData,
         }
     }

@@ -80,28 +80,14 @@ where
 ///
 /// Not [`Clone`]: cloning a plan would silently duplicate join work; share by
 /// materializing once.
-pub struct LeftJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
-where
-    L: MapQuery<Key = LK, Value = LV>,
-    R: MapQuery<Key = RK, Value = RV>,
-    LK: Hash + Eq + CellValue,
-    LV: CellValue,
-    RK: Hash + Eq + CellValue,
-    RV: CellValue,
-    JK: Hash + Eq + CellValue,
-    FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
-    FR: RightJoinKey<RK, RV, JK>,
-{
+pub struct LeftJoinPlan<L, R, FL, FR> {
     pub(crate) left: L,
     pub(crate) right: R,
     pub(crate) left_key: FL,
     pub(crate) right_key: FR,
-    #[allow(clippy::type_complexity)]
-    pub(crate) _types: PhantomData<fn() -> (LK, LV, RK, RV, JK)>,
 }
 
-impl<L, R, LK, LV, RK, RV, JK, FL, FR> PlanProperties
-    for LeftJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
+impl<L, R, LK, LV, RK, RV, JK, FL, FR> PlanProperties for LeftJoinPlan<L, R, FL, FR>
 where
     L: MapQuery<Key = LK, Value = LV> + PlanProperties,
     R: MapQuery<Key = RK, Value = RV>,
@@ -182,27 +168,12 @@ where
 }
 
 /// A left join whose output is projected directly from the indexed matches.
-pub struct JoinedValuesPlan<L, R, LK, LV, RK, RV, JK, OV, FL, FR, F>
-where
-    L: MapQuery<Key = LK, Value = LV>,
-    R: MapQuery<Key = RK, Value = RV>,
-    LK: Hash + Eq + CellValue,
-    LV: CellValue,
-    RK: Hash + Eq + CellValue,
-    RV: CellValue,
-    JK: Hash + Eq + CellValue,
-    OV: CellValue,
-    FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
-    FR: RightJoinKey<RK, RV, JK>,
-    F: Fn(&LK, &LV, &[(RK, RV)]) -> OV + Send + Sync + 'static,
-{
-    pub(super) join: LeftJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>,
+pub struct JoinedValuesPlan<L, R, FL, FR, F> {
+    pub(super) join: LeftJoinPlan<L, R, FL, FR>,
     pub(super) projection: F,
-    pub(super) _output: PhantomData<fn() -> OV>,
 }
 
-impl<L, R, LK, LV, RK, RV, JK, OV, FL, FR, F> PlanProperties
-    for JoinedValuesPlan<L, R, LK, LV, RK, RV, JK, OV, FL, FR, F>
+impl<L, R, LK, LV, RK, RV, JK, OV, FL, FR, F> PlanProperties for JoinedValuesPlan<L, R, FL, FR, F>
 where
     L: MapQuery<Key = LK, Value = LV> + PlanProperties,
     R: MapQuery<Key = RK, Value = RV>,
@@ -222,7 +193,7 @@ where
 }
 
 impl<L, R, LK, LV, RK, RV, JK, OV, FL, FR, F> BuildQueryRuntime<LK, OV>
-    for JoinedValuesPlan<L, R, LK, LV, RK, RV, JK, OV, FL, FR, F>
+    for JoinedValuesPlan<L, R, FL, FR, F>
 where
     L: MapQuery<Key = LK, Value = LV>,
     R: MapQuery<Key = RK, Value = RV>,
@@ -254,8 +225,7 @@ where
 }
 
 #[allow(private_bounds)]
-impl<L, R, LK, LV, RK, RV, JK, OV, FL, FR, F> MapQuery
-    for JoinedValuesPlan<L, R, LK, LV, RK, RV, JK, OV, FL, FR, F>
+impl<L, R, LK, LV, RK, RV, JK, OV, FL, FR, F> MapQuery for JoinedValuesPlan<L, R, FL, FR, F>
 where
     L: MapQuery<Key = LK, Value = LV>,
     R: MapQuery<Key = RK, Value = RV>,
@@ -274,7 +244,7 @@ where
 }
 
 impl<L, R, LK, LV, RK, RV, JK, FL, FR> BuildQueryRuntime<LK, (LV, Vec<RV>)>
-    for LeftJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
+    for LeftJoinPlan<L, R, FL, FR>
 where
     L: MapQuery<Key = LK, Value = LV>,
     R: MapQuery<Key = RK, Value = RV>,
@@ -307,7 +277,7 @@ where
 }
 
 #[allow(private_bounds)]
-impl<L, R, LK, LV, RK, RV, JK, FL, FR> MapQuery for LeftJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
+impl<L, R, LK, LV, RK, RV, JK, FL, FR> MapQuery for LeftJoinPlan<L, R, FL, FR>
 where
     L: MapQuery<Key = LK, Value = LV>,
     R: MapQuery<Key = RK, Value = RV>,
@@ -323,7 +293,7 @@ where
     type Value = (LV, Vec<RV>);
 }
 
-impl<L, R, LK, LV, RK, RV, JK, FL, FR> LeftJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
+impl<L, R, LK, LV, RK, RV, JK, FL, FR> LeftJoinPlan<L, R, FL, FR>
 where
     L: MapQuery<Key = LK, Value = LV>,
     R: MapQuery<Key = RK, Value = RV>,
@@ -346,10 +316,7 @@ where
     /// recognized join promotes to a concrete `JoinRegion`, and later joins
     /// extend its typed stage list. Rekeys and unsupported shapes are region
     /// boundaries.
-    pub fn map_joined_values<OV, F>(
-        self,
-        projection: F,
-    ) -> JoinedValuesPlan<L, R, LK, LV, RK, RV, JK, OV, FL, FR, F>
+    pub const fn map_joined_values<OV, F>(self, projection: F) -> JoinedValuesPlan<L, R, FL, FR, F>
     where
         OV: CellValue,
         F: Fn(&LK, &LV, &[(RK, RV)]) -> OV + Send + Sync + 'static,
@@ -357,13 +324,11 @@ where
         JoinedValuesPlan {
             join: self,
             projection,
-            _output: PhantomData,
         }
     }
 }
 
-impl<L, R, LK, LV, RK, RV, JK, FL, FR, Rel>
-    RelationPlan<LeftJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>, Rel>
+impl<L, R, LK, LV, RK, RV, JK, FL, FR, Rel> RelationPlan<LeftJoinPlan<L, R, FL, FR>, Rel>
 where
     L: MapQuery<Key = LK, Value = LV>,
     R: MapQuery<Key = RK, Value = RV>,
@@ -380,7 +345,7 @@ where
     pub fn map_joined_values<OV, F>(
         self,
         projection: F,
-    ) -> RelationPlan<JoinedValuesPlan<L, R, LK, LV, RK, RV, JK, OV, FL, FR, F>, Rel>
+    ) -> RelationPlan<JoinedValuesPlan<L, R, FL, FR, F>, Rel>
     where
         OV: CellValue,
         F: Fn(&LK, &LV, &[(RK, RV)]) -> OV + Send + Sync + 'static,

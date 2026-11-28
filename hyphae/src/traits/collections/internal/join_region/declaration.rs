@@ -1,5 +1,6 @@
 use std::{any::TypeId, hash::Hash, marker::PhantomData};
 
+use super::super::join_runtime::{RelationIndex, RelationIndexStorage};
 use crate::{
     map_query::{
         MapQuery, compile_runtime_into,
@@ -9,8 +10,6 @@ use crate::{
     subscription::SubscriptionGuard,
     traits::{CellValue, ForeignKeyRelation, IdFor},
 };
-
-use super::super::join_runtime::{RelationIndex, RelationIndexStorage};
 
 /// The empty join-stage list.
 #[derive(Debug, Clone, Copy, Default)]
@@ -67,8 +66,8 @@ pub trait LastStage {
     type RightValue: CellValue;
 }
 
-impl<Right, K, Input, RK, RV, JK, Output, FL, FR, Project, Policy> LastStage
-    for JCons<JoinStage<Right, K, Input, RK, RV, JK, Output, FL, FR, Project, Policy>, JNil>
+impl<Right, K, Input, RK, RV, Output, FL, FR, Project, Policy> LastStage
+    for JCons<JoinStage<Right, K, Input, RK, RV, Output, FL, FR, Project, Policy>, JNil>
 where
     Input: CellValue,
     RK: Hash + Eq + CellValue,
@@ -96,14 +95,12 @@ pub trait ReplaceLastProject<F, Output> {
     fn replace_last_project(self, project: F) -> Self::Stages;
 }
 
-impl<Right, K, Input, RK, RV, JK, OldOutput, FL, FR, OldProject, Policy, F, Output>
+impl<Right, K, Input, RK, RV, OldOutput, FL, FR, OldProject, Policy, F, Output>
     ReplaceLastProject<F, Output>
-    for JCons<JoinStage<Right, K, Input, RK, RV, JK, OldOutput, FL, FR, OldProject, Policy>, JNil>
+    for JCons<JoinStage<Right, K, Input, RK, RV, OldOutput, FL, FR, OldProject, Policy>, JNil>
 {
-    type Stages = JCons<
-        JoinStage<Right, K, Input, RK, RV, JK, Output, FL, FR, DirectProject<F>, Policy>,
-        JNil,
-    >;
+    type Stages =
+        JCons<JoinStage<Right, K, Input, RK, RV, Output, FL, FR, DirectProject<F>, Policy>, JNil>;
 
     fn replace_last_project(self, project: F) -> Self::Stages {
         let JoinStage {
@@ -144,9 +141,8 @@ pub trait MapLast<F, Output> {
     fn map_last(self, map: F) -> Self::Stages;
 }
 
-impl<Right, K, Input, RK, RV, JK, Intermediate, FL, FR, Project, Policy, F, Output>
-    MapLast<F, Output>
-    for JCons<JoinStage<Right, K, Input, RK, RV, JK, Intermediate, FL, FR, Project, Policy>, JNil>
+impl<Right, K, Input, RK, RV, Intermediate, FL, FR, Project, Policy, F, Output> MapLast<F, Output>
+    for JCons<JoinStage<Right, K, Input, RK, RV, Intermediate, FL, FR, Project, Policy>, JNil>
 {
     type Stages = JCons<
         JoinStage<
@@ -155,7 +151,6 @@ impl<Right, K, Input, RK, RV, JK, Intermediate, FL, FR, Project, Policy, F, Outp
             Input,
             RK,
             RV,
-            JK,
             Output,
             FL,
             FR,
@@ -476,7 +471,6 @@ pub struct JoinStage<
     Input,
     RightKey,
     RightValue,
-    JoinKey,
     Output,
     LeftKey,
     RightKeyFn,
@@ -488,11 +482,11 @@ pub struct JoinStage<
     pub right_key: RightKeyFn,
     pub project: Project,
     pub index_policy: Policy,
-    pub(super) _types: PhantomData<fn() -> (K, Input, RightKey, RightValue, JoinKey, Output)>,
+    pub(super) _types: PhantomData<fn() -> (K, Input, RightKey, RightValue, Output)>,
 }
 
-impl<Right, K, Input, RightKey, RightValue, JoinKey, Output, LeftKey, RightKeyFn, Project>
-    JoinStage<Right, K, Input, RightKey, RightValue, JoinKey, Output, LeftKey, RightKeyFn, Project>
+impl<Right, K, Input, RightKey, RightValue, Output, LeftKey, RightKeyFn, Project>
+    JoinStage<Right, K, Input, RightKey, RightValue, Output, LeftKey, RightKeyFn, Project>
 {
     #[allow(clippy::too_many_arguments)]
     pub const fn new(
@@ -520,7 +514,6 @@ impl<Right, K, Input, RightKey, RightValue, JoinKey, Output, LeftKey, RightKeyFn
         Input,
         RightKey,
         RightValue,
-        JoinKey,
         Output,
         LeftKey,
         RightKeyFn,
@@ -538,15 +531,13 @@ impl<Right, K, Input, RightKey, RightValue, JoinKey, Output, LeftKey, RightKeyFn
     }
 }
 
-impl<Right, K, Input, RightKey, RightValue, JoinKey, Output, LeftKey, RightKeyFn, Project, Policy>
-    StageSpec
+impl<Right, K, Input, RightKey, RightValue, Output, LeftKey, RightKeyFn, Project, Policy> StageSpec
     for JoinStage<
         Right,
         K,
         Input,
         RightKey,
         RightValue,
-        JoinKey,
         Output,
         LeftKey,
         RightKeyFn,
@@ -560,7 +551,6 @@ where
     Right: Send + Sync + 'static,
     RightKey: Send + Sync + 'static,
     RightValue: Send + Sync + 'static,
-    JoinKey: Send + Sync + 'static,
     LeftKey: Send + Sync + 'static,
     RightKeyFn: Send + Sync + 'static,
     Project: StageProject<K, Input, RightKey, RightValue, Output>,
@@ -573,7 +563,7 @@ where
     type OutputPartition = ByMapKey<K>;
 }
 
-impl<Right, K, Input, RightKey, RightValue, JoinKey, Output, LeftKey, RightKeyFn, Project, Policy>
+impl<Right, K, Input, RightKey, RightValue, Output, LeftKey, RightKeyFn, Project, Policy>
     PlanProperties
     for JoinStage<
         Right,
@@ -581,7 +571,6 @@ impl<Right, K, Input, RightKey, RightValue, JoinKey, Output, LeftKey, RightKeyFn
         Input,
         RightKey,
         RightValue,
-        JoinKey,
         Output,
         LeftKey,
         RightKeyFn,

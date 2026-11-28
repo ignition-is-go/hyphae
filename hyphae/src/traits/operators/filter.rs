@@ -26,14 +26,13 @@ use crate::{
 /// The `Sd` parameter records the source's seedness so the trait impls below
 /// can bind it without falling foul of E0207. The output seedness is always
 /// [`Empty`] regardless of source.
-pub struct FilterPipeline<S, T, P, Sd = Definite> {
+pub struct FilterPipeline<S, P, Sd = Definite> {
     source: S,
     predicate: Arc<P>,
-    _t: PhantomData<fn(T)>,
     _sd: PhantomData<fn(Sd)>,
 }
 
-impl<S, T, P, Sd> PipelineInstall<T> for FilterPipeline<S, T, P, Sd>
+impl<S, T, P, Sd> PipelineInstall<T> for FilterPipeline<S, P, Sd>
 where
     S: PipelineInstall<T> + Send + Sync + 'static,
     Sd: Seedness,
@@ -60,7 +59,7 @@ where
 }
 
 #[allow(private_bounds)]
-impl<S, T, P, Sd> Pipeline<T, Empty> for FilterPipeline<S, T, P, Sd>
+impl<S, T, P, Sd> Pipeline<T, Empty> for FilterPipeline<S, P, Sd>
 where
     S: Pipeline<T, Sd>,
     Sd: Seedness,
@@ -79,7 +78,6 @@ pub trait FilterExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
         FilterPipeline {
             source: self,
             predicate: Arc::new(predicate),
-            _t: PhantomData,
             _sd: PhantomData,
         }
     }

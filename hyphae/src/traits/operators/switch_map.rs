@@ -98,13 +98,13 @@ fn inner_callback<U: CellValue>(
     })
 }
 
-pub struct SwitchMapPipeline<S, T, U, F, I> {
+pub struct SwitchMapPipeline<S, T, F, I> {
     source: S,
     f: Arc<F>,
-    _types: PhantomData<fn(T) -> (U, I)>,
+    _types: PhantomData<fn(T) -> I>,
 }
 
-impl<S, T, U, F, I> PipelineInstall<U> for SwitchMapPipeline<S, T, U, F, I>
+impl<S, T, U, F, I> PipelineInstall<U> for SwitchMapPipeline<S, T, F, I>
 where
     S: PipelineInstall<T> + PipelineSeed<T>,
     T: CellValue,
@@ -245,7 +245,7 @@ where
     }
 }
 
-impl<S, T, U, F, I> PipelineSeed<U> for SwitchMapPipeline<S, T, U, F, I>
+impl<S, T, U, F, I> PipelineSeed<U> for SwitchMapPipeline<S, T, F, I>
 where
     S: PipelineSeed<T>,
     T: CellValue,
@@ -257,7 +257,7 @@ where
         (self.f)(&self.source.seed()).seed()
     }
 }
-impl<S, T, U, F, I> Pipeline<U, Definite> for SwitchMapPipeline<S, T, U, F, I>
+impl<S, T, U, F, I> Pipeline<U, Definite> for SwitchMapPipeline<S, T, F, I>
 where
     S: Pipeline<T, Definite> + PipelineSeed<T>,
     T: CellValue,

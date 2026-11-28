@@ -20,14 +20,13 @@ use crate::{
 };
 
 /// Pipeline node representing `source.skip(n)`.
-pub struct SkipPipeline<S, T, Sd = crate::pipeline::Definite> {
+pub struct SkipPipeline<S, Sd = crate::pipeline::Definite> {
     source: S,
     count: usize,
-    _t: PhantomData<fn(T)>,
     _sd: PhantomData<fn(Sd)>,
 }
 
-impl<S, T, Sd> PipelineInstall<T> for SkipPipeline<S, T, Sd>
+impl<S, T, Sd> PipelineInstall<T> for SkipPipeline<S, Sd>
 where
     S: PipelineInstall<T> + Send + Sync + 'static,
     Sd: Seedness,
@@ -52,7 +51,7 @@ where
 }
 
 #[allow(private_bounds)]
-impl<S, T, Sd> Pipeline<T, Empty> for SkipPipeline<S, T, Sd>
+impl<S, T, Sd> Pipeline<T, Empty> for SkipPipeline<S, Sd>
 where
     S: Pipeline<T, Sd>,
     Sd: Seedness,
@@ -67,7 +66,6 @@ pub trait SkipExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
         SkipPipeline {
             source: self,
             count,
-            _t: PhantomData,
             _sd: PhantomData,
         }
     }

@@ -10,13 +10,13 @@ use crate::{
 };
 
 /// Pipeline node representing `source.map(f)`. Does not allocate a cell.
-pub struct MapPipeline<S, T, U, F> {
+pub struct MapPipeline<S, T, F> {
     source: S,
     f: Arc<F>,
-    _types: PhantomData<fn(T) -> U>,
+    _types: PhantomData<fn(T)>,
 }
 
-impl<S, T, U, F> PipelineInstall<U> for MapPipeline<S, T, U, F>
+impl<S, T, U, F> PipelineInstall<U> for MapPipeline<S, T, F>
 where
     S: PipelineInstall<T> + Send + Sync + 'static,
     T: CellValue,
@@ -39,7 +39,7 @@ where
 }
 
 // Seed only exists when the source has a seed (i.e. source is Definite).
-impl<S, T, U, F> PipelineSeed<U> for MapPipeline<S, T, U, F>
+impl<S, T, U, F> PipelineSeed<U> for MapPipeline<S, T, F>
 where
     S: Pipeline<T, crate::pipeline::Definite>,
     T: CellValue,
@@ -53,7 +53,7 @@ where
 
 // Map propagates the source's Seedness.
 #[allow(private_bounds)]
-impl<S, T, U, F> Pipeline<U, crate::pipeline::Definite> for MapPipeline<S, T, U, F>
+impl<S, T, U, F> Pipeline<U, crate::pipeline::Definite> for MapPipeline<S, T, F>
 where
     S: Pipeline<T, crate::pipeline::Definite>,
     T: CellValue,
@@ -62,7 +62,7 @@ where
 {
 }
 
-impl<S, T, U, F> Pipeline<U, crate::pipeline::Empty> for MapPipeline<S, T, U, F>
+impl<S, T, U, F> Pipeline<U, crate::pipeline::Empty> for MapPipeline<S, T, F>
 where
     S: Pipeline<T, crate::pipeline::Empty>,
     T: CellValue,

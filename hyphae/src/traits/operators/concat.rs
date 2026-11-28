@@ -1,12 +1,10 @@
-use std::{
-    marker::PhantomData,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
 };
 
 use parking_lot::Mutex;
+use uuid::Uuid;
 
 use super::{CellValue, Watchable};
 use crate::{
@@ -15,15 +13,13 @@ use crate::{
     signal::Signal,
     subscription::SubscriptionGuard,
 };
-use uuid::Uuid;
 
-pub struct ConcatPipeline<A, B, T> {
+pub struct ConcatPipeline<A, B> {
     first: A,
     second: Arc<B>,
-    _type: PhantomData<fn() -> T>,
 }
 
-impl<A, B, T> PipelineInstall<T> for ConcatPipeline<A, B, T>
+impl<A, B, T> PipelineInstall<T> for ConcatPipeline<A, B>
 where
     A: PipelineInstall<T> + PipelineSeed<T>,
     B: PipelineInstall<T>,
@@ -83,7 +79,7 @@ where
     }
 }
 
-impl<A, B, T> PipelineSeed<T> for ConcatPipeline<A, B, T>
+impl<A, B, T> PipelineSeed<T> for ConcatPipeline<A, B>
 where
     A: PipelineSeed<T>,
     B: PipelineInstall<T>,
@@ -93,7 +89,7 @@ where
         self.first.seed()
     }
 }
-impl<A, B, T> Pipeline<T, Definite> for ConcatPipeline<A, B, T>
+impl<A, B, T> Pipeline<T, Definite> for ConcatPipeline<A, B>
 where
     A: Pipeline<T, Definite> + PipelineSeed<T>,
     B: Pipeline<T, Definite>,
@@ -109,7 +105,6 @@ pub trait ConcatExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
         ConcatPipeline {
             first: self,
             second: Arc::new(second),
-            _type: PhantomData,
         }
     }
 }

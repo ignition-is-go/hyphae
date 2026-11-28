@@ -15,13 +15,13 @@ use crate::{
     subscription::SubscriptionGuard,
 };
 
-pub struct MergeMapPipeline<S, T, U, F, I> {
+pub struct MergeMapPipeline<S, T, F, I> {
     source: S,
     f: Arc<F>,
-    _types: PhantomData<fn(T) -> (U, I)>,
+    _types: PhantomData<fn(T) -> I>,
 }
 
-impl<S, T, U, F, I> PipelineInstall<U> for MergeMapPipeline<S, T, U, F, I>
+impl<S, T, U, F, I> PipelineInstall<U> for MergeMapPipeline<S, T, F, I>
 where
     S: PipelineInstall<T> + PipelineSeed<T>,
     T: CellValue,
@@ -131,7 +131,7 @@ fn inner_callback<U: CellValue>(
     })
 }
 
-impl<S, T, U, F, I> PipelineSeed<U> for MergeMapPipeline<S, T, U, F, I>
+impl<S, T, U, F, I> PipelineSeed<U> for MergeMapPipeline<S, T, F, I>
 where
     S: PipelineSeed<T>,
     T: CellValue,
@@ -143,7 +143,7 @@ where
         (self.f)(&self.source.seed()).seed()
     }
 }
-impl<S, T, U, F, I> Pipeline<U, Definite> for MergeMapPipeline<S, T, U, F, I>
+impl<S, T, U, F, I> Pipeline<U, Definite> for MergeMapPipeline<S, T, F, I>
 where
     S: Pipeline<T, Definite> + PipelineSeed<T>,
     T: CellValue,

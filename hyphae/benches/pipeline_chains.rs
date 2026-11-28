@@ -25,7 +25,7 @@
 //!
 //! # Depth construction
 //!
-//! Post-refactor, each `.map(...)` returns a distinct `MapPipeline<S, T, U, F>`
+//! Post-refactor, each `.map(...)` returns a distinct `MapPipeline<S, T, F>`
 //! type. Loop reassignment (`last = last.map(...)`) no longer typechecks. We
 //! use `seq_macro::seq!` to build chains of a fixed depth at compile time so
 //! every operator's distinct closure type is preserved (chain fusion is a

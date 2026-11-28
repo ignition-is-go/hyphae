@@ -1,6 +1,6 @@
 //! `tap` operator — pure side effect; chains fuse into one closure on root.
 
-use std::{marker::PhantomData, sync::Arc};
+use std::sync::Arc;
 
 use super::CellValue;
 use crate::{
@@ -10,13 +10,12 @@ use crate::{
 };
 
 /// Pipeline node representing `source.tap(f)`. Does not allocate a cell.
-pub struct TapPipeline<S, T, F> {
+pub struct TapPipeline<S, F> {
     source: S,
     f: Arc<F>,
-    _t: PhantomData<fn(T)>,
 }
 
-impl<S, T, F> PipelineInstall<T> for TapPipeline<S, T, F>
+impl<S, T, F> PipelineInstall<T> for TapPipeline<S, F>
 where
     S: PipelineInstall<T> + Send + Sync + 'static,
     T: CellValue,
@@ -39,7 +38,7 @@ where
     }
 }
 
-impl<S, T, F> PipelineSeed<T> for TapPipeline<S, T, F>
+impl<S, T, F> PipelineSeed<T> for TapPipeline<S, F>
 where
     S: Pipeline<T, crate::pipeline::Definite>,
     T: CellValue,
@@ -53,7 +52,7 @@ where
 }
 
 #[allow(private_bounds)]
-impl<S, T, F> Pipeline<T, crate::pipeline::Definite> for TapPipeline<S, T, F>
+impl<S, T, F> Pipeline<T, crate::pipeline::Definite> for TapPipeline<S, F>
 where
     S: Pipeline<T, crate::pipeline::Definite>,
     T: CellValue,
@@ -61,7 +60,7 @@ where
 {
 }
 
-impl<S, T, F> Pipeline<T, crate::pipeline::Empty> for TapPipeline<S, T, F>
+impl<S, T, F> Pipeline<T, crate::pipeline::Empty> for TapPipeline<S, F>
 where
     S: Pipeline<T, crate::pipeline::Empty>,
     T: CellValue,
@@ -91,7 +90,6 @@ impl<T: CellValue, P: Pipeline<T, crate::pipeline::Definite>> TapExt<T, crate::p
         TapPipeline {
             source: self,
             f: Arc::new(f),
-            _t: PhantomData,
         }
     }
 }
@@ -104,7 +102,6 @@ impl<T: CellValue, P: Pipeline<T, crate::pipeline::Empty>> TapExt<T, crate::pipe
         TapPipeline {
             source: self,
             f: Arc::new(f),
-            _t: PhantomData,
         }
     }
 }

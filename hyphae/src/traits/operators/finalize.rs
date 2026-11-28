@@ -34,14 +34,13 @@ impl<F: FnOnce()> OnceCallback<F> {
 }
 
 /// Pipeline node representing `source.finalize(f)`.
-pub struct FinalizePipeline<S, T, F, Sd = Definite> {
+pub struct FinalizePipeline<S, F, Sd = Definite> {
     source: S,
     callback: Arc<OnceCallback<F>>,
-    _t: PhantomData<fn(T)>,
     _sd: PhantomData<fn(Sd)>,
 }
 
-impl<S, T, F, Sd> PipelineInstall<T> for FinalizePipeline<S, T, F, Sd>
+impl<S, T, F, Sd> PipelineInstall<T> for FinalizePipeline<S, F, Sd>
 where
     S: PipelineInstall<T> + Send + Sync + 'static,
     Sd: Seedness,
@@ -62,7 +61,7 @@ where
     }
 }
 
-impl<S, T, F, Sd> PipelineSeed<T> for FinalizePipeline<S, T, F, Sd>
+impl<S, T, F, Sd> PipelineSeed<T> for FinalizePipeline<S, F, Sd>
 where
     S: Pipeline<T, crate::pipeline::Definite>,
     Sd: Seedness,
@@ -76,7 +75,7 @@ where
 
 #[allow(private_bounds)]
 impl<S, T, F> Pipeline<T, crate::pipeline::Definite>
-    for FinalizePipeline<S, T, F, crate::pipeline::Definite>
+    for FinalizePipeline<S, F, crate::pipeline::Definite>
 where
     S: Pipeline<T, crate::pipeline::Definite>,
     T: CellValue,
@@ -84,8 +83,7 @@ where
 {
 }
 
-impl<S, T, F> Pipeline<T, crate::pipeline::Empty>
-    for FinalizePipeline<S, T, F, crate::pipeline::Empty>
+impl<S, T, F> Pipeline<T, crate::pipeline::Empty> for FinalizePipeline<S, F, crate::pipeline::Empty>
 where
     S: Pipeline<T, crate::pipeline::Empty>,
     T: CellValue,
@@ -134,7 +132,6 @@ impl<T: CellValue, P: Pipeline<T, crate::pipeline::Definite>>
         FinalizePipeline {
             source: self,
             callback: Arc::new(OnceCallback::new(callback)),
-            _t: PhantomData,
             _sd: PhantomData,
         }
     }
@@ -150,7 +147,6 @@ impl<T: CellValue, P: Pipeline<T, crate::pipeline::Empty>> FinalizeExt<T, crate:
         FinalizePipeline {
             source: self,
             callback: Arc::new(OnceCallback::new(callback)),
-            _t: PhantomData,
             _sd: PhantomData,
         }
     }

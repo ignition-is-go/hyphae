@@ -1,9 +1,6 @@
-use std::{
-    marker::PhantomData,
-    sync::{
-        Arc,
-        atomic::{AtomicU8, Ordering},
-    },
+use std::sync::{
+    Arc,
+    atomic::{AtomicU8, Ordering},
 };
 
 use parking_lot::Mutex;
@@ -22,13 +19,12 @@ const LEFT_COMPLETE: u8 = 0b01;
 const RIGHT_COMPLETE: u8 = 0b10;
 
 /// Pipeline node that emits the latest pair whenever either source changes.
-pub struct JoinPipeline<L, R, T, U> {
+pub struct JoinPipeline<L, R> {
     left: L,
     right: R,
-    _types: PhantomData<fn() -> (T, U)>,
 }
 
-impl<L, R, T, U> PipelineInstall<(T, U)> for JoinPipeline<L, R, T, U>
+impl<L, R, T, U> PipelineInstall<(T, U)> for JoinPipeline<L, R>
 where
     L: PipelineInstall<T> + PipelineSeed<T>,
     R: PipelineInstall<U> + PipelineSeed<U>,
@@ -91,7 +87,7 @@ where
     }
 }
 
-impl<L, R, T, U> PipelineSeed<(T, U)> for JoinPipeline<L, R, T, U>
+impl<L, R, T, U> PipelineSeed<(T, U)> for JoinPipeline<L, R>
 where
     L: PipelineSeed<T>,
     R: PipelineSeed<U>,
@@ -103,7 +99,7 @@ where
     }
 }
 
-impl<L, R, T, U> Pipeline<(T, U), Definite> for JoinPipeline<L, R, T, U>
+impl<L, R, T, U> Pipeline<(T, U), Definite> for JoinPipeline<L, R>
 where
     L: Pipeline<T, Definite> + PipelineSeed<T>,
     R: Pipeline<U, Definite> + PipelineSeed<U>,
@@ -121,7 +117,6 @@ pub trait JoinExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
         JoinPipeline {
             left: self,
             right: other,
-            _types: PhantomData,
         }
     }
 }

@@ -1,5 +1,4 @@
 use std::{
-    marker::PhantomData,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -17,13 +16,12 @@ use crate::{
     subscription::SubscriptionGuard,
 };
 
-pub struct BufferTimePipeline<S, T> {
+pub struct BufferTimePipeline<S> {
     source: S,
     duration: Duration,
-    _t: PhantomData<fn(T)>,
 }
 
-impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<Vec<T>> for BufferTimePipeline<S, T> {
+impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<Vec<T>> for BufferTimePipeline<S> {
     fn install(&self, callback: Arc<dyn Fn(&Signal<Vec<T>>) + Send + Sync>) -> SubscriptionGuard {
         let buffer = Arc::new(SegQueue::new());
         let completed = Arc::new(AtomicBool::new(false));
@@ -73,17 +71,14 @@ impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<Vec<T>> for BufferTime
     }
 }
 
-impl<S: PipelineInstall<T>, T: CellValue> PipelineSeed<Vec<T>> for BufferTimePipeline<S, T> {
+impl<S: PipelineInstall<T>, T: CellValue> PipelineSeed<Vec<T>> for BufferTimePipeline<S> {
     fn seed(&self) -> Vec<T> {
         Vec::new()
     }
 }
 
 #[allow(private_bounds)]
-impl<S: Pipeline<T, Definite>, T: CellValue> Pipeline<Vec<T>, Definite>
-    for BufferTimePipeline<S, T>
-{
-}
+impl<S: Pipeline<T, Definite>, T: CellValue> Pipeline<Vec<T>, Definite> for BufferTimePipeline<S> {}
 
 #[allow(private_bounds)]
 pub trait BufferTimeExt<T: CellValue>: Pipeline<T, Definite> {
@@ -92,7 +87,6 @@ pub trait BufferTimeExt<T: CellValue>: Pipeline<T, Definite> {
         BufferTimePipeline {
             source: self,
             duration,
-            _t: PhantomData,
         }
     }
 }
