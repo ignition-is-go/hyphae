@@ -256,7 +256,6 @@ where
                 order: WriteOrder::new(),
                 staged: Mutex::new(Vec::new()),
                 owned: Mutex::new(Vec::new()),
-                name: Mutex::new(None),
             }),
             _marker: PhantomData,
         }
@@ -890,26 +889,6 @@ where
             displaced
         });
         drop(displaced);
-    }
-
-    /// Give this `CellMap` a name for debugging. Names its internal cells accordingly.
-    #[must_use]
-    pub fn with_name(self, name: impl Into<Arc<str>>) -> Self {
-        let name: Arc<str> = name.into();
-        drop(
-            self.inner
-                .diffs_cell
-                .clone()
-                .with_name(format!("{name}::diffs")),
-        );
-        drop(
-            self.inner
-                .len_cell
-                .clone()
-                .with_name(format!("{name}::len")),
-        );
-        *self.inner.name.lock() = Some(name);
-        self
     }
 
     /// Lock the map to prevent further mutations.

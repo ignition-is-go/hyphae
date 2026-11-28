@@ -303,7 +303,6 @@ fn every_data_mutation_goes_through_the_hooked_helpers() {
         "replace_all",
         "apply_diff_owned",
         "apply_batch",
-        "with_name",
         "lock",
     ];
     assert_eq!(

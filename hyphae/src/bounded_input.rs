@@ -324,19 +324,11 @@ impl<T: CellValue> Gettable<T> for BoundedInput<T> {
     }
 }
 
+impl<T: CellValue> crate::traits::DepNodeSealed for BoundedInput<T> {}
+
 impl<T: CellValue> DepNode for BoundedInput<T> {
     fn id(&self) -> Uuid {
         self.inner.cell.inner.id
-    }
-
-    fn name(&self) -> Option<String> {
-        self.inner
-            .cell
-            .inner
-            .name
-            .lock()
-            .as_ref()
-            .map(std::string::ToString::to_string)
     }
 
     fn deps(&self) -> Vec<Arc<dyn DepNode>> {

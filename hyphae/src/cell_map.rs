@@ -245,9 +245,6 @@ where
     staged: Mutex<Vec<mutation::StagedDiff<K, V>>>,
     /// Subscription guards owned by this map (dropped when map drops).
     owned: Mutex<Vec<SubscriptionGuard>>,
-    /// Optional name for debugging. Cold path — set once via `with_name`,
-    /// read by per-key cell formatting helpers.
-    pub(crate) name: Mutex<Option<Arc<str>>>,
 }
 
 /// A reactive `HashMap` with per-key observability.
@@ -309,7 +306,6 @@ where
         &self,
         source: &Cell<S, CellMutable>,
         initial: O,
-        name: Option<&str>,
         replay: OutputReplay,
         update: impl Fn(&S) -> Option<O> + Send + Sync + 'static,
     ) -> Cell<O, CellImmutable>
@@ -318,9 +314,6 @@ where
         O: CellValue,
     {
         let cell = Cell::new(initial);
-        if let (Some(name), Some(map_name)) = (name, self.inner.name.lock().as_ref()) {
-            drop(cell.clone().with_name(format!("{map_name}::{name}")));
-        }
 
         let weak_cell = cell.downgrade();
         let map_keepalive = self.inner.clone();
@@ -353,7 +346,6 @@ where
         &self,
         projection: P,
         initial: O,
-        name: &str,
         update: impl Fn(&mut P, &MapDiff<K, V>) -> Option<O> + Send + Sync + 'static,
     ) -> Cell<O, CellImmutable>
     where
@@ -364,7 +356,6 @@ where
         self.install_output(
             &self.inner.diffs_cell,
             initial,
-            Some(name),
             OutputReplay::Skip,
             move |diff| projection.with(|state| update(state, diff)),
         )
@@ -413,8 +404,8 @@ where
             return cached.lock();
         }
         let mut current = self.inner.data.get(key).map(|entry| entry.value().clone());
-        let map_name = self.inner.name.lock().clone();
-        let point_name = map_name.map(|name| Arc::<str>::from(format!("{name}[{key:?}]")));
+        #[cfg(test)]
+        point_cell_race_tests::after_seed_read();
         // The observer belongs to the map, not to whoever asks first: it is
         // cached and handed to every later caller, in any domain.
         let home = self.inner.diffs_cell.inner.domain.as_ref();
@@ -422,9 +413,6 @@ where
             crate::scheduler::domain::in_use().then(|| crate::scheduler::domain::enter(home));
         loop {
             let candidate = Cell::new(current);
-            if let Some(point_name) = &point_name {
-                drop(candidate.clone().with_name(point_name.clone()));
-            }
             // NOTE(cx): Cloning may mutate another key. Only this key's writes
             // invalidate the seed, and user code runs outside the slot mutex.
             if let Some(cell) = slot.publish(revision, &candidate) {
@@ -452,7 +440,6 @@ where
         self.install_projection(
             EntryProjection::from_entries(initial.clone()),
             initial,
-            "entries",
             |projection, diff| {
                 projection.apply_diff(diff);
                 Some(projection.entries())
@@ -469,7 +456,7 @@ where
     pub fn items(&self) -> impl Materialize<Vec<V>, Definite> + use<K, V, M> {
         let projection = ValueProjection::from_entries(self.snapshot());
         let initial = projection.items();
-        self.install_projection(projection, initial, "items", |projection, diff| {
+        self.install_projection(projection, initial, |projection, diff| {
             projection.apply_diff(diff);
             Some(projection.items())
         })
@@ -481,7 +468,7 @@ where
     pub fn keys(&self) -> impl Materialize<Vec<K>, Definite> + use<K, V, M> {
         let projection = KeyProjection::from_keys(self.keys_snapshot());
         let initial = projection.keys();
-        self.install_projection(projection, initial, "keys", |projection, diff| {
+        self.install_projection(projection, initial, |projection, diff| {
             projection.apply_diff(diff).then(|| projection.keys())
         })
     }
@@ -495,7 +482,6 @@ where
         self.install_output(
             &self.inner.len_cell,
             self.inner.data.len(),
-            None,
             OutputReplay::Apply,
             |len| Some(*len),
         )

@@ -50,10 +50,6 @@ pub(crate) struct CellInner<T> {
     /// via `Arc` refcounting — readers holding clones keep the value alive
     /// until they drop.
     pub(crate) value: Mutex<Arc<T>>,
-    /// Optional human-readable name for tracing/debugging. Cold path — set
-    /// rarely via `with_name`, read from `DepNode::name`. Mutex avoids the
-    /// per-cell `ArcSwap` drop cost paid on every cell teardown.
-    pub(crate) name: Mutex<Option<Arc<str>>>,
     /// Subscription guards owned by this cell (dropped when cell drops, provides dependency tracking).
     pub(crate) owned: Mutex<FxHashMap<Uuid, SubscriptionGuard>>,
     /// Whether this cell has completed (no more values will be emitted).
@@ -146,7 +142,6 @@ impl<T: CellValue> Cell<T, CellMutable> {
             subscribers: parking_lot::Mutex::new(SubscriberRegistry::new()),
             result_subscribers: parking_lot::Mutex::new(SubscriberRegistry::new()),
             value: Mutex::new(Arc::new(initial_value)),
-            name: Mutex::new(None),
             owned: Mutex::new(FxHashMap::default()),
             completed: AtomicBool::new(false),
             errored: AtomicBool::new(false),
@@ -171,13 +166,6 @@ impl<T: CellValue> Cell<T, CellMutable> {
             inner: self.inner,
             _marker: PhantomData,
         }
-    }
-
-    #[must_use]
-    pub fn with_name(self, name: impl Into<Arc<str>>) -> Self {
-        let name = name.into();
-        *self.inner.name.lock() = Some(name);
-        self
     }
 }
 
@@ -489,17 +477,11 @@ fn raise_dependents(node: &dyn HeightNode, height: u64, path: &mut Vec<Uuid>) {
     }
 }
 
+impl<T, M> crate::traits::DepNodeSealed for Cell<T, M> {}
+
 impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
     fn id(&self) -> Uuid {
         self.inner.id
-    }
-
-    fn name(&self) -> Option<String> {
-        self.inner
-            .name
-            .lock()
-            .as_ref()
-            .map(std::string::ToString::to_string)
     }
 
     fn deps(&self) -> Vec<Arc<dyn DepNode>> {
@@ -545,15 +527,6 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
 
     fn owned_count(&self) -> usize {
         self.inner.owned.lock().len()
-    }
-}
-
-impl<T: CellValue> Cell<T, CellImmutable> {
-    #[must_use]
-    pub fn with_name(self, name: impl Into<Arc<str>>) -> Self {
-        let name = name.into();
-        *self.inner.name.lock() = Some(name);
-        self
     }
 }
 
@@ -769,16 +742,11 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
 
         // A `tracing` span per fanout so span-based profilers (`tracing-flame`,
         // `tracing-tracy`) get one entry per cell emit, tagged with the cell's
-        // id and (if set) its name. The consumer attaches the subscriber; when
-        // `profiling` is off this compiles to nothing. Later phases nest this
-        // under a per-frame span.
+        // id. The consumer attaches the subscriber; when `profiling` is off
+        // this compiles to nothing.
         #[cfg(feature = "profiling")]
-        let _fanout_span = ::tracing::trace_span!(
-            "hyphae.fanout",
-            cell.id = %self.inner.id,
-            cell.name = { self.inner.name.lock().clone() }.as_deref().unwrap_or(""),
-        )
-        .entered();
+        let _fanout_span =
+            ::tracing::trace_span!("hyphae.fanout", cell.id = %self.inner.id).entered();
 
         // Hot path: take the subscribers mutex briefly to grab the notify
         // snapshot (rebuilt from the id-index only if it changed since the last
@@ -1086,14 +1054,6 @@ impl<T: CellValue> Mutable<T> for Cell<T, CellMutable> {
     }
 }
 
-// ============================================================================
-// Inspector feature: DepNode for CellInner + Drop to deregister
-// ============================================================================
-
-impl<T> Drop for CellInner<T> {
-    fn drop(&mut self) {}
-}
-
 #[cfg(test)]
 mod height_dependents_tests {
     use crate::{Cell, Materialize, Mutable, SwitchMapExt, Watchable};
@@ -1266,28 +1226,6 @@ mod owned_guard_tests {
 
     use super::*;
 
-    #[cfg(feature = "profiling")]
-    #[test]
-    fn disabled_fanout_trace_does_not_acquire_name_lock() {
-        let source = Cell::new(0_u64).with_name("trace-test");
-        let sender = source.clone();
-        let name_lock = source.inner.name.lock();
-        let (done, received) = std::sync::mpsc::channel();
-        let thread = std::thread::spawn(move || {
-            ::tracing::subscriber::with_default(
-                ::tracing::subscriber::NoSubscriber::default(),
-                || {
-                    sender.fanout(&Signal::value(1));
-                },
-            );
-            let _ = done.send(());
-        });
-        let delivered = received.recv_timeout(std::time::Duration::from_secs(5));
-        drop(name_lock);
-        assert!(delivered.is_ok());
-        assert!(thread.join().is_ok());
-    }
-
     #[test]
     fn owned_subscription_lives_until_owner_drops() {
         let source = Cell::new(0u64);
@@ -1393,15 +1331,13 @@ mod owned_guard_tests {
             id: Uuid,
             owner: WeakCell<u64, CellMutable>,
         }
+        impl crate::traits::DepNodeSealed for ReentrantDependency {}
         impl DepNode for ReentrantDependency {
             fn id(&self) -> Uuid {
                 if let Some(owner) = self.owner.upgrade() {
                     assert!(owner.inner.owned.try_lock().is_some());
                 }
                 self.id
-            }
-            fn name(&self) -> Option<String> {
-                None
             }
             fn deps(&self) -> Vec<Arc<dyn DepNode>> {
                 Vec::new()

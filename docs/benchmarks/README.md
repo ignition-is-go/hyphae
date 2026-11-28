@@ -6,7 +6,7 @@ Benchmark source belongs in `hyphae/benches/` and reusable measurement tooling b
 
 ```sh
 cargo bench -p hyphae --bench compiled_map_queries
-cargo bench -p hyphae --features scheduler,region-calibration \
+cargo bench -p hyphae --features region-calibration \
   --bench region_threshold_calibration
 tools/bench-map-query-allocations.sh
 tools/bench-operator-allocations.sh

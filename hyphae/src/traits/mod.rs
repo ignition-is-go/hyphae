@@ -20,6 +20,7 @@ pub use collections::{
     TwoLeftJoinMappedPlan, TwoLeftJoinPlan,
 };
 pub use dep_node::DepNode;
+pub(crate) use dep_node::sealed::Sealed as DepNodeSealed;
 pub use foreign_key::{
     ForeignKeyRelation, IdFor, IdType, JoinKeyFrom, OptionalRightKey, RequiredRightKey,
     RightJoinKey,

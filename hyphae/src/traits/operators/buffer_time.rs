@@ -32,7 +32,7 @@ impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<Vec<T>> for BufferTime
         let interval_buffer = buffer.clone();
         let interval_completed = completed.clone();
         let interval_callback = callback.clone();
-        platform::spawn_interval(self.duration, false, move |_count| {
+        platform::spawn_interval(self.duration, move |_count| {
             if interval_completed.load(Ordering::SeqCst) {
                 return false;
             }

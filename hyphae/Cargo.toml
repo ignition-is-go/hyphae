@@ -17,9 +17,6 @@ path = "src/lib.rs"
 [features]
 default = []
 async = ["flume", "futures-core"]
-# No effect. The scheduler is always compiled; the name stays so manifests
-# that still list it keep resolving.
-scheduler = []
 # Opt-in calibration-only branch counters for join-region benchmarks. Every
 # counter call is cfg-elided unless explicitly enabled.
 region-calibration = []
@@ -136,7 +133,6 @@ harness = false
 [[bench]]
 name = "wave_calibration"
 harness = false
-required-features = ["scheduler"]
 
 [[bench]]
 name = "emission"

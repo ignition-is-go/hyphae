@@ -11,7 +11,7 @@ use std::{
 };
 
 use state::{
-    JoinState, apply_left_diff, apply_right_diff, observe_shared_right_diff, recompute_impacted,
+    JoinState, apply_left_diff, apply_right_diff, observe_shared_right_diff,
     recompute_keyed_impacted,
 };
 pub(super) use state::{RelationIndex, RelationIndexStorage};
@@ -40,122 +40,6 @@ fn emit_changes<OK, OV>(
         return;
     }
     sink(&MapDiff::Batch { changes });
-}
-
-/// Install join machinery that drives `sink` instead of allocating an output map.
-///
-/// Compiles both source maps into direct entry points, maintains the
-/// join state, and pushes resulting `MapDiff`s into the sink. Returns the
-/// subscription guards (caller owns them — typically attaches them to the
-/// materialized output). Chains of plans compose without intermediate
-/// [`CellMap`](crate::CellMap) allocations.
-///
-/// Used by `MapQuery` join plan nodes whose materialization owns a single
-/// output cell map; multiple plan stages share that output rather than each
-/// allocating their own.
-pub fn install_join_runtime_via_query<LK, LV, RK, RV, JK, OK, OV, L, R, FL, FR, FO>(
-    cx: &mut crate::map_query::compiler::CompileContext,
-    left: L,
-    right: R,
-    left_join_key: FL,
-    right_join_key: FR,
-    compute_rows: FO,
-    sink: crate::map_query::BoxedMapDiffSink<OK, OV>,
-) -> Vec<SubscriptionGuard>
-where
-    LK: Hash + Eq + CellValue,
-    LV: CellValue,
-    RK: Hash + Eq + CellValue,
-    RV: CellValue,
-    JK: Hash + Eq + CellValue,
-    OK: Hash + Eq + CellValue,
-    OV: CellValue,
-    L: crate::map_query::MapQuery<Key = LK, Value = LV>,
-    R: crate::map_query::MapQuery<Key = RK, Value = RV>,
-    FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
-    FR: RightJoinKey<RK, RV, JK> + Send + Sync + 'static,
-    FO: Fn(&LK, &LV, &[(RK, RV)]) -> Vec<(OK, OV)> + Send + Sync + 'static,
-{
-    let state = Arc::new(Mutex::new(
-        JoinState::<LK, LV, RK, RV, JK, OK, OV>::default(),
-    ));
-    let left_join_key = Arc::new(left_join_key);
-    let right_join_key = Arc::new(right_join_key);
-    let compute_rows = Arc::new(compute_rows);
-    let sink = Arc::new(sink);
-
-    let left_sink = {
-        let state = state.clone();
-        let left_join_key = left_join_key;
-        let compute_rows = compute_rows.clone();
-        let sink = sink.clone();
-        move |diff: &MapDiff<LK, LV>| {
-            let mut state = state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let mut scratch = std::mem::take(&mut state.scratch);
-            apply_left_diff(
-                &mut state,
-                diff,
-                left_join_key.as_ref(),
-                &mut scratch.impacted,
-            );
-            let changes = recompute_impacted(&mut state, &mut scratch, compute_rows.as_ref());
-            state.scratch = scratch;
-            // Emit while STILL holding `state`, not after dropping it. Under the
-            // scheduler's wave-parallel drain the left and right sinks can run on
-            // two threads at once; each reads the sibling's rows under this lock
-            // to build `changes`, so the emit must land under the same lock too.
-            // Otherwise two concurrent sibling emits touching one output key can
-            // reorder vs their lock order and last-write-wins a stale combined
-            // row into the output map — the CellMap analogue of the join.rs
-            // torn-value bug. Holding it across the emit makes emit order == lock
-            // order, so whichever side observed the freshest sibling emits last.
-            emit_changes(sink.as_ref(), changes);
-            drop(state);
-        }
-    };
-
-    let right_sink = {
-        let state = state;
-        let right_join_key = right_join_key;
-        let compute_rows = compute_rows;
-        let sink = sink;
-        move |diff: &MapDiff<RK, RV>| {
-            let mut state = state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let mut scratch = std::mem::take(&mut state.scratch);
-            apply_right_diff(
-                &mut state,
-                diff,
-                right_join_key.as_ref(),
-                &mut scratch.impacted,
-                &mut scratch.changed_join_keys,
-            );
-            let changes = recompute_impacted(&mut state, &mut scratch, compute_rows.as_ref());
-            state.scratch = scratch;
-            // Emit while STILL holding `state`, not after dropping it. Under the
-            // scheduler's wave-parallel drain the left and right sinks can run on
-            // two threads at once; each reads the sibling's rows under this lock
-            // to build `changes`, so the emit must land under the same lock too.
-            // Otherwise two concurrent sibling emits touching one output key can
-            // reorder vs their lock order and last-write-wins a stale combined
-            // row into the output map — the CellMap analogue of the join.rs
-            // torn-value bug. Holding it across the emit makes emit order == lock
-            // order, so whichever side observed the freshest sibling emits last.
-            emit_changes(sink.as_ref(), changes);
-            drop(state);
-        }
-    };
-
-    let mut guards = crate::map_query::compile_runtime_into(left, cx, Arc::new(left_sink));
-    guards.extend(crate::map_query::compile_runtime_into(
-        right,
-        cx,
-        Arc::new(right_sink),
-    ));
-    guards
 }
 
 /// Install the zero-or-one-output, left-key-preserving join runtime.

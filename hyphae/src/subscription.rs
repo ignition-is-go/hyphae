@@ -19,12 +19,11 @@ pub struct SubscriptionGuard {
 /// Minimal `DepNode` for callback-only guards (no real cell dependency).
 struct CallbackDepNode(Uuid);
 
+impl crate::traits::DepNodeSealed for CallbackDepNode {}
+
 impl DepNode for CallbackDepNode {
     fn id(&self) -> Uuid {
         self.0
-    }
-    fn name(&self) -> Option<String> {
-        Some("callback_guard".to_string())
     }
     fn deps(&self) -> Vec<Arc<dyn DepNode>> {
         vec![]
@@ -41,13 +40,11 @@ struct CompositeDepNode {
     sources: Vec<Arc<dyn DepNode>>,
 }
 
+impl crate::traits::DepNodeSealed for CompositeDepNode {}
+
 impl DepNode for CompositeDepNode {
     fn id(&self) -> Uuid {
         self.id
-    }
-
-    fn name(&self) -> Option<String> {
-        Some("composite_subscription".to_string())
     }
 
     fn deps(&self) -> Vec<Arc<dyn DepNode>> {
@@ -170,7 +167,7 @@ impl SubscriptionGuard {
 
     /// Get the source cell this subscription is connected to.
     #[must_use]
-    pub fn source(&self) -> &Arc<dyn DepNode> {
+    pub(crate) fn source(&self) -> &Arc<dyn DepNode> {
         &self.source
     }
 

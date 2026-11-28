@@ -40,7 +40,7 @@
 //!
 //! Classification (see the per-test NOTEs for detail):
 //!   - Synchronous output, fully wave-tested:   throttle (leading edge),
-//!     timeout (value pass-through), `drop_oldest`, `drop_newest`, `sample_latest`,
+//!     timeout (value pass-through), `drop_newest`,
 //!     concat, cold, finalize, retry, parallel.
 //!   - Timer-driven output, input-side wave only: debounce, delay, `buffer_time`,
 //!     audit.
@@ -56,13 +56,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use parking_lot::Mutex;
-
 use hyphae::{
     AuditExt, BackpressureExt, BufferTimeExt, Cell, ColdExt, ConcatExt, DebounceExt, DelayExt,
     FinalizeExt, Gettable, Materialize, Mutable, RetryExt, Signal, ThrottleExt, TimeoutExt,
     Watchable, batch,
 };
+use parking_lot::Mutex;
 
 /// The scheduler's tick queue is one process-wide structure, so `#[test]` fns
 /// (run as concurrent threads by the test harness) would otherwise interleave
@@ -356,35 +355,6 @@ fn audit_wide_parallel_input_wave_all_fire() {
 // Backpressure operators (synchronous pass-through — full wave-parallel output)
 // ---------------------------------------------------------------------------
 
-// NOTE: drop_oldest emits synchronously on every value, so its derived cell
-// rides the wave. Capacity is kept above the single per-batch push so no drop
-// occurs and the settled value is exactly deterministic. Genuine wave-parallel
-// output test across WIDE independent instances.
-#[test]
-fn backpressure_drop_oldest_wide_parallel_wave_correct() {
-    let _serial = scheduler_test_serial();
-    let sources: Vec<Cell<i64, _>> = (0..WIDE).map(|_| Cell::new(0i64)).collect();
-    let outs: Vec<_> = sources
-        .iter()
-        .map(|s| s.clone().drop_oldest(8).materialize())
-        .collect();
-
-    for it in 1..=STRUCTURAL_ITERS {
-        batch(|| {
-            for (i, s) in sources.iter().enumerate() {
-                s.set(it * 1000 + index_value(i));
-            }
-        });
-        for (i, out) in outs.iter().enumerate() {
-            assert_eq!(
-                out.get(),
-                it * 1000 + index_value(i),
-                "drop_oldest instance {i} wrong under a wide wave (iter {it})"
-            );
-        }
-    }
-}
-
 // NOTE: drop_newest emits synchronously when the buffer has room. Capacity is
 // kept above the single per-batch push so the value is never dropped and the
 // settled value is deterministic. Genuine wave-parallel output test.
@@ -416,33 +386,6 @@ fn backpressure_drop_newest_wide_parallel_wave_correct() {
                 out.get(),
                 expected,
                 "drop_newest instance {i} wrong under a wide wave (iter {it})"
-            );
-        }
-    }
-}
-
-// NOTE: sample_latest is a synchronous latest-value pass-through, so its derived
-// cell rides the wave. Genuine wave-parallel output test.
-#[test]
-fn backpressure_sample_latest_wide_parallel_wave_correct() {
-    let _serial = scheduler_test_serial();
-    let sources: Vec<Cell<i64, _>> = (0..WIDE).map(|_| Cell::new(0i64)).collect();
-    let outs: Vec<_> = sources
-        .iter()
-        .map(|s| s.clone().sample_latest().materialize())
-        .collect();
-
-    for it in 1..=STRUCTURAL_ITERS {
-        batch(|| {
-            for (i, s) in sources.iter().enumerate() {
-                s.set(it * 1000 + index_value(i));
-            }
-        });
-        for (i, out) in outs.iter().enumerate() {
-            assert_eq!(
-                out.get(),
-                it * 1000 + index_value(i),
-                "sample_latest instance {i} wrong under a wide wave (iter {it})"
             );
         }
     }

@@ -70,20 +70,6 @@ where
 
 #[allow(private_bounds)]
 pub trait BackpressureExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
-    /// Keep accepting values when capacity is reached.
-    ///
-    /// Hyphae pipelines deliver synchronously, so there is no independently
-    /// draining consumer queue at this layer. Dropping an already-delivered
-    /// "oldest" value cannot change the observable stream; this operator is
-    /// therefore an allocation-free pass-through that retains the capacity
-    /// check for API compatibility.
-    #[track_caller]
-    #[must_use]
-    fn drop_oldest(self, capacity: usize) -> Self {
-        assert!(capacity > 0, "capacity must be positive");
-        self
-    }
-
     /// Pass through the first `capacity` updates, then drop later updates.
     ///
     /// The queue state belongs to the installed pipeline subscription and no
@@ -97,17 +83,6 @@ pub trait BackpressureExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T>
             _t: PhantomData,
         }
     }
-
-    /// Keep only the latest value.
-    ///
-    /// A materialized `Cell` already has latest-value semantics. At the
-    /// pipeline layer this is exactly the identity operation, so it adds no
-    /// intermediate state or subscription.
-    #[track_caller]
-    #[must_use]
-    fn sample_latest(self) -> Self {
-        self
-    }
 }
 
 impl<T: CellValue, P: Pipeline<T, Definite> + PipelineSeed<T>> BackpressureExt<T> for P {}
@@ -117,30 +92,7 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     use super::*;
-    use crate::{Cell, Gettable, Materialize, Mutable, Signal, traits::Watchable};
-
-    #[test]
-    fn drop_oldest_is_lazy_passthrough() {
-        let source = Cell::new(0);
-        let initial_subscribers = crate::traits::DepNode::subscriber_count(&source);
-        let pipeline = source.clone().drop_oldest(3);
-
-        assert_eq!(
-            crate::traits::DepNode::subscriber_count(&source),
-            initial_subscribers
-        );
-
-        let buffered = pipeline.materialize();
-        // Materializing a plain Cell remains a no-op because drop_oldest
-        // returned the source pipeline unchanged.
-        assert_eq!(
-            crate::traits::DepNode::subscriber_count(&source),
-            initial_subscribers
-        );
-
-        source.set(4);
-        assert_eq!(buffered.get(), 4);
-    }
+    use crate::{Cell, Materialize, Mutable, Signal, traits::Watchable};
 
     #[test]
     fn drop_newest_installs_only_when_materialized() {
@@ -172,23 +124,6 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 4);
         source.set(4);
         assert_eq!(count.load(Ordering::SeqCst), 4);
-    }
-
-    #[test]
-    fn sample_latest_is_lazy_passthrough() {
-        let source = Cell::new(0);
-        let initial_subscribers = crate::traits::DepNode::subscriber_count(&source);
-        let latest = source.clone().sample_latest().materialize();
-
-        assert_eq!(
-            crate::traits::DepNode::subscriber_count(&source),
-            initial_subscribers
-        );
-
-        source.set(1);
-        source.set(2);
-        source.set(3);
-        assert_eq!(latest.get(), 3);
     }
 
     #[test]

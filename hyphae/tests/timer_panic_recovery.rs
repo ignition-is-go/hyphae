@@ -8,12 +8,12 @@ use std::{
     time::Duration,
 };
 
-use hyphae::{Signal, interval_precise_with_elapsed_source};
+use hyphae::{Signal, interval_with_elapsed_source};
 
 #[test]
 #[allow(clippy::panic)]
 fn interval_resumes_after_subscriber_panics() {
-    let source = interval_precise_with_elapsed_source(Duration::from_millis(10));
+    let source = interval_with_elapsed_source(Duration::from_millis(10));
     let source = source.batched();
     let panicked = AtomicBool::new(false);
     let (panic_tx, panic_rx) = mpsc::channel();

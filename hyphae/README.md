@@ -156,7 +156,7 @@ order are not API contracts.
 
 On native targets, eligible expensive join regions adaptively use Hyphae's
 shared dedicated Rayon pool. Wasm executes them sequentially. `HYPHAE_WORKER_THREADS=0` disables the native
-pool; `HYPHAE_WAVE_THREADS` remains a compatibility fallback.
+pool.
 
 ## Async Support
 
@@ -182,19 +182,13 @@ nothing per cell and ~1% on the hot path:
   sampling profilers resolve them as distinct frames instead of one folded
   symbol.
 - Each fanout emits a `tracing` span (`hyphae.fanout`) tagged with the cell's
-  `id` and `name` (set names with `Cell::with_name`). hyphae only emits spans;
+  `id`. hyphae only emits spans;
   the application attaches the subscriber (`tracing-flame`, `tracing-tracy`, …).
 - `hyphae::profiling::pass` / `take_report` tally per-cell re-fires inside a
   measured propagation pass.
 
-Pair-producing inner joins maintain row deltas by default: changing one right
-row visits only its matching left rows, not every unchanged right row in the
-same bucket. A profiling-enabled process can set `HYPHAE_PAIR_JOIN_DELTA=0`
-before constructing queries to select the previous bucket-recompute strategy
-as a measurement control. The setting is read once; builds without `profiling`
-always use incremental pair maintenance. This does not change the public query
-API. Clone-work regression tests are algorithmic checks, not application
-speedup measurements.
+Pair-producing inner joins maintain row deltas: changing one right row visits
+only its matching left rows, not every unchanged right row in the same bucket.
 
 For live-cell counts and memory attribution, use a heap profiler
 (jemalloc/`jeprof`, or `pprof`) rather than an in-process registry. See

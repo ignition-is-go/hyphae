@@ -21,7 +21,7 @@ fn cell_is_pipeline() {
 
 #[test]
 fn pipeline_materialize_roundtrip() {
-    let c = Cell::new(5).with_name("src");
+    let c = Cell::new(5);
     // Pipeline::materialize on a plain Cell returns a Cell with the same value
     let mat = c.clone().materialize();
     assert_eq!(mat.get(), 5);
@@ -32,7 +32,7 @@ fn pipeline_materialize_roundtrip() {
 
 #[test]
 fn map_pipeline_materializes_to_cell() {
-    let src = Cell::new(5).with_name("src");
+    let src = Cell::new(5);
     let doubled = src.clone().map(|x| x * 2).materialize();
     assert_eq!(doubled.get(), 10);
     src.set(7);
@@ -52,7 +52,7 @@ fn map_pipeline_materializes_to_subscribable_cell() {
 fn map_pipeline_chains_fuse_into_one_subscription() {
     use crate::traits::DepNode;
 
-    let src = Cell::new(1).with_name("src");
+    let src = Cell::new(1);
     let initial_count = DepNode::subscriber_count(&src);
 
     let mat = src
@@ -114,7 +114,7 @@ fn filter_pipeline_initial_failing_predicate_yields_none() {
 fn filter_pipeline_fuses_with_map() {
     use crate::traits::DepNode;
 
-    let src = Cell::new(1i64).with_name("src");
+    let src = Cell::new(1i64);
     let initial_count = DepNode::subscriber_count(&src);
 
     let out = src
@@ -223,7 +223,7 @@ use crate::PipelineShareExt;
 
 #[test]
 fn shared_pipeline_subscribes_upstream_once() {
-    let src = Cell::new(0u64).with_name("src");
+    let src = Cell::new(0u64);
     let initial_subs = crate::traits::DepNode::subscriber_count(&src);
 
     let shared = src.clone().map(|x| x * 2).materialize().share();
@@ -254,7 +254,7 @@ fn shared_pipeline_subscribes_upstream_once() {
 
 #[test]
 fn shared_pipeline_drops_upstream_when_all_subscribers_drop() {
-    let src = Cell::new(0u64).with_name("src");
+    let src = Cell::new(0u64);
     let initial_subs = crate::traits::DepNode::subscriber_count(&src);
 
     let shared = src.clone().map(|x| x * 2).materialize().share();

@@ -133,17 +133,6 @@ where
         }
     }
 
-    pub(super) fn clear(&mut self) {
-        match &mut self.storage {
-            Storage::Empty => {}
-            Storage::One(_) => self.storage = Storage::Empty,
-            Storage::Many { seen, values } => {
-                seen.clear();
-                values.clear();
-            }
-        }
-    }
-
     pub(super) fn contains(&self, value: &T) -> bool {
         match &self.storage {
             Storage::Empty => false,
@@ -186,26 +175,6 @@ where
             Storage::Empty => true,
             Storage::One(_) => false,
             Storage::Many { values, .. } => values.is_empty(),
-        }
-    }
-
-    pub(super) fn retain(&mut self, mut keep: impl FnMut(&T) -> bool) {
-        match &mut self.storage {
-            Storage::Empty => {}
-            Storage::One(value) => {
-                if !keep(value) {
-                    self.storage = Storage::Empty;
-                }
-            }
-            Storage::Many { seen, values } => {
-                values.retain(|value| {
-                    let retained = keep(value);
-                    if !retained {
-                        seen.remove(value);
-                    }
-                    retained
-                });
-            }
         }
     }
 }
@@ -253,10 +222,6 @@ mod tests {
             random = random.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
             let value = (random >> 4).checked_rem(19).unwrap_or(0);
             match step.checked_rem(13).unwrap_or(0) {
-                0 => {
-                    set.clear();
-                    expected.clear();
-                }
                 1 => {
                     set.move_into(&mut buffer);
                     assert_eq!(buffer, expected);
@@ -270,10 +235,6 @@ mod tests {
                     let existed = expected.contains(&value);
                     assert_eq!(set.remove(&value), existed);
                     expected.retain(|v| *v != value);
-                }
-                4 => {
-                    set.retain(|v| v.checked_rem(3) != Some(0));
-                    expected.retain(|v| v.checked_rem(3) != Some(0));
                 }
                 _ => {
                     let is_new = !expected.contains(&value);

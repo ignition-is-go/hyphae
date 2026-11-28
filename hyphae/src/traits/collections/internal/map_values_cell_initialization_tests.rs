@@ -16,13 +16,11 @@ impl Gettable<Option<(u8, u8)>> for UpdateBeforeSubscribe {
     }
 }
 
+impl crate::traits::DepNodeSealed for UpdateBeforeSubscribe {}
+
 impl DepNode for UpdateBeforeSubscribe {
     fn id(&self) -> uuid::Uuid {
         self.value.id()
-    }
-
-    fn name(&self) -> Option<String> {
-        self.value.name()
     }
 
     fn deps(&self) -> Vec<Arc<dyn DepNode>> {

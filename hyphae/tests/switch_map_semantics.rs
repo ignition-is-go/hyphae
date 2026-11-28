@@ -170,17 +170,6 @@ fn equal_inner_values_are_forwarded_not_deduplicated() {
 }
 
 #[test]
-fn names_attach_to_the_materialized_output() {
-    let _serial = serial();
-    let sel = Cell::new(0u64);
-    let out = sel
-        .switch_map(|&v| Cell::new(v))
-        .materialize()
-        .with_name("switched");
-    assert_eq!(out.name().as_deref(), Some("switched"));
-}
-
-#[test]
 fn completion_waits_for_outer_and_current_inner() {
     let _serial = serial();
     let sel = Cell::new(0u64);

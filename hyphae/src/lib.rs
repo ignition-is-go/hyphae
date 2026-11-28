@@ -17,16 +17,16 @@
 //! use hyphae::{Cell, MapExt, Materialize, Mutable, Watchable, JoinExt, Pipeline, Signal, flat};
 //!
 //! // Create reactive cells
-//! let x = Cell::new(5).with_name("x");
-//! let y = Cell::new(10).with_name("y");
+//! let x = Cell::new(5);
+//! let y = Cell::new(10);
 //!
 //! // Pure operators (map/filter/...) return pipelines — no allocation
 //! // until you materialize.
-//! let doubled = x.clone().map(|val| val * 2).materialize().with_name("doubled");
+//! let doubled = x.clone().map(|val| val * 2).materialize();
 //!
 //! // Combine multiple cells with join + flat!. join stays lazy, then creates
 //! // its required fan-in coalescing boundary when the chain is materialized.
-//! let sum = x.clone().join(y).map(flat!(|a, b| a + b)).materialize().with_name("sum");
+//! let sum = x.clone().join(y).map(flat!(|a, b| a + b)).materialize();
 //!
 //! // Subscribe on the materialized cell
 //! let _guard = sum.subscribe(|signal| {
@@ -187,8 +187,8 @@ pub use cell_map::{CellMap, MapDiff, WeakCellMap};
 pub use cell_set::{CellSet, SetDiff};
 pub use clock::{Clock, IntervalTickSource, MonotonicClock, Tick, TickGuard, TickSource};
 pub use constructors::{
-    IntervalTick, from_iter_with_delay, interval, interval_precise, interval_precise_source,
-    interval_precise_with_elapsed, interval_precise_with_elapsed_source, interval_source,
+    IntervalTick, from_iter_with_delay, interval, interval_source, interval_with_elapsed,
+    interval_with_elapsed_source,
 };
 pub use map_query::{MapQuery, MapQueryShareExt, SharedMapQuery};
 pub use nested_map::NestedMap;

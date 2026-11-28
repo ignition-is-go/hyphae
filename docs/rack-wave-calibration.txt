@@ -28,8 +28,8 @@ conservative width policy, not a universal cost model. Expensive 64/128
 waves become slower under the new default and can retain threshold 64.
 
 Reproduce individual calibration runs:
-  HYPHAE_WAVE_THRESHOLD=64 cargo bench -p hyphae --features scheduler,profiling --bench wave_calibration
-  HYPHAE_WAVE_THRESHOLD=100000 cargo bench -p hyphae --features scheduler,profiling --bench wave_calibration
+  HYPHAE_WAVE_THRESHOLD=64 cargo bench -p hyphae --features profiling --bench wave_calibration
+  HYPHAE_WAVE_THRESHOLD=100000 cargo bench -p hyphae --features profiling --bench wave_calibration
 
 A separate paired probe used real Hyphae APIs with a reduced row model and
 join_vec ingestion. Five alternating before/after runs compared the frozen

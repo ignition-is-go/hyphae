@@ -223,19 +223,14 @@ pub fn spawn_delayed(delay: Duration, f: impl FnOnce() + Send + 'static) {
 /// returns `false`. A panicking callback unwinds the current tick, but the
 /// interval remains scheduled for its next deadline.
 ///
-/// `precise` is accepted for API compatibility but no longer changes the
-/// wait strategy: the shared reactor schedules every timer against a monotonic
-/// deadline and parks between deadlines (see [`wait_for_due`]).
+/// The shared reactor schedules every timer against a monotonic deadline and
+/// parks between deadlines (see [`wait_for_due`]).
 ///
 /// An interval registered inside a child scheduling domain belongs to that
 /// child: each tick runs on the child's worker. A tick that comes due while
 /// the previous one has not run yet is skipped, as a tick the reactor itself
 /// is late for is, so a slow child queues at most one tick per interval.
-pub fn spawn_interval(
-    period: Duration,
-    _precise: bool,
-    tick: impl FnMut(u64) -> bool + Send + 'static,
-) {
+pub fn spawn_interval(period: Duration, tick: impl FnMut(u64) -> bool + Send + 'static) {
     let tick: Box<dyn FnMut(u64) -> bool + Send> = match crate::scheduler::domain::timer_owner() {
         None => Box::new(tick),
         Some(owner) => Box::new(child_interval(owner, tick)),
@@ -302,7 +297,7 @@ mod tests {
     fn interval_can_cancel_after_panicking() {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut first = true;
-        spawn_interval(Duration::from_millis(10), false, move |count| {
+        spawn_interval(Duration::from_millis(10), move |count| {
             let _sent = tx.send(count);
             if first {
                 first = false;
@@ -339,7 +334,7 @@ mod tests {
             panic!("delayed callback failure");
         });
         let (interval_tx, interval_rx) = mpsc::channel();
-        spawn_interval(Duration::from_millis(10), false, move |count| {
+        spawn_interval(Duration::from_millis(10), move |count| {
             if count < 3 {
                 return true;
             }

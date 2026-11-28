@@ -1,15 +1,14 @@
-use std::{collections::hash_map::Entry, hash::Hash};
+use std::{collections::hash_map::Entry, hash::Hash, marker::PhantomData};
 
 use rustc_hash::FxHashMap;
-
-use crate::{
-    cell_map::MapDiff,
-    traits::{CellValue, RightJoinKey},
-};
 
 pub(in crate::traits::collections::internal) use super::super::grouped_rows::GroupedRows;
 pub(super) use super::super::index_members::{IndexMembers, add_index_member, remove_index_member};
 use super::super::ordered_set::OrderedSet;
+use crate::{
+    cell_map::MapDiff,
+    traits::{CellValue, RightJoinKey},
+};
 
 pub(super) struct JoinState<LK, LV, RK, RV, JK, OK, OV, RI = RelationIndex<RK, RV, JK>>
 where
@@ -155,9 +154,7 @@ pub(super) struct JoinScratch<LK, RK, RV, JK, OK, OV> {
     pub(super) impacted: OrderedSet<LK>,
     pub(super) impacted_keys: Vec<LK>,
     pub(super) changed_join_keys: OrderedSet<JK>,
-    pub(super) right_rows: Vec<(RK, RV)>,
-    pub(super) desired_rows: FxHashMap<OK, OV>,
-    pub(super) desired_order: OrderedSet<OK>,
+    _rows: PhantomData<fn() -> (RK, RV, OK, OV)>,
 }
 
 impl<LK, RK, RV, JK, OK, OV> Default for JoinScratch<LK, RK, RV, JK, OK, OV> {
@@ -166,9 +163,7 @@ impl<LK, RK, RV, JK, OK, OV> Default for JoinScratch<LK, RK, RV, JK, OK, OV> {
             impacted: OrderedSet::default(),
             impacted_keys: Vec::new(),
             changed_join_keys: OrderedSet::default(),
-            right_rows: Vec::new(),
-            desired_rows: FxHashMap::default(),
-            desired_order: OrderedSet::default(),
+            _rows: PhantomData,
         }
     }
 }
@@ -546,102 +541,6 @@ pub(super) fn observe_shared_right_diff<LK, LV, RK, RV, JK, OK, OV, FR>(
             impacted.extend(left_keys.iter().cloned());
         }
     }
-}
-
-pub(super) fn recompute_impacted<LK, LV, RK, RV, JK, OK, OV, FO>(
-    state: &mut JoinState<LK, LV, RK, RV, JK, OK, OV, impl RelationIndexStorage<RK, RV, JK>>,
-    scratch: &mut JoinScratch<LK, RK, RV, JK, OK, OV>,
-    compute_rows: &FO,
-) -> Vec<MapDiff<OK, OV>>
-where
-    LK: Hash + Eq + CellValue,
-    LV: CellValue,
-    RK: Hash + Eq + CellValue,
-    RV: CellValue,
-    JK: Hash + Eq + CellValue,
-    OK: Hash + Eq + CellValue,
-    OV: CellValue,
-    FO: Fn(&LK, &LV, &[(RK, RV)]) -> Vec<(OK, OV)>,
-{
-    let mut changes: Vec<MapDiff<OK, OV>> = Vec::new();
-    // Pin a shared physical relationship index once for the whole root event.
-    // The owned index keeps this as a direct borrow with no locking.
-    let right = state.right.acquire_read();
-
-    for left_key in scratch.impacted.drain() {
-        let mut current_output_keys = state.left_output_keys.remove(&left_key).unwrap_or_default();
-
-        scratch.desired_rows.clear();
-        scratch.desired_order.clear();
-        if let Some(left_value) = state.left_rows.get(&left_key) {
-            scratch.right_rows.clear();
-            if let Some(join_key) = state.left_join_keys.get(&left_key)
-                && let Some(right_keys) = right.join_to_rows.get(join_key)
-            {
-                scratch
-                    .right_rows
-                    .extend(right_keys.iter().filter_map(|right_key| {
-                        right
-                            .rows
-                            .get(right_key)
-                            .map(|right_value| (right_key.clone(), right_value.clone()))
-                    }));
-            }
-
-            for (output_key, output_value) in
-                compute_rows(&left_key, left_value, &scratch.right_rows)
-            {
-                scratch.desired_order.insert(output_key.clone());
-                scratch.desired_rows.insert(output_key, output_value);
-            }
-        }
-
-        current_output_keys.retain(|output_key| {
-            if scratch.desired_rows.contains_key(output_key) {
-                true
-            } else {
-                if let Some(old_value) = state.output_cache.remove(output_key) {
-                    changes.push(MapDiff::Remove {
-                        key: output_key.clone(),
-                        old_value,
-                    });
-                }
-                false
-            }
-        });
-
-        for output_key in scratch.desired_order.drain() {
-            let Some(new_value) = scratch.desired_rows.remove(&output_key) else {
-                continue;
-            };
-            current_output_keys.insert(output_key.clone());
-            match state.output_cache.entry(output_key.clone()) {
-                Entry::Occupied(mut entry) => {
-                    if entry.get() != &new_value {
-                        let old_value = entry.insert(new_value.clone());
-                        changes.push(MapDiff::Update {
-                            key: output_key,
-                            old_value,
-                            new_value,
-                        });
-                    }
-                }
-                Entry::Vacant(entry) => {
-                    entry.insert(new_value.clone());
-                    changes.push(MapDiff::Insert {
-                        key: output_key,
-                        value: new_value,
-                    });
-                }
-            }
-        }
-
-        if !current_output_keys.is_empty() {
-            state.left_output_keys.insert(left_key, current_output_keys);
-        }
-    }
-
-    changes
 }
 
 /// Recompute joins that produce zero or one output under the unchanged left key.

@@ -163,14 +163,6 @@ impl<T: CellValue> Source<T> {
         self.inner.completed.load(Ordering::SeqCst)
     }
 
-    /// Builder-style name attachment, kept for API compatibility with
-    /// [`Cell::with_name`](crate::Cell::with_name). `Source` carries no name
-    /// field, so this is a no-op.
-    #[must_use]
-    pub fn with_name(self, _name: impl Into<std::sync::Arc<str>>) -> Self {
-        self
-    }
-
     /// Batch this source's fan-out: every [`emit`](Self::emit)/[`complete`](Self::complete)
     /// wraps its subscriber-notification loop in a scheduler [`batch`](crate::batch),
     /// so one emit is **one** coalesced propagation pass across all subscribers.
@@ -415,13 +407,11 @@ pub trait SampleOnSourceExt<T: CellValue>: Watchable<T> + Gettable<T> {
 
 impl<T: CellValue, W: Watchable<T> + Gettable<T>> SampleOnSourceExt<T> for W {}
 
+impl<T: Send + Sync> crate::traits::DepNodeSealed for Source<T> {}
+
 impl<T: Send + Sync> DepNode for Source<T> {
     fn id(&self) -> Uuid {
         self.inner.id
-    }
-
-    fn name(&self) -> Option<String> {
-        None
     }
 
     fn deps(&self) -> Vec<Arc<dyn DepNode>> {

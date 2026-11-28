@@ -1,11 +1,10 @@
 use std::{env, hint::black_box, thread, time::Duration};
 
-use hyphae::{interval, interval_precise};
+use hyphae::interval;
 
 fn main() {
-    let precise = env::args().nth(1).as_deref() == Some("precise");
     let timer_count = env::args()
-        .nth(2)
+        .nth(1)
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(1_000);
     let period = Duration::from_millis(33);
@@ -15,11 +14,7 @@ fn main() {
 
     let timers: Vec<_> = (0..timer_count)
         .map(|_| {
-            let timer = if precise {
-                interval_precise(period)
-            } else {
-                interval(period)
-            };
+            let timer = interval(period);
             thread::sleep(stagger);
             timer
         })

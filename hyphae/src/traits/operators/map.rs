@@ -182,10 +182,9 @@ mod tests {
 
     #[test]
     fn test_map_tracks_dependency() {
-        let source = Cell::new(1).with_name("source");
+        let source = Cell::new(1);
         let mapped = source.map(|x| x * 2).materialize();
 
-        assert_eq!(mapped.dependency_count(), 1);
-        assert!(mapped.has_dependencies());
+        assert_eq!(mapped.deps().len(), 1);
     }
 }
