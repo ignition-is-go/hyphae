@@ -1,10 +1,8 @@
-#![cfg(feature = "scheduler")]
-
 use std::{
     fmt,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
     },
 };
 
@@ -14,10 +12,6 @@ use hyphae::{
 };
 
 static TEST_TICK: Mutex<()> = Mutex::new(());
-
-fn scheduler_atomics(cell: &Cell<u64, CellMutable>) -> Option<(&AtomicU64, &AtomicU64)> {
-    cell.height_cache().zip(cell.height_epoch())
-}
 
 #[derive(Clone)]
 struct ReentrantValue {
@@ -78,51 +72,24 @@ impl Drop for ReentrantCleanup {
 }
 
 #[test]
-fn cached_height_references_stay_stable_across_unrelated_arena_churn() {
+fn heights_stay_stable_across_unrelated_arena_churn() {
     let _tick = TEST_TICK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let upstream = Cell::new(0_u64);
     let anchor = Cell::new(7_u64);
-    let atomics = scheduler_atomics(&anchor);
-    assert!(
-        atomics.is_some(),
-        "scheduler cells must expose height atomics"
-    );
-    let Some((cache, epoch)) = atomics else {
-        return;
-    };
-    let cache_address = std::ptr::from_ref(cache);
-    let epoch_address = std::ptr::from_ref(epoch);
-    cache.store(0x1234_5678, Ordering::Relaxed);
-    let original_epoch = epoch.load(Ordering::Relaxed);
+    anchor.own(upstream.subscribe(|_| {}));
+    assert_eq!(anchor.height(), 1);
 
     for value in 0_u64..20_000 {
         let transient = Cell::new(value);
-        let atomics = scheduler_atomics(&transient);
-        assert!(
-            atomics.is_some(),
-            "scheduler cells must expose height atomics"
-        );
-        let Some((transient_cache, transient_epoch)) = atomics else {
-            return;
-        };
-        assert_eq!(transient_cache.load(Ordering::Relaxed), 0);
-        assert_eq!(transient_epoch.load(Ordering::Relaxed), 1);
+        assert_eq!(transient.height(), 0);
+        transient.own(anchor.subscribe(|_| {}));
+        assert_eq!(transient.height(), 2);
         drop(transient);
     }
 
-    let atomics_after = scheduler_atomics(&anchor);
-    assert!(
-        atomics_after.is_some(),
-        "scheduler cells must retain height atomics"
-    );
-    let Some((cache_after, epoch_after)) = atomics_after else {
-        return;
-    };
-    assert!(std::ptr::eq(cache_address, std::ptr::from_ref(cache_after)));
-    assert!(std::ptr::eq(epoch_address, std::ptr::from_ref(epoch_after)));
-    assert_eq!(cache_after.load(Ordering::Relaxed), 0x1234_5678);
-    assert_eq!(epoch_after.load(Ordering::Relaxed), original_epoch);
+    assert_eq!(anchor.height(), 1);
 }
 
 #[test]
@@ -143,17 +110,7 @@ fn last_strong_drop_is_precise_and_reused_slots_do_not_resurrect_old_weaks() {
 
     for value in 0_u64..20_000 {
         let replacement = Cell::new(value);
-        let atomics = scheduler_atomics(&replacement);
-        assert!(
-            atomics.is_some(),
-            "scheduler cells must expose height atomics"
-        );
-        let Some((cache, epoch)) = atomics else {
-            return;
-        };
-        assert_eq!(cache.load(Ordering::Relaxed), 0);
-        assert_eq!(epoch.load(Ordering::Relaxed), 1);
-        cache.store(value.wrapping_add(1), Ordering::Relaxed);
+        assert_eq!(replacement.height(), 0);
         drop(replacement);
         assert!(!weak.is_alive(), "a freed slot resurrected an old WeakCell");
         assert!(weak.upgrade().is_none());
@@ -161,7 +118,7 @@ fn last_strong_drop_is_precise_and_reused_slots_do_not_resurrect_old_weaks() {
 }
 
 #[test]
-fn topology_rewiring_invalidates_cached_heights_through_the_dependent_cone() {
+fn topology_rewiring_raises_heights_through_the_dependent_cone() {
     let _tick = TEST_TICK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -169,27 +126,16 @@ fn topology_rewiring_invalidates_cached_heights_through_the_dependent_cone() {
     let middle = Cell::new(0_u64);
     let owner = Cell::new(0_u64);
     owner.own(middle.subscribe(|_| {}));
-
-    batch(|| owner.set(1));
-    let atomics = scheduler_atomics(&owner);
-    assert!(
-        atomics.is_some(),
-        "scheduler cells must expose height atomics"
-    );
-    let Some((owner_cache, owner_epoch)) = atomics else {
-        return;
-    };
-    let initial_owner_epoch = owner_epoch.load(Ordering::Relaxed);
-    assert_eq!(owner_cache.load(Ordering::Relaxed) & 0xFFFF_FFFF, 1);
+    assert_eq!(owner.height(), 1);
 
     middle.own(leaf.subscribe(|_| {}));
-    assert!(
-        owner_epoch.load(Ordering::Relaxed) > initial_owner_epoch,
-        "an upstream edge change did not invalidate its live dependent"
+    assert_eq!(
+        owner.height(),
+        2,
+        "an upstream edge change did not raise its live dependent"
     );
 
     batch(|| owner.set(2));
-    assert_eq!(owner_cache.load(Ordering::Relaxed) & 0xFFFF_FFFF, 2);
     assert_eq!(owner.get(), 2);
 }
 
@@ -204,16 +150,7 @@ fn owned_guard_cleanup_can_allocate_and_drop_cells_reentrantly() {
     owner.own(SubscriptionGuard::from_callback(move || {
         for value in 0_u64..4_096 {
             let temporary = Cell::new(value);
-            let atomics = scheduler_atomics(&temporary);
-            assert!(
-                atomics.is_some(),
-                "scheduler cells must expose height atomics"
-            );
-            let Some((cache, epoch)) = atomics else {
-                return;
-            };
-            assert_eq!(cache.load(Ordering::Relaxed), 0);
-            assert_eq!(epoch.load(Ordering::Relaxed), 1);
+            assert_eq!(temporary.height(), 0);
             drop(temporary);
         }
         cleanup_count_for_guard.fetch_add(1, Ordering::SeqCst);

@@ -1,17 +1,16 @@
-use std::{
-    marker::PhantomData,
-    sync::{
-        Arc,
-        atomic::{AtomicU8, Ordering},
-    },
+use std::sync::{
+    Arc,
+    atomic::{AtomicU8, Ordering},
 };
 
 use parking_lot::Mutex;
 
 use super::{CellValue, Watchable};
 use crate::{
-    cell::{Cell, CellMutable},
-    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed, prepare_install},
+    pipeline::{
+        Definite, GuardOwner, Pipeline, PipelineInstall, PipelineSeed, materialize_mutable,
+        prepare_install,
+    },
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -20,13 +19,12 @@ const LEFT_COMPLETE: u8 = 0b01;
 const RIGHT_COMPLETE: u8 = 0b10;
 
 /// Pipeline node that emits the latest pair whenever either source changes.
-pub struct JoinPipeline<L, R, T, U> {
+pub struct JoinPipeline<L, R> {
     left: L,
     right: R,
-    _types: PhantomData<fn() -> (T, U)>,
 }
 
-impl<L, R, T, U> PipelineInstall<(T, U)> for JoinPipeline<L, R, T, U>
+impl<L, R, T, U> PipelineInstall<(T, U)> for JoinPipeline<L, R>
 where
     L: PipelineInstall<T> + PipelineSeed<T>,
     R: PipelineInstall<U> + PipelineSeed<U>,
@@ -34,75 +32,62 @@ where
     U: CellValue,
 {
     fn install(&self, callback: Arc<dyn Fn(&Signal<(T, U)>) + Send + Sync>) -> SubscriptionGuard {
+        materialize_mutable(self).subscribe(move |signal| callback(signal))
+    }
+
+    fn install_into(
+        &self,
+        owner: &Arc<GuardOwner>,
+        emit: Arc<dyn Fn(&Signal<(T, U)>) + Send + Sync>,
+    ) {
         let left_prepared = prepare_install(&self.left);
         let right_prepared = prepare_install(&self.right);
         let initial = (
             left_prepared.initial().clone(),
             right_prepared.initial().clone(),
         );
-        let latest = Arc::new(Mutex::new(initial.clone()));
-        let derived = Cell::<(T, U), CellMutable>::new(initial);
+        emit(&Signal::value(initial.clone()));
+        let latest = Arc::new(Mutex::new(initial));
         let completed = Arc::new(AtomicU8::new(0));
 
         let left_latest = latest.clone();
         let left_completed = completed.clone();
-        let left_weak = derived.downgrade();
+        let left_emit = Arc::clone(&emit);
         let left_callback: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
             Arc::new(move |signal| match signal {
                 Signal::Value(value) => {
                     let mut latest = left_latest.lock();
                     latest.0 = value.as_ref().clone();
-                    if let Some(derived) = left_weak.upgrade() {
-                        derived.notify(Signal::value(latest.clone()));
-                    }
+                    left_emit(&Signal::value(latest.clone()));
                 }
                 Signal::Complete => {
-                    if left_completed.fetch_or(LEFT_COMPLETE, Ordering::SeqCst) == RIGHT_COMPLETE
-                        && let Some(derived) = left_weak.upgrade()
-                    {
-                        derived.notify(Signal::Complete);
+                    if left_completed.fetch_or(LEFT_COMPLETE, Ordering::SeqCst) == RIGHT_COMPLETE {
+                        left_emit(&Signal::Complete);
                     }
                 }
-                Signal::Error(error) => {
-                    if let Some(derived) = left_weak.upgrade() {
-                        derived.notify(Signal::Error(error.clone()));
-                    }
-                }
+                Signal::Error(error) => left_emit(&Signal::Error(error.clone())),
             });
-        let left_guard = left_prepared.activate(&left_callback);
-        derived.own(left_guard);
+        owner.own(left_prepared.activate(&left_callback));
 
-        let right_weak = derived.downgrade();
         let right_callback: Arc<dyn Fn(&Signal<U>) + Send + Sync> =
             Arc::new(move |signal| match signal {
                 Signal::Value(value) => {
                     let mut latest = latest.lock();
                     latest.1 = value.as_ref().clone();
-                    if let Some(derived) = right_weak.upgrade() {
-                        derived.notify(Signal::value(latest.clone()));
-                    }
+                    emit(&Signal::value(latest.clone()));
                 }
                 Signal::Complete => {
-                    if completed.fetch_or(RIGHT_COMPLETE, Ordering::SeqCst) == LEFT_COMPLETE
-                        && let Some(derived) = right_weak.upgrade()
-                    {
-                        derived.notify(Signal::Complete);
+                    if completed.fetch_or(RIGHT_COMPLETE, Ordering::SeqCst) == LEFT_COMPLETE {
+                        emit(&Signal::Complete);
                     }
                 }
-                Signal::Error(error) => {
-                    if let Some(derived) = right_weak.upgrade() {
-                        derived.notify(Signal::Error(error.clone()));
-                    }
-                }
+                Signal::Error(error) => emit(&Signal::Error(error.clone())),
             });
-        let right_guard = right_prepared.activate(&right_callback);
-        derived.own(right_guard);
-
-        derived.subscribe(move |signal| callback(signal))
+        owner.own(right_prepared.activate(&right_callback));
     }
 }
 
-impl<L, R, T, U> PipelineSeed<(T, U)> for JoinPipeline<L, R, T, U>
+impl<L, R, T, U> PipelineSeed<(T, U)> for JoinPipeline<L, R>
 where
     L: PipelineSeed<T>,
     R: PipelineSeed<U>,
@@ -114,7 +99,7 @@ where
     }
 }
 
-impl<L, R, T, U> Pipeline<(T, U), Definite> for JoinPipeline<L, R, T, U>
+impl<L, R, T, U> Pipeline<(T, U), Definite> for JoinPipeline<L, R>
 where
     L: Pipeline<T, Definite> + PipelineSeed<T>,
     R: Pipeline<U, Definite> + PipelineSeed<U>,
@@ -132,7 +117,6 @@ pub trait JoinExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
         JoinPipeline {
             left: self,
             right: other,
-            _types: PhantomData,
         }
     }
 }

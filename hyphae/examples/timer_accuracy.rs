@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use hyphae::{Signal, interval_precise_source};
+use hyphae::{Signal, interval_source};
 
 fn percentile(samples: &[Duration], numerator: usize, denominator: usize) -> Duration {
     let index = samples
@@ -17,7 +17,7 @@ fn percentile(samples: &[Duration], numerator: usize, denominator: usize) -> Dur
 
 fn main() {
     let period = Duration::from_secs_f64(1.0 / 240.0);
-    let timer = interval_precise_source(period);
+    let timer = interval_source(period);
     let (tx, rx) = mpsc::channel();
     let _guard = timer.subscribe(move |signal| {
         if matches!(signal, Signal::Value(_)) {

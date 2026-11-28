@@ -1,6 +1,5 @@
 use std::{
     collections::VecDeque,
-    marker::PhantomData,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -16,13 +15,12 @@ use crate::{
     subscription::SubscriptionGuard,
 };
 
-pub struct ZipPipeline<L, R, T, U> {
+pub struct ZipPipeline<L, R> {
     left: L,
     right: R,
-    _types: PhantomData<fn() -> (T, U)>,
 }
 
-impl<L, R, T, U> PipelineInstall<(T, U)> for ZipPipeline<L, R, T, U>
+impl<L, R, T, U> PipelineInstall<(T, U)> for ZipPipeline<L, R>
 where
     L: PipelineInstall<T>,
     R: PipelineInstall<U>,
@@ -65,7 +63,7 @@ where
     }
 }
 
-impl<L, R, T, U> PipelineSeed<(T, U)> for ZipPipeline<L, R, T, U>
+impl<L, R, T, U> PipelineSeed<(T, U)> for ZipPipeline<L, R>
 where
     L: PipelineSeed<T>,
     R: PipelineSeed<U>,
@@ -76,7 +74,7 @@ where
         (self.left.seed(), self.right.seed())
     }
 }
-impl<L, R, T, U> Pipeline<(T, U), Definite> for ZipPipeline<L, R, T, U>
+impl<L, R, T, U> Pipeline<(T, U), Definite> for ZipPipeline<L, R>
 where
     L: Pipeline<T, Definite> + PipelineSeed<T>,
     R: Pipeline<U, Definite> + PipelineSeed<U>,
@@ -94,7 +92,6 @@ pub trait ZipExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
         ZipPipeline {
             left: self,
             right: other,
-            _types: PhantomData,
         }
     }
 }

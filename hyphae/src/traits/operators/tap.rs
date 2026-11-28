@@ -1,40 +1,44 @@
 //! `tap` operator — pure side effect; chains fuse into one closure on root.
 
-use std::{marker::PhantomData, sync::Arc};
+use std::sync::Arc;
 
 use super::CellValue;
 use crate::{
-    pipeline::{Pipeline, PipelineInstall, PipelineSeed, Seedness},
+    pipeline::{Emit, EmitSink, Pipeline, PipelineInstall, PipelineSeed, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
 
 /// Pipeline node representing `source.tap(f)`. Does not allocate a cell.
-pub struct TapPipeline<S, T, F> {
+pub struct TapPipeline<S, F> {
     source: S,
     f: Arc<F>,
-    _t: PhantomData<fn(T)>,
 }
 
-impl<S, T, F> PipelineInstall<T> for TapPipeline<S, T, F>
+impl<S, T, F> PipelineInstall<T> for TapPipeline<S, F>
 where
     S: PipelineInstall<T> + Send + Sync + 'static,
     T: CellValue,
     F: Fn(&T) + Send + Sync + 'static,
 {
     fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
+        self.install_emit(Arc::new(move |emit| callback(&emit.into_signal())))
+    }
+
+    fn install_emit(&self, sink: EmitSink<T>) -> SubscriptionGuard {
         let f = Arc::clone(&self.f);
-        let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> = Arc::new(move |signal: &Signal<T>| {
-            if let Signal::Value(v) = signal {
-                (f)(v.as_ref());
+        self.source.install_emit(Arc::new(move |emit| {
+            match &emit {
+                Emit::Shared(v) => (f)(v),
+                Emit::Owned(v) => (f)(v),
+                Emit::Complete | Emit::Error(_) => {}
             }
-            callback(signal);
-        });
-        self.source.install(wrapped)
+            sink(emit);
+        }))
     }
 }
 
-impl<S, T, F> PipelineSeed<T> for TapPipeline<S, T, F>
+impl<S, T, F> PipelineSeed<T> for TapPipeline<S, F>
 where
     S: Pipeline<T, crate::pipeline::Definite>,
     T: CellValue,
@@ -48,7 +52,7 @@ where
 }
 
 #[allow(private_bounds)]
-impl<S, T, F> Pipeline<T, crate::pipeline::Definite> for TapPipeline<S, T, F>
+impl<S, T, F> Pipeline<T, crate::pipeline::Definite> for TapPipeline<S, F>
 where
     S: Pipeline<T, crate::pipeline::Definite>,
     T: CellValue,
@@ -56,7 +60,7 @@ where
 {
 }
 
-impl<S, T, F> Pipeline<T, crate::pipeline::Empty> for TapPipeline<S, T, F>
+impl<S, T, F> Pipeline<T, crate::pipeline::Empty> for TapPipeline<S, F>
 where
     S: Pipeline<T, crate::pipeline::Empty>,
     T: CellValue,
@@ -70,7 +74,6 @@ pub trait TapExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// Run `f(&value)` for side effects and forward the value untransformed.
     ///
     /// Returns an opaque lazy pipeline. Materialize to observe.
-    #[track_caller]
     fn tap<F>(self, f: F) -> impl crate::Materialize<T, S>
     where
         F: Fn(&T) + Send + Sync + 'static;
@@ -86,7 +89,6 @@ impl<T: CellValue, P: Pipeline<T, crate::pipeline::Definite>> TapExt<T, crate::p
         TapPipeline {
             source: self,
             f: Arc::new(f),
-            _t: PhantomData,
         }
     }
 }
@@ -99,7 +101,6 @@ impl<T: CellValue, P: Pipeline<T, crate::pipeline::Empty>> TapExt<T, crate::pipe
         TapPipeline {
             source: self,
             f: Arc::new(f),
-            _t: PhantomData,
         }
     }
 }

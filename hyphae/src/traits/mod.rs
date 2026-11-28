@@ -20,6 +20,7 @@ pub use collections::{
     TwoLeftJoinMappedPlan, TwoLeftJoinPlan,
 };
 pub use dep_node::DepNode;
+pub(crate) use dep_node::sealed::Sealed as DepNodeSealed;
 pub use foreign_key::{
     ForeignKeyRelation, IdFor, IdType, JoinKeyFrom, OptionalRightKey, RequiredRightKey,
     RightJoinKey,
@@ -34,7 +35,6 @@ pub use operators::{
     StateTransitionExt, SwitchMapExt, TakeExt, TakeUntilExt, TakeWhileExt, TapExt, ThrottleExt,
     TimeoutExt, TryMapExt, UnwrapOrExt, WindowExt, WithLatestFromExt, ZipExt, join_vec,
 };
-pub use operators::{ParallelCell, ParallelExt};
 pub use reactive_keys::{KeyChange, ReactiveKeys};
 pub use reactive_map::ReactiveMap;
 pub use watchable::{Gettable, Watchable, WatchableResult};

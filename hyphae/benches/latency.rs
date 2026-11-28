@@ -9,9 +9,7 @@ use std::sync::{
 };
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use hyphae::{
-    Cell, FilterExt, MapExt, Materialize, Mutable, ParallelExt, ScanExt, Signal, Watchable,
-};
+use hyphae::{Cell, FilterExt, MapExt, Materialize, Mutable, ScanExt, Signal, Watchable};
 use seq_macro::seq;
 
 fn bench_single_cell_propagation(c: &mut Criterion) {
@@ -92,33 +90,6 @@ fn bench_fan_out(c: &mut Criterion) {
                     .map(|_| {
                         let cnt = counter.clone();
                         source.subscribe(move |_| {
-                            cnt.fetch_add(1, Ordering::Relaxed);
-                        })
-                    })
-                    .collect();
-
-                let mut i = 0u64;
-                b.iter(|| {
-                    i = i.wrapping_add(1);
-                    source.set(black_box(i));
-                });
-
-                drop(guards);
-            },
-        );
-
-        group.bench_with_input(
-            BenchmarkId::new("parallel", num_subscribers),
-            num_subscribers,
-            |b, &num_subscribers| {
-                let source = Cell::new(0u64);
-                let parallel = source.parallel();
-                let counter = Arc::new(AtomicU64::new(0));
-
-                let guards: Vec<_> = (0..num_subscribers)
-                    .map(|_| {
-                        let cnt = counter.clone();
-                        parallel.subscribe(move |_| {
                             cnt.fetch_add(1, Ordering::Relaxed);
                         })
                     })
@@ -275,43 +246,6 @@ fn bench_parallel_heavy_callbacks(c: &mut Criterion) {
                     .map(|result| {
                         let r = result.clone();
                         source.subscribe(move |signal| {
-                            if let Signal::Value(x) = signal {
-                                // Simulate expensive work - can't be optimized away
-                                let mut sum = **x;
-                                for _ in 0..10000 {
-                                    sum = sum.wrapping_mul(31).wrapping_add(17);
-                                }
-                                r.store(sum, Ordering::Relaxed);
-                            }
-                        })
-                    })
-                    .collect();
-
-                let mut i = 0u64;
-                b.iter(|| {
-                    i = i.wrapping_add(1);
-                    source.set(black_box(i));
-                });
-
-                drop(guards);
-            },
-        );
-
-        group.bench_with_input(
-            BenchmarkId::new("parallel", num_subscribers),
-            num_subscribers,
-            |b, &num_subscribers| {
-                let source = Cell::new(0u64);
-                let parallel = source.parallel();
-                let results: Vec<_> = (0..num_subscribers)
-                    .map(|_| Arc::new(AtomicU64::new(0)))
-                    .collect();
-
-                let guards: Vec<_> = results
-                    .iter()
-                    .map(|result| {
-                        let r = result.clone();
-                        parallel.subscribe(move |signal| {
                             if let Signal::Value(x) = signal {
                                 // Simulate expensive work - can't be optimized away
                                 let mut sum = **x;

@@ -6,9 +6,8 @@ use std::{
     },
 };
 
-use crate::cell_map::MapDiff;
-
 use super::BoxedMapDiffSink;
+use crate::cell_map::MapDiff;
 
 type QueuedQueryEvent = Box<dyn FnOnce() + Send + 'static>;
 

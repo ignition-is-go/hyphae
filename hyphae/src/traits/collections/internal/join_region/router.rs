@@ -5,8 +5,6 @@ use std::{
 
 use rustc_hash::{FxHashMap, FxHasher};
 
-use crate::{cell_map::MapDiff, traits::CellValue};
-
 use super::{
     super::join_lifecycle::RuntimeStorage,
     declaration::JCons,
@@ -15,6 +13,7 @@ use super::{
         batch_has_unique_atomic_keys,
     },
 };
+use crate::{cell_map::MapDiff, traits::CellValue};
 
 /// Dual-mode whole-region executor. Tiny events use the original single
 /// runtime without extra hashing. Promotion is one-way; afterwards every map
@@ -36,11 +35,7 @@ const PARALLEL_REGION_WORK_EXIT: usize = 96_000;
 
 #[allow(clippy::missing_const_for_fn)]
 fn configured_shards() -> usize {
-    #[cfg(feature = "scheduler")]
-    let count = crate::executor::configured_worker_threads().max(1);
-    #[cfg(not(feature = "scheduler"))]
-    let count = 1;
-    count
+    crate::executor::configured_worker_threads().max(1)
 }
 
 const fn configured_promotion_work() -> usize {
@@ -431,12 +426,12 @@ where
         let max_shard_work = shard_work.iter().copied().max().unwrap_or(0);
         let balanced = active_shards > 1
             && max_shard_work.saturating_mul(4) <= diff.work_items().saturating_mul(3);
-        #[cfg(not(all(feature = "scheduler", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         let _ = (hysteresis_wants_parallel, balanced);
-        #[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let resources_available =
             hysteresis_wants_parallel && balanced && crate::executor::worker_pool().is_some();
-        #[cfg(not(all(feature = "scheduler", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         let resources_available = false;
         #[cfg(feature = "region-calibration")]
         let was_parallel = *parallel_active;
@@ -484,7 +479,7 @@ where
             tagged
         };
 
-        #[cfg(all(feature = "scheduler", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let per_shard = if run_parallel {
             if let Some(pool) = crate::executor::worker_pool() {
                 #[cfg(feature = "region-calibration")]
@@ -518,7 +513,7 @@ where
                 .map(process)
                 .collect()
         };
-        #[cfg(not(all(feature = "scheduler", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         let per_shard: Vec<_> = {
             let _ = run_parallel;
             #[cfg(feature = "region-calibration")]
@@ -673,10 +668,6 @@ where
     RK: Hash + Eq + CellValue,
     RV: CellValue,
 {
-    fn apply_right_root_diff(&mut self, diff: &MapDiff<RK, RV>) -> Vec<MapDiff<K, Self::Output>> {
-        self.apply_right_root_diff_policy(diff, true)
-    }
-
     fn apply_right_root_diff_policy(
         &mut self,
         diff: &MapDiff<RK, RV>,

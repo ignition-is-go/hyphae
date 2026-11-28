@@ -4,19 +4,19 @@ use std::{marker::PhantomData, sync::Arc};
 
 use super::CellValue;
 use crate::{
-    pipeline::{Pipeline, PipelineInstall, PipelineSeed, Seedness},
+    pipeline::{Emit, EmitSink, Pipeline, PipelineInstall, PipelineSeed, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
 
 /// Pipeline node representing `source.try_map(f)`. Does not allocate a cell.
-pub struct TryMapPipeline<S, T, U, E, F> {
+pub struct TryMapPipeline<S, T, F> {
     source: S,
     f: Arc<F>,
-    _types: PhantomData<fn(T) -> Result<U, E>>,
+    _types: PhantomData<fn(T)>,
 }
 
-impl<S, T, U, E, F> PipelineInstall<Result<U, E>> for TryMapPipeline<S, T, U, E, F>
+impl<S, T, U, E, F> PipelineInstall<Result<U, E>> for TryMapPipeline<S, T, F>
 where
     S: PipelineInstall<T> + Send + Sync + 'static,
     T: CellValue,
@@ -28,18 +28,21 @@ where
         &self,
         callback: Arc<dyn Fn(&Signal<Result<U, E>>) + Send + Sync>,
     ) -> SubscriptionGuard {
+        self.install_emit(Arc::new(move |emit| callback(&emit.into_signal())))
+    }
+
+    fn install_emit(&self, sink: EmitSink<Result<U, E>>) -> SubscriptionGuard {
         let f = Arc::clone(&self.f);
-        let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
-            Arc::new(move |signal: &Signal<T>| match signal {
-                Signal::Value(v) => callback(&Signal::value((f)(v.as_ref()))),
-                Signal::Complete => callback(&Signal::Complete),
-                Signal::Error(e) => callback(&Signal::Error(e.clone())),
-            });
-        self.source.install(wrapped)
+        self.source.install_emit(Arc::new(move |emit| match emit {
+            Emit::Shared(v) => sink(Emit::Owned((f)(v))),
+            Emit::Owned(v) => sink(Emit::Owned((f)(&v))),
+            Emit::Complete => sink(Emit::Complete),
+            Emit::Error(e) => sink(Emit::Error(e)),
+        }))
     }
 }
 
-impl<S, T, U, E, F> PipelineSeed<Result<U, E>> for TryMapPipeline<S, T, U, E, F>
+impl<S, T, U, E, F> PipelineSeed<Result<U, E>> for TryMapPipeline<S, T, F>
 where
     S: Pipeline<T, crate::pipeline::Definite>,
     T: CellValue,
@@ -53,8 +56,7 @@ where
 }
 
 #[allow(private_bounds)]
-impl<S, T, U, E, F> Pipeline<Result<U, E>, crate::pipeline::Definite>
-    for TryMapPipeline<S, T, U, E, F>
+impl<S, T, U, E, F> Pipeline<Result<U, E>, crate::pipeline::Definite> for TryMapPipeline<S, T, F>
 where
     S: Pipeline<T, crate::pipeline::Definite>,
     T: CellValue,
@@ -64,7 +66,7 @@ where
 {
 }
 
-impl<S, T, U, E, F> Pipeline<Result<U, E>, crate::pipeline::Empty> for TryMapPipeline<S, T, U, E, F>
+impl<S, T, U, E, F> Pipeline<Result<U, E>, crate::pipeline::Empty> for TryMapPipeline<S, T, F>
 where
     S: Pipeline<T, crate::pipeline::Empty>,
     T: CellValue,
@@ -82,7 +84,6 @@ pub trait TryMapExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// Returns an opaque lazy pipeline that yields `Ok(value)` when the
     /// transform succeeds, or `Err(error)` when it fails. Materialize to
     /// observe.
-    #[track_caller]
     fn try_map<U, E, F>(self, f: F) -> impl crate::Materialize<Result<U, E>, S>
     where
         U: CellValue,

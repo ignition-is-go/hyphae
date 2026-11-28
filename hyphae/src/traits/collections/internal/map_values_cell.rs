@@ -1,9 +1,11 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::VecDeque,
     hash::Hash,
     marker::PhantomData,
     sync::{Arc, Mutex},
 };
+
+use rustc_hash::FxHashMap;
 
 use crate::{
     cell_map::MapDiff,
@@ -29,24 +31,22 @@ struct MapValuesRow<U> {
 
 struct MapValuesQueue<K, V, U> {
     events: VecDeque<MapValuesEvent<K, V, U>>,
-    idle_rows: Option<HashMap<K, MapValuesRow<U>>>,
+    idle_rows: Option<FxHashMap<K, MapValuesRow<U>>>,
 }
 
-struct MapValuesRuntime<K, V, U, W, F>
+struct MapValuesRuntime<K, V, U, F>
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
     U: CellValue,
-    W: Watchable<U> + Gettable<U> + Clone + Send + Sync + 'static,
-    F: Fn(&K, &V) -> W + Send + Sync + 'static,
 {
     mapper: Arc<F>,
     queue: Mutex<MapValuesQueue<K, V, U>>,
     sink: crate::map_query::BoxedMapDiffSink<K, U>,
-    marker: PhantomData<fn(V) -> W>,
+    marker: PhantomData<fn(V)>,
 }
 
-impl<K, V, U, W, F> MapValuesRuntime<K, V, U, W, F>
+impl<K, V, U, W, F> MapValuesRuntime<K, V, U, F>
 where
     K: Hash + Eq + CellValue,
     V: CellValue,
@@ -64,26 +64,23 @@ where
 
     fn attach(
         self: &Arc<Self>,
-        rows: &mut HashMap<K, MapValuesRow<U>>,
+        rows: &mut FxHashMap<K, MapValuesRow<U>>,
         key: &K,
         value: &V,
         changes: Option<&mut Vec<MapDiff<K, U>>>,
+        retired: &mut Vec<SubscriptionGuard>,
     ) {
+        // Make before break: the replaced row's guard is retired, not dropped,
+        // so anything shared by the old and new inner graphs stays alive while
+        // the mapper builds the new one.
         let prior = rows.remove(key).map(|row| {
-            drop(row.guard);
+            retired.extend(row.guard);
             row.value
         });
         let inner_cell = (self.mapper)(key, value);
         let initial = inner_cell.get();
         let token = Arc::new(());
-        rows.insert(
-            key.clone(),
-            MapValuesRow {
-                token: Arc::clone(&token),
-                value: initial.clone(),
-                guard: None,
-            },
-        );
+        let row_value = initial.clone();
         let diff = match prior {
             None => MapDiff::Insert {
                 key: key.clone(),
@@ -95,34 +92,42 @@ where
                 new_value: initial,
             },
         };
+
         self.emit(diff, changes);
 
         let key_for_sub = key.clone();
         let runtime = Arc::downgrade(self);
+        let sub_token = Arc::clone(&token);
         let sub_guard = inner_cell.subscribe(move |signal| {
             if let Signal::Value(value) = signal
                 && let Some(runtime) = runtime.upgrade()
             {
                 runtime.enqueue(MapValuesEvent::Inner {
                     key: key_for_sub.clone(),
-                    token: Arc::clone(&token),
+                    token: Arc::clone(&sub_token),
                     value: (**value).clone(),
                 });
             }
         });
-        if let Some(row) = rows.get_mut(key) {
-            row.guard = Some(sub_guard);
-        }
+        rows.insert(
+            key.clone(),
+            MapValuesRow {
+                token,
+                value: row_value,
+                guard: Some(sub_guard),
+            },
+        );
     }
 
     fn detach(
         &self,
-        rows: &mut HashMap<K, MapValuesRow<U>>,
+        rows: &mut FxHashMap<K, MapValuesRow<U>>,
         key: &K,
         changes: Option<&mut Vec<MapDiff<K, U>>>,
+        retired: &mut Vec<SubscriptionGuard>,
     ) {
         if let Some(row) = rows.remove(key) {
-            drop(row.guard);
+            retired.extend(row.guard);
             self.emit(
                 MapDiff::Remove {
                     key: key.clone(),
@@ -135,26 +140,28 @@ where
 
     fn apply(
         self: &Arc<Self>,
-        rows: &mut HashMap<K, MapValuesRow<U>>,
+        rows: &mut FxHashMap<K, MapValuesRow<U>>,
         diff: &MapDiff<K, V>,
         mut changes: Option<&mut Vec<MapDiff<K, U>>>,
+        retired: &mut Vec<SubscriptionGuard>,
     ) {
         match diff {
             MapDiff::Initial { entries } => {
+                rows.reserve(entries.len());
                 let existing_keys: Vec<K> = rows.keys().cloned().collect();
                 for key in existing_keys {
-                    self.detach(rows, &key, changes.as_deref_mut());
+                    self.detach(rows, &key, changes.as_deref_mut(), retired);
                 }
                 for (key, value) in entries {
-                    self.attach(rows, key, value, changes.as_deref_mut());
+                    self.attach(rows, key, value, changes.as_deref_mut(), retired);
                 }
             }
             MapDiff::Insert { key, value } => {
-                self.attach(rows, key, value, changes);
+                self.attach(rows, key, value, changes, retired);
             }
-            MapDiff::Remove { key, .. } => self.detach(rows, key, changes),
+            MapDiff::Remove { key, .. } => self.detach(rows, key, changes, retired),
             MapDiff::Update { key, new_value, .. } => {
-                self.attach(rows, key, new_value, changes);
+                self.attach(rows, key, new_value, changes, retired);
             }
             MapDiff::Batch { .. } => {}
         }
@@ -186,13 +193,22 @@ where
                 drop(queue);
                 event
             };
+            // Guards replaced while applying one source event are dropped
+            // only after the whole event is applied, so a key removed and
+            // re-added within one batch keeps its shared upstream alive.
+            let mut retired = Vec::new();
             match event {
                 MapValuesEvent::Source(MapDiff::Batch { changes }) => {
                     let mut atomic_changes = Vec::new();
                     MapDiff::Batch { changes }.flatten_into(&mut atomic_changes);
                     let mut downstream_changes = Vec::new();
                     for change in &atomic_changes {
-                        self.apply(&mut rows, change, Some(&mut downstream_changes));
+                        self.apply(
+                            &mut rows,
+                            change,
+                            Some(&mut downstream_changes),
+                            &mut retired,
+                        );
                     }
                     if !downstream_changes.is_empty() {
                         (self.sink)(&MapDiff::Batch {
@@ -200,7 +216,27 @@ where
                         });
                     }
                 }
-                MapValuesEvent::Source(diff) => self.apply(&mut rows, &diff, None),
+                // A snapshot reaches the sink as one batch, not one write per
+                // row, like any other atomic source event with many rows.
+                MapValuesEvent::Source(diff @ MapDiff::Initial { .. }) => {
+                    let mut downstream_changes = Vec::new();
+                    self.apply(
+                        &mut rows,
+                        &diff,
+                        Some(&mut downstream_changes),
+                        &mut retired,
+                    );
+                    match downstream_changes.len() {
+                        0 => {}
+                        1 => downstream_changes
+                            .into_iter()
+                            .for_each(|change| (self.sink)(&change)),
+                        _ => (self.sink)(&MapDiff::Batch {
+                            changes: downstream_changes,
+                        }),
+                    }
+                }
+                MapValuesEvent::Source(diff) => self.apply(&mut rows, &diff, None, &mut retired),
                 MapValuesEvent::Inner { key, token, value } => {
                     let Some(row) = rows.get_mut(&key) else {
                         continue;
@@ -244,11 +280,11 @@ where
     W: Watchable<U> + Gettable<U> + Clone + Send + Sync + 'static,
     F: Fn(&K, &V) -> W + Send + Sync + 'static,
 {
-    let runtime = Arc::new(MapValuesRuntime::<K, V, U, W, F> {
+    let runtime = Arc::new(MapValuesRuntime::<K, V, U, F> {
         mapper: Arc::new(mapper),
         queue: Mutex::new(MapValuesQueue {
             events: VecDeque::new(),
-            idle_rows: Some(HashMap::new()),
+            idle_rows: Some(FxHashMap::default()),
         }),
         sink,
         marker: PhantomData,
@@ -262,7 +298,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::sync::mpsc;
+    use std::{collections::HashMap, sync::mpsc};
 
     use super::*;
     use crate::{Cell, CellMap, MapExt, Materialize, cell_map::MapDiff};
@@ -412,5 +448,97 @@ mod tests {
             matches!(seen.last(), Some(MapDiff::Batch { changes }) if changes.len() == 2),
             "expected a two-change batch diff from install_map_values_cell_via_query"
         );
+    }
+
+    /// A weakly cached shared cell, as a report cache holds it: alive only
+    /// while some inner graph holds it. Counts constructions.
+    fn weak_shared(
+        slot: &Arc<Mutex<Option<crate::cell::WeakCell<i32, crate::cell::CellMutable>>>>,
+        builds: &Arc<std::sync::atomic::AtomicUsize>,
+    ) -> Cell<i32, crate::cell::CellMutable> {
+        let mut slot = slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(cell) = slot.as_ref().and_then(crate::cell::WeakCell::upgrade) {
+            return cell;
+        }
+        builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let cell = Cell::new(100);
+        *slot = Some(cell.downgrade());
+        cell
+    }
+
+    #[test]
+    fn map_values_cell_update_keeps_upstream_shared_by_old_and_new_inner() {
+        let source = CellMap::<String, i32>::new();
+        source.insert("a".to_string(), 1);
+        let slot = Arc::new(Mutex::new(None));
+        let builds = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let (sink, state, _diffs) = capturing_sink::<String, i32>();
+        let mut cx = crate::map_query::compiler::CompileContext::default();
+        let mut guards = install_map_values_cell_via_query(
+            &mut cx,
+            source.clone(),
+            {
+                let builds = Arc::clone(&builds);
+                move |_: &String, v: &i32| {
+                    let v = *v;
+                    weak_shared(&slot, &builds)
+                        .map(move |s| s + v)
+                        .materialize()
+                }
+            },
+            sink,
+        );
+        guards.extend(cx.activate());
+        assert!(!guards.is_empty());
+        assert_eq!(builds.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        source.insert("a".to_string(), 2);
+        source.insert_many(vec![("a".to_string(), 3)]);
+        assert_eq!(
+            state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get("a")
+                .copied(),
+            Some(103)
+        );
+        assert_eq!(
+            builds.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "shared upstream was torn down and rebuilt on row update"
+        );
+    }
+
+    #[test]
+    fn map_values_cell_delivers_a_snapshot_as_one_batch() {
+        let source = CellMap::<u32, i32>::new();
+        source.insert_many((0..3).map(|key| (key, 1)).collect());
+        let (sink, state, diffs) = capturing_sink::<u32, i32>();
+        let mut cx = crate::map_query::compiler::CompileContext::default();
+        let mut guards = install_map_values_cell_via_query(
+            &mut cx,
+            source,
+            |key: &u32, v: &i32| Cell::new(*v + i32::try_from(*key).unwrap_or(0)).lock(),
+            sink,
+        );
+        guards.extend(cx.activate());
+        assert!(!guards.is_empty());
+
+        let diffs = diffs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        assert!(
+            matches!(diffs.as_slice(), [MapDiff::Batch { changes }] if changes.len() == 3),
+            "expected one three-row batch, got {diffs:?}"
+        );
+        let state = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        assert_eq!(state, HashMap::from([(0, 1), (1, 2), (2, 3)]));
     }
 }

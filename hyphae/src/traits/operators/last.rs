@@ -5,7 +5,6 @@
 //! source never emits any values before completing, the cell stays `None`
 //! (use [`LastExt::last_or`] to pick a default in that case).
 
-use parking_lot::Mutex;
 use std::{
     marker::PhantomData,
     sync::{
@@ -13,6 +12,8 @@ use std::{
         atomic::{AtomicBool, Ordering as AtomicOrdering},
     },
 };
+
+use parking_lot::Mutex;
 
 use super::CellValue;
 use crate::{
@@ -22,13 +23,12 @@ use crate::{
 };
 
 /// Pipeline node representing `source.last()`.
-pub struct LastPipeline<S, T, Sd = crate::pipeline::Definite> {
+pub struct LastPipeline<S, Sd = crate::pipeline::Definite> {
     source: S,
-    _t: PhantomData<fn(T)>,
     _sd: PhantomData<fn(Sd)>,
 }
 
-impl<S, T, Sd> PipelineInstall<T> for LastPipeline<S, T, Sd>
+impl<S, T, Sd> PipelineInstall<T> for LastPipeline<S, Sd>
 where
     S: PipelineInstall<T> + Send + Sync + 'static,
     Sd: Seedness,
@@ -62,7 +62,7 @@ where
 }
 
 #[allow(private_bounds)]
-impl<S, T, Sd> Pipeline<T, Empty> for LastPipeline<S, T, Sd>
+impl<S, T, Sd> Pipeline<T, Empty> for LastPipeline<S, Sd>
 where
     S: Pipeline<T, Sd>,
     Sd: Seedness,
@@ -135,11 +135,9 @@ pub trait LastExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     ///
     /// assert_eq!(last.get(), Some(3));
     /// ```
-    #[track_caller]
     fn last(self) -> impl crate::Materialize<T, Empty> {
         LastPipeline {
             source: self,
-            _t: PhantomData,
             _sd: PhantomData,
         }
     }
@@ -159,7 +157,6 @@ pub trait LastExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     ///
     /// assert_eq!(last.get(), Some(999));
     /// ```
-    #[track_caller]
     fn last_or(self, default: T) -> impl crate::Materialize<T, Empty> {
         LastOrPipeline {
             source: self,

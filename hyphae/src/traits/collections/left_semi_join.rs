@@ -5,10 +5,9 @@
 //! [`MapQuery::materialize`] to compile a plan into a subscribable
 //! [`CellMap`](crate::CellMap).
 
-use std::{hash::Hash, marker::PhantomData};
+use std::hash::Hash;
 
 use super::left_join::RelationPlan;
-
 use crate::{
     map_query::{
         BuildQueryRuntime, MapQuery,
@@ -31,28 +30,14 @@ use crate::{
 ///
 /// Not [`Clone`]: cloning a plan would silently duplicate join work; share by
 /// materializing once.
-pub struct LeftSemiJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
-where
-    L: MapQuery<Key = LK, Value = LV>,
-    R: MapQuery<Key = RK, Value = RV>,
-    LK: Hash + Eq + CellValue,
-    LV: CellValue,
-    RK: Hash + Eq + CellValue,
-    RV: CellValue,
-    JK: Hash + Eq + CellValue,
-    FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
-    FR: RightJoinKey<RK, RV, JK>,
-{
+pub struct LeftSemiJoinPlan<L, R, FL, FR> {
     pub(crate) left: L,
     pub(crate) right: R,
     pub(crate) left_key: FL,
     pub(crate) right_key: FR,
-    #[allow(clippy::type_complexity)]
-    pub(crate) _types: PhantomData<fn() -> (LK, LV, RK, RV, JK)>,
 }
 
-impl<L, R, LK, LV, RK, RV, JK, FL, FR> PlanProperties
-    for LeftSemiJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
+impl<L, R, LK, LV, RK, RV, JK, FL, FR> PlanProperties for LeftSemiJoinPlan<L, R, FL, FR>
 where
     L: MapQuery<Key = LK, Value = LV>,
     R: MapQuery<Key = RK, Value = RV>,
@@ -69,8 +54,7 @@ where
     type OutputPartition = ByMapKey<LK>;
 }
 
-impl<L, R, LK, LV, RK, RV, JK, FL, FR> BuildQueryRuntime<LK, LV>
-    for LeftSemiJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
+impl<L, R, LK, LV, RK, RV, JK, FL, FR> BuildQueryRuntime<LK, LV> for LeftSemiJoinPlan<L, R, FL, FR>
 where
     L: MapQuery<Key = LK, Value = LV>,
     R: MapQuery<Key = RK, Value = RV>,
@@ -106,8 +90,7 @@ where
 }
 
 #[allow(private_bounds)]
-impl<L, R, LK, LV, RK, RV, JK, FL, FR> MapQuery
-    for LeftSemiJoinPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
+impl<L, R, LK, LV, RK, RV, JK, FL, FR> MapQuery for LeftSemiJoinPlan<L, R, FL, FR>
 where
     L: MapQuery<Key = LK, Value = LV>,
     R: MapQuery<Key = RK, Value = RV>,
@@ -148,7 +131,6 @@ where
             right,
             left_key: |k: &K, _: &V| k.clone(),
             right_key: RequiredRightKey(|k: &K, _: &RV| k.clone()),
-            _types: PhantomData,
         }
     }
 
@@ -170,11 +152,6 @@ where
         LeftSemiJoinPlan<
             Self,
             R,
-            K,
-            V,
-            R::Key,
-            Rel::Child,
-            K,
             impl Fn(&K, &V) -> K + Send + Sync + 'static,
             OptionalRightKey<impl Fn(&R::Key, &Rel::Child) -> Option<K> + Send + Sync + 'static>,
         >,
@@ -192,7 +169,6 @@ where
             right_key: OptionalRightKey(|_: &R::Key, rv: &Rel::Child| {
                 Rel::foreign_key(rv).map(|foreign_key| foreign_key.map_key())
             }),
-            _types: PhantomData,
         })
     }
 
@@ -222,7 +198,6 @@ where
             right,
             left_key,
             right_key: RequiredRightKey(right_key),
-            _types: PhantomData,
         }
     }
 }

@@ -1,11 +1,8 @@
 //! Shared native worker pool for coarse Hyphae runtime work.
 //!
-//! This module exists only with the `scheduler` feature. Scheduler waves and
-//! eligible compiled join regions use one lazily constructed, dedicated Rayon
-//! pool rather than the process-global pool or independent pools. Wasm never
-//! constructs it, and map queries without `scheduler` compile a sequential
-//! path. Native configuration checks `HYPHAE_WORKER_THREADS` first, then the
-//! compatibility fallback `HYPHAE_WAVE_THREADS`; zero disables the pool. The
+//! Scheduler waves and eligible compiled join regions use one lazily
+//! constructed, dedicated Rayon pool rather than the process-global pool or
+//! independent pools. Wasm never constructs it and runs both sequentially. Native configuration reads `HYPHAE_WORKER_THREADS`; zero disables the pool. The
 //! default is available parallelism capped at four workers.
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -23,12 +20,9 @@ fn env_usize(key: &str) -> Option<usize> {
 
 #[cfg(not(target_arch = "wasm32"))]
 static WORKER_THREADS: LazyLock<usize> = LazyLock::new(|| {
-    env_usize("HYPHAE_WORKER_THREADS")
-        .or_else(|| env_usize("HYPHAE_WAVE_THREADS"))
-        .unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map_or(1, |count| count.get().min(DEFAULT_THREADS_CAP))
-        })
+    env_usize("HYPHAE_WORKER_THREADS").unwrap_or_else(|| {
+        std::thread::available_parallelism().map_or(1, |count| count.get().min(DEFAULT_THREADS_CAP))
+    })
 });
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -48,8 +42,15 @@ static WORKER_POOL: LazyLock<Option<rayon::ThreadPool>> = LazyLock::new(|| {
 /// workload. `None` means parallel execution was explicitly disabled or pool
 /// construction failed. Callers perform their cost and balance gates before
 /// requesting the pool.
+///
+/// Work running inside a child scheduling domain never gets the pool: a child
+/// must not wait behind another domain's work that occupies it, so child work
+/// stays on the child's own thread.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn worker_pool() -> Option<&'static rayon::ThreadPool> {
+    if crate::scheduler::domain::in_child_domain() {
+        return None;
+    }
     WORKER_POOL.as_ref()
 }
 

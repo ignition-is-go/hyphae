@@ -59,7 +59,7 @@ jobs:
       - run: cargo flux run lint
       - run: cargo flux run test
       - name: Check public runtime API workloads
-        run: cargo test -p hyphae --features scheduler --bench runtime_baseline -- --size 16 --iterations 2 --warmup 0
+        run: cargo test -p hyphae --bench runtime_baseline -- --size 16 --iterations 2 --warmup 0
       - name: Verify hyphae-gpui is publishable
         run: cargo publish --dry-run --locked --allow-dirty -p hyphae-gpui
       - name: Save ROSE snapshot and clean local Cargo targets

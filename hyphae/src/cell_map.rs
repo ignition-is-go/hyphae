@@ -2,6 +2,118 @@
 //!
 //! `CellMap` wraps a concurrent `HashMap` where each entry can be individually observed.
 //! Changes to keys trigger reactive updates to observers.
+//!
+//! # Write order
+//!
+//! A write stores its row at once and tells subscribers afterwards: on the
+//! writing thread when no batch is open, when the batch commits otherwise.
+//! Reads of the map (`get_value`, `contains_key`, `snapshot`, the value
+//! `insert` returns, a write hook) therefore see a row as soon as it is
+//! written, from any thread, including inside the batch that wrote it. The
+//! cells derived from the map (its diffs, per-key observers, length, and
+//! every query built on them) see it when it is delivered.
+//!
+//! For every key, diffs are delivered in the order the rows were stored,
+//! whichever threads wrote them and whichever of those held a batch open.
+//! Once every writer has returned and propagation has finished, each derived
+//! structure equals what it would compute from the map's rows. No writer
+//! waits for another's subscribers:
+//!
+//! - Two batches that write the same key commit together, when the later of
+//!   them closes. The one that closes first returns, and its writes are
+//!   delivered with the other's. Batches that share no key commit
+//!   independently.
+//! - A write made outside a batch to a key an open batch has written is
+//!   delivered when that batch commits.
+//! - A write made outside a batch to a key another thread is delivering
+//!   outside a batch returns at once, and that thread delivers it when its
+//!   own subscribers have returned.
+//! - Any other write made outside a batch is delivered as an unbatched cell
+//!   write is: before the write returns, or by the next drain when a batch
+//!   is open or a drain is running on the map's tick. Two threads that write
+//!   different keys this way run their subscribers at the same time.
+//!
+//! The length cell counts delivered rows, so it never runs ahead of the
+//! diffs. The length, entries, keys and items cells take each value in the
+//! order it was computed, also when two threads deliver at once.
+//!
+//! # Write hooks
+//!
+//! [`CellMap::register_write_hook`] keeps a secondary index exactly in step
+//! with a map. Diff subscribers are deferred while a batch is open; a write
+//! hook is not. The contract:
+//!
+//! - **Coverage.** The hook sees every change to the map's data, from every
+//!   mutating method, one [`MapWrite`] per changed key, with the old value on
+//!   every update and remove. A write the map suppresses as equal is not
+//!   reported. `Initial` diffs passed to `apply_diff_owned` or `apply_batch`
+//!   report a `Remove` then an `Insert` for each key they rewrite, because
+//!   that is what the map does: a reader of the map sees the key absent in
+//!   between, and so does the index.
+//! - **Ordering.** The hook runs on the writing thread, under the write lock
+//!   of the shard that holds the key, after the map holds the new value and
+//!   before the write returns, whether or not a batch is open. A read of that
+//!   key waits on the same lock, so for a single key the map and the index
+//!   never disagree: a reader that sees a row in the map then finds it in the
+//!   index, and a reader that finds a row in the index then reads it from the
+//!   map. For one key, hook calls arrive in the order the map applies the
+//!   writes. Different keys are not ordered.
+//! - **Seeding.** Registration write-locks every shard, replays each current
+//!   entry as a `MapWrite::Insert`, and installs the hook before releasing
+//!   them. Every concurrent write is in the replay or in a later call, never
+//!   both. Writers to the map wait for the replay: measured about 4 ms for
+//!   100,000 rows and 29 to 34 ms for 500,000 rows with a hook that fills a
+//!   `DashMap`.
+//! - **Restrictions.** The hook must not read or write the same map, or
+//!   register or drop a write hook on it: those calls take the shard lock the
+//!   hook already holds and deadlock. Keep it short; it blocks readers and
+//!   writers of the keys in its shard. While any hook is registered, the
+//!   equality check that suppresses equal writes runs first under the shard
+//!   read lock, which blocks other writers of the shard but not its readers,
+//!   and runs again under the write lock only if the shard was written in
+//!   between. Old values and
+//!   removed entries are dropped after the lock is released, as without a
+//!   hook.
+//! - **Cost.** With no hook, a write pays a relaxed atomic load under the
+//!   lock it already holds. With hooks, it also pays the read-locked
+//!   equality check, a per-shard counter, and the callbacks.
+//! - **Lifetime.** Dropping the returned guard removes the hook. Several hooks
+//!   may be registered; each sees every write.
+//!
+//! ```
+//! use std::{collections::{HashMap, HashSet}, sync::{Arc, Mutex}};
+//! use hyphae::{CellMap, cell_map::MapWrite};
+//!
+//! #[derive(Clone, Debug, PartialEq)]
+//! struct Task { owner: &'static str }
+//!
+//! let tasks = CellMap::<u32, Task>::new();
+//! tasks.insert(1, Task { owner: "ada" });
+//!
+//! // owner -> task ids, kept exact by the hook.
+//! let by_owner: Arc<Mutex<HashMap<&'static str, HashSet<u32>>>> = Arc::default();
+//! let index = by_owner.clone();
+//! let _guard = tasks.register_write_hook(move |write| {
+//!     let mut index = index.lock().unwrap();
+//!     let (key, old, new) = match write {
+//!         MapWrite::Insert { key, value } => (key, None, Some(value)),
+//!         MapWrite::Update { key, old, new } => (key, Some(old), Some(new)),
+//!         MapWrite::Remove { key, old } => (key, Some(old), None),
+//!     };
+//!     if let Some(old) = old {
+//!         index.entry(old.owner).or_default().remove(key);
+//!     }
+//!     if let Some(new) = new {
+//!         index.entry(new.owner).or_default().insert(*key);
+//!     }
+//! });
+//!
+//! tasks.insert(2, Task { owner: "ada" });
+//! tasks.insert(1, Task { owner: "lin" });
+//! let index = by_owner.lock().unwrap();
+//! assert_eq!(index["ada"], HashSet::from([2]));
+//! assert_eq!(index["lin"], HashSet::from([1]));
+//! ```
 
 use std::{
     hash::Hash,
@@ -26,9 +138,11 @@ use crate::{
 mod diff;
 mod mutation;
 mod projection;
+mod write_hook;
 
 pub use diff::MapDiff;
 use projection::{EntryProjection, KeyProjection, ProjectionOwner, ValueProjection};
+pub use write_hook::MapWrite;
 
 struct PointCellSlot<V: CellValue> {
     state: Mutex<PointCellState<V>>,
@@ -89,6 +203,13 @@ impl<V: CellValue> PointCellSlot<V> {
     }
 }
 
+/// Shard count for a map's stores. `DashMap` defaults to four shards per CPU,
+/// which costs 128 bytes per shard per map and one allocation per shard on
+/// every iteration. Most maps hold a handful of rows, and the shared diff cell
+/// every write sets bounds write throughput well below what four shards
+/// sustain.
+const SHARDS: usize = 4;
+
 pub(crate) struct CellMapInner<K, V>
 where
     K: Hash + Eq + CellValue,
@@ -107,15 +228,23 @@ where
     key_cell_slots: AtomicUsize,
     /// Mutation counter driving amortized pruning of dead `key_cells` weaks.
     prune_ops: AtomicUsize,
+    /// Synchronous hooks run under the shard lock of every data write.
+    write_hooks: write_hook::WriteHooks<K, V>,
     /// Cell for diff notifications.
     pub(crate) diffs_cell: Cell<MapDiff<K, V>, CellMutable>,
     /// Cell for length.
     len_cell: Cell<usize, CellMutable>,
+    /// Rows the length cell has been told about: rows added less rows
+    /// removed over every delivered write.
+    delivered_len: std::sync::atomic::AtomicIsize,
+    /// Sets the length cell to each count in the order they were reached.
+    len: crate::scheduler::order::Sequenced<usize>,
+    /// The order rows are stored in and their diffs delivered in.
+    order: Arc<crate::scheduler::order::WriteOrder>,
+    /// Diffs staged in open batches and not yet delivered.
+    staged: Mutex<Vec<mutation::StagedDiff<K, V>>>,
     /// Subscription guards owned by this map (dropped when map drops).
     owned: Mutex<Vec<SubscriptionGuard>>,
-    /// Optional name for debugging. Cold path — set once via `with_name`,
-    /// read by per-key cell formatting helpers.
-    pub(crate) name: Mutex<Option<Arc<str>>>,
 }
 
 /// A reactive `HashMap` with per-key observability.
@@ -172,12 +301,10 @@ where
     K: Hash + Eq + CellValue,
     V: CellValue,
 {
-    #[track_caller]
     fn install_output<S, O>(
         &self,
         source: &Cell<S, CellMutable>,
         initial: O,
-        name: Option<&str>,
         replay: OutputReplay,
         update: impl Fn(&S) -> Option<O> + Send + Sync + 'static,
     ) -> Cell<O, CellImmutable>
@@ -186,12 +313,10 @@ where
         O: CellValue,
     {
         let cell = Cell::new(initial);
-        if let (Some(name), Some(map_name)) = (name, self.inner.name.lock().as_ref()) {
-            drop(cell.clone().with_name(format!("{map_name}::{name}")));
-        }
 
         let weak_cell = cell.downgrade();
         let map_keepalive = self.inner.clone();
+        let outputs = crate::scheduler::order::Sequenced::default();
         let skip_replay = matches!(replay, OutputReplay::Skip).then(|| AtomicBool::new(true));
         let guard = source.subscribe(move |signal| {
             let _ = &map_keepalive;
@@ -204,22 +329,21 @@ where
             let Some(cell) = weak_cell.upgrade() else {
                 return;
             };
-            if let Signal::Value(value) = signal
-                && let Some(output) = update(value.as_ref())
-            {
-                cell.set(output);
+            if let Signal::Value(value) = signal {
+                // Two threads can deliver diffs of different keys at once.
+                // Each output is computed and takes its turn in one step,
+                // so the cell ends on the one computed last.
+                outputs.publish(|| update(value.as_ref()), |output| cell.set(output));
             }
         });
         cell.own(guard);
         cell.lock()
     }
 
-    #[track_caller]
     fn install_projection<P, O>(
         &self,
         projection: P,
         initial: O,
-        name: &str,
         update: impl Fn(&mut P, &MapDiff<K, V>) -> Option<O> + Send + Sync + 'static,
     ) -> Cell<O, CellImmutable>
     where
@@ -230,10 +354,17 @@ where
         self.install_output(
             &self.inner.diffs_cell,
             initial,
-            Some(name),
             OutputReplay::Skip,
             move |diff| projection.with(|state| update(state, diff)),
         )
+    }
+
+    /// The scheduling domain this map belongs to: the one that was ambient
+    /// where the map was created. Its diff, length and per-key cells all live
+    /// there.
+    #[must_use]
+    pub fn domain(&self) -> crate::scheduler::Domain {
+        self.inner.diffs_cell.domain()
     }
 
     /// Create a weak handle to this map.
@@ -249,9 +380,11 @@ where
     /// Materializing produces a `Cell<Option<V>>` that updates whenever the
     /// key's value changes. Multiple installations currently reuse the same
     /// underlying per-key cell, but that cache is not part of the public API.
-    #[track_caller]
     pub fn get(&self, key: &K) -> impl Materialize<Option<V>, Definite> + use<K, V, M> {
-        let key_cells = self.inner.key_cells.get_or_init(DashMap::new);
+        let key_cells = self
+            .inner
+            .key_cells
+            .get_or_init(|| DashMap::with_shard_amount(SHARDS));
         let reserved = key_cells.get(key).map(|slot| slot.value().clone());
         let slot = reserved.unwrap_or_else(|| match key_cells.entry(key.clone()) {
             Entry::Occupied(slot) => slot.get().clone(),
@@ -268,13 +401,15 @@ where
             return cached.lock();
         }
         let mut current = self.inner.data.get(key).map(|entry| entry.value().clone());
-        let map_name = self.inner.name.lock().clone();
-        let point_name = map_name.map(|name| Arc::<str>::from(format!("{name}[{key:?}]")));
+        #[cfg(test)]
+        point_cell_race_tests::after_seed_read();
+        // The observer belongs to the map, not to whoever asks first: it is
+        // cached and handed to every later caller, in any domain.
+        let home = self.inner.diffs_cell.inner.domain.as_ref();
+        let _scope =
+            crate::scheduler::domain::in_use().then(|| crate::scheduler::domain::enter(home));
         loop {
             let candidate = Cell::new(current);
-            if let Some(point_name) = &point_name {
-                drop(candidate.clone().with_name(point_name.clone()));
-            }
             // NOTE(cx): Cloning may mutate another key. Only this key's writes
             // invalidate the seed, and user code runs outside the slot mutex.
             if let Some(cell) = slot.publish(revision, &candidate) {
@@ -295,14 +430,12 @@ where
     /// Returns a derived cell that maintains entries incrementally via diffs.
     /// The initial value is computed from the current map state, then updates
     /// are applied incrementally as O(1) operations per diff.
-    #[track_caller]
     #[must_use]
     pub fn entries(&self) -> impl Materialize<Vec<(K, V)>, Definite> + use<K, V, M> {
         let initial = self.snapshot();
         self.install_projection(
             EntryProjection::from_entries(initial.clone()),
             initial,
-            "entries",
             |projection, diff| {
                 projection.apply_diff(diff);
                 Some(projection.entries())
@@ -314,24 +447,22 @@ where
     ///
     /// This maintains its own diff-driven projection to avoid forcing an
     /// intermediate entries materialization on hot value-only paths.
-    #[track_caller]
     #[must_use]
     pub fn items(&self) -> impl Materialize<Vec<V>, Definite> + use<K, V, M> {
         let projection = ValueProjection::from_entries(self.snapshot());
         let initial = projection.items();
-        self.install_projection(projection, initial, "items", |projection, diff| {
+        self.install_projection(projection, initial, |projection, diff| {
             projection.apply_diff(diff);
             Some(projection.items())
         })
     }
 
     /// Build an observable pipeline of all keys.
-    #[track_caller]
     #[must_use]
     pub fn keys(&self) -> impl Materialize<Vec<K>, Definite> + use<K, V, M> {
         let projection = KeyProjection::from_keys(self.keys_snapshot());
         let initial = projection.keys();
-        self.install_projection(projection, initial, "keys", |projection, diff| {
+        self.install_projection(projection, initial, |projection, diff| {
             projection.apply_diff(diff).then(|| projection.keys())
         })
     }
@@ -345,7 +476,6 @@ where
         self.install_output(
             &self.inner.len_cell,
             self.inner.data.len(),
-            None,
             OutputReplay::Apply,
             |len| Some(*len),
         )
@@ -385,9 +515,25 @@ where
     /// or it may deadlock. Mutate after `for_each` returns, or use
     /// `snapshot()` when the loop body must write back.
     pub fn for_each(&self, mut f: impl FnMut(&K, &V)) {
-        for entry in &self.inner.data {
-            f(entry.key(), entry.value());
+        for shard in self.inner.data.shards() {
+            let table = shard.read();
+            // SAFETY: the shard's read guard outlives the iterator and every
+            // bucket reference, and no writer can modify the table under it.
+            for bucket in unsafe { table.iter() } {
+                let (key, value) = unsafe { bucket.as_ref() };
+                f(key, value.get());
+            }
         }
+    }
+
+    /// Map every entry into a `Vec`, one shard read lock at a time.
+    ///
+    /// `DashMap::iter` allocates an `Arc` per shard and clones it for every
+    /// entry, which makes it about ten times slower than walking the shards.
+    fn collect<T>(&self, mut f: impl FnMut(&K, &V) -> T) -> Vec<T> {
+        let mut out = Vec::with_capacity(self.inner.data.len());
+        self.for_each(|key, value| out.push(f(key, value)));
+        out
     }
 
     /// Get a point-in-time snapshot of all entries (non-reactive).
@@ -396,31 +542,19 @@ where
     /// Use this for one-shot reads where you don't need live updates.
     #[must_use]
     pub fn snapshot(&self) -> Vec<(K, V)> {
-        self.inner
-            .data
-            .iter()
-            .map(|r| (r.key().clone(), r.value().clone()))
-            .collect()
+        self.collect(|key, value| (key.clone(), value.clone()))
     }
 
     /// Return the current values without creating a reactive projection.
     #[must_use]
     pub fn items_snapshot(&self) -> Vec<V> {
-        self.inner
-            .data
-            .iter()
-            .map(|entry| entry.value().clone())
-            .collect()
+        self.collect(|_, value| value.clone())
     }
 
     /// Return the current keys without creating a reactive projection.
     #[must_use]
     pub fn keys_snapshot(&self) -> Vec<K> {
-        self.inner
-            .data
-            .iter()
-            .map(|entry| entry.key().clone())
-            .collect()
+        self.collect(|key, _| key.clone())
     }
 
     /// Check if key exists (non-reactive).
@@ -473,12 +607,7 @@ where
             callback_for_diffs(diff.as_ref());
         });
 
-        let entries: Vec<(K, V)> = self
-            .inner
-            .data
-            .iter()
-            .map(|r| (r.key().clone(), r.value().clone()))
-            .collect();
+        let entries = self.collect(|key, value| (key.clone(), value.clone()));
         callback(&MapDiff::Initial { entries });
         loop {
             let queued = {
@@ -552,7 +681,7 @@ where
     type Key = K;
 
     fn key_set(&self) -> Vec<K> {
-        self.inner.data.iter().map(|r| r.key().clone()).collect()
+        self.collect(|key, _| key.clone())
     }
 
     fn contains_key(&self, key: &K) -> bool {
@@ -584,11 +713,7 @@ where
     }
 
     fn snapshot(&self) -> Vec<(K, V)> {
-        self.inner
-            .data
-            .iter()
-            .map(|r| (r.key().clone(), r.value().clone()))
-            .collect()
+        self.collect(|key, value| (key.clone(), value.clone()))
     }
 
     fn subscribe_diffs_reactive(
@@ -610,3 +735,6 @@ mod owned_guard_tests;
 
 #[cfg(test)]
 mod lazy_point_cache_tests;
+
+#[cfg(test)]
+mod write_hook_tests;

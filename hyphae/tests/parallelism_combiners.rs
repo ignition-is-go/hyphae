@@ -40,19 +40,17 @@
 //!   switched-in inner's, the result settles STALE. Expected to FAIL
 //!   (stale-inner survivor), though the window is narrow — the generation gate
 //!   plus seq-ordering catches most interleavings.
-#![cfg(feature = "scheduler")]
 
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
 
-use parking_lot::Mutex;
-
 use hyphae::{
     Cell, Gettable, Materialize, MergeExt, MergeMapExt, Mutable, Signal, SwitchMapExt, Watchable,
     batch, scheduler::no_coalesce,
 };
+use parking_lot::Mutex;
 
 /// Width of every wave. Must be >= `PARALLEL_WAVE_THRESHOLD` (8) so the drain
 /// dispatches across rayon; `2 * WIDTH` height-0 ops per batch clears it twice
@@ -270,7 +268,7 @@ fn concurrent_switch_map_latest_inner_wins_same_height() {
             // as the selector, so selector-set and old-inner-set collide in one
             // wave. The old inner is the current inner until `sel` flips to 1.
             let old = old_src.clone().lock();
-            let new = new_src.clone().lock();
+            let new = new_src.lock();
             let result = sel
                 .clone()
                 .switch_map(move |&selector| {

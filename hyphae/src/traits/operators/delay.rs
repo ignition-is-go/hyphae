@@ -1,13 +1,13 @@
-use parking_lot::Mutex;
 use std::{
     collections::BTreeMap,
-    marker::PhantomData,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
+
+use parking_lot::Mutex;
 
 use super::CellValue;
 use crate::{
@@ -17,13 +17,12 @@ use crate::{
     subscription::SubscriptionGuard,
 };
 
-pub struct DelayPipeline<S, T> {
+pub struct DelayPipeline<S> {
     source: S,
     duration: Duration,
-    _t: PhantomData<fn(T)>,
 }
 
-impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for DelayPipeline<S, T> {
+impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for DelayPipeline<S> {
     fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
         let duration = self.duration;
         let first = AtomicBool::new(true);
@@ -61,7 +60,7 @@ impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for DelayPipeline<S
     }
 }
 
-impl<S: PipelineSeed<T>, T: CellValue> PipelineSeed<T> for DelayPipeline<S, T> {
+impl<S: PipelineSeed<T>, T: CellValue> PipelineSeed<T> for DelayPipeline<S> {
     fn seed(&self) -> T {
         self.source.seed()
     }
@@ -69,18 +68,16 @@ impl<S: PipelineSeed<T>, T: CellValue> PipelineSeed<T> for DelayPipeline<S, T> {
 
 #[allow(private_bounds)]
 impl<S: Pipeline<T, Definite> + PipelineSeed<T>, T: CellValue> Pipeline<T, Definite>
-    for DelayPipeline<S, T>
+    for DelayPipeline<S>
 {
 }
 
 #[allow(private_bounds)]
 pub trait DelayExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
-    #[track_caller]
     fn delay(self, duration: Duration) -> impl crate::Materialize<T, Definite> {
         DelayPipeline {
             source: self,
             duration,
-            _t: PhantomData,
         }
     }
 }

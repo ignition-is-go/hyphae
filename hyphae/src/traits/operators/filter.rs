@@ -16,7 +16,7 @@ use std::{marker::PhantomData, sync::Arc};
 
 use super::CellValue;
 use crate::{
-    pipeline::{Definite, Empty, Pipeline, PipelineInstall, Seedness},
+    pipeline::{Definite, Emit, EmitSink, Empty, Pipeline, PipelineInstall, Seedness},
     signal::Signal,
     subscription::SubscriptionGuard,
 };
@@ -26,14 +26,13 @@ use crate::{
 /// The `Sd` parameter records the source's seedness so the trait impls below
 /// can bind it without falling foul of E0207. The output seedness is always
 /// [`Empty`] regardless of source.
-pub struct FilterPipeline<S, T, P, Sd = Definite> {
+pub struct FilterPipeline<S, P, Sd = Definite> {
     source: S,
     predicate: Arc<P>,
-    _t: PhantomData<fn(T)>,
     _sd: PhantomData<fn(Sd)>,
 }
 
-impl<S, T, P, Sd> PipelineInstall<T> for FilterPipeline<S, T, P, Sd>
+impl<S, T, P, Sd> PipelineInstall<T> for FilterPipeline<S, P, Sd>
 where
     S: PipelineInstall<T> + Send + Sync + 'static,
     Sd: Seedness,
@@ -41,23 +40,26 @@ where
     P: Fn(&T) -> bool + Send + Sync + 'static,
 {
     fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
+        self.install_emit(Arc::new(move |emit| callback(&emit.into_signal())))
+    }
+
+    fn install_emit(&self, sink: EmitSink<T>) -> SubscriptionGuard {
         let predicate = Arc::clone(&self.predicate);
-        let wrapped: Arc<dyn Fn(&Signal<T>) + Send + Sync> =
-            Arc::new(move |signal: &Signal<T>| match signal {
-                Signal::Value(v) => {
-                    if (predicate)(v.as_ref()) {
-                        callback(signal);
-                    }
-                }
-                Signal::Complete => callback(&Signal::Complete),
-                Signal::Error(e) => callback(&Signal::Error(e.clone())),
-            });
-        self.source.install(wrapped)
+        self.source.install_emit(Arc::new(move |emit| {
+            let pass = match &emit {
+                Emit::Shared(v) => (predicate)(v),
+                Emit::Owned(v) => (predicate)(v),
+                Emit::Complete | Emit::Error(_) => true,
+            };
+            if pass {
+                sink(emit);
+            }
+        }))
     }
 }
 
 #[allow(private_bounds)]
-impl<S, T, P, Sd> Pipeline<T, Empty> for FilterPipeline<S, T, P, Sd>
+impl<S, T, P, Sd> Pipeline<T, Empty> for FilterPipeline<S, P, Sd>
 where
     S: Pipeline<T, Sd>,
     Sd: Seedness,
@@ -68,7 +70,6 @@ where
 
 #[allow(private_bounds)]
 pub trait FilterExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
-    #[track_caller]
     fn filter<P>(self, predicate: P) -> impl crate::Materialize<T, Empty>
     where
         P: Fn(&T) -> bool + Send + Sync + 'static,
@@ -76,7 +77,6 @@ pub trait FilterExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
         FilterPipeline {
             source: self,
             predicate: Arc::new(predicate),
-            _t: PhantomData,
             _sd: PhantomData,
         }
     }

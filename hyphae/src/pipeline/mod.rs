@@ -29,9 +29,10 @@
 use std::sync::{Arc, OnceLock};
 
 use parking_lot::Mutex;
+use uuid::Uuid;
 
 use crate::{
-    cell::{Cell, CellImmutable, CellMutable},
+    cell::{Cell, CellImmutable, CellMutable, WeakCell},
     signal::Signal,
     subscription::SubscriptionGuard,
     traits::CellValue,
@@ -77,6 +78,40 @@ impl Seedness for Empty {
     type Seed<T: CellValue> = ();
 }
 
+/// A signal passed between fused stages.
+///
+/// A stage that computes a fresh value hands it on by value, so the value is
+/// only put behind an `Arc` where something keeps it (the output cell, or an
+/// operator that retains it). A value that already arrived shared is passed
+/// on as the same `Arc`.
+pub(crate) enum Emit<'a, T> {
+    Shared(&'a Arc<T>),
+    Owned(T),
+    Complete,
+    Error(&'a Arc<anyhow::Error>),
+}
+
+pub(crate) type EmitSink<T> = Arc<dyn for<'a> Fn(Emit<'a, T>) + Send + Sync>;
+
+impl<'a, T> Emit<'a, T> {
+    pub(crate) const fn from_signal(signal: &'a Signal<T>) -> Self {
+        match signal {
+            Signal::Value(value) => Self::Shared(value),
+            Signal::Complete => Self::Complete,
+            Signal::Error(error) => Self::Error(error),
+        }
+    }
+
+    pub(crate) fn into_signal(self) -> Signal<T> {
+        match self {
+            Self::Shared(value) => Signal::Value(Arc::clone(value)),
+            Self::Owned(value) => Signal::value(value),
+            Self::Complete => Signal::Complete,
+            Self::Error(error) => Signal::Error(Arc::clone(error)),
+        }
+    }
+}
+
 /// Crate-private installer hook used by `materialize`.
 ///
 /// `install` subscribes the pipeline's composed callback to the root source
@@ -84,6 +119,131 @@ impl Seedness for Empty {
 /// into the pipeline's output signal type and invokes the provided callback.
 pub(crate) trait PipelineInstall<T: CellValue>: Send + Sync + 'static {
     fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard;
+
+    /// Install a stage-to-stage sink. Stages that only transform or inspect a
+    /// value override this so the value crosses them without an `Arc`.
+    fn install_emit(&self, sink: EmitSink<T>) -> SubscriptionGuard {
+        self.install(Arc::new(move |signal| sink(Emit::from_signal(signal))))
+    }
+
+    /// Install with the materializing cell as the owner of every guard.
+    ///
+    /// An operator that would otherwise allocate its own cell only to forward
+    /// it (`switch_map`, `join`, ...) overrides this to hand its guards to
+    /// `owner` and emit straight into `callback`, so the cell `materialize`
+    /// creates is the operator's output and each value costs one fanout.
+    /// Trailing stages (`map`, `deduped`) deliberately keep this default: run
+    /// ahead of the output cell they would execute once per upstream notify
+    /// instead of once per settled value under `batch`, and a dedupe would see
+    /// coalesced-away intermediates.
+    fn install_into(
+        &self,
+        owner: &Arc<GuardOwner>,
+        callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>,
+    ) {
+        owner.own(self.install(callback));
+    }
+}
+
+/// Holds an installing pipeline's guards until its output cell exists, then
+/// hands them, and every later one, to that cell.
+///
+/// Guards must outlive the install call (a `switch_map` re-knit owns a new
+/// inner guard on every outer value), but the output cell can only be created
+/// once the install has produced its initial value.
+pub(crate) struct GuardOwner {
+    state: Mutex<OwnerState>,
+}
+
+enum OwnerState {
+    Pending(Vec<(Option<Uuid>, SubscriptionGuard)>),
+    Attached(Arc<dyn OwnerCell>),
+}
+
+trait OwnerCell: Send + Sync {
+    fn own(&self, key: Option<Uuid>, guard: SubscriptionGuard) -> bool;
+    fn is_alive(&self) -> bool;
+}
+
+impl<T: CellValue> OwnerCell for WeakCell<T, CellMutable> {
+    fn own(&self, key: Option<Uuid>, guard: SubscriptionGuard) -> bool {
+        let Some(cell) = self.upgrade() else {
+            return false;
+        };
+        match key {
+            Some(key) => cell.own_keyed(key, guard),
+            None => cell.own(guard),
+        }
+        true
+    }
+
+    fn is_alive(&self) -> bool {
+        Self::is_alive(self)
+    }
+}
+
+impl GuardOwner {
+    fn pending() -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new(OwnerState::Pending(Vec::new())),
+        })
+    }
+
+    pub(crate) fn own(&self, guard: SubscriptionGuard) {
+        self.place(None, guard);
+    }
+
+    /// Own `guard` under `key`, replacing (and dropping) the guard held there.
+    /// Returns `false` once the output cell is gone; `guard` is dropped then.
+    pub(crate) fn own_keyed(&self, key: Uuid, guard: SubscriptionGuard) -> bool {
+        self.place(Some(key), guard)
+    }
+
+    /// `false` once the output cell has been dropped.
+    pub(crate) fn is_alive(&self) -> bool {
+        let cell = match &*self.state.lock() {
+            OwnerState::Pending(_) => return true,
+            OwnerState::Attached(cell) => Arc::clone(cell),
+        };
+        cell.is_alive()
+    }
+
+    fn place(&self, key: Option<Uuid>, guard: SubscriptionGuard) -> bool {
+        let mut state = self.state.lock();
+        match &mut *state {
+            OwnerState::Pending(guards) => {
+                let replaced = key.and_then(|key| {
+                    guards
+                        .iter()
+                        .position(|(held, _)| *held == Some(key))
+                        .map(|index| guards.swap_remove(index))
+                });
+                guards.push((key, guard));
+                drop(state);
+                drop(replaced);
+                true
+            }
+            OwnerState::Attached(cell) => {
+                let cell = Arc::clone(cell);
+                drop(state);
+                cell.own(key, guard)
+            }
+        }
+    }
+
+    /// Move the pending guards onto `cell`. The lock is held while they move
+    /// so a concurrent keyed replacement cannot be overtaken by a stale one.
+    fn attach<T: CellValue>(&self, cell: &Cell<T, CellMutable>) {
+        let owner: Arc<dyn OwnerCell> = Arc::new(cell.downgrade());
+        let mut state = self.state.lock();
+        if let OwnerState::Pending(guards) =
+            std::mem::replace(&mut *state, OwnerState::Attached(Arc::clone(&owner)))
+        {
+            for (key, guard) in guards {
+                owner.own(key, guard);
+            }
+        }
+    }
 }
 
 pub(crate) trait PipelineMaterialize<T: CellValue, S: Seedness>: PipelineInstall<T> {
@@ -118,12 +278,16 @@ where
     fn materialize_pipeline(self) -> Cell<Option<T>, CellImmutable> {
         let cell = Cell::<Option<T>, CellMutable>::new(None);
         let weak = cell.downgrade();
-        let callback: Arc<dyn Fn(&Signal<T>) + Send + Sync> = Arc::new(move |signal| {
+        let guard = self.install_emit(Arc::new(move |emit| {
             if let Some(cell) = weak.upgrade() {
-                cell.notify(signal.map(|value| Some(value.clone())));
+                cell.notify(match emit {
+                    Emit::Shared(value) => Signal::value(Some(T::clone(value))),
+                    Emit::Owned(value) => Signal::value(Some(value)),
+                    Emit::Complete => Signal::Complete,
+                    Emit::Error(error) => Signal::Error(Arc::clone(error)),
+                });
             }
-        });
-        let guard = self.install(callback);
+        }));
         cell.own(guard);
         cell.lock()
     }
@@ -154,39 +318,39 @@ impl<T: CellValue> SignalQueue<T> {
         }
     }
 
-    fn latest_value(&self) -> Option<(T, usize)> {
-        match self {
-            Self::One(Signal::Value(value)) => Some((value.as_ref().clone(), 1)),
-            Self::Empty | Self::One(_) => None,
-            Self::Many(signals) => signals
-                .iter()
-                .enumerate()
-                .rev()
-                .find_map(|(index, signal)| match signal {
-                    Signal::Value(value) => Some((value.as_ref().clone(), index.saturating_add(1))),
-                    _ => None,
-                }),
-        }
-    }
-
-    fn discard_prefix(&mut self, count: usize) {
-        if count == 0 {
-            return;
-        }
-        match self {
-            Self::Empty => {}
-            Self::One(_) => *self = Self::Empty,
-            Self::Many(signals) => {
-                let mut tail = signals.split_off(count.min(signals.len()));
-                *self = if tail.is_empty() {
-                    Self::Empty
-                } else if tail.len() == 1 {
-                    Self::One(tail.remove(0))
-                } else {
-                    Self::Many(tail)
-                };
+    /// Remove the latest value and every signal before it, returning that
+    /// value. Signals after it stay queued for activation.
+    fn take_latest_value(&mut self) -> Option<T> {
+        let value = match self.take() {
+            Self::One(Signal::Value(value)) => value,
+            Self::Empty => return None,
+            one @ Self::One(_) => {
+                *self = one;
+                return None;
             }
-        }
+            Self::Many(mut signals) => {
+                let Some(index) = signals
+                    .iter()
+                    .rposition(|signal| matches!(signal, Signal::Value(_)))
+                else {
+                    *self = Self::Many(signals);
+                    return None;
+                };
+                let mut tail = signals.split_off(index.saturating_add(1));
+                *self = match tail.len() {
+                    0 => Self::Empty,
+                    1 => tail.pop().map_or(Self::Empty, Self::One),
+                    _ => Self::Many(tail),
+                };
+                match signals.pop() {
+                    Some(Signal::Value(value)) => value,
+                    _ => return None,
+                }
+            }
+        };
+        // The emitter has returned, so the queue usually holds the only
+        // reference and the value moves out without a clone.
+        Some(Arc::try_unwrap(value).unwrap_or_else(|value| T::clone(&value)))
     }
 
     const fn take(&mut self) -> Self {
@@ -227,21 +391,41 @@ struct InstallState<T> {
 /// created the cell from `initial`. Activation then publishes any signals that
 /// arrived after the chosen initial value before switching atomically to live
 /// forwarding. This closes the former `seed(); install()` lost-update window.
-pub(crate) struct PreparedInstall<T: CellValue> {
+pub(crate) struct PreparedInstall<T: CellValue, G = SubscriptionGuard> {
     initial: T,
     state: Arc<InstallState<T>>,
-    guard: SubscriptionGuard,
+    guard: G,
 }
 
-impl<T: CellValue> PreparedInstall<T> {
+impl<T: CellValue, G> PreparedInstall<T, G> {
     pub(crate) const fn initial(&self) -> &T {
         &self.initial
     }
 
-    pub(crate) fn activate(
-        self,
-        callback: &Arc<dyn Fn(&Signal<T>) + Send + Sync>,
-    ) -> SubscriptionGuard {
+    /// Separate the initial value so a caller can move it into its cell.
+    pub(crate) fn into_parts(self) -> (T, PendingActivation<T, G>) {
+        (
+            self.initial,
+            PendingActivation {
+                state: self.state,
+                guard: self.guard,
+            },
+        )
+    }
+
+    pub(crate) fn activate(self, callback: &Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> G {
+        self.into_parts().1.activate(callback)
+    }
+}
+
+/// A [`PreparedInstall`] whose initial value has been taken.
+pub(crate) struct PendingActivation<T: CellValue, G> {
+    state: Arc<InstallState<T>>,
+    guard: G,
+}
+
+impl<T: CellValue, G> PendingActivation<T, G> {
+    pub(crate) fn activate(self, callback: &Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> G {
         let mut pending = {
             let mut state = self.state.capture.lock();
             let pending = match &mut *state {
@@ -303,18 +487,33 @@ pub trait PipelineSeed<T: CellValue>: PipelineInstall<T> {
     where
         Self: Sized,
     {
-        let prepared = prepare_install(&self);
-        let cell = Cell::<T, CellMutable>::new(prepared.initial().clone());
-        let weak = cell.downgrade();
-        let callback: Arc<dyn Fn(&Signal<T>) + Send + Sync> = Arc::new(move |signal| {
-            if let Some(cell) = weak.upgrade() {
-                cell.notify(signal.clone());
-            }
-        });
-        let guard = prepared.activate(&callback);
-        cell.own(guard);
-        cell.lock()
+        materialize_mutable(&self).lock()
     }
+}
+
+/// Install `pipeline` into a new cell that owns its guards.
+///
+/// The cell is the pipeline's output: an operator overriding
+/// [`PipelineInstall::install_into`] emits into it directly, so no forwarding
+/// cell sits between the operator and its subscribers.
+pub(crate) fn materialize_mutable<P, T>(pipeline: &P) -> Cell<T, CellMutable>
+where
+    P: PipelineSeed<T>,
+    T: CellValue,
+{
+    let owner = GuardOwner::pending();
+    let prepared = prepare(pipeline, |callback| pipeline.install_into(&owner, callback));
+    let (initial, prepared) = prepared.into_parts();
+    let cell = Cell::<T, CellMutable>::new(initial);
+    owner.attach(&cell);
+    let weak = cell.downgrade();
+    let callback: Arc<dyn Fn(&Signal<T>) + Send + Sync> = Arc::new(move |signal| {
+        if let Some(cell) = weak.upgrade() {
+            cell.notify(signal.clone());
+        }
+    });
+    prepared.activate(&callback);
+    cell
 }
 
 /// Subscribe before choosing the materialized initial value.
@@ -329,12 +528,23 @@ where
     P: PipelineSeed<T>,
     T: CellValue,
 {
+    prepare(pipeline, |callback| pipeline.install(callback))
+}
+
+fn prepare<P, T, G>(
+    pipeline: &P,
+    install: impl FnOnce(Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> G,
+) -> PreparedInstall<T, G>
+where
+    P: PipelineSeed<T>,
+    T: CellValue,
+{
     let state = Arc::new(InstallState {
         capture: Mutex::new(InstallCapture::Capturing(SignalQueue::Empty)),
         live: OnceLock::new(),
     });
     let capture = state.clone();
-    let guard = pipeline.install(Arc::new(move |signal| {
+    let guard = install(Arc::new(move |signal| {
         if let Some(callback) = capture.live.get() {
             callback(signal);
             return;
@@ -358,35 +568,19 @@ where
         }
     }));
 
-    let captured_initial = {
-        let state = state.capture.lock();
-        match &*state {
+    let take_captured = || {
+        let mut state = state.capture.lock();
+        match &mut *state {
             InstallCapture::Capturing(signals) | InstallCapture::Activating(signals) => {
-                signals.latest_value()
+                signals.take_latest_value()
             }
             InstallCapture::Live => None,
         }
     };
-
-    let (initial, initial_boundary) = captured_initial.unwrap_or_else(|| {
+    let initial = take_captured().unwrap_or_else(|| {
         let fallback = pipeline.seed();
-        let state = state.capture.lock();
-        match &*state {
-            InstallCapture::Capturing(signals) | InstallCapture::Activating(signals) => {
-                signals.latest_value().unwrap_or((fallback, 0))
-            }
-            InstallCapture::Live => (fallback, 0),
-        }
+        take_captured().unwrap_or(fallback)
     });
-
-    {
-        let mut state = state.capture.lock();
-        if let InstallCapture::Capturing(signals) | InstallCapture::Activating(signals) =
-            &mut *state
-        {
-            signals.discard_prefix(initial_boundary);
-        }
-    }
 
     PreparedInstall {
         initial,
@@ -434,7 +628,6 @@ where
     T: CellValue,
     S: Seedness,
 {
-    #[track_caller]
     fn materialize(self) -> Cell<S::Materialized<T>, CellImmutable> {
         self.materialize_pipeline()
     }

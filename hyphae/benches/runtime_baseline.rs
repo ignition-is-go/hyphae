@@ -92,7 +92,7 @@ fn percentile(samples: &mut [Duration], numerator: usize) -> u128 {
         .saturating_sub(1)
         .saturating_mul(numerator)
         .checked_div(100)
-        .map_or(0, |value| value);
+        .unwrap_or(0);
     samples.get(index).map_or(0, Duration::as_nanos)
 }
 
@@ -105,7 +105,7 @@ fn raw_ns(samples: &[Duration]) -> String {
 }
 
 fn usize_to_u64(value: usize) -> u64 {
-    u64::try_from(value).map_or(u64::MAX, |converted| converted)
+    u64::try_from(value).unwrap_or(u64::MAX)
 }
 
 fn report(workload: &str, phase: &str, size: usize, samples: &[Duration]) {
@@ -217,7 +217,7 @@ fn wide_diamond(cfg: &Config) -> Samples {
         let offsets = n
             .wrapping_mul(n.saturating_sub(1))
             .checked_div(2)
-            .map_or(0, |value| value);
+            .unwrap_or(0);
         assert_eq!(output, n.wrapping_mul(input).wrapping_add(offsets));
         assert_eq!(
             solves.load(Ordering::Relaxed),

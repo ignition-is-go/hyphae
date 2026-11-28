@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! Static type substrate for an arbitrary-length left-join region.
 //!
 //! A join region is described and installed without tuples (and therefore
@@ -19,9 +17,7 @@ mod stage_runtime;
 
 pub use declaration::{
     CollectProject, DirectProject, JCons, JNil, JoinStage, LastStage, MapLast, OwnedIndex, Push,
-    ReplaceLastProject, SharedRelationIndex, StageList, StageProject, ThenMap, foreign_map_key,
-    map_key,
+    ReplaceLastProject, SharedRelationIndex, StageList, StageProject, ThenMap, collect_matches,
+    foreign_map_key, map_key,
 };
 pub use plan::JoinRegion;
-
-pub use declaration::collect_matches;

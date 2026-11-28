@@ -18,9 +18,8 @@
 //!   [`IntervalTickSource`] wraps `platform::spawn_interval`. A future
 //!   `PllTickSource` will slew this grid to phase-lock to PTP.
 //!
-//! Nothing here changes hyphae's synchronous default. The traits are consumed
-//! only by the opt-in [`crate::scheduler`] (both gated behind the `scheduler`
-//! feature); the clock is intended to be **handle-scoped**, not a process
+//! Nothing here changes how an unbatched write propagates. The traits are
+//! consumed only by [`crate::scheduler`]; the clock is intended to be **handle-scoped**, not a process
 //! global, so multiple engines can run on independent timebases.
 
 use std::{
@@ -122,13 +121,12 @@ impl Clock for MonotonicClock {
 
 /// Default [`TickSource`]: a fixed-period interval over `platform::spawn_interval`.
 ///
-/// Each `on_tick` registration spawns one interval timer (native: a thread with
-/// `spin_sleep` when `precise`; wasm: a `setTimeout` loop, `precise` ignored).
+/// Each `on_tick` registration registers one interval timer (native: the shared
+/// timer reactor; wasm: a `setTimeout` loop).
 /// Ticks are stamped with the source's [`Clock`] — [`MonotonicClock`] by
 /// default, or an injected disciplined clock via [`with_clock`](Self::with_clock).
 pub struct IntervalTickSource {
     period: Duration,
-    precise: bool,
     clock: Arc<dyn Clock>,
 }
 
@@ -138,16 +136,8 @@ impl IntervalTickSource {
     pub fn new(period: Duration) -> Self {
         Self {
             period,
-            precise: false,
             clock: Arc::new(MonotonicClock::new()),
         }
-    }
-
-    /// Enable sub-millisecond precision (native only; ignored on wasm).
-    #[must_use]
-    pub const fn precise(mut self) -> Self {
-        self.precise = true;
-        self
     }
 
     /// Stamp ticks with an injected clock (e.g. a PTP-disciplined one) instead
@@ -164,7 +154,7 @@ impl TickSource for IntervalTickSource {
         let alive = Arc::new(AtomicBool::new(true));
         let alive_timer = alive.clone();
         let clock = self.clock.clone();
-        crate::platform::spawn_interval(self.period, self.precise, move |count| {
+        crate::platform::spawn_interval(self.period, move |count| {
             // Stop the timer once the guard is gone.
             if !alive_timer.load(Ordering::Relaxed) {
                 return false;

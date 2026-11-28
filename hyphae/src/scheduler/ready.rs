@@ -154,13 +154,17 @@ impl ManyGroup {
         self.scheduled = scheduled;
     }
 
-    fn into_runs(self) -> Vec<PendingRun> {
-        self.runs.into_iter().flatten().collect()
-    }
-
     fn into_single(mut self) -> Option<PendingRun> {
         self.runs.iter_mut().find_map(Option::take)
     }
+}
+
+/// One height's ops, flattened: `ends[i]` is the exclusive end in `runs` of
+/// the `i`th cell's group. Reused across waves so popping does not allocate.
+#[derive(Default)]
+pub(super) struct Wave {
+    pub(super) runs: Vec<PendingRun>,
+    pub(super) ends: Vec<usize>,
 }
 
 enum Group {
@@ -169,7 +173,7 @@ enum Group {
 }
 
 pub(super) struct ReadyQueue {
-    frontier: Frontier<(u64, Uuid), Group>,
+    frontier: Frontier<Group>,
     scheduled: FxHashMap<Uuid, u64>,
     many: Option<Box<ManyArena>>,
 }
@@ -335,44 +339,38 @@ impl ReadyQueue {
             .get_or_insert_with(|| Box::new(ManyArena::default()))
     }
 
+    /// Moves every op at the minimum height into `wave`, grouped by cell id,
+    /// each group in arrival order. Returns `false` when the frontier is empty.
     #[inline]
-    pub(super) fn pop_min_height_groups(&mut self) -> Option<Vec<Vec<PendingRun>>> {
-        let target = self
-            .frontier
-            .first_key_value()
-            .map(|(&(height, _), _)| height)?;
-        let mut groups = Vec::new();
-
-        while self
-            .frontier
-            .first_key_value()
-            .is_some_and(|(&(height, _), _)| height == target)
-        {
-            let Some(((height, id), group)) = self.frontier.pop_first() else {
-                break;
-            };
-            if self.scheduled.get(&id) == Some(&height) {
-                self.scheduled.remove(&id);
+    pub(super) fn pop_min_height_into(&mut self, wave: &mut Wave) -> bool {
+        let Self {
+            frontier,
+            scheduled,
+            many,
+            ..
+        } = self;
+        let drained = frontier.drain_min(|height, id, group| {
+            if scheduled.get(&id) == Some(&height) {
+                scheduled.remove(&id);
             }
-            let runs = match group {
-                Group::One(run) => vec![run],
-                Group::Many(handle) => self
-                    .many
-                    .as_deref_mut()
-                    .and_then(|many| many.take(*handle))
-                    .map(ManyGroup::into_runs)
-                    .unwrap_or_default(),
-            };
-            if !runs.is_empty() {
-                groups.push(runs);
+            let start = wave.runs.len();
+            match group {
+                Group::One(run) => wave.runs.push(run),
+                Group::Many(handle) => {
+                    if let Some(many) = many.as_deref_mut().and_then(|many| many.take(*handle)) {
+                        wave.runs.extend(many.runs.into_iter().flatten());
+                    }
+                }
             }
-        }
-
-        (!groups.is_empty()).then_some(groups)
+            if wave.runs.len() > start {
+                wave.ends.push(wave.runs.len());
+            }
+        });
+        drained.is_some() && !wave.ends.is_empty()
     }
 
     #[inline]
-    pub(super) fn is_empty(&self) -> bool {
+    pub(super) const fn is_empty(&self) -> bool {
         self.frontier.is_empty()
     }
 
@@ -466,11 +464,20 @@ mod tests {
         })
     }
 
-    fn run(groups: Vec<Vec<PendingRun>>) {
-        for group in groups {
-            for op in group {
-                op();
-            }
+    fn run(wave: Wave) {
+        for op in wave.runs {
+            op();
+        }
+    }
+
+    trait PopWave {
+        fn pop_min_height_groups(&mut self) -> Option<Wave>;
+    }
+
+    impl PopWave for ReadyQueue {
+        fn pop_min_height_groups(&mut self) -> Option<Wave> {
+            let mut wave = Wave::default();
+            self.pop_min_height_into(&mut wave).then_some(wave)
         }
     }
 
@@ -508,12 +515,14 @@ mod tests {
             self.order.insert((height, id, sequence), payload);
         }
 
-        fn pop(&mut self) -> Option<Vec<u16>> {
+        /// The next height's payloads, one list per cell in arrival order,
+        /// the lists sorted: cells at one height owe each other no order.
+        fn pop(&mut self) -> Option<Vec<Vec<u16>>> {
             let target = self
                 .order
                 .first_key_value()
                 .map(|(&(height, _, _), _)| height)?;
-            let mut payloads = Vec::new();
+            let mut groups: Vec<(Uuid, Vec<u16>)> = Vec::new();
             while self
                 .order
                 .first_key_value()
@@ -529,9 +538,17 @@ mod tests {
                 {
                     self.scheduled.remove(&id);
                 }
-                payloads.push(payload);
+                match groups.last_mut() {
+                    Some((last, payloads)) if *last == id => payloads.push(payload),
+                    _ => groups.push((id, vec![payload])),
+                }
             }
-            Some(payloads)
+            let mut groups = groups
+                .into_iter()
+                .map(|(_, payloads)| payloads)
+                .collect::<Vec<_>>();
+            groups.sort();
+            Some(groups)
         }
     }
 
@@ -542,6 +559,25 @@ mod tests {
                 seen.push(value);
             }
         })
+    }
+
+    /// Run `wave` and return what each of its cells recorded, in the shape
+    /// [`ReferenceQueue::pop`] gives.
+    fn run_groups(wave: Wave, seen: &Arc<Mutex<Vec<u16>>>) -> Vec<Vec<u16>> {
+        let ends = wave.ends.clone();
+        run(wave);
+        let payloads = drain_u16(seen);
+        let mut start = 0;
+        let mut groups = ends
+            .into_iter()
+            .map(|end| {
+                let group = payloads.get(start..end).unwrap_or_default().to_vec();
+                start = end;
+                group
+            })
+            .collect::<Vec<_>>();
+        groups.sort();
+        groups
     }
 
     fn drain_u16(seen: &Arc<Mutex<Vec<u16>>>) -> Vec<u16> {
@@ -652,7 +688,7 @@ mod tests {
         let Some(groups) = groups else {
             return;
         };
-        assert_eq!(groups.len(), 1);
+        assert_eq!(groups.ends.len(), 1);
         run(groups);
         assert_eq!(snapshot(&seen), (0..16).collect::<Vec<_>>());
     }
@@ -713,7 +749,6 @@ mod tests {
             reference.enqueue(id, height, true, payload);
             queue.assert_consistent();
         }
-        assert!(queue.frontier.is_large());
 
         for (position, &id) in ids.iter().take(5).enumerate() {
             let height = u64::try_from(position % 4).unwrap_or(0);
@@ -744,12 +779,10 @@ mod tests {
             queue.assert_consistent();
             assert!(groups.is_some(), "wide queue drained before reference");
             if let Some(groups) = groups {
-                run(groups);
+                assert_eq!(run_groups(groups, &seen), expected);
             }
-            assert_eq!(drain_u16(&seen), expected);
         }
         assert!(queue.is_empty());
-        assert!(!queue.frontier.is_large());
 
         let id = Uuid::from_u128(100);
         assert!(
@@ -757,7 +790,6 @@ mod tests {
                 .enqueue(id, 1, true, recorded_u16(251, &seen))
                 .is_none()
         );
-        assert!(!queue.frontier.is_large());
         queue.assert_consistent();
         if let Some(groups) = queue.pop_min_height_groups() {
             queue.assert_consistent();
@@ -793,8 +825,7 @@ mod tests {
                 queue.assert_consistent();
                 match (expected, actual) {
                     (Some(expected), Some(actual)) => {
-                        run(actual);
-                        assert_eq!(drain_u16(&seen), expected);
+                        assert_eq!(run_groups(actual, &seen), expected);
                     }
                     (None, None) => {}
                     (expected, actual) => {
@@ -811,8 +842,7 @@ mod tests {
             queue.assert_consistent();
             match (expected, actual) {
                 (Some(expected), Some(actual)) => {
-                    run(actual);
-                    assert_eq!(drain_u16(&seen), expected);
+                    assert_eq!(run_groups(actual, &seen), expected);
                 }
                 (None, None) => break,
                 (expected, actual) => {

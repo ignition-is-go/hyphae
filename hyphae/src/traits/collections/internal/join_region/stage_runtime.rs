@@ -2,17 +2,16 @@ use std::{collections::hash_map::Entry, hash::Hash, marker::PhantomData, sync::A
 
 use rustc_hash::FxHashMap;
 
-use crate::{
-    cell_map::MapDiff,
-    traits::{CellValue, RightJoinKey},
-};
-
 use super::{
     super::{
         join_runtime::{RelationIndex, RelationIndexStorage},
         ordered_set::OrderedSet,
     },
     declaration::{JCons, JNil, StageProject},
+};
+use crate::{
+    cell_map::MapDiff,
+    traits::{CellValue, RightJoinKey},
 };
 
 /// Executable state for one stage of an arbitrary-length join region.
@@ -41,7 +40,7 @@ pub(super) struct StageRuntimeState<
 {
     left_rows: FxHashMap<K, I>,
     left_join_keys: FxHashMap<K, JK>,
-    join_to_left: FxHashMap<JK, Vec<K>>,
+    join_to_left: FxHashMap<JK, IndexMembers<K>>,
     right: RI,
     output_cache: FxHashMap<K, O>,
     left_key: Arc<LeftKey>,
@@ -50,29 +49,7 @@ pub(super) struct StageRuntimeState<
     _right_types: PhantomData<fn() -> (RK, RV)>,
 }
 
-fn add_index_member<I, M>(index: &mut FxHashMap<I, Vec<M>>, index_key: I, member: M)
-where
-    I: Hash + Eq,
-    M: Eq,
-{
-    let members = index.entry(index_key).or_default();
-    if !members.contains(&member) {
-        members.push(member);
-    }
-}
-
-fn remove_index_member<I, M>(index: &mut FxHashMap<I, Vec<M>>, index_key: &I, member: &M)
-where
-    I: Hash + Eq,
-    M: Eq,
-{
-    if let Some(members) = index.get_mut(index_key) {
-        members.retain(|candidate| candidate != member);
-        if members.is_empty() {
-            index.remove(index_key);
-        }
-    }
-}
+use super::super::index_members::{IndexMembers, add_index_member, remove_index_member};
 
 fn upsert_relation<RK, RV, JK, FR>(
     index: &mut RelationIndex<RK, RV, JK>,
@@ -120,28 +97,6 @@ fn remove_relation<RK, RV, JK>(
         changed.insert(join_key);
     }
     index.rows.remove(key);
-}
-
-impl<K, I, RK, RV, JK, O, LeftKey, RightKeyFn, Project>
-    StageRuntimeState<K, I, RK, RV, JK, O, LeftKey, RightKeyFn, Project>
-where
-    K: Hash + Eq + CellValue,
-    I: CellValue,
-    RK: Hash + Eq + CellValue,
-    RV: CellValue,
-    JK: Hash + Eq + CellValue,
-    O: CellValue,
-    LeftKey: Fn(&K, &I) -> JK,
-    RightKeyFn: RightJoinKey<RK, RV, JK>,
-    Project: StageProject<K, I, RK, RV, O>,
-{
-    pub(super) fn new(left_key: LeftKey, right_key: RightKeyFn, project: Project) -> Self {
-        Self::with_index(left_key, right_key, project, RelationIndex::default())
-    }
-
-    pub(super) fn apply_right_diff(&mut self, diff: &MapDiff<RK, RV>) -> Vec<MapDiff<K, O>> {
-        self.apply_right_diff_policy(diff, true)
-    }
 }
 
 impl<K, I, RK, RV, JK, O, LeftKey, RightKeyFn, Project, RI>

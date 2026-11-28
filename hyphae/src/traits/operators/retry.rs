@@ -1,6 +1,5 @@
 use std::{
     any::Any,
-    marker::PhantomData,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -18,10 +17,9 @@ use crate::{
     subscription::SubscriptionGuard,
 };
 
-pub struct RetryPipeline<S, T, P> {
+pub struct RetryPipeline<S, P> {
     source: Arc<S>,
     policy: Arc<P>,
-    _type: PhantomData<fn() -> T>,
 }
 
 fn install_attempt<S, T, P>(
@@ -84,7 +82,7 @@ fn install_attempt<S, T, P>(
     }
 }
 
-impl<S, T, P> PipelineInstall<T> for RetryPipeline<S, T, P>
+impl<S, T, P> PipelineInstall<T> for RetryPipeline<S, P>
 where
     S: PipelineInstall<T> + PipelineSeed<T>,
     T: CellValue,
@@ -107,7 +105,7 @@ where
         output.subscribe(move |signal| callback(signal))
     }
 }
-impl<S, T, P> PipelineSeed<T> for RetryPipeline<S, T, P>
+impl<S, T, P> PipelineSeed<T> for RetryPipeline<S, P>
 where
     S: PipelineSeed<T>,
     T: CellValue,
@@ -117,7 +115,7 @@ where
         self.source.seed()
     }
 }
-impl<S, T, P> Pipeline<T, Definite> for RetryPipeline<S, T, P>
+impl<S, T, P> Pipeline<T, Definite> for RetryPipeline<S, P>
 where
     S: Pipeline<T, Definite> + PipelineSeed<T>,
     T: CellValue,
@@ -130,7 +128,6 @@ pub trait RetryExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
         RetryPipeline {
             source: Arc::new(self),
             policy: Arc::new(move |_: &anyhow::Error, attempt| attempt < max_attempts),
-            _type: PhantomData,
         }
     }
     fn retry_when<F>(self, predicate: F) -> impl crate::Materialize<T, Definite>
@@ -140,7 +137,6 @@ pub trait RetryExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
         RetryPipeline {
             source: Arc::new(self),
             policy: Arc::new(move |error: &anyhow::Error, attempt| predicate(error, attempt)),
-            _type: PhantomData,
         }
     }
 }

@@ -11,7 +11,6 @@ use crate::{
 ///
 /// Returns `None` if the iterator is empty.
 /// The thread automatically stops when the cell is dropped.
-#[track_caller]
 pub fn from_iter_with_delay<T, I>(iter: I, delay: Duration) -> Option<Cell<T, CellImmutable>>
 where
     T: CellValue,
@@ -24,7 +23,7 @@ where
 
     // Use weak ref so the timer doesn't keep the cell alive
     let weak = cell.downgrade();
-    platform::spawn_interval(delay, false, move |_count| {
+    platform::spawn_interval(delay, move |_count| {
         if let Some(value) = iter.next() {
             // Exit when cell is dropped
             let Some(c) = weak.upgrade() else {

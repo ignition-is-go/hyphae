@@ -4,10 +4,9 @@
 //! [`MapQuery`] operators. Call [`MapQuery::materialize`] to compile a plan
 //! into a subscribable [`CellMap`](crate::CellMap).
 
-use std::{hash::Hash, marker::PhantomData};
+use std::hash::Hash;
 
 use super::map_values::FilterMapValuesPlan;
-
 use crate::{
     map_query::{
         BuildQueryRuntime, MapQuery,
@@ -19,7 +18,7 @@ use crate::{
     },
 };
 
-impl<S, K, V, F> PlanProperties for SelectPlan<S, K, V, F>
+impl<S, K, V, F> PlanProperties for SelectPlan<S, F>
 where
     S: MapQuery<Key = K, Value = V> + PlanProperties,
     K: Hash + Eq + CellValue,
@@ -38,19 +37,12 @@ where
 ///
 /// Not [`Clone`]: cloning a plan would silently duplicate filter work;
 /// share by materializing once.
-pub struct SelectPlan<S, K, V, F>
-where
-    S: MapQuery<Key = K, Value = V>,
-    K: Hash + Eq + CellValue,
-    V: CellValue,
-    F: Fn(&K, &V) -> bool + Send + Sync + 'static,
-{
+pub struct SelectPlan<S, F> {
     pub(crate) source: S,
     pub(crate) predicate: F,
-    pub(crate) _types: PhantomData<fn() -> (K, V)>,
 }
 
-impl<S, K, V, F> SelectPlan<S, K, V, F>
+impl<S, K, V, F> SelectPlan<S, F>
 where
     S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
@@ -61,7 +53,7 @@ where
     pub fn map_values<U, G>(
         self,
         g: G,
-    ) -> FilterMapValuesPlan<S, K, V, U, impl Fn(&K, &V) -> Option<U> + Send + Sync + 'static>
+    ) -> FilterMapValuesPlan<S, impl Fn(&K, &V) -> Option<U> + Send + Sync + 'static>
     where
         U: CellValue,
         G: Fn(&K, &V) -> U + Send + Sync + 'static,
@@ -69,8 +61,7 @@ where
         let predicate = self.predicate;
         FilterMapValuesPlan {
             source: self.source,
-            f: move |key, value| predicate(key, value).then(|| g(key, value)),
-            _types: PhantomData,
+            f: move |key: &K, value: &V| predicate(key, value).then(|| g(key, value)),
         }
     }
 
@@ -78,7 +69,7 @@ where
     pub fn filter_map_values<U, G>(
         self,
         g: G,
-    ) -> FilterMapValuesPlan<S, K, V, U, impl Fn(&K, &V) -> Option<U> + Send + Sync + 'static>
+    ) -> FilterMapValuesPlan<S, impl Fn(&K, &V) -> Option<U> + Send + Sync + 'static>
     where
         U: CellValue,
         G: Fn(&K, &V) -> Option<U> + Send + Sync + 'static,
@@ -86,13 +77,12 @@ where
         let predicate = self.predicate;
         FilterMapValuesPlan {
             source: self.source,
-            f: move |key, value| predicate(key, value).then(|| g(key, value)).flatten(),
-            _types: PhantomData,
+            f: move |key: &K, value: &V| predicate(key, value).then(|| g(key, value)).flatten(),
         }
     }
 }
 
-impl<S, K, V, F> BuildQueryRuntime<K, V> for SelectPlan<S, K, V, F>
+impl<S, K, V, F> BuildQueryRuntime<K, V> for SelectPlan<S, F>
 where
     S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
@@ -115,7 +105,7 @@ where
 }
 
 #[allow(private_bounds)]
-impl<S, K, V, F> MapQuery for SelectPlan<S, K, V, F>
+impl<S, K, V, F> MapQuery for SelectPlan<S, F>
 where
     S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
@@ -143,11 +133,10 @@ where
     /// Filters rows by value.
     ///
     /// `predicate(&value)` decides whether a row is present in the output map.
-    #[track_caller]
     fn select<F>(
         self,
         predicate: F,
-    ) -> SelectPlan<Self, K, V, impl Fn(&K, &V) -> bool + Send + Sync + 'static>
+    ) -> SelectPlan<Self, impl Fn(&K, &V) -> bool + Send + Sync + 'static>
     where
         F: Fn(&V) -> bool + Send + Sync + 'static,
     {
@@ -155,20 +144,17 @@ where
         SelectPlan {
             source: self,
             predicate,
-            _types: PhantomData,
         }
     }
 
     /// Filters rows using both the key and value.
-    #[track_caller]
-    fn select_by<F>(self, predicate: F) -> SelectPlan<Self, K, V, F>
+    fn select_by<F>(self, predicate: F) -> SelectPlan<Self, F>
     where
         F: Fn(&K, &V) -> bool + Send + Sync + 'static,
     {
         SelectPlan {
             source: self,
             predicate,
-            _types: PhantomData,
         }
     }
 }

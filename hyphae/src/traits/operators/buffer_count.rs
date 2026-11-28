@@ -1,9 +1,6 @@
-use std::{
-    marker::PhantomData,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-    },
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use crossbeam::queue::SegQueue;
@@ -16,13 +13,12 @@ use crate::{
 };
 
 /// Pipeline node representing `source.buffer_count(count)`.
-pub struct BufferCountPipeline<S, T> {
+pub struct BufferCountPipeline<S> {
     source: S,
     count: usize,
-    _t: PhantomData<fn(T)>,
 }
 
-impl<S, T> PipelineInstall<Vec<T>> for BufferCountPipeline<S, T>
+impl<S, T> PipelineInstall<Vec<T>> for BufferCountPipeline<S>
 where
     S: PipelineInstall<T> + Send + Sync + 'static,
     T: CellValue,
@@ -66,7 +62,7 @@ where
     }
 }
 
-impl<S, T> PipelineSeed<Vec<T>> for BufferCountPipeline<S, T>
+impl<S, T> PipelineSeed<Vec<T>> for BufferCountPipeline<S>
 where
     S: PipelineInstall<T>,
     T: CellValue,
@@ -77,7 +73,7 @@ where
 }
 
 #[allow(private_bounds)]
-impl<S, T> Pipeline<Vec<T>, Definite> for BufferCountPipeline<S, T>
+impl<S, T> Pipeline<Vec<T>, Definite> for BufferCountPipeline<S>
 where
     S: Pipeline<T, Definite>,
     T: CellValue,
@@ -106,7 +102,6 @@ pub trait BufferCountExt<T: CellValue>: Pipeline<T, Definite> {
         BufferCountPipeline {
             source: self,
             count,
-            _t: PhantomData,
         }
     }
 }

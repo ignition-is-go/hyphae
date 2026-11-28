@@ -11,16 +11,14 @@
 //! shares one drain. Assertions run after every thread has joined, so the
 //! scheduler is quiescent (the last batch to close at depth 0 drains to
 //! completion) and every graph is fully settled.
-#![cfg(feature = "scheduler")]
 
 use std::{sync::Arc, thread};
-
-use parking_lot::Mutex;
 
 use hyphae::{
     Cell, CellMutable, JoinExt, MapExt, Materialize, Mutable, Signal, Watchable, batch,
     scheduler::no_coalesce,
 };
+use parking_lot::Mutex;
 
 const THREADS: usize = 8;
 const ITERS: i64 = 4_000;

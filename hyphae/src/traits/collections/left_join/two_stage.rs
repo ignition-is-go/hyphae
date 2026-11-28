@@ -1,5 +1,9 @@
 use std::{hash::Hash, marker::PhantomData};
 
+use super::{
+    DirectJoinProjection, JoinProjection, JoinProjectionProject, JoinedValuesPlan, LeftJoinPlan,
+    RelationPlan, TupleJoinProjection,
+};
 use crate::{
     map_query::{
         BuildQueryRuntime, MapQuery,
@@ -8,21 +12,18 @@ use crate::{
     subscription::SubscriptionGuard,
     traits::{
         CellValue, ForeignKeyRelation, IdFor, OptionalRightKey, RequiredRightKey, RightJoinKey,
-        collections::internal::{
-            join_region::{
-                DirectProject, JCons, JNil, JoinRegion, JoinStage, SharedRelationIndex,
-                collect_matches,
+        collections::{
+            internal::{
+                join_region::{
+                    DirectProject, JCons, JNil, JoinRegion, JoinStage, SharedRelationIndex,
+                    collect_matches,
+                },
+                join_runtime::install_two_keyed_join_runtime_via_query,
             },
-            join_runtime::install_two_keyed_join_runtime_via_query,
+            map_values::MapValuesPlan,
         },
     },
 };
-
-use super::{
-    DirectJoinProjection, JoinProjection, JoinProjectionProject, JoinedValuesPlan, LeftJoinPlan,
-    RelationPlan, TupleJoinProjection,
-};
-use crate::traits::collections::map_values::MapValuesPlan;
 
 #[allow(private_bounds)]
 impl<
@@ -50,14 +51,8 @@ impl<
 >
     RelationPlan<
         JoinedValuesPlan<
-            RelationPlan<JoinedValuesPlan<L, R1, LK, LV, RK1, RV1, JK1, MV1, FL1, FR1, FM1>, Rel1>,
+            RelationPlan<JoinedValuesPlan<L, R1, FL1, FR1, FM1>, Rel1>,
             R2,
-            LK,
-            MV1,
-            RK2,
-            RV2,
-            JK2,
-            MV2,
             FL2,
             FR2,
             FM2,
@@ -101,7 +96,6 @@ where
                 LV,
                 RK1,
                 RV1,
-                JK1,
                 MV1,
                 FL1,
                 FR1,
@@ -115,7 +109,6 @@ where
                     MV1,
                     RK2,
                     RV2,
-                    JK2,
                     MV2,
                     FL2,
                     FR2,
@@ -129,7 +122,6 @@ where
                         MV2,
                         R3::Key,
                         Rel3::Child,
-                        LK,
                         (MV2, Vec<Rel3::Child>),
                         fn(&LK, &MV2) -> LK,
                         OptionalRightKey<fn(&R3::Key, &Rel3::Child) -> Option<LK>>,
@@ -222,42 +214,10 @@ where
 ///
 /// The named shape lets installation coordinate all three roots through one
 /// state machine instead of installing two independent join runtimes.
-pub struct TwoLeftJoinPlan<
-    L,
-    R1,
-    R2,
-    LK,
-    LV,
-    RK1,
-    RV1,
-    JK1,
-    MV,
-    RK2,
-    RV2,
-    JK2,
-    FL1,
-    FR1,
-    FM1,
-    FL2,
-    FR2,
-> where
-    L: MapQuery<Key = LK, Value = LV>,
-    R1: MapQuery<Key = RK1, Value = RV1>,
-    R2: MapQuery<Key = RK2, Value = RV2>,
-    LK: Hash + Eq + CellValue,
-    LV: CellValue,
-    RK1: Hash + Eq + CellValue,
-    RV1: CellValue,
-    JK1: Hash + Eq + CellValue,
+pub struct TwoLeftJoinPlan<L, R1, R2, MV, JK2, FL1, FR1, FM1, FL2, FR2>
+where
     MV: CellValue,
-    RK2: Hash + Eq + CellValue,
-    RV2: CellValue,
     JK2: Hash + Eq + CellValue,
-    FL1: Fn(&LK, &LV) -> JK1 + Send + Sync + 'static,
-    FR1: RightJoinKey<RK1, RV1, JK1>,
-    FM1: JoinProjection<LK, LV, RK1, RV1, MV>,
-    FL2: Fn(&LK, &MV) -> JK2 + Send + Sync + 'static,
-    FR2: RightJoinKey<RK2, RV2, JK2>,
 {
     left: L,
     right1: R1,
@@ -268,29 +228,11 @@ pub struct TwoLeftJoinPlan<
     left_key2: FL2,
     right_key2: FR2,
     #[allow(clippy::type_complexity)]
-    _types: PhantomData<fn() -> (LK, LV, RK1, RV1, JK1, MV, RK2, RV2, JK2)>,
+    _types: PhantomData<fn() -> (MV, JK2)>,
 }
 
 impl<L, R1, R2, LK, LV, RK1, RV1, JK1, MV, RK2, RV2, JK2, FL1, FR1, FM1, FL2, FR2> PlanProperties
-    for TwoLeftJoinPlan<
-        L,
-        R1,
-        R2,
-        LK,
-        LV,
-        RK1,
-        RV1,
-        JK1,
-        MV,
-        RK2,
-        RV2,
-        JK2,
-        FL1,
-        FR1,
-        FM1,
-        FL2,
-        FR2,
-    >
+    for TwoLeftJoinPlan<L, R1, R2, MV, JK2, FL1, FR1, FM1, FL2, FR2>
 where
     L: MapQuery<Key = LK, Value = LV> + PlanProperties,
     R1: MapQuery<Key = RK1, Value = RV1>,
@@ -316,23 +258,18 @@ where
 }
 
 /// Final projection attached to a coordinated two-left-join region.
-pub struct TwoLeftJoinMappedPlan<P, LK, MV, RK2, RV2, OV, F>
+pub struct TwoLeftJoinMappedPlan<P, MV, RK2, OV, F>
 where
-    P: MapQuery<Key = LK, Value = (MV, Vec<RV2>)>,
-    LK: Hash + Eq + CellValue,
     MV: CellValue,
     RK2: Hash + Eq + CellValue,
-    RV2: CellValue,
     OV: CellValue,
-    F: JoinProjection<LK, MV, RK2, RV2, OV>,
 {
     plan: P,
     map_second: F,
-    _types: PhantomData<fn() -> (LK, MV, RK2, RV2, OV)>,
+    _types: PhantomData<fn() -> (MV, RK2, OV)>,
 }
 
-impl<P, LK, MV, RK2, RV2, OV, F> PlanProperties
-    for TwoLeftJoinMappedPlan<P, LK, MV, RK2, RV2, OV, F>
+impl<P, LK, MV, RK2, RV2, OV, F> PlanProperties for TwoLeftJoinMappedPlan<P, MV, RK2, OV, F>
 where
     P: MapQuery<Key = LK, Value = (MV, Vec<RV2>)>,
     LK: Hash + Eq + CellValue,
@@ -349,25 +286,7 @@ where
 
 impl<L, R1, R2, LK, LV, RK1, RV1, JK1, MV, RK2, RV2, JK2, FL1, FR1, FM1, FL2, FR2>
     BuildQueryRuntime<LK, (MV, Vec<RV2>)>
-    for TwoLeftJoinPlan<
-        L,
-        R1,
-        R2,
-        LK,
-        LV,
-        RK1,
-        RV1,
-        JK1,
-        MV,
-        RK2,
-        RV2,
-        JK2,
-        FL1,
-        FR1,
-        FM1,
-        FL2,
-        FR2,
-    >
+    for TwoLeftJoinPlan<L, R1, R2, MV, JK2, FL1, FR1, FM1, FL2, FR2>
 where
     L: MapQuery<Key = LK, Value = LV>,
     R1: MapQuery<Key = RK1, Value = RV1>,
@@ -416,25 +335,7 @@ where
 
 #[allow(private_bounds)]
 impl<L, R1, R2, LK, LV, RK1, RV1, JK1, MV, RK2, RV2, JK2, FL1, FR1, FM1, FL2, FR2> MapQuery
-    for TwoLeftJoinPlan<
-        L,
-        R1,
-        R2,
-        LK,
-        LV,
-        RK1,
-        RV1,
-        JK1,
-        MV,
-        RK2,
-        RV2,
-        JK2,
-        FL1,
-        FR1,
-        FM1,
-        FL2,
-        FR2,
-    >
+    for TwoLeftJoinPlan<L, R1, R2, MV, JK2, FL1, FR1, FM1, FL2, FR2>
 where
     L: MapQuery<Key = LK, Value = LV>,
     R1: MapQuery<Key = RK1, Value = RV1>,
@@ -461,29 +362,9 @@ where
 impl<L, R1, R2, LK, LV, RK1, RV1, JK1, MV, RK2, RV2, JK2, OV, FL1, FR1, FM1, FL2, FR2, FM2>
     BuildQueryRuntime<LK, OV>
     for TwoLeftJoinMappedPlan<
-        TwoLeftJoinPlan<
-            L,
-            R1,
-            R2,
-            LK,
-            LV,
-            RK1,
-            RV1,
-            JK1,
-            MV,
-            RK2,
-            RV2,
-            JK2,
-            FL1,
-            FR1,
-            FM1,
-            FL2,
-            FR2,
-        >,
-        LK,
+        TwoLeftJoinPlan<L, R1, R2, MV, JK2, FL1, FR1, FM1, FL2, FR2>,
         MV,
         RK2,
-        RV2,
         OV,
         FM2,
     >
@@ -533,7 +414,7 @@ where
 }
 
 #[allow(private_bounds)]
-impl<P, LK, MV, RK2, RV2, OV, F> MapQuery for TwoLeftJoinMappedPlan<P, LK, MV, RK2, RV2, OV, F>
+impl<P, LK, MV, RK2, RV2, OV, F> MapQuery for TwoLeftJoinMappedPlan<P, MV, RK2, OV, F>
 where
     P: MapQuery<Key = LK, Value = (MV, Vec<RV2>)>,
     LK: Hash + Eq + CellValue,
@@ -549,7 +430,7 @@ where
 }
 
 impl<L, R1, R2, LK, LV, RK1, RV1, JK1, MV, RK2, RV2, JK2, FL1, FR1, FM1, FL2, FR2>
-    TwoLeftJoinPlan<L, R1, R2, LK, LV, RK1, RV1, JK1, MV, RK2, RV2, JK2, FL1, FR1, FM1, FL2, FR2>
+    TwoLeftJoinPlan<L, R1, R2, MV, JK2, FL1, FR1, FM1, FL2, FR2>
 where
     L: MapQuery<Key = LK, Value = LV>,
     R1: MapQuery<Key = RK1, Value = RV1>,
@@ -574,7 +455,7 @@ where
     pub fn map_values<OV, F>(
         self,
         f: F,
-    ) -> TwoLeftJoinMappedPlan<Self, LK, MV, RK2, RV2, OV, TupleJoinProjection<F>>
+    ) -> TwoLeftJoinMappedPlan<Self, MV, RK2, OV, TupleJoinProjection<F>>
     where
         OV: CellValue,
         F: Fn(&LK, &(MV, Vec<RV2>)) -> OV + Send + Sync + 'static,
@@ -590,7 +471,7 @@ where
     pub fn map_joined_values<OV, F>(
         self,
         f: F,
-    ) -> TwoLeftJoinMappedPlan<Self, LK, MV, RK2, RV2, OV, DirectJoinProjection<F>>
+    ) -> TwoLeftJoinMappedPlan<Self, MV, RK2, OV, DirectJoinProjection<F>>
     where
         OV: CellValue,
         F: Fn(&LK, &MV, &[(RK2, RV2)]) -> OV + Send + Sync + 'static,
@@ -606,29 +487,9 @@ where
 #[allow(private_bounds)]
 impl<L, R1, R2, LK, LV, RK1, RV1, JK1, MV, RK2, RV2, JK2, OV, FL1, FR1, FM1, FL2, FR2, FM2>
     TwoLeftJoinMappedPlan<
-        TwoLeftJoinPlan<
-            L,
-            R1,
-            R2,
-            LK,
-            LV,
-            RK1,
-            RV1,
-            JK1,
-            MV,
-            RK2,
-            RV2,
-            JK2,
-            FL1,
-            FR1,
-            FM1,
-            FL2,
-            FR2,
-        >,
-        LK,
+        TwoLeftJoinPlan<L, R1, R2, MV, JK2, FL1, FR1, FM1, FL2, FR2>,
         MV,
         RK2,
-        RV2,
         OV,
         FM2,
     >
@@ -663,9 +524,9 @@ where
     ) -> JoinRegion<
         L,
         JCons<
-            JoinStage<R1, LK, LV, RK1, RV1, JK1, MV, FL1, FR1, JoinProjectionProject<FM1>>,
+            JoinStage<R1, LK, LV, RK1, RV1, MV, FL1, FR1, JoinProjectionProject<FM1>>,
             JCons<
-                JoinStage<R2, LK, MV, RK2, RV2, JK2, OV, FL2, FR2, JoinProjectionProject<FM2>>,
+                JoinStage<R2, LK, MV, RK2, RV2, OV, FL2, FR2, JoinProjectionProject<FM2>>,
                 JCons<
                     JoinStage<
                         R3,
@@ -673,7 +534,6 @@ where
                         OV,
                         RK3,
                         RV3,
-                        JK3,
                         (OV, Vec<RV3>),
                         FL3,
                         RequiredRightKey<FR3>,
@@ -743,7 +603,7 @@ where
 
 #[allow(private_bounds)]
 impl<L, R1, LK, LV, RK1, RV1, JK1, MV, FL1, FR1, FM1>
-    MapValuesPlan<LeftJoinPlan<L, R1, LK, LV, RK1, RV1, JK1, FL1, FR1>, LK, (LV, Vec<RV1>), MV, FM1>
+    MapValuesPlan<LeftJoinPlan<L, R1, FL1, FR1>, FM1>
 where
     L: MapQuery<Key = LK, Value = LV> + PreservesMapKey<LK>,
     R1: MapQuery<Key = RK1, Value = RV1>,
@@ -767,14 +627,7 @@ where
         L,
         R1,
         R2,
-        LK,
-        LV,
-        RK1,
-        RV1,
-        JK1,
         MV,
-        RK2,
-        RV2,
         JK2,
         FL1,
         FR1,
@@ -812,8 +665,7 @@ where
 }
 
 #[allow(private_bounds)]
-impl<L, R1, LK, LV, RK1, RV1, JK1, MV, FL1, FR1, FM1>
-    JoinedValuesPlan<L, R1, LK, LV, RK1, RV1, JK1, MV, FL1, FR1, FM1>
+impl<L, R1, LK, LV, RK1, RV1, JK1, MV, FL1, FR1, FM1> JoinedValuesPlan<L, R1, FL1, FR1, FM1>
 where
     L: MapQuery<Key = LK, Value = LV> + PreservesMapKey<LK>,
     R1: MapQuery<Key = RK1, Value = RV1>,
@@ -837,14 +689,7 @@ where
         L,
         R1,
         R2,
-        LK,
-        LV,
-        RK1,
-        RV1,
-        JK1,
         MV,
-        RK2,
-        RV2,
         JK2,
         FL1,
         FR1,

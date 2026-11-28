@@ -5,7 +5,7 @@
 //! [`MapQuery::materialize`] to compile a plan into a subscribable
 //! [`CellMap`].
 
-use std::{hash::Hash, marker::PhantomData};
+use std::hash::Hash;
 
 use super::left_join::RelationPlan;
 use crate::{
@@ -17,8 +17,7 @@ use crate::{
     traits::{
         CellValue, ForeignKeyRelation, IdFor, OptionalRightKey, RequiredRightKey, RightJoinKey,
         collections::internal::join_runtime::{
-            install_join_runtime_via_query, install_keyed_join_runtime_via_query,
-            install_pair_join_runtime_via_query,
+            install_keyed_join_runtime_via_query, install_pair_join_runtime_via_query,
         },
     },
 };
@@ -28,21 +27,12 @@ use crate::{
 /// Output rows are keyed by the shared map key with value `(LV, RV)`.
 /// Not [`Clone`]: cloning a plan would silently duplicate join work; share by
 /// materializing once.
-pub struct InnerJoinByKeyPlan<L, R, K, LV, RV>
-where
-    L: MapQuery<Key = K, Value = LV>,
-    R: MapQuery<Key = K, Value = RV>,
-    K: Hash + Eq + CellValue,
-    LV: CellValue,
-    RV: CellValue,
-{
+pub struct InnerJoinByKeyPlan<L, R> {
     pub(crate) left: L,
     pub(crate) right: R,
-    #[allow(clippy::type_complexity)]
-    pub(crate) _types: PhantomData<fn() -> (K, LV, RV)>,
 }
 
-impl<L, R, K, LV, RV> PlanProperties for InnerJoinByKeyPlan<L, R, K, LV, RV>
+impl<L, R, K, LV, RV> PlanProperties for InnerJoinByKeyPlan<L, R>
 where
     L: MapQuery<Key = K, Value = LV>,
     R: MapQuery<Key = K, Value = RV>,
@@ -55,7 +45,7 @@ where
     type OutputPartition = ByMapKey<K>;
 }
 
-impl<L, R, K, LV, RV> BuildQueryRuntime<K, (LV, RV)> for InnerJoinByKeyPlan<L, R, K, LV, RV>
+impl<L, R, K, LV, RV> BuildQueryRuntime<K, (LV, RV)> for InnerJoinByKeyPlan<L, R>
 where
     L: MapQuery<Key = K, Value = LV>,
     R: MapQuery<Key = K, Value = RV>,
@@ -85,7 +75,7 @@ where
 }
 
 #[allow(private_bounds)]
-impl<L, R, K, LV, RV> MapQuery for InnerJoinByKeyPlan<L, R, K, LV, RV>
+impl<L, R, K, LV, RV> MapQuery for InnerJoinByKeyPlan<L, R>
 where
     L: MapQuery<Key = K, Value = LV>,
     R: MapQuery<Key = K, Value = RV>,
@@ -103,28 +93,14 @@ where
 /// Output rows are keyed by `(LK, RK)` with value `(LV, RV)`.
 /// Not [`Clone`]: cloning a plan would silently duplicate join work; share by
 /// materializing once.
-pub struct InnerJoinByPairPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
-where
-    L: MapQuery<Key = LK, Value = LV>,
-    R: MapQuery<Key = RK, Value = RV>,
-    LK: Hash + Eq + CellValue,
-    LV: CellValue,
-    RK: Hash + Eq + CellValue,
-    RV: CellValue,
-    JK: Hash + Eq + CellValue,
-    FL: Fn(&LK, &LV) -> JK + Send + Sync + 'static,
-    FR: RightJoinKey<RK, RV, JK>,
-{
+pub struct InnerJoinByPairPlan<L, R, FL, FR> {
     pub(crate) left: L,
     pub(crate) right: R,
     pub(crate) left_key: FL,
     pub(crate) right_key: FR,
-    #[allow(clippy::type_complexity)]
-    pub(crate) _types: PhantomData<fn() -> (LK, LV, RK, RV, JK)>,
 }
 
-impl<L, R, LK, LV, RK, RV, JK, FL, FR> PlanProperties
-    for InnerJoinByPairPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
+impl<L, R, LK, LV, RK, RV, JK, FL, FR> PlanProperties for InnerJoinByPairPlan<L, R, FL, FR>
 where
     L: MapQuery<Key = LK, Value = LV>,
     R: MapQuery<Key = RK, Value = RV>,
@@ -142,7 +118,7 @@ where
 }
 
 impl<L, R, LK, LV, RK, RV, JK, FL, FR> BuildQueryRuntime<(LK, RK), (LV, RV)>
-    for InnerJoinByPairPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
+    for InnerJoinByPairPlan<L, R, FL, FR>
 where
     L: MapQuery<Key = LK, Value = LV>,
     R: MapQuery<Key = RK, Value = RV>,
@@ -159,36 +135,19 @@ where
         cx: &mut crate::map_query::compiler::CompileContext,
         sink: crate::map_query::BoxedMapDiffSink<(LK, RK), (LV, RV)>,
     ) -> Vec<SubscriptionGuard> {
-        if incremental_pairs_enabled() {
-            return install_pair_join_runtime_via_query::<LK, LV, RK, RV, JK, _, _, _, _>(
-                cx,
-                self.left,
-                self.right,
-                self.left_key,
-                self.right_key,
-                sink,
-            );
-        }
-        install_join_runtime_via_query::<LK, LV, RK, RV, JK, (LK, RK), (LV, RV), _, _, _, _, _>(
+        install_pair_join_runtime_via_query::<LK, LV, RK, RV, JK, _, _, _, _>(
             cx,
             self.left,
             self.right,
             self.left_key,
             self.right_key,
-            |left_k: &LK, left_v: &LV, rights: &[(RK, RV)]| {
-                rights
-                    .iter()
-                    .map(|(rk, rv)| ((left_k.clone(), rk.clone()), (left_v.clone(), rv.clone())))
-                    .collect()
-            },
             sink,
         )
     }
 }
 
 #[allow(private_bounds)]
-impl<L, R, LK, LV, RK, RV, JK, FL, FR> MapQuery
-    for InnerJoinByPairPlan<L, R, LK, LV, RK, RV, JK, FL, FR>
+impl<L, R, LK, LV, RK, RV, JK, FL, FR> MapQuery for InnerJoinByPairPlan<L, R, FL, FR>
 where
     L: MapQuery<Key = LK, Value = LV>,
     R: MapQuery<Key = RK, Value = RV>,
@@ -224,11 +183,7 @@ where
         R: MapQuery<Key = K, Value = RV>,
         RV: CellValue,
     {
-        InnerJoinByKeyPlan {
-            left: self,
-            right,
-            _types: PhantomData,
-        }
+        InnerJoinByKeyPlan { left: self, right }
     }
 
     /// Inner join using foreign key relationship.
@@ -249,11 +204,6 @@ where
         InnerJoinByPairPlan<
             Self,
             R,
-            K,
-            V,
-            R::Key,
-            Rel::Child,
-            K,
             impl Fn(&K, &V) -> K + Send + Sync + 'static,
             OptionalRightKey<impl Fn(&R::Key, &Rel::Child) -> Option<K> + Send + Sync + 'static>,
         >,
@@ -271,7 +221,6 @@ where
             right_key: OptionalRightKey(|_: &R::Key, rv: &Rel::Child| {
                 Rel::foreign_key(rv).map(|foreign_key| foreign_key.map_key())
             }),
-            _types: PhantomData,
         })
     }
 
@@ -301,7 +250,6 @@ where
             right,
             left_key,
             right_key: RequiredRightKey(right_key),
-            _types: PhantomData,
         }
     }
 }
@@ -312,18 +260,6 @@ where
     V: CellValue,
     M: MapQuery<Key = K, Value = V>,
 {
-}
-
-// The legacy path is retained as a profiling control, not a second public API.
-#[cfg(feature = "profiling")]
-fn incremental_pairs_enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED
-        .get_or_init(|| !std::env::var("HYPHAE_PAIR_JOIN_DELTA").is_ok_and(|value| value == "0"))
-}
-#[cfg(not(feature = "profiling"))]
-const fn incremental_pairs_enabled() -> bool {
-    true
 }
 
 #[cfg(test)]

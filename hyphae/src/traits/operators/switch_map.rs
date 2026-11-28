@@ -11,19 +11,23 @@ use uuid::Uuid;
 
 use super::{CellValue, Watchable};
 use crate::{
-    cell::{Cell, CellMutable, WeakCell},
-    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed, prepare_install},
+    pipeline::{
+        Definite, GuardOwner, Pipeline, PipelineInstall, PipelineSeed, materialize_mutable,
+        prepare_install,
+    },
     signal::Signal,
     subscription::SubscriptionGuard,
 };
 
 // Lock-free completion state packed into a single u64:
-// - Bits 0-61: generation (max 2^62-1)
+// - Bits 0-60: generation (max 2^61-1)
+// - Bit 61: inner_errored
 // - Bit 62: inner_complete
 // - Bit 63: outer_complete
 const INNER_COMPLETE_BIT: u64 = 1 << 62;
 const OUTER_COMPLETE_BIT: u64 = 1 << 63;
-const GEN_MASK: u64 = (1 << 62) - 1;
+const INNER_ERRORED_BIT: u64 = 1 << 61;
+const GEN_MASK: u64 = (1 << 61) - 1;
 
 fn advance_generation(state: &AtomicU64) -> u64 {
     loop {
@@ -72,7 +76,7 @@ fn mark_outer_complete(state: &AtomicU64) -> bool {
 }
 
 fn inner_callback<U: CellValue>(
-    weak: WeakCell<U, CellMutable>,
+    emit: Arc<dyn Fn(&Signal<U>) + Send + Sync>,
     state: Arc<AtomicU64>,
     switch_lock: Arc<Mutex<()>>,
     generation: u64,
@@ -82,26 +86,25 @@ fn inner_callback<U: CellValue>(
         if state.load(Ordering::SeqCst) & GEN_MASK != generation {
             return;
         }
-        if let Some(cell) = weak.upgrade() {
-            match signal {
-                Signal::Value(_) => cell.notify(signal.clone()),
-                Signal::Complete if mark_inner_complete(&state, generation) => {
-                    cell.notify(Signal::Complete);
-                }
-                Signal::Complete => {}
-                Signal::Error(error) => cell.notify(Signal::Error(error.clone())),
+        match signal {
+            Signal::Value(_) => emit(signal),
+            Signal::Error(_) => {
+                state.fetch_or(INNER_ERRORED_BIT, Ordering::SeqCst);
+                emit(signal);
             }
+            Signal::Complete if mark_inner_complete(&state, generation) => emit(signal),
+            Signal::Complete => {}
         }
     })
 }
 
-pub struct SwitchMapPipeline<S, T, U, F, I> {
+pub struct SwitchMapPipeline<S, T, F, I> {
     source: S,
     f: Arc<F>,
-    _types: PhantomData<fn(T) -> (U, I)>,
+    _types: PhantomData<fn(T) -> I>,
 }
 
-impl<S, T, U, F, I> PipelineInstall<U> for SwitchMapPipeline<S, T, U, F, I>
+impl<S, T, U, F, I> PipelineInstall<U> for SwitchMapPipeline<S, T, F, I>
 where
     S: PipelineInstall<T> + PipelineSeed<T>,
     T: CellValue,
@@ -110,13 +113,20 @@ where
     I: PipelineInstall<U> + PipelineSeed<U>,
 {
     fn install(&self, callback: Arc<dyn Fn(&Signal<U>) + Send + Sync>) -> SubscriptionGuard {
+        materialize_mutable(self).subscribe(move |signal| callback(signal))
+    }
+
+    /// The materializing cell is the switch's output: values from the current
+    /// inner are emitted straight into `emit`, and the outer and inner guards
+    /// live on that cell.
+    fn install_into(&self, owner: &Arc<GuardOwner>, emit: Arc<dyn Fn(&Signal<U>) + Send + Sync>) {
         // Subscribe to the selector before choosing its initial value. This
         // closes the old seed/build-inner/subscribe window in which a topology
         // update could become the replay that we then blindly discarded.
         let outer_prepared = prepare_install(&self.source);
         let first_inner = (self.f)(outer_prepared.initial());
         let first_prepared = prepare_install(&first_inner);
-        let cell = Cell::<U, CellMutable>::new(first_prepared.initial().clone());
+        emit(&Signal::value(first_prepared.initial().clone()));
 
         // Stable key for the inner subscription guard so switch_map replaces (not accumulates)
         let inner_guard_key = Uuid::new_v4();
@@ -143,28 +153,30 @@ where
         // Source callbacks may run concurrently. Serializing complete re-knits
         // ensures an older installation can never return after a newer one and
         // overwrite the newer generation's keyed guard.
-        let reknit_lock = Arc::new(Mutex::new(()));
+        // It also holds the outer value the live inner was built from, so an
+        // equal outer value is compared against the inner it would replace.
+        let reknit_lock = Arc::new(Mutex::new(Arc::new(outer_prepared.initial().clone())));
 
         // Subscribe to first inner (generation 0)
         let first_callback = inner_callback(
-            cell.downgrade(),
+            Arc::clone(&emit),
             Arc::clone(&state),
             Arc::clone(&switch_lock),
             0,
         );
         let first_guard = first_prepared.activate(&first_callback);
-        cell.own_keyed(inner_guard_key, first_guard);
+        owner.own_keyed(inner_guard_key, first_guard);
 
         // Single subscription to outer handles both value switching and completion tracking
-        let weak = cell.downgrade();
+        let owner_outer = Arc::clone(owner);
         let f = self.f.clone();
         let state_for_outer = state;
         let switch_lock_outer = switch_lock;
         let reknit_lock_outer = reknit_lock;
         let outer_callback: Arc<dyn Fn(&Signal<T>) + Send + Sync> = Arc::new(move |signal| {
-            let _reknit = reknit_lock_outer.lock();
             match signal {
                 Signal::Value(outer_value) => {
+                    let mut knitted_to = reknit_lock_outer.lock();
                     // Per-outer-fire re-knit: rebuild the inner cell + re-subscribe
                     // + drop the prior inner guard. This span isolates switch_map's
                     // un-fusable teardown/rebuild cost from the anonymous
@@ -172,7 +184,17 @@ where
                     #[cfg(feature = "profiling")]
                     let _reknit_span = ::tracing::trace_span!("hyphae.switch_map").entered();
 
-                    let Some(c) = weak.upgrade() else { return };
+                    if !owner_outer.is_alive() {
+                        return;
+                    }
+                    // Equal keys keep only a live inner; a terminated one is
+                    // rebuilt so the operator never stays on a dead inner.
+                    let inner_terminated = state_for_outer.load(Ordering::SeqCst)
+                        & (INNER_COMPLETE_BIT | INNER_ERRORED_BIT)
+                        != 0;
+                    if !inner_terminated && **knitted_to == **outer_value {
+                        return;
+                    }
 
                     // Increment generation, clear inner_complete, preserve
                     // outer_complete — under `switch_lock` so it's atomic against
@@ -193,40 +215,37 @@ where
                     {
                         let _switch = switch_lock_outer.lock();
                         if state_for_outer.load(Ordering::SeqCst) & GEN_MASK == my_gen {
-                            c.notify(Signal::value(prepared.initial().clone()));
+                            emit(&Signal::value(prepared.initial().clone()));
                         }
                     }
                     let value_callback = inner_callback(
-                        weak.clone(),
+                        Arc::clone(&emit),
                         Arc::clone(&state_for_outer),
                         Arc::clone(&switch_lock_outer),
                         my_gen,
                     );
                     let value_guard = prepared.activate(&value_callback);
-                    c.own_keyed(inner_guard_key, value_guard);
+                    owner_outer.own_keyed(inner_guard_key, value_guard);
+                    *knitted_to = Arc::clone(outer_value);
                 }
                 Signal::Complete => {
-                    if mark_outer_complete(&state_for_outer)
-                        && let Some(cell) = weak.upgrade()
-                    {
-                        cell.notify(Signal::Complete);
+                    let _reknit = reknit_lock_outer.lock();
+                    if mark_outer_complete(&state_for_outer) {
+                        emit(&Signal::Complete);
                     }
                 }
-                Signal::Error(e) => {
-                    if let Some(c) = weak.upgrade() {
-                        c.notify(Signal::Error(e.clone()));
-                    }
+                Signal::Error(error) => {
+                    let _reknit = reknit_lock_outer.lock();
+                    emit(&Signal::Error(error.clone()));
                 }
             }
         });
         let outer_guard = outer_prepared.activate(&outer_callback);
-        cell.own(outer_guard);
-
-        cell.subscribe(move |signal| callback(signal))
+        owner.own(outer_guard);
     }
 }
 
-impl<S, T, U, F, I> PipelineSeed<U> for SwitchMapPipeline<S, T, U, F, I>
+impl<S, T, U, F, I> PipelineSeed<U> for SwitchMapPipeline<S, T, F, I>
 where
     S: PipelineSeed<T>,
     T: CellValue,
@@ -238,7 +257,7 @@ where
         (self.f)(&self.source.seed()).seed()
     }
 }
-impl<S, T, U, F, I> Pipeline<U, Definite> for SwitchMapPipeline<S, T, U, F, I>
+impl<S, T, U, F, I> Pipeline<U, Definite> for SwitchMapPipeline<S, T, F, I>
 where
     S: Pipeline<T, Definite> + PipelineSeed<T>,
     T: CellValue,
@@ -249,6 +268,12 @@ where
 }
 
 pub trait SwitchMapExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
+    /// Follows the inner pipeline built by `f` from the latest outer value.
+    ///
+    /// An outer value equal to the one the live inner was built from keeps
+    /// that inner: `f` is not called and nothing is emitted for it. Once the
+    /// live inner has completed or errored, any outer value, equal or not,
+    /// builds a new inner and emits its current value.
     fn switch_map<U, F, I>(self, f: F) -> impl crate::Materialize<U, Definite>
     where
         U: CellValue,
@@ -269,7 +294,10 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
 
     use super::*;
-    use crate::{Gettable, MapExt, Materialize, Mutable};
+    use crate::{
+        Gettable, MapExt, Materialize, Mutable,
+        cell::{Cell, CellMutable},
+    };
 
     #[test]
     fn switch_map_does_not_build_an_inner_until_materialized() {
@@ -401,5 +429,41 @@ mod tests {
             alive_count <= 1,
             "expected at most 1 live inner cell, found {alive_count} — old cells not being dropped"
         );
+    }
+
+    #[test]
+    fn switch_keeps_upstream_shared_by_old_and_new_inner() {
+        let slot: Arc<std::sync::Mutex<Option<crate::cell::WeakCell<u64, CellMutable>>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let builds = Arc::new(AtomicUsize::new(0));
+        let source = Cell::new(1u64);
+        let switched = source
+            .clone()
+            .switch_map({
+                let builds = Arc::clone(&builds);
+                move |v| {
+                    let v = *v;
+                    let shared = {
+                        let mut slot = slot
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        slot.as_ref()
+                            .and_then(crate::cell::WeakCell::upgrade)
+                            .unwrap_or_else(|| {
+                                builds.fetch_add(1, Ordering::SeqCst);
+                                let cell = Cell::new(100u64);
+                                *slot = Some(cell.downgrade());
+                                cell
+                            })
+                    };
+                    shared.map(move |s| s + v).materialize()
+                }
+            })
+            .materialize();
+        for i in 2..=5u64 {
+            source.set(i);
+        }
+        assert_eq!(switched.get(), 105);
+        assert_eq!(builds.load(Ordering::SeqCst), 1);
     }
 }

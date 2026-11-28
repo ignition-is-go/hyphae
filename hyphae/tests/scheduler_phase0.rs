@@ -1,4 +1,4 @@
-//! Phase 0 gate for the opt-in propagation scheduler (`scheduler` feature).
+//! Phase 0 gate for the propagation scheduler.
 //!
 //! Two properties, both asserted against the public API:
 //!   1. A synchronous diamond re-solves its sink **twice** per source change
@@ -8,7 +8,6 @@
 //!      the value from the *long* path, not a stale short-path glitch.
 //!
 //! The whole file compiles to nothing unless the feature is on.
-#![cfg(feature = "scheduler")]
 
 use std::sync::{
     Arc, Mutex,
@@ -353,7 +352,7 @@ fn switch_map_old_inner_firing_during_switch_is_glitch_free() {
             .materialize(); // taller inner, h3
 
         let sel = Cell::new(0i64);
-        let (in0c, in1c) = (in0.clone(), in1.clone());
+        let (in0c, in1c) = (in0, in1);
         let result = sel
             .clone()
             .switch_map(move |&i| if i == 0 { in0c.clone() } else { in1c.clone() })

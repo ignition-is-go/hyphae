@@ -14,7 +14,6 @@
 //! Shape that reproduced it (all three needed): two stacked `CellMap` layers
 //! (one wrapping another via `subscribe_diffs`), a weak-ref query cache, and a
 //! `switch_map` replacing the cached value each round under `batch()`.
-#![cfg(feature = "scheduler")]
 
 use std::{collections::HashMap, sync::Arc};
 

@@ -1,6 +1,6 @@
 //! Collision-safe one-to-many projection plans implementing [`MapQuery`].
 
-use std::{hash::Hash, marker::PhantomData};
+use std::hash::Hash;
 
 use crate::{
     map_query::{
@@ -11,7 +11,7 @@ use crate::{
     traits::{CellValue, collections::internal::map_runtime::install_map_runtime_via_query},
 };
 
-impl<S, SK, SV, LK, OV, F> PlanProperties for FlatMapEntriesPlan<S, SK, SV, LK, OV, F>
+impl<S, SK, SV, LK, OV, F> PlanProperties for FlatMapEntriesPlan<S, F>
 where
     S: MapQuery<Key = SK, Value = SV> + PlanProperties,
     SK: Hash + Eq + CellValue,
@@ -27,22 +27,12 @@ where
 
 /// One-to-many projection whose `(source key, local key)` output identity is
 /// collision-free across distinct source rows.
-pub struct FlatMapEntriesPlan<S, SK, SV, LK, OV, F>
-where
-    S: MapQuery<Key = SK, Value = SV>,
-    SK: Hash + Eq + CellValue,
-    SV: CellValue,
-    LK: Hash + Eq + CellValue,
-    OV: CellValue,
-    F: Fn(&SK, &SV) -> Vec<(LK, OV)> + Send + Sync + 'static,
-{
+pub struct FlatMapEntriesPlan<S, F> {
     pub(crate) source: S,
     pub(crate) f: F,
-    pub(crate) _types: PhantomData<fn() -> (SK, SV, LK, OV)>,
 }
 
-impl<S, SK, SV, LK, OV, F> BuildQueryRuntime<(SK, LK), OV>
-    for FlatMapEntriesPlan<S, SK, SV, LK, OV, F>
+impl<S, SK, SV, LK, OV, F> BuildQueryRuntime<(SK, LK), OV> for FlatMapEntriesPlan<S, F>
 where
     S: MapQuery<Key = SK, Value = SV>,
     SK: Hash + Eq + CellValue,
@@ -72,7 +62,7 @@ where
 }
 
 #[allow(private_bounds)]
-impl<S, SK, SV, LK, OV, F> MapQuery for FlatMapEntriesPlan<S, SK, SV, LK, OV, F>
+impl<S, SK, SV, LK, OV, F> MapQuery for FlatMapEntriesPlan<S, F>
 where
     S: MapQuery<Key = SK, Value = SV>,
     SK: Hash + Eq + CellValue,
@@ -104,11 +94,7 @@ where
         V2: CellValue,
         F: Fn(&K, &V) -> Vec<(LK, V2)> + Send + Sync + 'static,
     {
-        FlatMapEntriesPlan {
-            source: self,
-            f,
-            _types: PhantomData,
-        }
+        FlatMapEntriesPlan { source: self, f }
     }
 }
 

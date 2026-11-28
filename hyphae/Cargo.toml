@@ -17,10 +17,6 @@ path = "src/lib.rs"
 [features]
 default = []
 async = ["flume", "futures-core"]
-# Opt-in deferred/ordered/glitch-free propagation under an explicit `batch()`
-# boundary, plus the `clock`/`TickSource` seam for frame-locked ticking. Off by
-# default: the synchronous eager-push path is unchanged when this is disabled.
-scheduler = []
 # Opt-in calibration-only branch counters for join-region benchmarks. Every
 # counter call is cfg-elided unless explicitly enabled.
 region-calibration = []
@@ -108,28 +104,44 @@ harness = false
 [[bench]]
 name = "scheduler"
 harness = false
-required-features = ["scheduler"]
 
 [[bench]]
 name = "scheduler_contention"
 harness = false
-required-features = ["scheduler"]
+
+[[bench]]
+name = "scheduling_domains"
+harness = false
+
+[[bench]]
+name = "write_paths"
+harness = false
 
 [[bench]]
 name = "region_threshold_calibration"
 harness = false
-required-features = ["scheduler", "region-calibration"]
+required-features = ["region-calibration"]
 
 [[test]]
 name = "region_threshold_truth_table"
-required-features = ["scheduler", "region-calibration"]
+required-features = ["region-calibration"]
 
 [[bench]]
 name = "runtime_baseline"
 harness = false
-required-features = ["scheduler"]
 
 [[bench]]
 name = "wave_calibration"
 harness = false
-required-features = ["scheduler"]
+
+[[bench]]
+name = "emission"
+harness = false
+
+[[bench]]
+name = "graph_construction"
+harness = false
+
+[[bench]]
+name = "scheduler_overhead"
+harness = false

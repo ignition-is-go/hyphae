@@ -108,6 +108,11 @@ where
                 }
                 self.rows.clear();
                 self.buckets.clear();
+                self.rows.reserve(entries.len());
+                if touched.order.is_empty() {
+                    touched.order = OrderedSet::with_capacity(entries.len());
+                }
+                touched.previous.reserve(entries.len());
                 for (row, value) in entries {
                     self.upsert(row, value, key(row, value), touched);
                 }

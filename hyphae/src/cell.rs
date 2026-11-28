@@ -1,7 +1,6 @@
 use std::{
     fmt::Debug,
     marker::PhantomData,
-    panic::Location,
     sync::{
         Arc, Weak,
         atomic::{AtomicBool, Ordering},
@@ -13,6 +12,7 @@ use rustc_hash::FxHashMap;
 use uuid::Uuid;
 
 use crate::{
+    scheduler::{Domain, DomainError},
     signal::Signal,
     subscription::SubscriptionGuard,
     traits::{CellValue, DepNode, Gettable, Mutable, Watchable, WatchableResult},
@@ -23,6 +23,13 @@ pub struct CellMutable;
 
 #[derive(Debug, Clone)]
 pub struct CellImmutable;
+
+/// When the effect of [`Cell::set_with`] runs.
+#[derive(Clone, Copy)]
+pub(crate) enum EffectAt {
+    BeforeFanout,
+    AfterFanout,
+}
 
 /// The inner data of a Cell, wrapped in Arc for shared ownership.
 pub(crate) struct CellInner<T> {
@@ -42,10 +49,6 @@ pub(crate) struct CellInner<T> {
     /// via `Arc` refcounting — readers holding clones keep the value alive
     /// until they drop.
     pub(crate) value: Mutex<Arc<T>>,
-    /// Optional human-readable name for tracing/debugging. Cold path — set
-    /// rarely via `with_name`, read from `DepNode::name`. Mutex avoids the
-    /// per-cell `ArcSwap` drop cost paid on every cell teardown.
-    pub(crate) name: Mutex<Option<Arc<str>>>,
     /// Subscription guards owned by this cell (dropped when cell drops, provides dependency tracking).
     pub(crate) owned: Mutex<FxHashMap<Uuid, SubscriptionGuard>>,
     /// Whether this cell has completed (no more values will be emitted).
@@ -55,14 +58,11 @@ pub(crate) struct CellInner<T> {
     /// The error, if any. Cold path — only written when the cell errors,
     /// read by error/subscribe paths.
     pub(crate) error: Mutex<Option<Arc<anyhow::Error>>>,
-    /// Scheduler height cache: packed `(epoch << 32) | height`. The scheduler
-    /// computes a cell's propagation height (`1 + max(dep.height)`) once per
-    /// topology epoch and caches it here, so a steady-state batch reads height
-    /// as a single atomic load instead of walking `deps()` every notify. `0`
-    /// means "never computed" (epoch 0 is never current). Invalidated lazily by
-    /// bumping the global topology epoch on any edge change.
-    #[cfg(feature = "scheduler")]
-    pub(crate) height_cache: std::sync::atomic::AtomicU64,
+    /// Propagation height. Invariant: strictly greater than the height of
+    /// every source this cell owns a guard on. Only ever raised (see
+    /// [`raise_height`]); heights must be valid, not minimal, so removing an
+    /// edge leaves it as is.
+    pub(crate) height: std::sync::atomic::AtomicU64,
     /// Scheduler coalescing policy. When `true`, the scheduler enqueues every
     /// notify from this cell as a distinct height-ordered op instead of
     /// last-write-wins coalescing them — preserving the event semantics
@@ -71,28 +71,16 @@ pub(crate) struct CellInner<T> {
     /// [`scheduler::no_coalesce`](crate::scheduler::no_coalesce) scope, or after
     /// the fact via [`Cell::no_coalesce`]. Default `false` (coalesce), so the
     /// behavior-cell majority gets the glitch-free win.
-    #[cfg(feature = "scheduler")]
     pub(crate) no_coalesce: AtomicBool,
-    /// Per-node height epoch for localized cache invalidation. Bumped whenever
-    /// an edge change in this cell's transitive-dependency cone could change its
-    /// height; `height_cache` is tagged with the epoch it was computed under and
-    /// recomputed only when they differ. Starts at 1 so a zero-initialized
-    /// `height_cache` reads as stale. Replaces the old process-global topology
-    /// epoch (which flushed *every* cached height on any edge change — pathologically
-    /// costly during a topology-churning knit).
-    #[cfg(feature = "scheduler")]
-    pub(crate) height_epoch: std::sync::atomic::AtomicU64,
-    /// Weak back-edges to the cells whose height depends (transitively) on this
-    /// one — the invalidation cone walked when this cell's deps change (see
-    /// [`invalidate_height_cone`]). Weak so a dependent's death doesn't pin it
-    /// here; the walk prunes dead entries. May over-approximate (a stale entry
-    /// only causes a harmless extra recompute) but must never miss a live
-    /// dependent, or that dependent would keep a stale height (a glitch).
-    #[cfg(feature = "scheduler")]
-    pub(crate) height_dependents: Mutex<Vec<std::sync::Weak<dyn HeightInvalidate>>>,
-    /// Source location where this cell was created (via #[`track_caller`]).
-    #[allow(dead_code)]
-    pub(crate) caller: &'static Location<'static>,
+    /// Weak back-edges to the cells that own a guard on this one: the cells a
+    /// raise of this cell's height must also raise (see [`raise_height`]).
+    /// Weak so a dependent's death doesn't pin it here; dead entries are
+    /// pruned on read. May over-approximate (a stale entry only over-raises)
+    /// but must never miss a live dependent.
+    pub(crate) height_dependents: Mutex<HeightDependents>,
+    /// The child scheduling domain this cell belongs to, fixed at birth from
+    /// the creating thread's ambient domain. `None` is the root domain.
+    pub(crate) domain: Option<Arc<crate::scheduler::domain::DomainInner>>,
 }
 
 /// A reactive cell that holds a value and notifies subscribers on change.
@@ -143,27 +131,20 @@ mod subscriber;
 pub(crate) use subscriber::{ResultSubscriber, Subscriber, SubscriberCallback, SubscriberRegistry};
 
 impl<T: CellValue> Cell<T, CellMutable> {
-    #[track_caller]
     pub fn new(initial_value: T) -> Self {
         let inner = Arc::new(CellInner {
             id: Uuid::new_v4(),
             subscribers: parking_lot::Mutex::new(SubscriberRegistry::new()),
             result_subscribers: parking_lot::Mutex::new(SubscriberRegistry::new()),
             value: Mutex::new(Arc::new(initial_value)),
-            name: Mutex::new(None),
             owned: Mutex::new(FxHashMap::default()),
             completed: AtomicBool::new(false),
             errored: AtomicBool::new(false),
             error: Mutex::new(None),
-            #[cfg(feature = "scheduler")]
-            height_cache: std::sync::atomic::AtomicU64::new(0),
-            #[cfg(feature = "scheduler")]
+            height: std::sync::atomic::AtomicU64::new(0),
             no_coalesce: AtomicBool::new(crate::scheduler::birth_no_coalesce()),
-            #[cfg(feature = "scheduler")]
-            height_epoch: std::sync::atomic::AtomicU64::new(1),
-            #[cfg(feature = "scheduler")]
-            height_dependents: Mutex::new(Vec::new()),
-            caller: Location::caller(),
+            height_dependents: Mutex::new(HeightDependents::default()),
+            domain: crate::scheduler::domain::birth_domain(),
         });
         Self {
             inner,
@@ -179,13 +160,6 @@ impl<T: CellValue> Cell<T, CellMutable> {
             inner: self.inner,
             _marker: PhantomData,
         }
-    }
-
-    #[must_use]
-    pub fn with_name(self, name: impl Into<Arc<str>>) -> Self {
-        let name = name.into();
-        *self.inner.name.lock() = Some(name);
-        self
     }
 }
 
@@ -253,24 +227,81 @@ impl<T, M> Cell<T, M> {
     /// holding it somewhere real — not by making its own subscription pin it.
     /// A self-pinning cell is indistinguishable from a leak, because that is
     /// what it is.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the guard's source would cross a scheduling-domain boundary
+    /// the wrong way (see [`DomainError`]). [`try_own`](Self::try_own) reports
+    /// the same condition as an error.
     pub fn own(&self, guard: SubscriptionGuard)
     where
         T: Send + Sync + 'static,
     {
-        // Register this cell as a height-dependent of the guard's source (so a
-        // later edge change there invalidates our cached height), then invalidate
-        // our own height cone — our dependency set just changed. Localized: only
-        // this cell and its transitive dependents recompute, not the whole graph.
-        #[cfg(feature = "scheduler")]
-        {
-            let erased: Arc<dyn HeightInvalidate> = self.inner.clone();
-            let dep = Arc::downgrade(&erased);
-            guard.source().add_height_dependent(dep);
+        if let Err(error) = self.check_domain(&guard) {
+            drop(guard);
+            crate::scheduler::domain::reject(error);
         }
+        self.own_checked(guard);
+    }
+
+    /// [`own`](Self::own), returning an error instead of panicking when the
+    /// guard's source would cross a scheduling-domain boundary the wrong way.
+    /// The guard is dropped on error, which cancels its subscription.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`DomainError`] describing the rejected dependency.
+    pub fn try_own(&self, guard: SubscriptionGuard) -> Result<(), DomainError>
+    where
+        T: Send + Sync + 'static,
+    {
+        self.check_domain(&guard)?;
+        self.own_checked(guard);
+        Ok(())
+    }
+
+    /// The scheduling domain this cell belongs to.
+    #[must_use]
+    pub fn domain(&self) -> Domain {
+        Domain::from_inner(self.inner.domain.clone())
+    }
+
+    /// Validate the dependency `guard` would add to this cell. Free until the
+    /// first child domain exists.
+    fn check_domain(&self, guard: &SubscriptionGuard) -> Result<(), DomainError> {
+        use crate::scheduler::domain;
+        if !domain::in_use() {
+            return Ok(());
+        }
+        let reader = domain::id_of(self.inner.domain.as_ref());
+        let crosses_boundary = guard.source().check_reader(reader)?;
+        if crosses_boundary && guard.subscribed_in().is_some_and(|scope| scope != reader) {
+            return Err(DomainError::UnscopedBoundary);
+        }
+        Ok(())
+    }
+
+    fn own_checked(&self, guard: SubscriptionGuard)
+    where
+        T: Send + Sync + 'static,
+    {
+        let min_height = self.register_height_edge(&guard);
         let previous = self.inner.owned.lock().insert(Uuid::new_v4(), guard);
         drop(previous);
-        #[cfg(feature = "scheduler")]
-        invalidate_height_cone(self.inner.as_ref());
+        raise_height(self.inner.as_ref(), min_height);
+    }
+
+    /// Register this cell as a height dependent of `guard`'s source and return
+    /// the height this cell needs to stay above it. Registration comes first
+    /// so a concurrent raise of the source either sees this cell in its
+    /// dependents or happened before the height read here.
+    fn register_height_edge(&self, guard: &SubscriptionGuard) -> u64
+    where
+        T: Send + Sync + 'static,
+    {
+        let erased: Arc<dyn HeightNode> = self.inner.clone();
+        guard.source().add_height_dependent(Arc::downgrade(&erased));
+        guard.source().height().saturating_add(1)
     }
 
     /// Take ownership of a subscription guard with a stable key.
@@ -278,26 +309,24 @@ impl<T, M> Cell<T, M> {
     /// If a guard with the same key already exists, it is replaced (and dropped).
     /// This is used by `switch_map` to ensure the old inner subscription is cleaned up
     /// when switching to a new inner cell.
+    ///
+    /// # Panics
+    ///
+    /// Panics under the same condition as [`own`](Self::own).
     pub fn own_keyed(&self, key: Uuid, guard: SubscriptionGuard)
     where
         T: Send + Sync + 'static,
     {
-        // Register as a height-dependent of the new source before it moves into
-        // `owned`. The replaced guard's stale back-edge on the *old* source is
-        // left to be pruned lazily — a stale dependent only over-invalidates (a
-        // harmless extra recompute), never under-invalidates.
-        #[cfg(feature = "scheduler")]
-        {
-            let erased: Arc<dyn HeightInvalidate> = self.inner.clone();
-            let dep = Arc::downgrade(&erased);
-            guard.source().add_height_dependent(dep);
+        if let Err(error) = self.check_domain(&guard) {
+            drop(guard);
+            crate::scheduler::domain::reject(error);
         }
+        // The replaced guard's back-edge on its old source stays; a stale
+        // dependent only over-raises, never under-raises.
+        let min_height = self.register_height_edge(&guard);
         let previous = self.inner.owned.lock().insert(key, guard);
         drop(previous);
-        // switch_map rewiring changed our dep set: invalidate our height cone
-        // (this cell + its transitive dependents), not the whole process.
-        #[cfg(feature = "scheduler")]
-        invalidate_height_cone(self.inner.as_ref());
+        raise_height(self.inner.as_ref(), min_height);
     }
 }
 
@@ -305,7 +334,6 @@ impl<T, M> Cell<T, M> {
 // DepNode implementation for Cell - enables type-erased dependency traversal
 // ============================================================================
 
-#[cfg(feature = "scheduler")]
 impl<T, M> Cell<T, M> {
     /// Opt this cell out of the scheduler's last-write-wins coalescing.
     ///
@@ -332,80 +360,122 @@ impl<T, M> Cell<T, M> {
     }
 }
 
-/// Type-erased handle to a node participating in localized height-cache
-/// invalidation. Implemented on the stable `Arc<CellInner<T>>` (not the ephemeral
-/// `Cell` handle that `DepNode` rides), so a `Weak<dyn HeightInvalidate>` can name
-/// a specific cell for its lifetime — the identity the dependency back-edges need
-/// and `DepNode` can't provide.
+/// Type-erased handle to a cell's height and height dependents. Implemented
+/// on the stable `Arc<CellInner<T>>` (not the ephemeral `Cell` handle that
+/// `DepNode` rides), so a `Weak<dyn HeightNode>` names a specific cell for its
+/// lifetime.
 ///
 /// `pub` only because it appears in the (public) `DepNode::add_height_dependent`
 /// signature; it is an internal scheduler detail, not stable API.
 #[doc(hidden)]
-#[cfg(feature = "scheduler")]
-pub trait HeightInvalidate: Send + Sync {
-    fn hi_id(&self) -> Uuid;
-    /// Advance this node's height epoch, marking its cached height stale.
-    fn hi_bump_epoch(&self);
-    /// Snapshot the live dependents (pruning dead weaks) for the cone walk.
-    fn hi_dependents(&self) -> Vec<std::sync::Weak<dyn HeightInvalidate>>;
+pub trait HeightNode: Send + Sync {
+    fn hn_id(&self) -> Uuid;
+    fn hn_height(&self) -> &std::sync::atomic::AtomicU64;
+    /// Snapshot the live dependents, pruning dead weaks.
+    fn hn_dependents(&self) -> Vec<std::sync::Weak<dyn HeightNode>>;
 }
 
-#[cfg(feature = "scheduler")]
-impl<T: Send + Sync> HeightInvalidate for CellInner<T> {
-    fn hi_id(&self) -> Uuid {
+impl<T: Send + Sync> HeightNode for CellInner<T> {
+    fn hn_id(&self) -> Uuid {
         self.id
     }
-    fn hi_bump_epoch(&self) {
-        self.height_epoch.fetch_add(1, Ordering::Relaxed);
+    fn hn_height(&self) -> &std::sync::atomic::AtomicU64 {
+        &self.height
     }
-    fn hi_dependents(&self) -> Vec<std::sync::Weak<dyn HeightInvalidate>> {
-        let mut g = self.height_dependents.lock();
-        // Amortized prune: a dropped dependent leaves a dead weak; sweep them on
-        // read. NOTE: this bounds the vec to the live dependent set only because
-        // `add_height_dependent` also rejects duplicates — retain alone cannot
-        // remove a repeat registration of a still-live dependent (rship lv-c065).
-        g.retain(|w| w.strong_count() > 0);
-        g.clone()
+    fn hn_dependents(&self) -> Vec<std::sync::Weak<dyn HeightNode>> {
+        self.height_dependents.lock().live()
     }
 }
 
-/// Invalidate the height cache of `start` and every node whose height depends
-/// (transitively) on it — the downstream cone. Called when `start`'s dependency
-/// set changes (`own`/`own_keyed`), so exactly the heights that could have moved
-/// are recomputed on their next read, leaving unrelated (and already-settled)
-/// subgraphs cached.
+/// The weak back-edges of [`CellInner::height_dependents`], keyed by the
+/// dependent's data address so registering is O(1) however many cells share
+/// one source.
 ///
-/// Bounds/safety: the visited set breaks cycles and de-dups diamonds; dead weaks
-/// (a dependent dropped concurrently — e.g. a `switch_map` inner being torn down
-/// in the same wave that invalidates it) upgrade to `None` and are skipped. The
-/// walk may over-invalidate (a stale weak still upgrades until pruned → one extra
-/// recompute) but never under-invalidates a live dependent.
-#[cfg(feature = "scheduler")]
-pub(crate) fn invalidate_height_cone(start: &dyn HeightInvalidate) {
-    start.hi_bump_epoch();
-    let mut visited = std::collections::HashSet::new();
-    visited.insert(start.hi_id());
-    let mut stack = start.hi_dependents();
-    while let Some(weak) = stack.pop() {
-        let Some(node) = weak.upgrade() else { continue };
-        if visited.insert(node.hi_id()) {
-            node.hi_bump_epoch();
-            stack.extend(node.hi_dependents());
+/// The address key is sound because a held `Weak` keeps its allocation alive:
+/// no other cell can be born at an address present here. Re-registering the
+/// same (source, dependent) pair is therefore a lookup, never a push — the
+/// `switch_map`-onto-a-cached-cell shape (rship lv-c065) — and dead entries are
+/// pruned whenever the set doubles, bounding it to twice the live set.
+pub(crate) struct HeightDependents {
+    by_addr: FxHashMap<usize, std::sync::Weak<dyn HeightNode>>,
+    prune_at: usize,
+}
+
+impl Default for HeightDependents {
+    fn default() -> Self {
+        Self {
+            by_addr: FxHashMap::default(),
+            prune_at: Self::MIN_PRUNE,
         }
     }
 }
 
+impl HeightDependents {
+    const MIN_PRUNE: usize = 8;
+
+    fn insert(&mut self, dep: std::sync::Weak<dyn HeightNode>) {
+        // Compare data addresses, not `Weak::ptr_eq`: these are trait-object
+        // weaks and vtable identity is not guaranteed across coercion sites.
+        let addr = dep.as_ptr().cast::<()>().addr();
+        if self.by_addr.contains_key(&addr) {
+            return;
+        }
+        if self.by_addr.len() >= self.prune_at {
+            self.prune();
+            self.prune_at = self.by_addr.len().saturating_mul(2).max(Self::MIN_PRUNE);
+        }
+        self.by_addr.insert(addr, dep);
+    }
+
+    fn prune(&mut self) {
+        self.by_addr.retain(|_, w| w.strong_count() > 0);
+    }
+
+    fn live(&mut self) -> Vec<std::sync::Weak<dyn HeightNode>> {
+        self.prune();
+        self.by_addr.values().cloned().collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.by_addr.len()
+    }
+}
+
+/// Raise `start`'s height to at least `min`, then raise every transitive
+/// dependent that would no longer sit strictly above its source. Heights only
+/// grow, through `fetch_max`, so concurrent raises compose; each thread walks
+/// on from the nodes it raised itself. A walk stops at a node already on its
+/// path, so a dependency cycle ends the walk instead of raising forever.
+pub(crate) fn raise_height(start: &dyn HeightNode, min: u64) {
+    if start.hn_height().fetch_max(min, Ordering::AcqRel) >= min {
+        return;
+    }
+    let mut path = vec![start.hn_id()];
+    raise_dependents(start, min, &mut path);
+}
+
+fn raise_dependents(node: &dyn HeightNode, height: u64, path: &mut Vec<Uuid>) {
+    let min = height.saturating_add(1);
+    for weak in node.hn_dependents() {
+        let Some(dependent) = weak.upgrade() else {
+            continue;
+        };
+        let id = dependent.hn_id();
+        if path.contains(&id) || dependent.hn_height().fetch_max(min, Ordering::AcqRel) >= min {
+            continue;
+        }
+        path.push(id);
+        raise_dependents(dependent.as_ref(), min, path);
+        path.pop();
+    }
+}
+
+impl<T, M> crate::traits::DepNodeSealed for Cell<T, M> {}
+
 impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
     fn id(&self) -> Uuid {
         self.inner.id
-    }
-
-    fn name(&self) -> Option<String> {
-        self.inner
-            .name
-            .lock()
-            .as_ref()
-            .map(std::string::ToString::to_string)
     }
 
     fn deps(&self) -> Vec<Arc<dyn DepNode>> {
@@ -421,43 +491,24 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
         sources
     }
 
-    #[cfg(feature = "scheduler")]
-    fn height_cache(&self) -> Option<&std::sync::atomic::AtomicU64> {
-        Some(&self.inner.height_cache)
+    fn height(&self) -> u64 {
+        self.inner.height.load(Ordering::Acquire)
     }
 
-    #[cfg(feature = "scheduler")]
-    fn height_epoch(&self) -> Option<&std::sync::atomic::AtomicU64> {
-        Some(&self.inner.height_epoch)
+    fn add_height_dependent(&self, dep: std::sync::Weak<dyn HeightNode>) {
+        // Deduplicated: `own`/`own_keyed` re-register the same (source,
+        // dependent) pair on every `switch_map` re-knit onto a memoized inner
+        // cell, which an unguarded push grew without bound (rship lv-c065).
+        self.inner.height_dependents.lock().insert(dep);
     }
 
-    #[cfg(feature = "scheduler")]
-    fn add_height_dependent(&self, dep: std::sync::Weak<dyn HeightInvalidate>) {
-        let mut deps = self.inner.height_dependents.lock();
-        // Prune dead entries, then register only if this dependent isn't already
-        // here. Both steps are load-bearing: `own`/`own_keyed` re-register the
-        // SAME (source, dependent) pair on every `switch_map` re-knit whose
-        // closure returns a CACHED cell (myko memoizes report/query cells, so
-        // the "new" inner cell is usually the same live one). An unguarded push
-        // therefore grew this Vec without bound at 16 bytes per re-knit —
-        // measured at ~7.5k re-knits/s in the rship server, and quadratic in
-        // allocator churn on top, because `hi_dependents` clones the whole Vec
-        // on every invalidation. `retain(strong_count > 0)` alone did NOT bound
-        // it: it only drops dependents that have DIED, never duplicates of a
-        // live one. (rship lv-c065)
-        deps.retain(|w| w.strong_count() > 0);
-        // Compare data addresses, not `Weak::ptr_eq`: these are trait-object
-        // weaks and vtable identity is not guaranteed across coercion sites.
-        let new_addr = dep.as_ptr().cast::<()>();
-        if deps.iter().any(|w| w.as_ptr().cast::<()>() == new_addr) {
-            return;
-        }
-        deps.push(dep);
-    }
-
-    #[cfg(feature = "scheduler")]
     fn no_coalesce(&self) -> bool {
         self.inner.no_coalesce.load(Ordering::Relaxed)
+    }
+
+    fn check_reader(&self, reader: u64) -> Result<bool, DomainError> {
+        let source = crate::scheduler::domain::id_of(self.inner.domain.as_ref());
+        crate::scheduler::domain::check_edge(reader, source)
     }
 
     fn subscriber_count(&self) -> usize {
@@ -470,15 +521,6 @@ impl<T: Send + Sync, M: Send + Sync> DepNode for Cell<T, M> {
 
     fn owned_count(&self) -> usize {
         self.inner.owned.lock().len()
-    }
-}
-
-impl<T: CellValue> Cell<T, CellImmutable> {
-    #[must_use]
-    pub fn with_name(self, name: impl Into<Arc<str>>) -> Self {
-        let name = name.into();
-        *self.inner.name.lock() = Some(name);
-        self
     }
 }
 
@@ -501,47 +543,153 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
             return;
         }
 
-        // Opt-in scheduler interception. Inside a `batch` (never in the
-        // default build, never on the synchronous path) this defers the
-        // value-settle + fanout into the height-ordered tick queue and returns;
-        // the drain runs them in order at the batch boundary. One thread-local
-        // bool load when the feature is on but no batch is open.
-        #[cfg(feature = "scheduler")]
-        if crate::scheduler::tick_active() {
-            // Weak: the queued op must not be what keeps this cell alive. If
-            // its source is rewritten before the op runs, the rewrite reaches
-            // the cell through the op's reference and queues a fresh op that
-            // holds it again, so a cell nobody uses any more never drops, never
-            // unsubscribes, and keeps recomputing for as long as the queue
-            // stays busy. A cell with no other holder has no subscribers left
-            // to tell, so skipping its op changes nothing observable.
-            let cell = self.downgrade();
-            // A terminal signal must not coalesce over a value it follows (an
-            // emit-then-complete operator would otherwise lose its final value
-            // under `batch`) — see [`crate::scheduler::enqueue`].
-            let terminal = !matches!(signal, Signal::Value(_));
-            let signal = signal;
-            let dependency: &dyn crate::traits::DepNode = self;
-            crate::scheduler::enqueue(
-                self.inner.id,
-                dependency,
-                terminal,
-                Box::new(move || {
-                    if let Some(cell) = cell.upgrade() {
-                        cell.write_value(&signal);
-                        cell.fanout(&signal);
-                    }
-                }),
-            );
+        // Until the first child domain exists every cell is a root cell: the
+        // cell's own domain is never read and the path below is the whole of
+        // `notify`.
+        if crate::scheduler::domain::in_use() {
+            self.notify_in_domain(signal);
             return;
         }
 
-        // Two phases, split so the (opt-in) scheduler can settle a cell's value
-        // in height order *before* running its fanout — glitch-free coalescing —
-        // and so sampling profilers resolve the value-write and the fanout as
-        // distinct symbols instead of one folded `notify`. Outside a scheduler
-        // batch (the default, and always on wasm) they run back-to-back: the
-        // exact synchronous eager-push path, with no behavioral change.
+        // Scheduler interception. Inside a `batch` (or a drain) this defers
+        // the value-settle + fanout into the height-ordered tick queue and
+        // returns; the drain runs them in order at the batch boundary. One
+        // relaxed atomic load when no batch is open.
+        if crate::scheduler::tick_active(None) {
+            self.defer(None, signal);
+            return;
+        }
+        self.settle(signal);
+    }
+
+    /// [`notify`](Self::notify) once a child domain exists: the same two
+    /// paths on this cell's own tick, as this cell's domain's propagation.
+    #[inline(never)]
+    fn notify_in_domain(&self, signal: Signal<T>) {
+        let domain = self.inner.domain.as_ref();
+        crate::scheduler::domain::assert_write(domain);
+        if crate::scheduler::tick_active(domain) {
+            self.defer(domain, signal);
+            return;
+        }
+        // Cells the cascade's operators create join this cell's domain, and a
+        // callback that writes another domain is rejected.
+        let _scope = crate::scheduler::domain::propagate(domain);
+        self.settle(signal);
+    }
+
+    /// Set the value and run `effect` on the thread that delivers it, just
+    /// before or just after the fanout, so the effect takes the write's
+    /// place in delivery order instead of the order `set` was called in.
+    pub(crate) fn set_with(&self, value: T, at: EffectAt, effect: impl FnOnce() + Send + 'static) {
+        // Wrapped when the write is made, not when it is delivered: wrapping
+        // at delivery puts one allocation per row into the drain loop, where
+        // it contends with the threads freeing what subscribers handed off.
+        let signal = Signal::value(value);
+        self.set_signal_from(at, move || Some((signal, effect)));
+    }
+
+    /// [`set_with`](Self::set_with), with the value and effect produced when
+    /// the write is delivered rather than when it is made. Nothing is
+    /// delivered when `produce` gives nothing.
+    pub(crate) fn set_from<E: FnOnce() + Send + 'static>(
+        &self,
+        at: EffectAt,
+        produce: impl FnOnce() -> Option<(T, E)> + Send + 'static,
+    ) {
+        self.set_signal_from(at, move || {
+            produce().map(|(value, effect)| (Signal::value(value), effect))
+        });
+    }
+
+    fn set_signal_from<E: FnOnce() + Send + 'static>(
+        &self,
+        at: EffectAt,
+        produce: impl FnOnce() -> Option<(Signal<T>, E)> + Send + 'static,
+    ) {
+        let deliver = move |cell: Option<&Self>| {
+            let Some((signal, effect)) = produce() else {
+                return;
+            };
+            if matches!(at, EffectAt::BeforeFanout) {
+                effect();
+                if let Some(cell) = cell {
+                    cell.settle(signal);
+                }
+            } else {
+                if let Some(cell) = cell {
+                    cell.settle(signal);
+                }
+                effect();
+            }
+        };
+        if self.inner.completed.load(Ordering::SeqCst) || self.inner.errored.load(Ordering::SeqCst)
+        {
+            return deliver(None);
+        }
+        let in_use = crate::scheduler::domain::in_use();
+        let domain = self.inner.domain.as_ref().filter(|_| in_use);
+        crate::scheduler::domain::assert_write(domain);
+        if crate::scheduler::tick_active(domain) {
+            let cell = self.downgrade();
+            let dependency: &dyn crate::traits::DepNode = self;
+            crate::scheduler::enqueue(
+                domain,
+                self.inner.id,
+                dependency,
+                false,
+                Box::new(move || deliver(cell.upgrade().as_ref())),
+            );
+            return;
+        }
+        let _scope = crate::scheduler::domain::propagate_if_in_use(domain);
+        deliver(Some(self));
+    }
+
+    /// Queue the value-settle and fanout on `domain`'s tick.
+    #[inline]
+    fn defer(
+        &self,
+        domain: Option<&Arc<crate::scheduler::domain::DomainInner>>,
+        signal: Signal<T>,
+    ) {
+        // Weak: the queued op must not be what keeps this cell alive. If
+        // its source is rewritten before the op runs, the rewrite reaches
+        // the cell through the op's reference and queues a fresh op that
+        // holds it again, so a cell nobody uses any more never drops, never
+        // unsubscribes, and keeps recomputing for as long as the queue
+        // stays busy. A cell with no other holder has no subscribers left
+        // to tell, so skipping its op changes nothing observable.
+        let cell = self.downgrade();
+        // A terminal signal must not coalesce over a value it follows (an
+        // emit-then-complete operator would otherwise lose its final value
+        // under `batch`) — see [`crate::scheduler::enqueue`].
+        let terminal = !matches!(signal, Signal::Value(_));
+        let dependency: &dyn crate::traits::DepNode = self;
+        crate::scheduler::enqueue(
+            domain,
+            self.inner.id,
+            dependency,
+            terminal,
+            Box::new(move || {
+                if let Some(cell) = cell.upgrade() {
+                    cell.write_value(&signal);
+                    cell.fanout(&signal);
+                }
+            }),
+        );
+    }
+
+    /// Settle the value and fan it out on the calling thread.
+    ///
+    /// Two phases, split so the (opt-in) scheduler can settle a cell's value
+    /// in height order *before* running its fanout — glitch-free coalescing —
+    /// and so sampling profilers resolve the value-write and the fanout as
+    /// distinct symbols instead of one folded `notify`. Outside a scheduler
+    /// batch (the default, and always on wasm) they run back-to-back: the
+    /// exact synchronous eager-push path, with no behavioral change.
+    #[inline]
+    fn settle(&self, signal: Signal<T>) {
         self.write_value(&signal);
         self.fanout(&signal);
         // `notify` owns its signal because scheduler-enabled builds may move it
@@ -588,16 +736,11 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
 
         // A `tracing` span per fanout so span-based profilers (`tracing-flame`,
         // `tracing-tracy`) get one entry per cell emit, tagged with the cell's
-        // id and (if set) its name. The consumer attaches the subscriber; when
-        // `profiling` is off this compiles to nothing. Later phases nest this
-        // under a per-frame span.
+        // id. The consumer attaches the subscriber; when `profiling` is off
+        // this compiles to nothing.
         #[cfg(feature = "profiling")]
-        let _fanout_span = ::tracing::trace_span!(
-            "hyphae.fanout",
-            cell.id = %self.inner.id,
-            cell.name = { self.inner.name.lock().clone() }.as_deref().unwrap_or(""),
-        )
-        .entered();
+        let _fanout_span =
+            ::tracing::trace_span!("hyphae.fanout", cell.id = %self.inner.id).entered();
 
         // Hot path: take the subscribers mutex briefly to grab the notify
         // snapshot (rebuilt from the id-index only if it changed since the last
@@ -608,10 +751,13 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         // already-cloned snapshot). The displaced old snapshot drops *outside*
         // the lock — it may hold the last ref to an unsubscribed subscriber
         // whose drop cascades into upstream cell drops.
-        let subs = {
-            let (subs, old_snapshot) = self.inner.subscribers.lock().snapshot();
+        let (subs, handing_off) = {
+            let mut registry = self.inner.subscribers.lock();
+            let (subs, old_snapshot) = registry.snapshot();
+            let crossing = registry.crossing();
+            drop(registry);
             drop(old_snapshot);
-            subs
+            (subs, crossing)
         };
 
         // Subscriber callbacks must not panic — see `Watchable::subscribe` docs.
@@ -619,7 +765,20 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         // rest of this fanout, which is a bug in the subscriber that should surface
         // loudly rather than be silently swallowed.
         for (_subscriber_id, sub) in subs.as_slice() {
-            sub.deliver(signal);
+            if handing_off && let Some(child) = sub.hand_off() {
+                // A child's subscription to this root cell: the delivery
+                // crosses the boundary and runs on the child's own tick.
+                if sub.seed_started() {
+                    let sub = Arc::clone(sub);
+                    let signal = signal.clone();
+                    crate::scheduler::domain::hand_off(
+                        child,
+                        Box::new(move || sub.deliver(&signal)),
+                    );
+                }
+            } else {
+                sub.deliver(signal);
+            }
         }
 
         // Fallible subscribers run after the infallible chain. Errors are logged
@@ -628,14 +787,35 @@ impl<T: CellValue, M: Send + Sync + 'static> Cell<T, M> {
         // this loop). Use `subscribe_result` when you want a structured error
         // channel instead of `panic!`.
         // Same snapshot pattern as `subscribers` above.
-        let result_subs = {
-            let (result_subs, old_snapshot) = self.inner.result_subscribers.lock().snapshot();
+        let (result_subs, handing_off) = {
+            let mut registry = self.inner.result_subscribers.lock();
+            let (result_subs, old_snapshot) = registry.snapshot();
+            let crossing = registry.crossing();
+            drop(registry);
             drop(old_snapshot);
-            result_subs
+            (result_subs, crossing)
         };
 
         for (subscriber_id, sub) in result_subs.as_slice() {
-            if let Err(err) = sub.deliver(signal) {
+            if handing_off && let Some(child) = sub.hand_off() {
+                if !sub.seed_started() {
+                    continue;
+                }
+                let sub = Arc::clone(sub);
+                let signal = signal.clone();
+                let subscriber_id = *subscriber_id;
+                let cell_id = self.inner.id;
+                crate::scheduler::domain::hand_off(
+                    child,
+                    Box::new(move || {
+                        if let Err(err) = sub.deliver(&signal) {
+                            log::error!(
+                                "hyphae: fallible subscriber {subscriber_id} on cell {cell_id} returned error: {err}"
+                            );
+                        }
+                    }),
+                );
+            } else if let Err(err) = sub.deliver(signal) {
                 log::error!(
                     "hyphae: fallible subscriber {} on cell {} returned error: {}",
                     subscriber_id,
@@ -656,13 +836,37 @@ impl<T: CellValue, U: Send + Sync + 'static> Gettable<T> for Cell<T, U> {
     }
 }
 
+impl<T: CellValue, U: Send + Sync + 'static> Cell<T, U> {
+    /// Tell `child` how to remove hand-off subscription `id` from this root
+    /// cell, so closing the child releases it. Returns the child for the
+    /// subscription's guard to deregister with.
+    fn register_boundary(
+        &self,
+        child: Option<&Arc<crate::scheduler::domain::DomainInner>>,
+        id: Uuid,
+    ) -> Option<Arc<crate::scheduler::domain::DomainInner>> {
+        let child = child?;
+        let cell = self.downgrade();
+        child.register_boundary(
+            id,
+            Box::new(move || {
+                if let Some(cell) = cell.upgrade() {
+                    cell.unsubscribe(id);
+                }
+            }),
+        );
+        Some(Arc::clone(child))
+    }
+}
+
 impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
     fn subscribe(
         &self,
         callback: impl Fn(&Signal<T>) + Send + Sync + 'static,
     ) -> SubscriptionGuard {
         let id = Uuid::new_v4();
-        let sub = Arc::new(Subscriber::new(callback));
+        let hand_off = crate::scheduler::domain::hand_off_target(self.inner.domain.as_ref());
+        let sub = Arc::new(Subscriber::new(callback).handing_off_to(hand_off));
 
         // Insert BEFORE seeding. The prior order (fire the seed with the current
         // value, THEN insert) left a window in which a concurrent `notify` on
@@ -683,8 +887,15 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
         // subscriber's drop can cascade into upstream cell drops that touch
         // other cell mutexes, and running that under this lock allowed two
         // concurrently-dropping cells to deadlock.
-        let displaced = self.inner.subscribers.lock().insert(id, sub.clone());
+        let displaced = {
+            let mut registry = self.inner.subscribers.lock();
+            if sub.hand_off().is_some() {
+                registry.mark_crossing();
+            }
+            registry.insert(id, sub.clone())
+        };
         drop(displaced);
+        let boundary = self.register_boundary(sub.hand_off(), id);
 
         // Seed the current value AFTER the insert (backfilling the freshest
         // stored value) and fire OUTSIDE the subscribers lock — subscriber
@@ -693,7 +904,17 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
         // raced the insert above already delivers to this now-indexed
         // subscriber; a duplicate value delivery is benign, and any one-emit
         // ordering skew self-heals on the next notify.
-        let current = self.inner.value.lock().clone();
+        //
+        // A hand-off subscriber starts receiving at the instant its seed is
+        // read, under the value lock: a write settled before that instant is
+        // in the seed, and its fanout hands this subscriber nothing unless it
+        // is the write the seed read, so nothing older than the seed can
+        // arrive after it.
+        let current = {
+            let value = self.inner.value.lock();
+            sub.start_seed();
+            value.clone()
+        };
         sub.finish_initial(&Signal::Value(current));
 
         // If already complete or errored, send that signal too
@@ -713,7 +934,11 @@ impl<T: CellValue, U: Send + Sync + 'static> Watchable<T> for Cell<T, U> {
             let (removed_sub, stale_snap) = cell.inner.subscribers.lock().remove(&id);
             drop(removed_sub);
             drop(stale_snap);
+            if let Some(child) = &boundary {
+                child.release_boundary(id);
+            }
         })
+        .subscribed_here()
     }
 
     fn unsubscribe(&self, id: Uuid) {
@@ -756,17 +981,29 @@ impl<T: CellValue, U: Send + Sync + 'static> WatchableResult<T> for Cell<T, U> {
         };
 
         let id = Uuid::new_v4();
-        let sub = Arc::new(ResultSubscriber::new(callback));
+        let hand_off = crate::scheduler::domain::hand_off_target(self.inner.domain.as_ref());
+        let sub = Arc::new(ResultSubscriber::new(callback).handing_off_to(hand_off));
 
         // Match the infallible subscribe path: install before replay so an
         // update racing subscription cannot fall between the replay and the
         // registry insert. Result callbacks use the same initialization queue
         // to preserve replay-before-live ordering.
-        let displaced = self.inner.result_subscribers.lock().insert(id, sub.clone());
+        let displaced = {
+            let mut registry = self.inner.result_subscribers.lock();
+            if sub.hand_off().is_some() {
+                registry.mark_crossing();
+            }
+            registry.insert(id, sub.clone())
+        };
         drop(displaced);
+        let boundary = self.register_boundary(sub.hand_off(), id);
 
         // Send current value immediately (Arc clone, no deep copy).
-        let current = self.inner.value.lock().clone();
+        let current = {
+            let value = self.inner.value.lock();
+            sub.start_seed();
+            value.clone()
+        };
         sub.finish_initial(&Signal::Value(current), |error| log_err(&id, error));
 
         // Replay any prior terminal signal.
@@ -789,7 +1026,11 @@ impl<T: CellValue, U: Send + Sync + 'static> WatchableResult<T> for Cell<T, U> {
             let (removed_sub, stale_snap) = cell.inner.result_subscribers.lock().remove(&id);
             drop(removed_sub);
             drop(stale_snap);
+            if let Some(child) = &boundary {
+                child.release_boundary(id);
+            }
         })
+        .subscribed_here()
     }
 }
 
@@ -807,15 +1048,7 @@ impl<T: CellValue> Mutable<T> for Cell<T, CellMutable> {
     }
 }
 
-// ============================================================================
-// Inspector feature: DepNode for CellInner + Drop to deregister
-// ============================================================================
-
-impl<T> Drop for CellInner<T> {
-    fn drop(&mut self) {}
-}
-
-#[cfg(all(test, feature = "scheduler"))]
+#[cfg(test)]
 mod height_dependents_tests {
     use crate::{Cell, Materialize, Mutable, SwitchMapExt, Watchable};
 
@@ -867,11 +1100,11 @@ mod height_dependents_tests {
             let owner = Cell::new(0i32);
             owner.own(source.subscribe(|_| {}));
         }
-        // Force a read, which runs the amortized prune.
         let owner2 = Cell::new(0i32);
         owner2.own(source.subscribe(|_| {}));
 
-        let len = source.inner.height_dependents.lock().len();
+        // A raise reads the dependents, which prunes the dead entry.
+        let len = crate::cell::HeightNode::hn_dependents(source.inner.as_ref()).len();
         assert_eq!(len, 1, "dropped dependent should not linger, got {len}");
     }
 
@@ -902,6 +1135,83 @@ mod height_dependents_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::indexing_slicing)]
+mod height_invariant_tests {
+    use std::sync::Arc;
+
+    use crate::{Cell, DepNode, Watchable, cell::CellMutable};
+
+    fn assert_edges_valid(cells: &[Cell<u64, CellMutable>]) {
+        for cell in cells {
+            let height = cell.height();
+            for guard in cell.inner.owned.lock().values() {
+                let source = guard.source().height();
+                assert!(
+                    height > source,
+                    "edge violates height order: {source} -> {height}"
+                );
+            }
+        }
+    }
+
+    fn lcg(state: &mut u64) -> usize {
+        *state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        usize::try_from(*state >> 33).unwrap_or(0)
+    }
+
+    #[test]
+    fn random_edits_keep_every_edge_ordered() {
+        let mut state = 7u64;
+        let cells: Vec<_> = (0..24).map(|_| Cell::new(0u64)).collect();
+        let keys: Vec<_> = (0..4).map(|_| uuid::Uuid::new_v4()).collect();
+        for _ in 0..2000 {
+            let dst = 1 + lcg(&mut state) % (cells.len() - 1);
+            let src = lcg(&mut state) % dst;
+            let guard = cells[src].subscribe(|_| {});
+            if lcg(&mut state).is_multiple_of(2) {
+                cells[dst].own_keyed(keys[lcg(&mut state) % keys.len()], guard);
+            } else {
+                cells[dst].own(guard);
+            }
+            assert_edges_valid(&cells);
+        }
+    }
+
+    #[test]
+    fn concurrent_edits_keep_every_edge_ordered() {
+        let cells: Arc<Vec<_>> = Arc::new((0..24).map(|_| Cell::new(0u64)).collect());
+        std::thread::scope(|scope| {
+            for seed in 0..4u64 {
+                let cells = Arc::clone(&cells);
+                scope.spawn(move || {
+                    let mut state = seed + 1;
+                    let key = uuid::Uuid::new_v4();
+                    for _ in 0..1000 {
+                        let dst = 1 + lcg(&mut state) % (cells.len() - 1);
+                        let src = lcg(&mut state) % dst;
+                        cells[dst].own_keyed(key, cells[src].subscribe(|_| {}));
+                    }
+                });
+            }
+        });
+        assert_edges_valid(&cells);
+    }
+
+    #[test]
+    fn dependency_cycle_terminates() {
+        let a = Cell::new(0u64);
+        let b = Cell::new(0u64);
+        b.own(a.subscribe(|_| {}));
+        a.own(b.subscribe(|_| {}));
+        let c = Cell::new(0u64);
+        a.own(c.subscribe(|_| {}));
+        assert!(b.height() > c.height());
+    }
+}
+
+#[cfg(test)]
 mod owned_guard_tests {
     use std::sync::{
         Arc,
@@ -909,28 +1219,6 @@ mod owned_guard_tests {
     };
 
     use super::*;
-
-    #[cfg(feature = "profiling")]
-    #[test]
-    fn disabled_fanout_trace_does_not_acquire_name_lock() {
-        let source = Cell::new(0_u64).with_name("trace-test");
-        let sender = source.clone();
-        let name_lock = source.inner.name.lock();
-        let (done, received) = std::sync::mpsc::channel();
-        let thread = std::thread::spawn(move || {
-            ::tracing::subscriber::with_default(
-                ::tracing::subscriber::NoSubscriber::default(),
-                || {
-                    sender.fanout(&Signal::value(1));
-                },
-            );
-            let _ = done.send(());
-        });
-        let delivered = received.recv_timeout(std::time::Duration::from_secs(5));
-        drop(name_lock);
-        assert!(delivered.is_ok());
-        assert!(thread.join().is_ok());
-    }
 
     #[test]
     fn owned_subscription_lives_until_owner_drops() {
@@ -1037,15 +1325,13 @@ mod owned_guard_tests {
             id: Uuid,
             owner: WeakCell<u64, CellMutable>,
         }
+        impl crate::traits::DepNodeSealed for ReentrantDependency {}
         impl DepNode for ReentrantDependency {
             fn id(&self) -> Uuid {
                 if let Some(owner) = self.owner.upgrade() {
                     assert!(owner.inner.owned.try_lock().is_some());
                 }
                 self.id
-            }
-            fn name(&self) -> Option<String> {
-                None
             }
             fn deps(&self) -> Vec<Arc<dyn DepNode>> {
                 Vec::new()

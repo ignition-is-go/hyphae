@@ -1,8 +1,9 @@
 use std::{
-    collections::{HashMap, HashSet},
     hash::Hash,
     sync::{Arc, Mutex},
 };
+
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use crate::{
     cell_map::MapDiff, map_query::MapQuery, subscription::SubscriptionGuard, traits::CellValue,
@@ -27,24 +28,22 @@ where
 {
     fn default() -> Self {
         Self {
-            source_to_group: HashMap::new(),
-            groups: HashMap::new(),
+            source_to_group: HashMap::default(),
+            groups: HashMap::default(),
         }
     }
 }
 
-pub struct GroupedOps<SK, SV, GK, GS, OV, FG, FI, FU, FR, FM, FE>
+pub struct GroupedOps<SK, SV, GK, GS, FG, FI, FU, FR, FM, FE>
 where
     SK: Hash + Eq + CellValue,
     SV: CellValue,
     GK: Hash + Eq + CellValue,
     GS: Clone + Send + Sync + 'static,
-    OV: CellValue,
     FG: Fn(&SK, &SV) -> GK + Send + Sync + 'static,
     FI: Fn(&mut GS, &SK, &SV) + Send + Sync + 'static,
     FU: Fn(&mut GS, &SK, &SV, &SV) + Send + Sync + 'static,
     FR: Fn(&mut GS, &SK, &SV) + Send + Sync + 'static,
-    FM: Fn(&GS) -> OV + Send + Sync + 'static,
     FE: Fn(&GS) -> bool + Send + Sync + 'static,
 {
     pub make_group_key: FG,
@@ -57,8 +56,7 @@ where
     pub _marker: std::marker::PhantomData<fn(&SK, &SV) -> GK>,
 }
 
-impl<SK, SV, GK, GS, OV, FG, FI, FU, FR, FM, FE>
-    GroupedOps<SK, SV, GK, GS, OV, FG, FI, FU, FR, FM, FE>
+impl<SK, SV, GK, GS, OV, FG, FI, FU, FR, FM, FE> GroupedOps<SK, SV, GK, GS, FG, FI, FU, FR, FM, FE>
 where
     SK: Hash + Eq + CellValue,
     SV: CellValue,
@@ -103,16 +101,16 @@ where
                 .map(|group_state| (self.materialize)(group_state));
             match (old_value, new_value) {
                 (Some(old_value), Some(new_value)) => downstream.push(MapDiff::Update {
-                    key: group.clone(),
+                    key: group,
                     old_value,
                     new_value,
                 }),
                 (None, Some(new_value)) => downstream.push(MapDiff::Insert {
-                    key: group.clone(),
+                    key: group,
                     value: new_value,
                 }),
                 (Some(old_value), None) => downstream.push(MapDiff::Remove {
-                    key: group.clone(),
+                    key: group,
                     old_value,
                 }),
                 (None, None) => {}
@@ -131,6 +129,17 @@ where
         return;
     }
     sink(&MapDiff::Batch { changes });
+}
+
+/// Visit the non-batch changes of `diff` in order, without copying it.
+fn for_each_atomic<K, V>(diff: &MapDiff<K, V>, visit: &mut impl FnMut(&MapDiff<K, V>)) {
+    if let MapDiff::Batch { changes } = diff {
+        for change in changes {
+            for_each_atomic(change, visit);
+        }
+    } else {
+        visit(diff);
+    }
 }
 
 /// Sink-driven diff runtime for [`MapQuery`] plan nodes.
@@ -159,16 +168,14 @@ where
 
     let upstream_sink = {
         move |diff: &MapDiff<SK, SV>| {
-            let mut atomic_diffs: Vec<MapDiff<SK, SV>> = Vec::new();
-            diff.clone().flatten_into(&mut atomic_diffs);
             let mut emitted = Vec::<MapDiff<OK, OV>>::new();
             {
                 let mut state = state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                for atomic in &atomic_diffs {
+                for_each_atomic(diff, &mut |atomic| {
                     apply_atomic(&mut state, atomic, &mut emitted);
-                }
+                });
             }
             emit_changes(emitted, &sink);
         }
@@ -184,7 +191,7 @@ where
 pub fn install_grouped_runtime_via_query<SK, SV, GK, GS, OV, S, FG, FI, FU, FR, FM, FE>(
     cx: &mut crate::map_query::compiler::CompileContext,
     source: S,
-    ops: GroupedOps<SK, SV, GK, GS, OV, FG, FI, FU, FR, FM, FE>,
+    ops: GroupedOps<SK, SV, GK, GS, FG, FI, FU, FR, FM, FE>,
     sink: crate::map_query::BoxedMapDiffSink<GK, OV>,
 ) -> Vec<SubscriptionGuard>
 where
@@ -209,13 +216,14 @@ where
         move |state: &mut GroupedState<SK, GK, GS>,
               diff: &MapDiff<SK, SV>,
               downstream: &mut Vec<MapDiff<GK, OV>>| {
-            let mut touched = HashSet::<GK>::new();
-            let mut before = HashMap::<GK, Option<OV>>::new();
+            let mut touched = HashSet::<GK>::default();
+            let mut before = HashMap::<GK, Option<OV>>::default();
 
             match diff {
                 MapDiff::Initial { entries } => {
                     let old_groups = std::mem::take(&mut state.groups);
                     state.source_to_group.clear();
+                    state.source_to_group.reserve(entries.len());
                     for (group, group_state) in old_groups {
                         before.insert(group.clone(), Some((ops.materialize)(&group_state)));
                         touched.insert(group);

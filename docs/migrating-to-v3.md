@@ -318,9 +318,8 @@ before returning. `ReactiveMap` carries `MapDiff` and has no completion/error
 terminal channel, so completion/error ordering is currently not applicable to
 map queries.
 
-On native builds with `scheduler`, only sufficiently costly and balanced join
-regions use the shared dedicated Rayon pool. Builds without `scheduler` and
-wasm stay sequential. `HYPHAE_WORKER_THREADS` controls the pool and zero
+On native builds, only sufficiently costly and balanced join regions use the
+shared dedicated Rayon pool. Wasm stays sequential. `HYPHAE_WORKER_THREADS` controls the pool and zero
 disables it; `HYPHAE_WAVE_THREADS` is the compatibility fallback.
 
 A panic inside a coordinated promoted `JoinRegion` joins sibling workers,
@@ -360,6 +359,5 @@ region.
 15. Keep query closures pure and do not depend on their invocation order,
     count, or worker thread.
 16. Run the application test suite with the same Hyphae features used in
-    production, especially `scheduler`, `async`, and `profiling`; also test the
-    sequential configuration when production may run on wasm or without the
-    scheduler feature.
+    production, especially `async` and `profiling`; also test the sequential
+    configuration when production may run on wasm.

@@ -1,7 +1,7 @@
 //! Regression coverage for the shared native timer reactor
 //! (`platform::native::{spawn_interval, spawn_delayed}`).
 //!
-//! The reactor exists to make hyphae's `scheduler` feature's glitch-free
+//! The reactor exists to make hyphae's scheduler's glitch-free
 //! coalescing hold *process-wide*: that guarantee is thread-local (see
 //! `crate::scheduler`), so any two timer-driven sources that used to spawn
 //! their own OS thread could fan out into a shared downstream cell from
@@ -11,7 +11,7 @@
 //! actual regression gate for that bug; the rest cover that the reactor
 //! didn't lose basic interval/delayed-timer correctness in the rewrite.
 
-#![cfg(all(not(target_arch = "wasm32"), feature = "scheduler"))]
+#![cfg(not(target_arch = "wasm32"))]
 
 use std::{
     sync::{
@@ -22,9 +22,8 @@ use std::{
     time::Duration,
 };
 
-use parking_lot::Mutex;
-
 use hyphae::{Cell, DelayExt, Materialize, Mutable, Signal, Watchable, interval_source};
+use parking_lot::Mutex;
 
 const DELAYED_TIMER_COUNT: usize = 200;
 static SCHEDULER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

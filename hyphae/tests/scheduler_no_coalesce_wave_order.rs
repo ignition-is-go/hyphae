@@ -11,16 +11,14 @@
 //! concurrently. `run_wave`'s independence invariant assumes each op writes a
 //! distinct cell; N same-cell event ops violate it. This test pins down whether
 //! that reorders or overlaps event delivery.
-#![cfg(feature = "scheduler")]
 
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
 
-use parking_lot::Mutex;
-
 use hyphae::{Cell, CellMutable, Mutable, Signal, Watchable, batch, scheduler::no_coalesce};
+use parking_lot::Mutex;
 
 const N: usize = 32; // well over the parallel-wave threshold (8)
 const ITERS: usize = 2_000;

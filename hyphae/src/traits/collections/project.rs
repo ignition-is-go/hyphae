@@ -1,6 +1,6 @@
 //! Rekeying projection plan nodes implementing [`MapQuery`].
 
-use std::{hash::Hash, marker::PhantomData};
+use std::hash::Hash;
 
 use crate::{
     map_query::{
@@ -11,7 +11,7 @@ use crate::{
     traits::{CellValue, collections::internal::single_runtime::install_single_runtime},
 };
 
-impl<S, SK, SV, OK, OV, F> PlanProperties for ProjectPlan<S, SK, SV, OK, OV, F>
+impl<S, SK, SV, OK, OV, F> PlanProperties for ProjectPlan<S, F>
 where
     S: MapQuery<Key = SK, Value = SV> + PlanProperties,
     SK: Hash + Eq + CellValue,
@@ -25,7 +25,7 @@ where
     type OutputPartition = Repartition<OK>;
 }
 
-impl<S, SK, SV, OK, OV, F> PlanProperties for MapEntriesPlan<S, SK, SV, OK, OV, F>
+impl<S, SK, SV, OK, OV, F> PlanProperties for MapEntriesPlan<S, F>
 where
     S: MapQuery<Key = SK, Value = SV> + PlanProperties,
     SK: Hash + Eq + CellValue,
@@ -47,22 +47,12 @@ where
 ///
 /// Not [`Clone`]: cloning a plan would silently duplicate projection work;
 /// share by materializing once.
-pub struct ProjectPlan<S, SK, SV, OK, OV, F>
-where
-    S: MapQuery<Key = SK, Value = SV>,
-    SK: Hash + Eq + CellValue,
-    SV: CellValue,
-    OK: Hash + Eq + CellValue,
-    OV: CellValue,
-    F: Fn(&SK, &SV) -> Option<(OK, OV)> + Send + Sync + 'static,
-{
+pub struct ProjectPlan<S, F> {
     pub(crate) source: S,
     pub(crate) f: F,
-    #[allow(clippy::type_complexity)]
-    pub(crate) _types: PhantomData<fn() -> (SK, SV, OK, OV)>,
 }
 
-impl<S, SK, SV, OK, OV, F> BuildQueryRuntime<OK, OV> for ProjectPlan<S, SK, SV, OK, OV, F>
+impl<S, SK, SV, OK, OV, F> BuildQueryRuntime<OK, OV> for ProjectPlan<S, F>
 where
     S: MapQuery<Key = SK, Value = SV>,
     SK: Hash + Eq + CellValue,
@@ -82,7 +72,7 @@ where
 }
 
 #[allow(private_bounds)]
-impl<S, SK, SV, OK, OV, F> MapQuery for ProjectPlan<S, SK, SV, OK, OV, F>
+impl<S, SK, SV, OK, OV, F> MapQuery for ProjectPlan<S, F>
 where
     S: MapQuery<Key = SK, Value = SV>,
     SK: Hash + Eq + CellValue,
@@ -96,21 +86,12 @@ where
 }
 
 /// One-to-one rekeying projection plan.
-pub struct MapEntriesPlan<S, SK, SV, OK, OV, F>
-where
-    S: MapQuery<Key = SK, Value = SV>,
-    SK: Hash + Eq + CellValue,
-    SV: CellValue,
-    OK: Hash + Eq + CellValue,
-    OV: CellValue,
-    F: Fn(&SK, &SV) -> (OK, OV) + Send + Sync + 'static,
-{
+pub struct MapEntriesPlan<S, F> {
     pub(crate) source: S,
     pub(crate) f: F,
-    pub(crate) _types: PhantomData<fn() -> (SK, SV, OK, OV)>,
 }
 
-impl<S, SK, SV, OK, OV, F> BuildQueryRuntime<OK, OV> for MapEntriesPlan<S, SK, SV, OK, OV, F>
+impl<S, SK, SV, OK, OV, F> BuildQueryRuntime<OK, OV> for MapEntriesPlan<S, F>
 where
     S: MapQuery<Key = SK, Value = SV>,
     SK: Hash + Eq + CellValue,
@@ -130,7 +111,7 @@ where
 }
 
 #[allow(private_bounds)]
-impl<S, SK, SV, OK, OV, F> MapQuery for MapEntriesPlan<S, SK, SV, OK, OV, F>
+impl<S, SK, SV, OK, OV, F> MapQuery for MapEntriesPlan<S, F>
 where
     S: MapQuery<Key = SK, Value = SV>,
     SK: Hash + Eq + CellValue,
@@ -167,11 +148,7 @@ where
         V2: CellValue,
         F: Fn(&K, &V) -> (K2, V2) + Send + Sync + 'static,
     {
-        MapEntriesPlan {
-            source: self,
-            f,
-            _types: PhantomData,
-        }
+        MapEntriesPlan { source: self, f }
     }
 
     /// Map an input row to zero or one output row with a unique output key.
@@ -188,11 +165,7 @@ where
         V2: CellValue,
         F: Fn(&K, &V) -> Option<(K2, V2)> + Send + Sync + 'static,
     {
-        ProjectPlan {
-            source: self,
-            f,
-            _types: PhantomData,
-        }
+        ProjectPlan { source: self, f }
     }
 }
 

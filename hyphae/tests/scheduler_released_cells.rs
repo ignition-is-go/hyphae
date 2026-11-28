@@ -3,7 +3,6 @@
 //! immortal whenever its source is rewritten before that op runs: each rewrite
 //! reaches the cell through the op's reference and queues a fresh op that holds
 //! it again, so it never unsubscribes and its work never goes away.
-#![cfg(feature = "scheduler")]
 
 use std::sync::{
     Arc,

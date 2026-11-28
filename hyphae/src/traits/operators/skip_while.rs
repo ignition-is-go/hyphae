@@ -20,14 +20,13 @@ use crate::{
 };
 
 /// Pipeline node representing `source.skip_while(p)`.
-pub struct SkipWhilePipeline<S, T, F, Sd = crate::pipeline::Definite> {
+pub struct SkipWhilePipeline<S, F, Sd = crate::pipeline::Definite> {
     source: S,
     predicate: Arc<F>,
-    _t: PhantomData<fn(T)>,
     _sd: PhantomData<fn(Sd)>,
 }
 
-impl<S, T, F, Sd> PipelineInstall<T> for SkipWhilePipeline<S, T, F, Sd>
+impl<S, T, F, Sd> PipelineInstall<T> for SkipWhilePipeline<S, F, Sd>
 where
     S: PipelineInstall<T> + Send + Sync + 'static,
     Sd: Seedness,
@@ -57,7 +56,7 @@ where
 }
 
 #[allow(private_bounds)]
-impl<S, T, F, Sd> Pipeline<T, Empty> for SkipWhilePipeline<S, T, F, Sd>
+impl<S, T, F, Sd> Pipeline<T, Empty> for SkipWhilePipeline<S, F, Sd>
 where
     S: Pipeline<T, Sd>,
     Sd: Seedness,
@@ -86,7 +85,6 @@ pub trait SkipWhileExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// source.set(3); // passes (predicate false)
     /// source.set(1); // passes (gate already opened)
     /// ```
-    #[track_caller]
     fn skip_while<F>(self, predicate: F) -> impl crate::Materialize<T, Empty>
     where
         F: Fn(&T) -> bool + Send + Sync + 'static,
@@ -94,7 +92,6 @@ pub trait SkipWhileExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
         SkipWhilePipeline {
             source: self,
             predicate: Arc::new(predicate),
-            _t: PhantomData,
             _sd: PhantomData,
         }
     }

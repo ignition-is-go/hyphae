@@ -150,14 +150,10 @@ fn point_value_clone_can_read_another_point_with_a_colliding_key() {
 struct ReentrantKey {
     value: u8,
     hash_read: Option<Arc<dyn Fn() + Send + Sync>>,
-    debug_read: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl std::fmt::Debug for ReentrantKey {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(read) = &self.debug_read {
-            read();
-        }
         std::fmt::Debug::fmt(&self.value, formatter)
     }
 }
@@ -179,72 +175,41 @@ impl Hash for ReentrantKey {
     }
 }
 
-struct PublicationGate {
-    armed: AtomicBool,
-    paused: mpsc::Sender<()>,
-    resume: Mutex<mpsc::Receiver<()>>,
+thread_local! {
+    static AFTER_SEED_READ: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
-#[derive(Clone)]
-struct PublicationKey {
-    value: u8,
-    gate: Arc<PublicationGate>,
-}
-
-impl std::fmt::Debug for PublicationKey {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.gate.armed.swap(false, Ordering::AcqRel) {
-            self.gate.paused.send(()).map_err(|_| std::fmt::Error)?;
-            self.gate
-                .resume
-                .lock()
-                .recv()
-                .map_err(|_| std::fmt::Error)?;
-        }
-        std::fmt::Debug::fmt(&self.value, formatter)
+/// Runs the hook this thread installed, once, between a point cell's seed read
+/// and its publication.
+pub(super) fn after_seed_read() {
+    if let Some(hook) = AFTER_SEED_READ.with(|hook| hook.borrow_mut().take()) {
+        hook();
     }
 }
 
-impl PartialEq for PublicationKey {
-    fn eq(&self, other: &Self) -> bool {
-        self.value == other.value
-    }
-}
-
-impl Eq for PublicationKey {}
-
-impl Hash for PublicationKey {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.value.hash(state);
-    }
-}
-
-fn point_seed_tracks_write(
-    mutate: impl FnOnce(&CellMap<PublicationKey, u8>, PublicationKey),
-    expected: Option<u8>,
-) {
+fn point_seed_tracks_write(mutate: impl FnOnce(&CellMap<u8, u8>, u8), expected: Option<u8>) {
     let (paused_tx, paused_rx) = mpsc::channel();
-    let (resume_tx, resume_rx) = mpsc::channel();
-    let key = PublicationKey {
-        value: 7,
-        gate: Arc::new(PublicationGate {
-            armed: AtomicBool::new(false),
-            paused: paused_tx,
-            resume: Mutex::new(resume_rx),
-        }),
-    };
-    let source = CellMap::new().with_name("point-publication-race");
-    source.insert(key.clone(), 0);
-    key.gate.armed.store(true, Ordering::Release);
+    let (resume_tx, resume_rx) = mpsc::channel::<()>();
+    let key = 7_u8;
+    let source = CellMap::new();
+    source.insert(key, 0);
     let get_source = source.clone();
-    let get_key = key.clone();
-    let getter = std::thread::spawn(move || get_source.get(&get_key).materialize());
+    let getter = std::thread::spawn(move || {
+        AFTER_SEED_READ.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                assert!(paused_tx.send(()).is_ok());
+                assert!(resume_rx.recv().is_ok());
+            }));
+        });
+        get_source.get(&key).materialize()
+    });
     assert!(
         paused_rx
             .recv_timeout(std::time::Duration::from_secs(5))
             .is_ok()
     );
-    mutate(&source, key.clone());
+    mutate(&source, key);
     assert!(resume_tx.send(()).is_ok());
     let point = getter.join();
     assert!(point.is_ok());
@@ -305,18 +270,12 @@ fn point_seed_retries_writes_before_cache_publication() {
     );
 }
 
-fn reentrant_key_reads_other_point(from_debug: bool) {
+fn reentrant_key_reads_other_point() {
     let source = CellMap::<ReentrantKey, u8>::new();
-    let source = if from_debug {
-        source.with_name("reentrant-key-debug")
-    } else {
-        source
-    };
     source.insert(
         ReentrantKey {
             value: 2,
             hash_read: None,
-            debug_read: None,
         },
         2,
     );
@@ -331,7 +290,6 @@ fn reentrant_key_reads_other_point(from_debug: bool) {
                 .get(&ReentrantKey {
                     value: 2,
                     hash_read: None,
-                    debug_read: None,
                 })
                 .materialize();
             assert_eq!(other.get(), Some(2));
@@ -340,8 +298,7 @@ fn reentrant_key_reads_other_point(from_debug: bool) {
     });
     let key = ReentrantKey {
         value: 1,
-        hash_read: (!from_debug).then(|| read.clone()),
-        debug_read: from_debug.then_some(read),
+        hash_read: Some(read),
     };
     let get_source = source.clone();
     let get_key = key.clone();
@@ -362,65 +319,7 @@ fn reentrant_key_reads_other_point(from_debug: bool) {
 
 #[test]
 fn missing_point_key_hash_can_read_another_ephemeral_point() {
-    reentrant_key_reads_other_point(false);
-}
-
-#[test]
-fn named_point_key_debug_can_read_another_named_point() {
-    reentrant_key_reads_other_point(true);
-}
-
-#[test]
-fn point_name_debug_can_mutate_its_own_key_without_repeated_initialization() {
-    let source = CellMap::<ReentrantKey, u8>::new().with_name("point-name-write");
-    let weak = source.downgrade();
-    let enabled = Arc::new(AtomicBool::new(true));
-    let alternate = Arc::new(AtomicBool::new(false));
-    let active = enabled.clone();
-    let key = ReentrantKey {
-        value: 1,
-        hash_read: None,
-        debug_read: Some(Arc::new(move || {
-            if active.load(Ordering::Acquire)
-                && let Some(map) = weak.upgrade()
-            {
-                let value = if alternate.fetch_xor(true, Ordering::Relaxed) {
-                    88
-                } else {
-                    77
-                };
-                map.insert(
-                    ReentrantKey {
-                        value: 1,
-                        hash_read: None,
-                        debug_read: None,
-                    },
-                    value,
-                );
-            }
-        })),
-    };
-    let map = source.clone();
-    let requested = key.clone();
-    let (tx, rx) = mpsc::channel();
-    let worker = std::thread::spawn(move || {
-        assert!(tx.send(map.get(&requested).materialize()).is_ok());
-    });
-    let result = rx.recv_timeout(std::time::Duration::from_secs(5));
-    let completed = result.is_ok();
-    enabled.store(false, Ordering::Release);
-    let result = result.or_else(|_| rx.recv_timeout(std::time::Duration::from_secs(5)));
-    assert!(worker.join().is_ok());
-    assert!(
-        completed,
-        "name formatting repeatedly invalidated the point seed"
-    );
-    assert!(result.is_ok());
-    let Ok(point) = result else { return };
-    assert_eq!(source.get_value(&key), Some(77));
-    assert_eq!(point.get(), Some(77));
-    source.insert(key, 99);
-    assert_eq!(point.get(), Some(99));
+    reentrant_key_reads_other_point();
 }
 
 fn key_on_another_data_shard(source: &CellMap<u64, ReentrantValue>) -> Option<u64> {

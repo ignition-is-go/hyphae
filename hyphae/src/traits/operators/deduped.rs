@@ -1,12 +1,10 @@
 use super::{CellValue, DistinctUntilChangedByExt};
-
 use crate::pipeline::{Pipeline, Seedness};
 
 #[allow(private_bounds)]
 pub trait DedupedExt<T: CellValue, S: Seedness>:
     Pipeline<T, S> + DistinctUntilChangedByExt<T, S>
 {
-    #[track_caller]
     fn deduped(self) -> impl crate::Materialize<T, S>
     where
         T: PartialEq,

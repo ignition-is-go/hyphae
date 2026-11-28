@@ -21,14 +21,13 @@ use crate::{
 };
 
 /// Pipeline node representing `source.take(n)`.
-pub struct TakePipeline<S, T, Sd = Definite> {
+pub struct TakePipeline<S, Sd = Definite> {
     source: S,
     count: usize,
-    _t: PhantomData<fn(T)>,
     _sd: PhantomData<fn(Sd)>,
 }
 
-impl<S, T, Sd> PipelineInstall<T> for TakePipeline<S, T, Sd>
+impl<S, T, Sd> PipelineInstall<T> for TakePipeline<S, Sd>
 where
     S: PipelineInstall<T> + Send + Sync + 'static,
     Sd: Seedness,
@@ -60,7 +59,7 @@ where
     }
 }
 
-impl<S, T, Sd> PipelineSeed<T> for TakePipeline<S, T, Sd>
+impl<S, T, Sd> PipelineSeed<T> for TakePipeline<S, Sd>
 where
     S: Pipeline<T, crate::pipeline::Definite>,
     Sd: Seedness,
@@ -72,14 +71,14 @@ where
 }
 
 #[allow(private_bounds)]
-impl<S, T> Pipeline<T, crate::pipeline::Definite> for TakePipeline<S, T, crate::pipeline::Definite>
+impl<S, T> Pipeline<T, crate::pipeline::Definite> for TakePipeline<S, crate::pipeline::Definite>
 where
     S: Pipeline<T, crate::pipeline::Definite>,
     T: CellValue,
 {
 }
 
-impl<S, T> Pipeline<T, crate::pipeline::Empty> for TakePipeline<S, T, crate::pipeline::Empty>
+impl<S, T> Pipeline<T, crate::pipeline::Empty> for TakePipeline<S, crate::pipeline::Empty>
 where
     S: Pipeline<T, crate::pipeline::Empty>,
     T: CellValue,
@@ -88,7 +87,6 @@ where
 
 #[allow(private_bounds)]
 pub trait TakeExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
-    #[track_caller]
     fn take(self, count: usize) -> impl crate::Materialize<T, S>;
 }
 
@@ -99,7 +97,6 @@ impl<T: CellValue, P: Pipeline<T, crate::pipeline::Definite>> TakeExt<T, crate::
         TakePipeline {
             source: self,
             count,
-            _t: PhantomData,
             _sd: PhantomData,
         }
     }
@@ -112,7 +109,6 @@ impl<T: CellValue, P: Pipeline<T, crate::pipeline::Empty>> TakeExt<T, crate::pip
         TakePipeline {
             source: self,
             count,
-            _t: PhantomData,
             _sd: PhantomData,
         }
     }

@@ -7,10 +7,8 @@
 //! no per-tick closure leak and no closure is ever dropped from inside its own
 //! callback — the two hazards of the raw `setInterval` callback API.
 //!
-//! Monotonic time comes from `performance.now()` (through `web-time`). There
-//! are no OS threads, so the `precise` flag on [`spawn_interval`] is ignored
-//! (`setTimeout` is millisecond-resolution and subject to browser throttling)
-//! and [`par_for_each`] runs sequentially.
+//! Monotonic time comes from `performance.now()` (through `web-time`).
+//! `setTimeout` is millisecond-resolution and subject to browser throttling.
 
 use std::time::Duration;
 
@@ -32,14 +30,7 @@ pub fn spawn_delayed(delay: Duration, f: impl FnOnce() + Send + 'static) {
 
 /// Repeatedly invoke `tick(count)` every `period`, with `count` beginning at 1.
 /// The task ends (and stops re-arming the timer) when `tick` returns `false`.
-///
-/// `precise` is ignored on wasm — there is no sub-millisecond timer available
-/// in the browser.
-pub fn spawn_interval(
-    period: Duration,
-    _precise: bool,
-    mut tick: impl FnMut(u64) -> bool + Send + 'static,
-) {
+pub fn spawn_interval(period: Duration, mut tick: impl FnMut(u64) -> bool + Send + 'static) {
     spawn_local(async move {
         let mut count: u64 = 0;
         loop {
@@ -50,10 +41,4 @@ pub fn spawn_interval(
             }
         }
     });
-}
-
-/// Fan out `f` across `items`. wasm is single-threaded, so this runs
-/// sequentially — the API matches the native rayon fan-out.
-pub fn par_for_each<T: Sync>(items: &[T], f: impl Fn(&T) + Send + Sync) {
-    items.iter().for_each(f);
 }

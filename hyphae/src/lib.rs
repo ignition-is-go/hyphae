@@ -17,16 +17,16 @@
 //! use hyphae::{Cell, MapExt, Materialize, Mutable, Watchable, JoinExt, Pipeline, Signal, flat};
 //!
 //! // Create reactive cells
-//! let x = Cell::new(5).with_name("x");
-//! let y = Cell::new(10).with_name("y");
+//! let x = Cell::new(5);
+//! let y = Cell::new(10);
 //!
 //! // Pure operators (map/filter/...) return pipelines — no allocation
 //! // until you materialize.
-//! let doubled = x.clone().map(|val| val * 2).materialize().with_name("doubled");
+//! let doubled = x.clone().map(|val| val * 2).materialize();
 //!
 //! // Combine multiple cells with join + flat!. join stays lazy, then creates
 //! // its required fan-in coalescing boundary when the chain is materialized.
-//! let sum = x.clone().join(y).map(flat!(|a, b| a + b)).materialize().with_name("sum");
+//! let sum = x.clone().join(y).map(flat!(|a, b| a + b)).materialize();
 //!
 //! // Subscribe on the materialized cell
 //! let _guard = sum.subscribe(|signal| {
@@ -121,9 +121,8 @@
 //! deterministic, ordered, and synchronously settled. See [`map_query`] for
 //! exact execution, collision, teardown, completion/error, and panic contracts.
 //!
-//! Native builds with the `scheduler` feature may adaptively dispatch eligible
-//! join-region work to Hyphae's shared dedicated worker pool. Wasm and builds
-//! without that feature execute map queries sequentially.
+//! Native builds may adaptively dispatch eligible join-region work to Hyphae's
+//! shared dedicated worker pool. Wasm executes map queries sequentially.
 //!
 //! ## `CellMap` Quick Start
 //!
@@ -155,10 +154,8 @@ pub mod bounded_output;
 pub mod cell;
 pub mod cell_map;
 pub mod cell_set;
-#[cfg(feature = "scheduler")]
 pub mod clock;
 pub mod constructors;
-#[cfg(feature = "scheduler")]
 pub(crate) mod executor;
 pub mod map_query;
 pub mod nested_map;
@@ -168,7 +165,6 @@ pub(crate) mod platform;
 pub mod profiling;
 #[cfg(feature = "region-calibration")]
 pub mod region_calibration;
-#[cfg(feature = "scheduler")]
 pub mod scheduler;
 pub mod signal;
 pub mod source;
@@ -189,18 +185,16 @@ pub use bounded_output::BoundedOutput;
 pub use cell::{Cell, CellImmutable, CellMutable};
 pub use cell_map::{CellMap, MapDiff, WeakCellMap};
 pub use cell_set::{CellSet, SetDiff};
-#[cfg(feature = "scheduler")]
 pub use clock::{Clock, IntervalTickSource, MonotonicClock, Tick, TickGuard, TickSource};
 pub use constructors::{
-    IntervalTick, from_iter_with_delay, interval, interval_precise, interval_precise_source,
-    interval_precise_with_elapsed, interval_precise_with_elapsed_source, interval_source,
+    IntervalTick, from_iter_with_delay, interval, interval_source, interval_with_elapsed,
+    interval_with_elapsed_source,
 };
 pub use map_query::{MapQuery, MapQueryShareExt, SharedMapQuery};
 pub use nested_map::NestedMap;
 pub use pipeline::{
     Definite, Empty, Materialize, Pipeline, PipelineShareExt, Seedness, SharedPipeline,
 };
-#[cfg(feature = "scheduler")]
 pub use scheduler::batch;
 pub use signal::Signal;
 pub use source::{SampleOnSourceExt, Source, WeakSource};
@@ -214,11 +208,11 @@ pub use traits::{
     JoinRegion, JoinStage, JoinedValuesPlan, KeyChange, LastExt, LastStage, LeftJoinExt,
     LeftJoinPlan, LeftSemiJoinExt, MapEntriesExt, MapErrExt, MapExt, MapLast, MapOkExt,
     MapValuesExt, MapValuesPlan, MergeExt, MergeMapExt, MultiLeftJoinExt, Mutable,
-    OptionalRightKey, OwnedIndex, PairwiseExt, ParallelCell, ParallelExt, ProjectCellExt, Push,
-    ReactiveKeys, ReactiveMap, RelationPlan, ReplaceLastProject, RequiredRightKey, RetryExt,
-    RightJoinKey, SampleExt, ScanExt, SelectCellExt, SelectExt, SharedRelationIndex, SkipExt,
-    SkipWhileExt, StageList, StateMachineBuilder, StateTransitionExt, SwitchMapExt, TakeExt,
-    TakeUntilExt, TakeWhileExt, TapExt, ThenMap, ThrottleExt, TimeoutExt, TryMapExt,
-    TupleJoinProjection, TwoLeftJoinMappedPlan, TwoLeftJoinPlan, UnwrapOrExt, Watchable,
-    WatchableResult, WindowExt, WithLatestFromExt, ZipExt, join_vec,
+    OptionalRightKey, OwnedIndex, PairwiseExt, ProjectCellExt, Push, ReactiveKeys, ReactiveMap,
+    RelationPlan, ReplaceLastProject, RequiredRightKey, RetryExt, RightJoinKey, SampleExt, ScanExt,
+    SelectCellExt, SelectExt, SharedRelationIndex, SkipExt, SkipWhileExt, StageList,
+    StateMachineBuilder, StateTransitionExt, SwitchMapExt, TakeExt, TakeUntilExt, TakeWhileExt,
+    TapExt, ThenMap, ThrottleExt, TimeoutExt, TryMapExt, TupleJoinProjection,
+    TwoLeftJoinMappedPlan, TwoLeftJoinPlan, UnwrapOrExt, Watchable, WatchableResult, WindowExt,
+    WithLatestFromExt, ZipExt, join_vec,
 };

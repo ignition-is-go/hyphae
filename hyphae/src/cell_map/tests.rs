@@ -1116,3 +1116,43 @@ fn key_observers_can_observe_colliding_keys_during_every_mutation() -> Result<()
     }
     Ok(())
 }
+
+/// A large snapshot is stored a shard at a time; it must leave exactly its
+/// rows (the last value of a repeated key), the right length and every
+/// observed key's value, whether or not a write hook is registered.
+#[test]
+fn initial_snapshot_fill_matches_row_by_row_store() {
+    for hooked in [false, true] {
+        let map = CellMap::<u64, u64>::new();
+        for key in 1_000..1_050 {
+            map.insert(key, key);
+        }
+        let hook_writes = Arc::new(AtomicUsize::new(0));
+        let _hook = hooked.then(|| {
+            let hook_writes = Arc::clone(&hook_writes);
+            map.register_write_hook(move |_| {
+                hook_writes.fetch_add(1, Ordering::SeqCst);
+            })
+        });
+        let len = map.len().materialize();
+        let observed = map.get(&7).materialize();
+        let stale = map.get(&1_000).materialize();
+
+        let mut entries: Vec<(u64, u64)> = (0..500).map(|key| (key, key * 2)).collect();
+        entries.push((7, 70));
+        map.apply_diff_owned(MapDiff::Initial { entries });
+
+        assert_eq!(len.get(), 500, "hooked: {hooked}");
+        assert_eq!(map.get_value(&7), Some(70));
+        assert_eq!(observed.get(), Some(70));
+        assert_eq!(stale.get(), None);
+        assert_eq!(map.get_value(&1_000), None);
+        for key in (0..500).filter(|key| *key != 7) {
+            assert_eq!(map.get_value(&key), Some(key * 2));
+        }
+        if hooked {
+            // 50 registration inserts, 50 removes, 500 inserts, 1 update.
+            assert_eq!(hook_writes.load(Ordering::SeqCst), 601);
+        }
+    }
+}

@@ -1,4 +1,3 @@
-use parking_lot::Mutex;
 use std::{
     collections::HashMap,
     hash::Hash,
@@ -7,6 +6,8 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+
+use parking_lot::Mutex;
 
 use super::CellValue;
 use crate::{
@@ -233,7 +234,6 @@ pub trait StateTransitionExt<S: CellValue + Eq + Hash>:
     /// // Filter to only react to specific transitions
     /// let triggers = sm.filter(|v| *v);
     /// ```
-    #[track_caller]
     fn state_transition<R, F>(self, configure: F) -> impl crate::Materialize<R, Definite>
     where
         S: CellValue + Eq + Hash,

@@ -154,10 +154,9 @@ deterministic by logical input/emission ordinal and synchronously settled before
 the initiating source mutation returns. Hash-map and initial-snapshot iteration
 order are not API contracts.
 
-With the `scheduler` feature on native targets, eligible expensive join regions
-adaptively use Hyphae's shared dedicated Rayon pool. Builds without `scheduler`
-and wasm execute sequentially. `HYPHAE_WORKER_THREADS=0` disables the native
-pool; `HYPHAE_WAVE_THREADS` remains a compatibility fallback.
+On native targets, eligible expensive join regions adaptively use Hyphae's
+shared dedicated Rayon pool. Wasm executes them sequentially. `HYPHAE_WORKER_THREADS=0` disables the native
+pool.
 
 ## Async Support
 
@@ -183,23 +182,89 @@ nothing per cell and ~1% on the hot path:
   sampling profilers resolve them as distinct frames instead of one folded
   symbol.
 - Each fanout emits a `tracing` span (`hyphae.fanout`) tagged with the cell's
-  `id` and `name` (set names with `Cell::with_name`). hyphae only emits spans;
+  `id`. hyphae only emits spans;
   the application attaches the subscriber (`tracing-flame`, `tracing-tracy`, …).
 - `hyphae::profiling::pass` / `take_report` tally per-cell re-fires inside a
   measured propagation pass.
 
-Pair-producing inner joins maintain row deltas by default: changing one right
-row visits only its matching left rows, not every unchanged right row in the
-same bucket. A profiling-enabled process can set `HYPHAE_PAIR_JOIN_DELTA=0`
-before constructing queries to select the previous bucket-recompute strategy
-as a measurement control. The setting is read once; builds without `profiling`
-always use incremental pair maintenance. This does not change the public query
-API. Clone-work regression tests are algorithmic checks, not application
-speedup measurements.
+Pair-producing inner joins maintain row deltas: changing one right row visits
+only its matching left rows, not every unchanged right row in the same bucket.
 
 For live-cell counts and memory attribution, use a heap profiler
 (jemalloc/`jeprof`, or `pprof`) rather than an in-process registry. See
 [`docs/profiling.md`](docs/profiling.md).
+
+## Migrating to Hyphae 4.0
+
+Hyphae 4.0 removes API that did nothing, changes when some map writes are
+delivered, and adds scheduling domains. Work through the list below; each item
+says what to change and what to watch for.
+
+### Remove calls to deleted API
+
+| Removed | Replacement |
+| --- | --- |
+| `Cell::with_name`, `CellMap::with_name`, `Source::with_name` | Delete the call. Cells no longer store a name; the `hyphae.fanout` profiling span carries `cell.id`. |
+| `BackpressureExt::drop_oldest`, `BackpressureExt::sample_latest` | Delete the call. Both returned their input unchanged. |
+| `interval_precise`, `interval_precise_source` | `interval`, `interval_source`. Every timer runs on the same deadline reactor. |
+| `interval_precise_with_elapsed`, `interval_precise_with_elapsed_source` | `interval_with_elapsed`, `interval_with_elapsed_source`. |
+| `IntervalTickSource::precise` | Delete the call. |
+| `ParallelCell`, `ParallelExt::parallel` | Delete the call. Wide fan-out already runs on the scheduler's worker pool. |
+| `DepNode::name`, `display_name`, `dependency_count`, `has_dependencies`, `dependency_tree`, `print_dependency_tree` | None. `DepNode` is now sealed and hidden; it is not an extension point. |
+| `SubscriptionGuard::source` | None; it is crate-private. |
+| The `scheduler` Cargo feature | Delete it from `features = [...]`. The scheduler is always compiled. |
+| `HYPHAE_WAVE_THREADS` | `HYPHAE_WORKER_THREADS`. |
+| `HYPHAE_PAIR_JOIN_DELTA` | None. Pair joins always maintain row deltas. |
+
+```rust
+// 3.x
+let tick = interval_precise_source(Duration::from_micros(4167));
+let status = Cell::new(Status::Idle).with_name("status");
+
+// 4.0
+let tick = interval_source(Duration::from_micros(4167));
+let status = Cell::new(Status::Idle);
+```
+
+Plan and pipeline structs such as `SelectPlan` and `FilterPipeline` take fewer
+generic arguments. Code that only uses `impl MapQuery` or `impl Materialize`
+return types is unaffected; code that names these structs must drop the key,
+value and output type arguments.
+
+### Check code that depends on delivery timing
+
+- **Map diffs can arrive batched.** Adjacent row writes a batch makes to one
+  map may be delivered as one `MapDiff::Batch` instead of separate diffs.
+  Handle `MapDiff::Batch` wherever you match on `MapDiff`.
+- **Each key's diffs arrive in store order, across threads.** A batch that
+  writes a key another thread's open batch has also written is delivered when
+  that batch closes, not when its own `batch` call returns. An unbatched write
+  that follows another thread's delivery to the same key may return before it
+  is delivered. Wait on the cell or call `Domain::flush` instead of assuming a
+  write has propagated when it returns.
+- **`switch_map` keeps its inner for an equal outer value.** It no longer calls
+  its closure or re-emits when the outer value equals the one the current inner
+  was built from. A completed or errored inner is still rebuilt.
+- **`batch` is always available.** Default-feature builds now contain the
+  scheduler, and join regions may run on the worker pool.
+
+### Adopt scheduling domains where you need isolation
+
+Programs that never create a `scheduler::Domain` behave as before: every cell
+is a root cell. Child domains add rules that panic when broken:
+
+- A child may depend on a root cell; a root cell may not depend on a child, and
+  siblings may not depend on each other. Use `Cell::try_own` to get a
+  `DomainError` instead of a panic.
+- A write from one domain's propagation to another domain's cell, including a
+  `CellMap`, panics with `DomainError::CrossDomainWrite`. Cross with
+  `Domain::hand_off` instead.
+- Entering root or a sibling from a child's wave panics with
+  `DomainError::EnterAgainstFlow`.
+
+Upgrading from Hyphae 2.x? Read
+[Migrating to Hyphae 3.0](https://github.com/ignition-is-go/hyphae/blob/main/docs/migrating-to-v3.md)
+first.
 
 ## License
 

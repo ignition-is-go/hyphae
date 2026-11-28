@@ -234,7 +234,6 @@ pub trait MapQuery: CompileQuery<Self::Key, Self::Value> + properties::PlanPrope
     /// on a materialized map, never on a plan. The returned map owns all root
     /// guards; dropping it tears the installation down. Publication caused by
     /// a source mutation is synchronously settled before that mutation returns.
-    #[track_caller]
     fn materialize(self) -> CellMap<Self::Key, Self::Value, CellImmutable> {
         let output = CellMap::<Self::Key, Self::Value, CellMutable>::new();
         let weak = Arc::downgrade(&output.inner);

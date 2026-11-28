@@ -1,5 +1,4 @@
 use std::{
-    marker::PhantomData,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -15,13 +14,12 @@ use crate::{
     subscription::SubscriptionGuard,
 };
 
-pub struct TimeoutPipeline<S, T> {
+pub struct TimeoutPipeline<S> {
     source: S,
     duration: Duration,
-    _t: PhantomData<fn(T)>,
 }
 
-impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for TimeoutPipeline<S, T> {
+impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for TimeoutPipeline<S> {
     fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
         let generation = Arc::new(AtomicU64::new(0));
         let completed = Arc::new(AtomicBool::new(false));
@@ -79,7 +77,7 @@ impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for TimeoutPipeline
     }
 }
 
-impl<S: PipelineSeed<T>, T: CellValue> PipelineSeed<T> for TimeoutPipeline<S, T> {
+impl<S: PipelineSeed<T>, T: CellValue> PipelineSeed<T> for TimeoutPipeline<S> {
     fn seed(&self) -> T {
         self.source.seed()
     }
@@ -87,18 +85,16 @@ impl<S: PipelineSeed<T>, T: CellValue> PipelineSeed<T> for TimeoutPipeline<S, T>
 
 #[allow(private_bounds)]
 impl<S: Pipeline<T, Definite> + PipelineSeed<T>, T: CellValue> Pipeline<T, Definite>
-    for TimeoutPipeline<S, T>
+    for TimeoutPipeline<S>
 {
 }
 
 #[allow(private_bounds)]
 pub trait TimeoutExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
-    #[track_caller]
     fn timeout(self, duration: Duration) -> impl crate::Materialize<T, Definite> {
         TimeoutPipeline {
             source: self,
             duration,
-            _t: PhantomData,
         }
     }
 }

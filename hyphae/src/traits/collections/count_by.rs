@@ -4,7 +4,7 @@
 //! [`MapQuery`] operators. Call [`MapQuery::materialize`] to compile a plan
 //! into a subscribable [`CellMap`](crate::CellMap).
 
-use std::{hash::Hash, marker::PhantomData, sync::Arc};
+use std::{hash::Hash, sync::Arc};
 
 use crate::{
     map_query::{
@@ -18,7 +18,7 @@ use crate::{
     },
 };
 
-impl<S, K, V, GK, F> PlanProperties for CountByPlan<S, K, V, GK, F>
+impl<S, K, V, GK, F> PlanProperties for CountByPlan<S, F>
 where
     S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
@@ -38,20 +38,12 @@ where
 ///
 /// Not [`Clone`]: cloning a plan would silently duplicate grouping work;
 /// share by materializing once.
-pub struct CountByPlan<S, K, V, GK, F>
-where
-    S: MapQuery<Key = K, Value = V>,
-    K: Hash + Eq + CellValue,
-    V: CellValue,
-    GK: Hash + Eq + CellValue,
-    F: Fn(&K, &V) -> GK + Send + Sync + 'static,
-{
+pub struct CountByPlan<S, F> {
     pub(crate) source: S,
     pub(crate) group_key: Arc<F>,
-    pub(crate) _types: PhantomData<fn() -> (K, V, GK)>,
 }
 
-impl<S, K, V, GK, F> BuildQueryRuntime<GK, usize> for CountByPlan<S, K, V, GK, F>
+impl<S, K, V, GK, F> BuildQueryRuntime<GK, usize> for CountByPlan<S, F>
 where
     S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
@@ -88,7 +80,7 @@ where
 }
 
 #[allow(private_bounds)]
-impl<S, K, V, GK, F> MapQuery for CountByPlan<S, K, V, GK, F>
+impl<S, K, V, GK, F> MapQuery for CountByPlan<S, F>
 where
     S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + CellValue,
@@ -115,7 +107,6 @@ where
     ///
     /// `group_key` is called for every source row and its return value
     /// becomes the output map key.
-    #[track_caller]
     fn count_by<GK, F>(self, group_key: F) -> impl MapQuery<Key = GK, Value = usize>
     where
         GK: Hash + Eq + CellValue,
@@ -124,7 +115,6 @@ where
         CountByPlan {
             source: self,
             group_key: Arc::new(group_key),
-            _types: PhantomData,
         }
     }
 }

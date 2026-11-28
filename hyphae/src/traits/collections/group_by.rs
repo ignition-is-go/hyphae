@@ -4,7 +4,7 @@
 //! [`MapQuery`] operators. Call [`MapQuery::materialize`] to compile a plan
 //! into a subscribable [`CellMap`](crate::CellMap).
 
-use std::{collections::BTreeMap, hash::Hash, marker::PhantomData, sync::Arc};
+use std::{collections::BTreeMap, hash::Hash, sync::Arc};
 
 use crate::{
     map_query::{
@@ -18,7 +18,7 @@ use crate::{
     },
 };
 
-impl<S, K, V, GK, F> PlanProperties for GroupByPlan<S, K, V, GK, F>
+impl<S, K, V, GK, F> PlanProperties for GroupByPlan<S, F>
 where
     S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + Ord + CellValue,
@@ -38,20 +38,12 @@ where
 ///
 /// Not [`Clone`]: cloning a plan would silently duplicate grouping work;
 /// share by materializing once.
-pub struct GroupByPlan<S, K, V, GK, F>
-where
-    S: MapQuery<Key = K, Value = V>,
-    K: Hash + Eq + Ord + CellValue,
-    V: CellValue,
-    GK: Hash + Eq + CellValue,
-    F: Fn(&K, &V) -> GK + Send + Sync + 'static,
-{
+pub struct GroupByPlan<S, F> {
     pub(crate) source: S,
     pub(crate) group_key: Arc<F>,
-    pub(crate) _types: PhantomData<fn() -> (K, V, GK)>,
 }
 
-impl<S, K, V, GK, F> BuildQueryRuntime<GK, Vec<V>> for GroupByPlan<S, K, V, GK, F>
+impl<S, K, V, GK, F> BuildQueryRuntime<GK, Vec<V>> for GroupByPlan<S, F>
 where
     S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + Ord + CellValue,
@@ -90,7 +82,7 @@ where
 }
 
 #[allow(private_bounds)]
-impl<S, K, V, GK, F> MapQuery for GroupByPlan<S, K, V, GK, F>
+impl<S, K, V, GK, F> MapQuery for GroupByPlan<S, F>
 where
     S: MapQuery<Key = K, Value = V>,
     K: Hash + Eq + Ord + CellValue,
@@ -116,7 +108,6 @@ where
     ///
     /// Each output key is a group id and each output value is the group's
     /// rows as `Vec<V>`.
-    #[track_caller]
     fn group_by<GK, F>(self, group_key: F) -> impl MapQuery<Key = GK, Value = Vec<V>>
     where
         K: Ord,
@@ -126,7 +117,6 @@ where
         GroupByPlan {
             source: self,
             group_key: Arc::new(group_key),
-            _types: PhantomData,
         }
     }
 }

@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxBuildHasher, FxHashMap};
 
 use super::ordered_set::OrderedSet;
 use crate::{
@@ -121,6 +121,38 @@ where
         changes
     }
 
+    /// Install the first snapshot into an empty state with tables sized
+    /// once. Returns `None`, leaving the state untouched, when the snapshot
+    /// repeats a source key, so the general path settles which entry wins.
+    fn first_initial<SV: CellValue>(
+        &mut self,
+        entries: &[(SK, SV)],
+        compute: &impl Fn(&SK, &SV) -> Option<(OK, OV)>,
+    ) -> Option<Vec<MapDiff<OK, OV>>> {
+        let mut source_order = OrderedSet::with_capacity(entries.len());
+        let mut rows = FxHashMap::with_capacity_and_hasher(entries.len(), FxBuildHasher);
+        let mut owners = FxHashMap::with_capacity_and_hasher(entries.len(), FxBuildHasher);
+        let mut changes = Vec::with_capacity(entries.len());
+        for (key, value) in entries {
+            if !source_order.insert(key.clone()) {
+                return None;
+            }
+            let Some((output, value)) = compute(key, value) else {
+                continue;
+            };
+            assert!(
+                owners.insert(output.clone(), key.clone()).is_none(),
+                "map query unique-output-key contract violated across source rows"
+            );
+            rows.insert(key.clone(), (output.clone(), value.clone()));
+            changes.push(MapDiff::Insert { key: output, value });
+        }
+        self.source_order = source_order;
+        self.rows = rows;
+        self.owners = owners;
+        Some(changes)
+    }
+
     pub(super) fn apply<SV: CellValue>(
         &mut self,
         diff: &MapDiff<SK, SV>,
@@ -147,6 +179,13 @@ where
                 let changes = self.point(key, None);
                 self.source_order.remove(key);
                 return changes;
+            }
+            MapDiff::Initial { entries }
+                if self.rows.is_empty() && self.source_order.is_empty() =>
+            {
+                if let Some(changes) = self.first_initial(entries, compute) {
+                    return changes;
+                }
             }
             _ => {}
         }

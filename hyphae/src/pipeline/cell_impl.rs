@@ -15,7 +15,7 @@ use std::{marker::PhantomData, sync::Arc};
 use crate::{
     bounded_input::BoundedInput,
     cell::{Cell, CellImmutable},
-    pipeline::{Definite, Pipeline, PipelineInstall, PipelineSeed},
+    pipeline::{Definite, Emit, EmitSink, Pipeline, PipelineInstall, PipelineSeed},
     signal::Signal,
     subscription::SubscriptionGuard,
     traits::{CellValue, Gettable, Watchable},
@@ -27,6 +27,10 @@ use crate::{
 impl<T: CellValue, M: Send + Sync + 'static> PipelineInstall<T> for Cell<T, M> {
     fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
         self.subscribe(move |signal| callback(signal))
+    }
+
+    fn install_emit(&self, sink: EmitSink<T>) -> SubscriptionGuard {
+        self.subscribe(move |signal| sink(Emit::from_signal(signal)))
     }
 }
 

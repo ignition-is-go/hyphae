@@ -27,7 +27,6 @@
 
 use std::{
     marker::PhantomData,
-    panic::Location,
     sync::{
         Arc, Weak,
         atomic::{AtomicBool, Ordering},
@@ -65,12 +64,11 @@ pub(crate) struct SourceInner<T> {
     /// fan-out in a scheduler [`batch`](crate::batch), so one emit is one
     /// coalesced propagation pass across all subscribers. Set via
     /// [`Source::batched`]; default `false` (eager per-subscriber fan-out, the
-    /// documented hot path). Only meaningful under the `scheduler` feature.
-    #[cfg(feature = "scheduler")]
+    /// documented hot path).
     pub(crate) batched: AtomicBool,
-    /// Source location where this source was created (`#[track_caller]`).
-    #[allow(dead_code)]
-    pub(crate) caller: &'static Location<'static>,
+    /// The child scheduling domain this source belongs to, fixed at birth
+    /// from the creating thread's ambient domain. `None` is the root domain.
+    pub(crate) domain: Option<Arc<crate::scheduler::domain::DomainInner>>,
 }
 
 /// A watchable event channel with no current value.
@@ -122,7 +120,6 @@ impl<T> Clone for Source<T> {
 
 impl<T: CellValue> Source<T> {
     /// Create a new source with no subscribers.
-    #[track_caller]
     #[must_use]
     pub fn new() -> Self {
         let inner = Arc::new(SourceInner {
@@ -130,9 +127,8 @@ impl<T: CellValue> Source<T> {
             subscribers: parking_lot::Mutex::new(Arc::new(Vec::new())),
             owned: Mutex::new(FxHashMap::default()),
             completed: AtomicBool::new(false),
-            #[cfg(feature = "scheduler")]
             batched: AtomicBool::new(false),
-            caller: Location::caller(),
+            domain: crate::scheduler::domain::birth_domain(),
         });
         Self {
             inner,
@@ -161,14 +157,6 @@ impl<T: CellValue> Source<T> {
         self.inner.completed.load(Ordering::SeqCst)
     }
 
-    /// Builder-style name attachment, kept for API compatibility with
-    /// [`Cell::with_name`](crate::Cell::with_name). `Source` carries no name
-    /// field, so this is a no-op.
-    #[must_use]
-    pub fn with_name(self, _name: impl Into<std::sync::Arc<str>>) -> Self {
-        self
-    }
-
     /// Batch this source's fan-out: every [`emit`](Self::emit)/[`complete`](Self::complete)
     /// wraps its subscriber-notification loop in a scheduler [`batch`](crate::batch),
     /// so one emit is **one** coalesced propagation pass across all subscribers.
@@ -187,9 +175,6 @@ impl<T: CellValue> Source<T> {
     /// tick depth inc/dec + drain per emit. Turn it on for many-subscriber
     /// fan-out sources (interval/clock timers feeding a wide reactive graph);
     /// leave it off for point-to-point sources.
-    ///
-    /// Requires the `scheduler` feature (batching is meaningless without it).
-    #[cfg(feature = "scheduler")]
     #[must_use]
     pub fn batched(self) -> Self {
         self.inner.batched.store(true, Ordering::Relaxed);
@@ -202,14 +187,16 @@ impl<T: CellValue> Source<T> {
     /// invoke the callback synchronously with a current value — there is no
     /// current value. The callback fires only on subsequent [`emit`](Self::emit)
     /// or [`complete`](Self::complete) calls.
-    #[track_caller]
     pub fn subscribe(
         &self,
         callback: impl Fn(&Signal<T>) + Send + Sync + 'static,
     ) -> SubscriptionGuard {
         let id = Uuid::new_v4();
         let cb: SubscriberCallback<T> = Arc::new(callback);
-        let sub = Arc::new(Subscriber::new_live(cb));
+        // A child's subscription to a root source is a hand-off subscription,
+        // as on a root cell.
+        let boundary = crate::scheduler::domain::hand_off_target(self.inner.domain.as_ref());
+        let sub = Arc::new(Subscriber::new_live(cb).handing_off_to(boundary.clone()));
         // Swap-and-defer: see Cell::subscribe.
         let old_snapshot = {
             let mut guard = self.inner.subscribers.lock();
@@ -218,26 +205,27 @@ impl<T: CellValue> Source<T> {
             std::mem::replace(&mut *guard, Arc::new(next))
         };
         drop(old_snapshot);
+        if let Some(child) = &boundary {
+            let source = self.downgrade();
+            child.register_boundary(
+                id,
+                Box::new(move || {
+                    if let Some(source) = source.upgrade() {
+                        source.inner.remove_subscriber(id);
+                    }
+                }),
+            );
+        }
 
         let source: Arc<dyn DepNode> = Arc::new(self.clone());
         let inner = self.inner.clone();
         SubscriptionGuard::new(id, source, move || {
-            let old_snapshot = {
-                let mut guard = inner.subscribers.lock();
-                let prev_len = guard.len();
-                let next: Vec<(Uuid, Arc<Subscriber<T>>)> = (**guard)
-                    .iter()
-                    .filter(|(i, _)| *i != id)
-                    .cloned()
-                    .collect();
-                if next.len() == prev_len {
-                    None
-                } else {
-                    Some(std::mem::replace(&mut *guard, Arc::new(next)))
-                }
-            };
-            drop(old_snapshot);
+            inner.remove_subscriber(id);
+            if let Some(child) = &boundary {
+                child.release_boundary(id);
+            }
         })
+        .subscribed_here()
     }
 
     /// Emit a value to all subscribers. Does **not** store the value — there
@@ -254,23 +242,7 @@ impl<T: CellValue> Source<T> {
         let arc_value = Arc::new(value);
         let signal = Signal::Value(arc_value);
 
-        // Brief mutex acquire + Arc::clone snapshot, then iterate callbacks lock-free.
-        let subs = Arc::clone(&*self.inner.subscribers.lock());
-        // Subscriber callbacks must not panic — same contract as Cell::notify.
-        // When batched, the whole fan-out is one propagation pass so downstream
-        // diamonds coalesce; otherwise each subscriber cascades eagerly (default).
-        #[cfg(feature = "scheduler")]
-        if self.inner.batched.load(Ordering::Relaxed) {
-            crate::scheduler::batch(|| {
-                for (_id, sub) in subs.iter() {
-                    (sub.callback)(&signal);
-                }
-            });
-            return;
-        }
-        for (_id, sub) in subs.iter() {
-            (sub.callback)(&signal);
-        }
+        self.fan_out(&signal);
     }
 
     /// Mark this source as completed. Subsequent [`emit`](Self::emit) calls
@@ -279,20 +251,90 @@ impl<T: CellValue> Source<T> {
         if self.inner.completed.swap(true, Ordering::SeqCst) {
             return;
         }
-        let signal: Signal<T> = Signal::Complete;
+        self.fan_out(&Signal::Complete);
+    }
+
+    /// Deliver `signal` to every subscriber: inline for subscribers of this
+    /// source's own domain, and handed to its child for each hand-off
+    /// subscriber of a root source, one unit per child.
+    fn fan_out(&self, signal: &Signal<T>) {
+        use crate::scheduler::domain;
+        let domains = domain::in_use();
+        let home = if domains {
+            let home = self.inner.domain.as_ref();
+            domain::assert_write(home);
+            home
+        } else {
+            None
+        };
+        // Brief mutex acquire + Arc::clone snapshot, then iterate callbacks lock-free.
         let subs = Arc::clone(&*self.inner.subscribers.lock());
-        #[cfg(feature = "scheduler")]
-        if self.inner.batched.load(Ordering::Relaxed) {
-            crate::scheduler::batch(|| {
-                for (_id, sub) in subs.iter() {
-                    (sub.callback)(&signal);
+        let batched = self.inner.batched.load(Ordering::Relaxed);
+        let _scope = domains.then(|| domain::propagate(home));
+        // Subscriber callbacks must not panic — same contract as Cell::notify.
+        // When batched, the whole fan-out is one propagation pass so downstream
+        // diamonds coalesce; otherwise each subscriber cascades eagerly (default).
+        let deliver_local = || {
+            for (_id, sub) in subs.iter() {
+                if sub.hand_off().is_none() {
+                    (sub.callback)(signal);
                 }
-            });
+            }
+        };
+        if batched {
+            crate::scheduler::batch_in(home, deliver_local);
+        } else {
+            deliver_local();
+        }
+        if !domains {
             return;
         }
+        let mut children: Vec<(Arc<domain::DomainInner>, Vec<Arc<Subscriber<T>>>)> = Vec::new();
         for (_id, sub) in subs.iter() {
-            (sub.callback)(&signal);
+            let Some(child) = sub.hand_off() else {
+                continue;
+            };
+            match children.iter_mut().find(|(known, _)| known.id == child.id) {
+                Some((_, readers)) => readers.push(Arc::clone(sub)),
+                None => children.push((Arc::clone(child), vec![Arc::clone(sub)])),
+            }
         }
+        for (child, readers) in children {
+            let signal = signal.clone();
+            let target = Arc::clone(&child);
+            domain::hand_off(
+                &child,
+                Box::new(move || {
+                    let deliver = || {
+                        for reader in &readers {
+                            (reader.callback)(&signal);
+                        }
+                    };
+                    if batched {
+                        crate::scheduler::batch_in(Some(&target), deliver);
+                    } else {
+                        deliver();
+                    }
+                }),
+            );
+        }
+    }
+}
+
+impl<T> SourceInner<T> {
+    fn remove_subscriber(&self, id: Uuid) {
+        let old_snapshot = {
+            let mut guard = self.subscribers.lock();
+            let prev_len = guard.len();
+            let next: Vec<(Uuid, Arc<Subscriber<T>>)> =
+                guard.iter().filter(|(i, _)| *i != id).cloned().collect();
+            if next.len() == prev_len {
+                None
+            } else {
+                Some(std::mem::replace(&mut *guard, Arc::new(next)))
+            }
+        };
+        drop(old_snapshot);
     }
 }
 
@@ -333,7 +375,6 @@ impl<T: CellValue> Pipeline<T, Empty> for Source<T> {}
 pub trait SampleOnSourceExt<T: CellValue>: Watchable<T> + Gettable<T> {
     /// Build a pipeline that re-emits the current value of `self` whenever
     /// `notifier` emits, with lifecycle owned by the resulting cell.
-    #[track_caller]
     fn sample_on<U>(&self, notifier: &Source<U>) -> impl Materialize<T, Definite> + use<Self, T, U>
     where
         U: CellValue,
@@ -358,17 +399,20 @@ pub trait SampleOnSourceExt<T: CellValue>: Watchable<T> + Gettable<T> {
 
 impl<T: CellValue, W: Watchable<T> + Gettable<T>> SampleOnSourceExt<T> for W {}
 
+impl<T: Send + Sync> crate::traits::DepNodeSealed for Source<T> {}
+
 impl<T: Send + Sync> DepNode for Source<T> {
     fn id(&self) -> Uuid {
         self.inner.id
     }
 
-    fn name(&self) -> Option<String> {
-        None
-    }
-
     fn deps(&self) -> Vec<Arc<dyn DepNode>> {
         Vec::new()
+    }
+
+    fn check_reader(&self, reader: u64) -> Result<bool, crate::scheduler::DomainError> {
+        let source = crate::scheduler::domain::id_of(self.inner.domain.as_ref());
+        crate::scheduler::domain::check_edge(reader, source)
     }
 
     fn subscriber_count(&self) -> usize {

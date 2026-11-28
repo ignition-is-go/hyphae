@@ -1,7 +1,7 @@
 //! Regression harness: single-input slicing/stateful operators under the
 //! scheduler's wave-parallel drain.
 //!
-//! The `scheduler` feature's `batch(|| ...)` defers notifies into a
+//! The scheduler's `batch(|| ...)` defers notifies into a
 //! height-ordered queue. A wave of `>= PARALLEL_WAVE_THRESHOLD` (8) same-height
 //! ops dispatches across rayon IN PARALLEL. This file pins down two distinct
 //! properties for the single-input operators in
@@ -36,17 +36,15 @@
 //! a separate (also wide) notifier wave. There is no way to fold the notifier
 //! arm into the same same-height source wave via the public API, so the source
 //! wave is what this harness stresses.
-#![cfg(feature = "scheduler")]
 
 use std::sync::Arc;
-
-use parking_lot::Mutex;
 
 use hyphae::{
     BufferCountExt, Cell, CellMutable, FirstExt, Gettable, LastExt, Materialize, Mutable,
     PairwiseExt, Signal, SkipExt, SkipWhileExt, TakeExt, TakeUntilExt, TakeWhileExt, Watchable,
     WindowExt, batch, scheduler::no_coalesce,
 };
+use parking_lot::Mutex;
 
 const WIDE: usize = 16;
 const ITERS: i64 = 2_000;

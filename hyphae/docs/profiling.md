@@ -30,7 +30,7 @@ removed in 2.0.0). It does three things, and compiles to nothing when off:
 - Marks `Cell::notify`, `Cell::write_value`, and `Cell::fanout`
   `#[inline(never)]`, so each stays a distinct frame in a sampled stack.
 - Emits a `tracing` span (`hyphae.fanout`) per cell emit, tagged with the cell
-  `id` and `name` (set names with `Cell::with_name`). hyphae only *emits* spans;
+  `id`. hyphae only *emits* spans;
   the application chooses the subscriber (see Layer 3b).
 - Exposes [`hyphae::profiling::pass`] / [`take_report`] for measuring how much
   of a propagation pass is redundant re-fire.

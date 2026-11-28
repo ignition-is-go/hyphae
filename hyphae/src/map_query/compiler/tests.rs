@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use super::*;
 use crate::{
     CellMap,
@@ -5,7 +7,6 @@ use crate::{
     map_query::compile_runtime_into,
     traits::{ForeignKeyRelation, IdFor, LeftJoinExt, MapValuesExt},
 };
-use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Parent;

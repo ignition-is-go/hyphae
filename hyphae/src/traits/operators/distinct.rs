@@ -16,13 +16,12 @@ use crate::{
 };
 
 /// Pipeline node representing `source.distinct()`.
-pub struct DistinctPipeline<S, T, Sd = Definite> {
+pub struct DistinctPipeline<S, Sd = Definite> {
     source: S,
-    _t: PhantomData<fn(T)>,
     _sd: PhantomData<fn(Sd)>,
 }
 
-impl<S, T, Sd> PipelineInstall<T> for DistinctPipeline<S, T, Sd>
+impl<S, T, Sd> PipelineInstall<T> for DistinctPipeline<S, Sd>
 where
     S: PipelineInstall<T> + Send + Sync + 'static,
     Sd: Seedness,
@@ -44,7 +43,7 @@ where
     }
 }
 
-impl<S, T, Sd> PipelineSeed<T> for DistinctPipeline<S, T, Sd>
+impl<S, T, Sd> PipelineSeed<T> for DistinctPipeline<S, Sd>
 where
     S: Pipeline<T, crate::pipeline::Definite>,
     Sd: Seedness,
@@ -56,15 +55,14 @@ where
 }
 
 #[allow(private_bounds)]
-impl<S, T> Pipeline<T, crate::pipeline::Definite>
-    for DistinctPipeline<S, T, crate::pipeline::Definite>
+impl<S, T> Pipeline<T, crate::pipeline::Definite> for DistinctPipeline<S, crate::pipeline::Definite>
 where
     S: Pipeline<T, crate::pipeline::Definite>,
     T: CellValue + Eq + Hash,
 {
 }
 
-impl<S, T> Pipeline<T, crate::pipeline::Empty> for DistinctPipeline<S, T, crate::pipeline::Empty>
+impl<S, T> Pipeline<T, crate::pipeline::Empty> for DistinctPipeline<S, crate::pipeline::Empty>
 where
     S: Pipeline<T, crate::pipeline::Empty>,
     T: CellValue + Eq + Hash,
@@ -89,7 +87,6 @@ pub trait DistinctExt<T: CellValue + Eq + Hash, S: Seedness>: Pipeline<T, S> {
     /// source.set(3);
     /// source.set(2); // blocked - already seen
     /// ```
-    #[track_caller]
     fn distinct(self) -> impl crate::Materialize<T, S>;
 }
 
@@ -99,7 +96,6 @@ impl<T: CellValue + Eq + Hash, P: Pipeline<T, crate::pipeline::Definite>>
     fn distinct(self) -> impl crate::Materialize<T, crate::pipeline::Definite> {
         DistinctPipeline {
             source: self,
-            _t: PhantomData,
             _sd: PhantomData,
         }
     }
@@ -111,7 +107,6 @@ impl<T: CellValue + Eq + Hash, P: Pipeline<T, crate::pipeline::Empty>>
     fn distinct(self) -> impl crate::Materialize<T, crate::pipeline::Empty> {
         DistinctPipeline {
             source: self,
-            _t: PhantomData,
             _sd: PhantomData,
         }
     }

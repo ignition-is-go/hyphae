@@ -28,9 +28,9 @@
 //! `SharedMapQuery` does not reactivate — hold the handle (or one
 //! materialized leaf) for as long as you want the shared work to run.
 
-use parking_lot::Mutex;
 use std::{collections::HashMap, hash::Hash, sync::Arc};
 
+use parking_lot::Mutex;
 use uuid::Uuid;
 
 use super::properties::{ByMapKey, ExactlyOne, PlanProperties};

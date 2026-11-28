@@ -19,14 +19,13 @@ use crate::{
 };
 
 /// Pipeline node representing `source.take_while(p)`.
-pub struct TakeWhilePipeline<S, T, F, Sd = crate::pipeline::Definite> {
+pub struct TakeWhilePipeline<S, F, Sd = crate::pipeline::Definite> {
     source: S,
     predicate: Arc<F>,
-    _t: PhantomData<fn(T)>,
     _sd: PhantomData<fn(Sd)>,
 }
 
-impl<S, T, F, Sd> PipelineInstall<T> for TakeWhilePipeline<S, T, F, Sd>
+impl<S, T, F, Sd> PipelineInstall<T> for TakeWhilePipeline<S, F, Sd>
 where
     S: PipelineInstall<T> + Send + Sync + 'static,
     Sd: Seedness,
@@ -57,7 +56,7 @@ where
 }
 
 #[allow(private_bounds)]
-impl<S, T, F, Sd> Pipeline<T, Empty> for TakeWhilePipeline<S, T, F, Sd>
+impl<S, T, F, Sd> Pipeline<T, Empty> for TakeWhilePipeline<S, F, Sd>
 where
     S: Pipeline<T, Sd>,
     Sd: Seedness,
@@ -70,7 +69,6 @@ where
 pub trait TakeWhileExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
     /// Forward values while the predicate returns `true`. On the first `false`,
     /// emit `Complete` and ignore all subsequent values.
-    #[track_caller]
     fn take_while<F>(self, predicate: F) -> impl crate::Materialize<T, Empty>
     where
         F: Fn(&T) -> bool + Send + Sync + 'static,
@@ -78,7 +76,6 @@ pub trait TakeWhileExt<T: CellValue, S: Seedness>: Pipeline<T, S> {
         TakeWhilePipeline {
             source: self,
             predicate: Arc::new(predicate),
-            _t: PhantomData,
             _sd: PhantomData,
         }
     }

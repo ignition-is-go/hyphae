@@ -1,12 +1,12 @@
-use parking_lot::Mutex;
 use std::{
-    marker::PhantomData,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
+
+use parking_lot::Mutex;
 
 use super::CellValue;
 use crate::{
@@ -16,13 +16,12 @@ use crate::{
     subscription::SubscriptionGuard,
 };
 
-pub struct AuditPipeline<S, T> {
+pub struct AuditPipeline<S> {
     source: S,
     duration: Duration,
-    _t: PhantomData<fn(T)>,
 }
 
-impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for AuditPipeline<S, T> {
+impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for AuditPipeline<S> {
     fn install(&self, callback: Arc<dyn Fn(&Signal<T>) + Send + Sync>) -> SubscriptionGuard {
         let first = AtomicBool::new(true);
         let latest: Arc<Mutex<Option<T>>> = Arc::new(Mutex::new(None));
@@ -79,7 +78,7 @@ impl<S: PipelineInstall<T>, T: CellValue> PipelineInstall<T> for AuditPipeline<S
     }
 }
 
-impl<S: PipelineSeed<T>, T: CellValue> PipelineSeed<T> for AuditPipeline<S, T> {
+impl<S: PipelineSeed<T>, T: CellValue> PipelineSeed<T> for AuditPipeline<S> {
     fn seed(&self) -> T {
         self.source.seed()
     }
@@ -87,18 +86,16 @@ impl<S: PipelineSeed<T>, T: CellValue> PipelineSeed<T> for AuditPipeline<S, T> {
 
 #[allow(private_bounds)]
 impl<S: Pipeline<T, Definite> + PipelineSeed<T>, T: CellValue> Pipeline<T, Definite>
-    for AuditPipeline<S, T>
+    for AuditPipeline<S>
 {
 }
 
 #[allow(private_bounds)]
 pub trait AuditExt<T: CellValue>: Pipeline<T, Definite> + PipelineSeed<T> {
-    #[track_caller]
     fn audit(self, duration: Duration) -> impl crate::Materialize<T, Definite> {
         AuditPipeline {
             source: self,
             duration,
-            _t: PhantomData,
         }
     }
 }

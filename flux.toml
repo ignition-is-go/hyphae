@@ -7,7 +7,7 @@ timeout_seconds = 600
 [channels]
 main = "production"
 
-# `--all-features` so the feature-gated modules (scheduler, profiling, async)
+# `--all-features` so the feature-gated modules (profiling, async)
 # are actually compiled/linted/tested — with `default = []` a bare cargo
 # invocation skips most of the crate. No `--all-targets`: that pulls in the
 # benches, which are slow to build and are not a correctness gate.
@@ -25,9 +25,7 @@ cargo = ["cargo", "check", "--target", "wasm32-unknown-unknown"]
 workspace_batchable = true
 
 # Wasm compile guard for the *feature-gated* modules. `check-wasm` alone
-# compiles `default = []` and skips them — that gap shipped 1.3.2 with an
-# ungated `rayon` reference in the scheduler that broke every downstream wasm
-# build with `scheduler` enabled. Every feature must stay wasm-clean; only
+# compiles `default = []` and skips them. Every feature must stay wasm-clean; only
 # `hyphae` opts in — `hyphae-leptos` doesn't define these features.
 [tasks.check-wasm-features]
 cargo = [
@@ -36,7 +34,7 @@ cargo = [
     "--target",
     "wasm32-unknown-unknown",
     "--features",
-    "scheduler,async,profiling",
+    "async,profiling",
 ]
 workspace_batchable = true
 
@@ -97,7 +95,7 @@ root = ["rustfmt", "+nightly", "--edition", "2024", "--config", "skip_children=t
 root = ["cargo", "check", "-p", "hyphae", "--no-default-features"]
 
 [tasks.check-pair-join-wasm]
-root = ["cargo", "check", "-p", "hyphae", "--target", "wasm32-unknown-unknown", "--features", "scheduler,async,profiling"]
+root = ["cargo", "check", "-p", "hyphae", "--target", "wasm32-unknown-unknown", "--features", "async,profiling"]
 
 [tasks.test-pair-join-scratch]
 root = ["cargo", "test", "-p", "hyphae", "--all-features", "initial_join_does_not_retain_large_touched_scratch", "--", "--test-threads=1", "--nocapture"]

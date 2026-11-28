@@ -98,12 +98,6 @@ fn test_cell_unsubscribe() {
 }
 
 #[test]
-fn test_cell_with_name() {
-    let cell = Cell::new(42).with_name("my_cell");
-    assert_eq!(cell.name(), Some("my_cell".to_string()));
-}
-
-#[test]
 fn test_cell_clone_shares_state() {
     let cell1 = Cell::new(0);
     let cell2 = cell1.clone();
@@ -114,9 +108,6 @@ fn test_cell_clone_shares_state() {
 
 #[test]
 fn test_cell_dep_node() {
-    let cell = Cell::new(42).with_name("test");
-
-    assert!(cell.name().is_some());
-    assert_eq!(cell.dependency_count(), 0);
-    assert!(!cell.has_dependencies());
+    let cell = Cell::new(42);
+    assert!(cell.deps().is_empty());
 }
